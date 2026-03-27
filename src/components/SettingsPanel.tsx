@@ -112,7 +112,6 @@ export function SettingsPanel({
 
   useEffect(() => {
     if (!isOpen) {
-      setGlobalPatterns(globalExcludePatterns);
       setProjectPatterns(projectPath ? readProjectExcludePatterns(projectPath) : []);
       setGlobalTaskScriptsPath(null);
       setNeedsProjectRefresh(false);
@@ -121,12 +120,20 @@ export function SettingsPanel({
       return;
     }
 
-    setGlobalPatterns(globalExcludePatterns);
     setProjectPatterns(projectPath ? readProjectExcludePatterns(projectPath) : []);
     setNeedsProjectRefresh(false);
     setNewPattern('');
     setShowPresets(false);
-  }, [isOpen, projectPath, globalExcludePatterns]);
+  }, [isOpen, projectPath]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      setGlobalPatterns(globalExcludePatterns);
+      return;
+    }
+
+    setGlobalPatterns(globalExcludePatterns);
+  }, [globalExcludePatterns, isOpen]);
 
   useEffect(() => {
     if (!isOpen) {

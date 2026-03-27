@@ -18,8 +18,26 @@ import { useUiStore } from '../../stores/uiStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { Folder, Code, Clock, History, MessageCircle, Terminal, Upload, X } from 'lucide-react';
 
+function isEditableTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  const tagName = target.tagName.toLowerCase();
+  return tagName === 'input' || tagName === 'textarea' || tagName === 'select' || target.isContentEditable;
+}
+
 export function FileManager() {
-  const { isInitialized, projectPath, projectName, currentPath, setProject, refresh } = useProjectStore();
+  const {
+    isInitialized,
+    projectPath,
+    projectName,
+    currentPath,
+    setProject,
+    refresh,
+    toggleShowExcludedFiles,
+    showExcludedFiles,
+  } = useProjectStore();
   const { toast, showToast, hideToast } = useUiStore();
   const { 
     loadSettings, 
@@ -65,6 +83,42 @@ export function FileManager() {
 
     return () => window.clearTimeout(timeout);
   }, [hideToast, toast.isOpen, toast.tone]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!isInitialized || activeTab !== 'files') {
+        return;
+      }
+
+      if (!(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey) {
+        return;
+      }
+
+      if (event.key.toLowerCase() !== 'h') {
+        return;
+      }
+
+      if (isEditableTarget(event.target)) {
+        return;
+      }
+
+      event.preventDefault();
+
+      const nextShowExcluded = !useProjectStore.getState().showExcludedFiles;
+      toggleShowExcludedFiles();
+      void refresh();
+      showToast({
+        title: nextShowExcluded ? '已显示排除项' : '已隐藏排除项',
+        message: nextShowExcluded
+          ? '当前目录会显示被排除规则隐藏的文件，按 Ctrl+H 可切回隐藏。'
+          : '当前目录已恢复隐藏被排除规则匹配的文件。',
+        tone: 'info',
+      });
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeTab, isInitialized, refresh, showToast, toggleShowExcludedFiles]);
 
   const resetExternalDragState = useCallback(() => {
     externalDragDepthRef.current = 0;
@@ -195,6 +249,12 @@ export function FileManager() {
           <LauncherButton />
         </div>
       </div>
+
+      {isInitialized && activeTab === 'files' && showExcludedFiles && (
+        <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-700">
+          当前正在显示排除规则隐藏的文件，按 `Ctrl+H` 可切回隐藏。
+        </div>
+      )}
 
       {/* Tab 切换 */}
       {isInitialized && (

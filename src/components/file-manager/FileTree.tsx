@@ -1,10 +1,16 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { TreeNode } from '../../types';
 import { useProjectStore } from '../../stores/projectStore';
+import { useSettingsStore } from '../../stores/settingsStore';
 import { ChevronRight, ChevronDown, Folder, FolderOpen } from 'lucide-react';
 import { canMovePathsToDirectory, getPathLabel } from './dragDrop';
 import { useFileDropMove } from './useFileDropMove';
 import { useInternalFileDrag } from './useInternalFileDrag';
+import {
+  mergeExcludePatterns,
+  readProjectExcludePatterns,
+  shouldExcludeFile,
+} from '../../utils/excludePatterns';
 
 interface TreeItemProps {
   node: TreeNode;
@@ -17,6 +23,8 @@ interface TreeItemProps {
   canDropToDirectory: (targetDir: string, dragPaths?: string[]) => boolean;
   getDraggedPathsFromDataTransfer: (dataTransfer: DataTransfer | null) => string[];
   suppressInteraction: (event: React.SyntheticEvent<HTMLElement>) => boolean;
+  isExcluded: (node: TreeNode) => boolean;
+  showExcludedFiles: boolean;
 }
 
 function TreeItem({
@@ -30,11 +38,14 @@ function TreeItem({
   canDropToDirectory,
   getDraggedPathsFromDataTransfer,
   suppressInteraction,
+  isExcluded,
+  showExcludedFiles,
 }: TreeItemProps) {
   const { currentPath, expandedKeys, toggleExpanded, loadDirectory } = useProjectStore();
   const isExpanded = expandedKeys.has(node.path);
   const isSelected = currentPath === node.path;
   const isDropTarget = dropTargetPath === node.path;
+  const excluded = isExcluded(node);
 
   const handleClick = (event: React.MouseEvent<HTMLDivElement>) => {
     if (suppressInteraction(event)) {
@@ -57,6 +68,7 @@ function TreeItem({
           hover:bg-gray-100 dark:hover:bg-gray-800
           ${isSelected ? 'bg-blue-50 dark:bg-blue-900/20 border-r-2 border-blue-500' : ''}
           ${isDropTarget ? 'bg-blue-50 ring-2 ring-inset ring-blue-500' : ''}
+          ${showExcludedFiles && excluded ? 'opacity-70' : ''}
         `}
         style={{ paddingLeft: `${level * 16 + 8}px` }}
         onClick={handleClick}
@@ -108,6 +120,11 @@ function TreeItem({
         )}
         
         <span className="text-sm truncate">{node.name}</span>
+        {showExcludedFiles && excluded && (
+          <span className="ml-2 shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+            已排除
+          </span>
+        )}
       </div>
       
       {isExpanded && node.children.length > 0 && (
@@ -125,6 +142,8 @@ function TreeItem({
               canDropToDirectory={canDropToDirectory}
               getDraggedPathsFromDataTransfer={getDraggedPathsFromDataTransfer}
               suppressInteraction={suppressInteraction}
+              isExcluded={isExcluded}
+              showExcludedFiles={showExcludedFiles}
             />
           ))}
         </div>
@@ -133,8 +152,29 @@ function TreeItem({
   );
 }
 
+function filterTreeNode(
+  node: TreeNode,
+  shouldHideExcluded: boolean,
+  isExcluded: (node: TreeNode) => boolean,
+  isRoot = false,
+): TreeNode | null {
+  if (!isRoot && shouldHideExcluded && isExcluded(node)) {
+    return null;
+  }
+
+  const children = node.children
+    .map((child) => filterTreeNode(child, shouldHideExcluded, isExcluded))
+    .filter((child): child is TreeNode => child !== null);
+
+  return {
+    ...node,
+    children,
+  };
+}
+
 export function FileTree() {
-  const { treeData, projectName, projectPath } = useProjectStore();
+  const { treeData, projectName, projectPath, showExcludedFiles } = useProjectStore();
+  const globalExcludePatterns = useSettingsStore((state) => state.globalExcludePatterns);
   const {
     draggedPaths,
     startInternalDrag,
@@ -175,7 +215,22 @@ export function FileTree() {
     );
   }, [draggedPaths, movePathsToDirectory]);
 
-  if (!treeData) {
+  const excludePatterns = projectPath
+    ? mergeExcludePatterns(globalExcludePatterns, readProjectExcludePatterns(projectPath))
+    : [];
+
+  const isExcluded = useCallback((node: TreeNode) => {
+    return excludePatterns.length > 0 && shouldExcludeFile(node.name, excludePatterns);
+  }, [excludePatterns]);
+
+  const visibleTreeData = useMemo(() => {
+    if (!treeData) {
+      return null;
+    }
+    return filterTreeNode(treeData, !showExcludedFiles, isExcluded, true) ?? treeData;
+  }, [isExcluded, showExcludedFiles, treeData]);
+
+  if (!visibleTreeData) {
     return (
       <div className="h-full flex items-center justify-center text-gray-400 text-sm">
         请先打开一个项目
@@ -207,7 +262,7 @@ export function FileTree() {
       {/* 树 */}
       <div className="flex-1 overflow-auto">
         <TreeItem
-          node={treeData}
+          node={visibleTreeData}
           level={0}
           dropTargetPath={dropTargetPath}
           onDragStart={handleDragStart}
@@ -217,6 +272,8 @@ export function FileTree() {
           canDropToDirectory={canDropToDirectory}
           getDraggedPathsFromDataTransfer={getDraggedPathsFromDataTransfer}
           suppressInteraction={suppressInteraction}
+          isExcluded={isExcluded}
+          showExcludedFiles={showExcludedFiles}
         />
       </div>
 

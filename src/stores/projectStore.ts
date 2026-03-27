@@ -75,6 +75,7 @@ interface ProjectState {
   searchQuery: string;
   searchResults: FileInfo[];
   isSearching: boolean;
+  showExcludedFiles: boolean;
   
   // 操作
   setProject: (path: string) => Promise<void>;
@@ -104,6 +105,7 @@ interface ProjectState {
   // 搜索
   search: (query: string) => Promise<void>;
   clearSearch: () => void;
+  toggleShowExcludedFiles: () => void;
 }
 
 export const useProjectStore = create<ProjectState>((set, get) => ({
@@ -124,6 +126,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   searchQuery: '',
   searchResults: [],
   isSearching: false,
+  showExcludedFiles: false,
 
   // 设置项目
   setProject: async (path: string) => {
@@ -156,8 +159,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       let files = await invoke<FileInfo[]>('read_directory', { path });
       
       // 应用排除规则过滤
-      const projectPath = get().projectPath;
-      if (projectPath) {
+      const { projectPath, showExcludedFiles } = get();
+      if (projectPath && !showExcludedFiles) {
         const excludePatterns = getExcludePatterns(projectPath);
         files = files.filter(file => !shouldExclude(file.name, excludePatterns));
       }
@@ -393,7 +396,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   // 搜索
   search: async (query: string) => {
-    const { projectPath } = get();
+    const { projectPath, showExcludedFiles } = get();
     if (!projectPath || !query.trim()) {
       set({ searchQuery: '', searchResults: [], isSearching: false });
       return;
@@ -402,10 +405,14 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     set({ isSearching: true, searchQuery: query });
     
     try {
-      const results = await invoke<FileInfo[]>('search_files', {
+      let results = await invoke<FileInfo[]>('search_files', {
         rootPath: projectPath,
         query: query.trim(),
       });
+      if (!showExcludedFiles) {
+        const excludePatterns = getExcludePatterns(projectPath);
+        results = results.filter((file) => !shouldExclude(file.name, excludePatterns));
+      }
       set({ searchResults: results, isSearching: false });
     } catch (error) {
       console.error('Failed to search:', error);
@@ -416,5 +423,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   // 清除搜索
   clearSearch: () => {
     set({ searchQuery: '', searchResults: [], isSearching: false });
+  },
+
+  toggleShowExcludedFiles: () => {
+    set((state) => ({ showExcludedFiles: !state.showExcludedFiles }));
   },
 }));

@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { FileInfo } from '../../types';
 import { useProjectStore } from '../../stores/projectStore';
+import { useSettingsStore } from '../../stores/settingsStore';
 import { useUiStore } from '../../stores/uiStore';
 import { FileIcon, FolderIcon, Image, Film, FileText, Box } from 'lucide-react';
 import { FileContextMenu } from './FileContextMenu';
@@ -9,6 +10,11 @@ import { FileDetailsDialog } from './FileDetailsView';
 import { canMovePathsToDirectory, getPathLabel } from './dragDrop';
 import { useFileDropMove } from './useFileDropMove';
 import { useInternalFileDrag } from './useInternalFileDrag';
+import {
+  mergeExcludePatterns,
+  readProjectExcludePatterns,
+  shouldExcludeFile,
+} from '../../utils/excludePatterns';
 
 // 格式化文件大小
 function formatSize(bytes: number): string {
@@ -86,6 +92,8 @@ function ListView({
   columns,
   tags,
   fileTags,
+  isExcluded,
+  showExcludedFiles,
 }: {
   files: FileInfo[];
   selectedFiles: Set<string>;
@@ -104,6 +112,8 @@ function ListView({
   columns: any[];
   tags: any[];
   fileTags: Map<string, string[]>;
+  isExcluded: (file: FileInfo) => boolean;
+  showExcludedFiles: boolean;
 }) {
   const visibleColumns = columns.filter(c => c.visible);
   
@@ -144,6 +154,7 @@ function ListView({
           const fileTagIds = fileTags.get(file.path) || [];
           const fileTagList = tags.filter(t => fileTagIds.includes(t.id));
           const isDropTarget = file.is_dir && dropTargetPath === file.path;
+          const excluded = isExcluded(file);
           
           return (
             <div
@@ -157,6 +168,7 @@ function ListView({
                   : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'
                 }
                 ${isDropTarget ? 'ring-2 ring-inset ring-blue-500 bg-blue-50' : ''}
+                ${showExcludedFiles && excluded ? 'opacity-70' : ''}
               `}
               onClick={(e) => {
                 if (suppressInteraction(e)) return;
@@ -203,6 +215,11 @@ function ListView({
                     <div className="flex items-center gap-2">
                       {getFileIcon(file)}
                       <span className="truncate">{file.name}</span>
+                      {showExcludedFiles && excluded && (
+                        <span className="shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                          已排除
+                        </span>
+                      )}
                     </div>
                   )}
                   {col.key === 'size' && formatSize(file.size)}
@@ -249,6 +266,8 @@ function GridView({
   currentPath,
   tags,
   fileTags,
+  isExcluded,
+  showExcludedFiles,
 }: {
   files: FileInfo[];
   selectedFiles: Set<string>;
@@ -266,6 +285,8 @@ function GridView({
   currentPath: string;
   tags: any[];
   fileTags: Map<string, string[]>;
+  isExcluded: (file: FileInfo) => boolean;
+  showExcludedFiles: boolean;
 }) {
   return (
     <div
@@ -289,6 +310,7 @@ function GridView({
         const fileTagIds = fileTags.get(file.path) || [];
         const fileTagList = tags.filter(t => fileTagIds.includes(t.id));
         const isDropTarget = file.is_dir && dropTargetPath === file.path;
+        const excluded = isExcluded(file);
         
         return (
           <div
@@ -301,6 +323,7 @@ function GridView({
                 : 'hover:bg-gray-50 dark:hover:bg-gray-800'
               }
               ${isDropTarget ? 'ring-2 ring-blue-500 bg-blue-50' : ''}
+              ${showExcludedFiles && excluded ? 'opacity-70' : ''}
             `}
             onClick={(e) => {
               if (suppressInteraction(e)) return;
@@ -346,6 +369,13 @@ function GridView({
             <div className="text-sm text-center truncate" title={file.name}>
               {file.name}
             </div>
+            {showExcludedFiles && excluded && (
+              <div className="mt-1 text-center">
+                <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                  已排除
+                </span>
+              </div>
+            )}
             
             {/* 标签 */}
             {fileTagList.length > 0 && (
@@ -385,8 +415,11 @@ export function FileList() {
     searchResults,
     isSearching,
     searchQuery,
+    projectPath,
+    showExcludedFiles,
   } = useProjectStore();
   const showToast = useUiStore((state) => state.showToast);
+  const globalExcludePatterns = useSettingsStore((state) => state.globalExcludePatterns);
   const {
     draggedPaths,
     startInternalDrag,
@@ -408,6 +441,12 @@ export function FileList() {
   const [detailsDialogFile, setDetailsDialogFile] = useState<FileInfo | null>(null);
 
   const displayFiles = searchQuery ? searchResults : files;
+  const excludePatterns = projectPath
+    ? mergeExcludePatterns(globalExcludePatterns, readProjectExcludePatterns(projectPath))
+    : [];
+  const isExcluded = useCallback((file: FileInfo) => {
+    return excludePatterns.length > 0 && shouldExcludeFile(file.name, excludePatterns);
+  }, [excludePatterns]);
   const detailsDialogTagIds = detailsDialogFile ? (fileTags.get(detailsDialogFile.path) || []) : [];
   const detailsDialogTagList = detailsDialogFile
     ? tags.filter((tag) => detailsDialogTagIds.includes(tag.id))
@@ -518,6 +557,8 @@ export function FileList() {
           columns={columns}
           tags={tags}
           fileTags={fileTags}
+          isExcluded={isExcluded}
+          showExcludedFiles={showExcludedFiles}
         />
       ) : (
         <GridView
@@ -537,6 +578,8 @@ export function FileList() {
           currentPath={currentPath || ''}
           tags={tags}
           fileTags={fileTags}
+          isExcluded={isExcluded}
+          showExcludedFiles={showExcludedFiles}
         />
       )}
 

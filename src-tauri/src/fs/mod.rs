@@ -73,12 +73,7 @@ pub async fn read_directory(path: String) -> Result<Vec<FileInfo>, String> {
         let metadata = entry.metadata().await.map_err(|e| e.to_string())?;
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
-        
-        // 跳过隐藏文件
-        if name.starts_with('.') {
-            continue;
-        }
-        
+
         let extension = path.extension()
             .map(|e| e.to_string_lossy().to_string().to_lowercase());
         
@@ -128,13 +123,7 @@ fn build_tree_node(
             if let Ok(mut dir) = tokio::fs::read_dir(path).await {
                 while let Ok(Some(entry)) = dir.next_entry().await {
                     let child_path = entry.path();
-                    let child_name = entry.file_name().to_string_lossy().to_string();
-                    
-                    // 跳过隐藏文件和特定目录
-                    if child_name.starts_with('.') {
-                        continue;
-                    }
-                    
+
                     if child_path.is_dir() {
                         match build_tree_node(&child_path).await {
                             Ok(node) => children.push(node),
@@ -166,12 +155,7 @@ pub async fn search_files(root_path: String, query: String) -> Result<Vec<FileIn
         .filter_map(|e| e.ok())
     {
         let name = entry.file_name().to_string_lossy().to_string();
-        
-        // 跳过隐藏文件
-        if name.starts_with('.') {
-            continue;
-        }
-        
+
         if name.to_lowercase().contains(&query_lower) {
             if let Ok(metadata) = entry.metadata() {
                 let path = entry.path();
