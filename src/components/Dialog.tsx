@@ -147,7 +147,7 @@ export function ConfirmDialog({
         </>
       }
     >
-      <p className="text-gray-700 dark:text-gray-300">{message}</p>
+      <p className="text-gray-700 dark:text-gray-300 whitespace-pre-line">{message}</p>
     </Dialog>
   );
 }
@@ -183,7 +183,7 @@ export function AlertDialog({
         </button>
       }
     >
-      <p className="text-gray-700 dark:text-gray-300">{message}</p>
+      <p className="text-gray-700 dark:text-gray-300 whitespace-pre-line">{message}</p>
     </Dialog>
   );
 }

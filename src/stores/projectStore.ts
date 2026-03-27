@@ -25,6 +25,25 @@ function shouldExclude(fileName: string, patterns: string[]): boolean {
   });
 }
 
+function replacePathPrefix(path: string, oldPath: string, newPath: string): string | null {
+  const normalizedPath = path.replace(/\\/g, '/');
+  const normalizedOldPath = oldPath.replace(/\\/g, '/');
+
+  if (normalizedPath === normalizedOldPath) {
+    return newPath;
+  }
+
+  if (normalizedPath.startsWith(`${normalizedOldPath}/`)) {
+    return newPath + path.slice(oldPath.length);
+  }
+
+  return null;
+}
+
+function getFileName(path: string): string {
+  return path.split(/[\\/]/).pop() || path;
+}
+
 // 默认列配置
 const defaultColumns: ColumnConfig[] = [
   { key: 'name', title: '名称', width: 300, visible: true, sortable: true },
@@ -67,6 +86,7 @@ interface ProjectState {
   loadTree: () => Promise<void>;
   refresh: () => Promise<void>;
   closeProject: () => void;
+  applyMovedPath: (oldPath: string, newPath: string) => void;
   
   // 选择
   selectFile: (path: string, multi?: boolean) => void;
@@ -201,6 +221,46 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       selectedFiles: new Set(),
       searchQuery: '',
       searchResults: [],
+    });
+  },
+
+  applyMovedPath: (oldPath, newPath) => {
+    set((state) => {
+      const nextFiles = state.files.map((file) => {
+        const replacedPath = replacePathPrefix(file.path, oldPath, newPath);
+        if (!replacedPath) {
+          return file;
+        }
+
+        return {
+          ...file,
+          path: replacedPath,
+          name: getFileName(replacedPath),
+        };
+      });
+
+      const nextSelectedFiles = new Set<string>();
+      state.selectedFiles.forEach((path) => {
+        nextSelectedFiles.add(replacePathPrefix(path, oldPath, newPath) || path);
+      });
+
+      const nextExpandedKeys = new Set<string>();
+      state.expandedKeys.forEach((path) => {
+        nextExpandedKeys.add(replacePathPrefix(path, oldPath, newPath) || path);
+      });
+
+      const nextFileTags = new Map<string, string[]>();
+      state.fileTags.forEach((tagIds, path) => {
+        nextFileTags.set(replacePathPrefix(path, oldPath, newPath) || path, tagIds);
+      });
+
+      return {
+        files: nextFiles,
+        currentPath: state.currentPath ? (replacePathPrefix(state.currentPath, oldPath, newPath) || state.currentPath) : null,
+        selectedFiles: nextSelectedFiles,
+        expandedKeys: nextExpandedKeys,
+        fileTags: nextFileTags,
+      };
     });
   },
 

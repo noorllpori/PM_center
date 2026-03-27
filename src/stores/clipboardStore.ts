@@ -41,9 +41,10 @@ export const useClipboardStore = create<ClipboardState>((set, get) => ({
 
     try {
       if (item.action === 'cut') {
-        await invoke('move_file', { 
+        await invoke('move_project_entry', { 
           source: item.path, 
-          target: targetDir 
+          target: targetDir,
+          conflictStrategy: 'error',
         });
         // 移动后清空剪贴板
         set({ item: null });
@@ -57,7 +58,10 @@ export const useClipboardStore = create<ClipboardState>((set, get) => ({
       return true;
     } catch (error) {
       console.error('Paste failed:', error);
-      alert('操作失败: ' + error);
+      const message = String(error).startsWith('PM_CONFLICT:')
+        ? '目标位置已存在同名文件'
+        : '操作失败: ' + error;
+      alert(message);
       return false;
     }
   },

@@ -4,6 +4,8 @@ use std::pin::Pin;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::future::Future;
 
+pub const FILE_CONFLICT_ERROR_PREFIX: &str = "PM_CONFLICT:";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileInfo {
     pub name: String,
@@ -228,6 +230,19 @@ pub async fn create_directory(path: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+pub async fn path_exists_internal(path: &str) -> Result<bool, String> {
+    match tokio::fs::metadata(path).await {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[tauri::command]
+pub async fn path_exists(path: String) -> Result<bool, String> {
+    path_exists_internal(&path).await
+}
+
 // 在资源管理器中显示文件
 #[tauri::command]
 pub async fn show_in_folder(path: String) -> Result<(), String> {
@@ -347,26 +362,135 @@ pub async fn delete_file(path: String) -> Result<(), String> {
 }
 
 // 移动文件或目录
-#[tauri::command]
-pub async fn move_file(source: String, target: String) -> Result<(), String> {
-    let source_path = PathBuf::from(&source);
+async fn remove_path(path: &PathBuf) -> Result<(), String> {
+    let metadata = tokio::fs::metadata(path)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if metadata.is_dir() {
+        tokio::fs::remove_dir_all(path)
+            .await
+            .map_err(|e| e.to_string())?;
+    } else {
+        tokio::fs::remove_file(path)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+async fn move_path_fallback(source: &PathBuf, target_path: &PathBuf) -> Result<(), String> {
+    let metadata = tokio::fs::metadata(source)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if metadata.is_dir() {
+        copy_dir_recursive(source.clone(), target_path.clone()).await?;
+        tokio::fs::remove_dir_all(source)
+            .await
+            .map_err(|e| e.to_string())?;
+    } else {
+        tokio::fs::copy(source, target_path)
+            .await
+            .map_err(|e| e.to_string())?;
+        tokio::fs::remove_file(source)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+fn build_target_path(source_path: &PathBuf, target_dir: &PathBuf) -> Result<PathBuf, String> {
     let file_name = source_path.file_name()
         .ok_or("Invalid source path")?
         .to_string_lossy()
         .to_string();
-    
-    let target_path = PathBuf::from(&target).join(&file_name);
-    
-    // 检查目标是否已存在
-    if target_path.exists() {
-        return Err("目标位置已存在同名文件".to_string());
+
+    Ok(target_dir.join(file_name))
+}
+
+fn build_renamed_path(path: &PathBuf) -> PathBuf {
+    let parent = path.parent().map(PathBuf::from).unwrap_or_default();
+    let file_name = path.file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "untitled".to_string());
+
+    let stem = path.file_stem()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or(file_name.clone());
+    let extension = path.extension()
+        .map(|ext| ext.to_string_lossy().to_string());
+
+    for index in 1.. {
+        let candidate_name = if let Some(extension) = &extension {
+            format!("{} ({}).{}", stem, index, extension)
+        } else {
+            format!("{} ({})", file_name, index)
+        };
+        let candidate = parent.join(candidate_name);
+        if !candidate.exists() {
+            return candidate;
+        }
     }
-    
-    tokio::fs::rename(&source, &target_path)
+
+    path.clone()
+}
+
+pub async fn move_path_with_strategy(source: PathBuf, target_dir: PathBuf, conflict_strategy: &str) -> Result<PathBuf, String> {
+    let mut target_path = build_target_path(&source, &target_dir)?;
+
+    if source == target_path {
+        return Err("不能移动到当前位置".to_string());
+    }
+
+    if target_path.exists() {
+        match conflict_strategy {
+            "overwrite" => {
+                remove_path(&target_path).await?;
+            }
+            "rename" => {
+                target_path = build_renamed_path(&target_path);
+            }
+            _ => {
+                return Err(format!("{}{}", FILE_CONFLICT_ERROR_PREFIX, target_path.to_string_lossy()));
+            }
+        }
+    }
+
+    match tokio::fs::rename(&source, &target_path).await {
+        Ok(_) => Ok(target_path),
+        Err(_) => {
+            move_path_fallback(&source, &target_path).await?;
+            Ok(target_path)
+        }
+    }
+}
+
+pub async fn rename_path(path: PathBuf, new_name: String) -> Result<PathBuf, String> {
+    let parent = path.parent()
+        .ok_or("Invalid path")?
+        .to_path_buf();
+
+    let target_path = parent.join(&new_name);
+
+    if target_path.exists() {
+        return Err(format!("{}{}", FILE_CONFLICT_ERROR_PREFIX, target_path.to_string_lossy()));
+    }
+
+    tokio::fs::rename(&path, &target_path)
         .await
         .map_err(|e| e.to_string())?;
-    
-    Ok(())
+
+    Ok(target_path)
+}
+
+#[tauri::command]
+pub async fn move_file(source: String, target: String) -> Result<(), String> {
+    move_path_with_strategy(PathBuf::from(source), PathBuf::from(target), "error")
+        .await
+        .map(|_| ())
 }
 
 // 复制文件或目录
@@ -439,22 +563,9 @@ fn copy_dir_recursive(
 // 重命名文件或目录
 #[tauri::command]
 pub async fn rename_file(path: String, new_name: String) -> Result<(), String> {
-    let source_path = PathBuf::from(&path);
-    let parent = source_path.parent()
-        .ok_or("Invalid path")?;
-    
-    let target_path = parent.join(&new_name);
-    
-    // 检查目标是否已存在
-    if target_path.exists() {
-        return Err("目标位置已存在同名文件".to_string());
-    }
-    
-    tokio::fs::rename(&path, &target_path)
+    rename_path(PathBuf::from(path), new_name)
         .await
-        .map_err(|e| e.to_string())?;
-    
-    Ok(())
+        .map(|_| ())
 }
 
 // 文件属性

@@ -125,7 +125,7 @@ export function CodeEditorWindow({ windowInstance }: CodeEditorWindowProps) {
       <CodeEditor
         initialContent={content}
         language={language}
-        theme="dark"
+        theme="light"
         onChange={handleContentChange}
         onSave={handleSave}
       />

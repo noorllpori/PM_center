@@ -40,7 +40,7 @@ const languageExtensions: Record<EditorLanguage, () => Extension> = {
 export function CodeEditor({
   initialContent = '',
   language = 'plaintext',
-  theme = 'dark',
+  theme = 'light',
   readOnly = false,
   onChange,
   onSave,

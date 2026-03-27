@@ -5,6 +5,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager, Runtime,
 };
+use std::path::PathBuf;
 
 mod fs;
 mod db;
@@ -15,8 +16,6 @@ mod task;
 mod p2p;
 mod python_env;
 
-use fs::{read_directory, get_directory_tree, search_files, get_file_info, create_directory, show_in_folder, reveal_in_explorer, open_file, open_path, delete_file, move_file, copy_file, rename_file, get_file_property, read_file};
-use task::{run_task, cancel_task};
 use db::{Database, Tag, FileMetadata};
 use python::{detect_python_envs, run_python_script, run_python_file, pip_install, get_blender_file_info};
 use db::FileChange;
@@ -386,6 +385,48 @@ async fn create_project(
 }
 
 #[tauri::command]
+async fn move_project_entry(
+    db_state: tauri::State<'_, DbState>,
+    source: String,
+    target: String,
+    conflict_strategy: String,
+) -> Result<String, String> {
+    let final_path = fs::move_path_with_strategy(
+        PathBuf::from(&source),
+        PathBuf::from(&target),
+        &conflict_strategy,
+    ).await?;
+
+    let final_path_str = final_path.to_string_lossy().to_string();
+
+    let guard = db_state.lock().await;
+    if let Some(db) = guard.as_ref() {
+        db.move_path_references(&source, &final_path_str)
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(final_path_str)
+}
+
+#[tauri::command]
+async fn rename_project_entry(
+    db_state: tauri::State<'_, DbState>,
+    path: String,
+    new_name: String,
+) -> Result<String, String> {
+    let final_path = fs::rename_path(PathBuf::from(&path), new_name).await?;
+    let final_path_str = final_path.to_string_lossy().to_string();
+
+    let guard = db_state.lock().await;
+    if let Some(db) = guard.as_ref() {
+        db.move_path_references(&path, &final_path_str)
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(final_path_str)
+}
+
+#[tauri::command]
 async fn get_tags(db_state: tauri::State<'_, DbState>) -> Result<Vec<Tag>, String> {
     let guard = db_state.lock().await;
     let db = guard.as_ref().ok_or("Project not initialized")?;
@@ -675,8 +716,11 @@ pub fn run() {
             fs::move_file,
             fs::copy_file,
             fs::rename_file,
+            fs::path_exists,
             fs::get_file_property,
             fs::read_file,
+            move_project_entry,
+            rename_project_entry,
             task::run_task,
             task::cancel_task,
             launch_program,

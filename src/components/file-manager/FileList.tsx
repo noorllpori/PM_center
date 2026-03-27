@@ -1,8 +1,11 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { FileInfo } from '../../types';
 import { useProjectStore } from '../../stores/projectStore';
+import { useFileDragStore } from '../../stores/fileDragStore';
 import { FileIcon, FolderIcon, Image, Film, FileText, Box } from 'lucide-react';
 import { FileContextMenu } from './FileContextMenu';
+import { getInternalDragPaths, getParentPath, getPathLabel, isSameOrDescendantPath, setFileDragData } from './dragDrop';
+import { useFileDropMove } from './useFileDropMove';
 
 // 格式化文件大小
 function formatSize(bytes: number): string {
@@ -68,6 +71,12 @@ function ListView({
   onSelect,
   onDoubleClick,
   onContextMenu,
+  onDragStart,
+  onDragEnd,
+  onDropToDirectory,
+  onHoverDirectory,
+  canDropToDirectory,
+  dropTargetPath,
   currentPath,
   columns,
   tags,
@@ -78,6 +87,12 @@ function ListView({
   onSelect: (path: string, multi: boolean) => void;
   onDoubleClick: (file: FileInfo) => void;
   onContextMenu: (file: FileInfo, x: number, y: number) => void;
+  onDragStart: (file: FileInfo, event: React.DragEvent<HTMLDivElement>) => void;
+  onDragEnd: () => void;
+  onDropToDirectory: (targetDir: string, dragPaths?: string[]) => Promise<void>;
+  onHoverDirectory: (targetDir: string) => void;
+  canDropToDirectory: (targetDir: string, dragPaths?: string[]) => boolean;
+  dropTargetPath: string | null;
   currentPath: string;
   columns: any[];
   tags: any[];
@@ -101,15 +116,32 @@ function ListView({
       </div>
       
       {/* 文件列表 */}
-      <div className="flex-1 overflow-auto">
+      <div
+        className={`flex-1 overflow-auto ${dropTargetPath === currentPath ? 'bg-blue-50/60' : ''}`}
+        onDragOver={(e) => {
+          const internalDragPaths = getInternalDragPaths(e.dataTransfer);
+          if (!canDropToDirectory(currentPath, internalDragPaths)) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          onHoverDirectory(currentPath);
+        }}
+        onDrop={async (e) => {
+          const internalDragPaths = getInternalDragPaths(e.dataTransfer);
+          if (!canDropToDirectory(currentPath, internalDragPaths)) return;
+          e.preventDefault();
+          await onDropToDirectory(currentPath, internalDragPaths);
+        }}
+      >
         {files.map(file => {
           const isSelected = selectedFiles.has(file.path);
           const fileTagIds = fileTags.get(file.path) || [];
           const fileTagList = tags.filter(t => fileTagIds.includes(t.id));
+          const isDropTarget = file.is_dir && dropTargetPath === file.path;
           
           return (
             <div
               key={file.path}
+              draggable
               className={`
                 flex items-center border-b border-gray-100 dark:border-gray-800
                 cursor-pointer select-none
@@ -117,12 +149,35 @@ function ListView({
                   ? 'bg-blue-50 dark:bg-blue-900/20' 
                   : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'
                 }
+                ${isDropTarget ? 'ring-2 ring-inset ring-blue-500 bg-blue-50' : ''}
               `}
               onClick={(e) => onSelect(file.path, e.ctrlKey || e.metaKey)}
               onDoubleClick={() => onDoubleClick(file)}
               onContextMenu={(e) => {
                 e.preventDefault();
                 onContextMenu(file, e.clientX, e.clientY);
+              }}
+              onDragStart={(e) => onDragStart(file, e)}
+              onDragEnd={onDragEnd}
+              onDragOver={(e) => {
+                const internalDragPaths = getInternalDragPaths(e.dataTransfer);
+                if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                onHoverDirectory(file.path);
+              }}
+              onDragEnter={(e) => {
+                const internalDragPaths = getInternalDragPaths(e.dataTransfer);
+                if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
+                e.preventDefault();
+                onHoverDirectory(file.path);
+              }}
+              onDrop={async (e) => {
+                const internalDragPaths = getInternalDragPaths(e.dataTransfer);
+                if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
+                e.preventDefault();
+                e.stopPropagation();
+                await onDropToDirectory(file.path, internalDragPaths);
               }}
             >
               {visibleColumns.map(col => (
@@ -170,6 +225,12 @@ function GridView({
   onSelect,
   onDoubleClick,
   onContextMenu,
+  onDragStart,
+  onDragEnd,
+  onDropToDirectory,
+  onHoverDirectory,
+  canDropToDirectory,
+  dropTargetPath,
   currentPath,
   tags,
   fileTags,
@@ -179,32 +240,78 @@ function GridView({
   onSelect: (path: string, multi: boolean) => void;
   onDoubleClick: (file: FileInfo) => void;
   onContextMenu: (file: FileInfo, x: number, y: number) => void;
+  onDragStart: (file: FileInfo, event: React.DragEvent<HTMLDivElement>) => void;
+  onDragEnd: () => void;
+  onDropToDirectory: (targetDir: string, dragPaths?: string[]) => Promise<void>;
+  onHoverDirectory: (targetDir: string) => void;
+  canDropToDirectory: (targetDir: string, dragPaths?: string[]) => boolean;
+  dropTargetPath: string | null;
   currentPath: string;
   tags: any[];
   fileTags: Map<string, string[]>;
 }) {
   return (
-    <div className="p-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 overflow-auto">
+    <div
+      className={`p-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 overflow-auto ${dropTargetPath === currentPath ? 'bg-blue-50/60' : ''}`}
+      onDragOver={(e) => {
+        const internalDragPaths = getInternalDragPaths(e.dataTransfer);
+        if (!canDropToDirectory(currentPath, internalDragPaths)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        onHoverDirectory(currentPath);
+      }}
+      onDrop={async (e) => {
+        const internalDragPaths = getInternalDragPaths(e.dataTransfer);
+        if (!canDropToDirectory(currentPath, internalDragPaths)) return;
+        e.preventDefault();
+        await onDropToDirectory(currentPath, internalDragPaths);
+      }}
+    >
       {files.map(file => {
         const isSelected = selectedFiles.has(file.path);
         const fileTagIds = fileTags.get(file.path) || [];
         const fileTagList = tags.filter(t => fileTagIds.includes(t.id));
+        const isDropTarget = file.is_dir && dropTargetPath === file.path;
         
         return (
           <div
             key={file.path}
+            draggable
             className={`
               group relative p-3 rounded-lg cursor-pointer select-none
               ${isSelected 
                 ? 'bg-blue-50 dark:bg-blue-900/20 ring-2 ring-blue-500' 
                 : 'hover:bg-gray-50 dark:hover:bg-gray-800'
               }
+              ${isDropTarget ? 'ring-2 ring-blue-500 bg-blue-50' : ''}
             `}
             onClick={(e) => onSelect(file.path, e.ctrlKey || e.metaKey)}
             onDoubleClick={() => onDoubleClick(file)}
             onContextMenu={(e) => {
               e.preventDefault();
               onContextMenu(file, e.clientX, e.clientY);
+            }}
+            onDragStart={(e) => onDragStart(file, e)}
+            onDragEnd={onDragEnd}
+            onDragOver={(e) => {
+              const internalDragPaths = getInternalDragPaths(e.dataTransfer);
+              if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = 'move';
+              onHoverDirectory(file.path);
+            }}
+            onDragEnter={(e) => {
+              const internalDragPaths = getInternalDragPaths(e.dataTransfer);
+              if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
+              e.preventDefault();
+              onHoverDirectory(file.path);
+            }}
+            onDrop={async (e) => {
+              const internalDragPaths = getInternalDragPaths(e.dataTransfer);
+              if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
+              e.preventDefault();
+              e.stopPropagation();
+              await onDropToDirectory(file.path, internalDragPaths);
             }}
           >
             {/* 图标 */}
@@ -256,6 +363,13 @@ export function FileList() {
     isSearching,
     searchQuery,
   } = useProjectStore();
+  const draggedPaths = useFileDragStore((state) => state.draggedPaths);
+  const startDrag = useFileDragStore((state) => state.startDrag);
+  const clearDrag = useFileDragStore((state) => state.clearDrag);
+  const [dropTargetPath, setDropTargetPath] = useState<string | null>(null);
+  const { movePathsToDirectory, conflictDialog } = useFileDropMove(async () => {
+    await refresh();
+  });
 
   // 右键菜单状态
   const [contextMenu, setContextMenu] = useState<{
@@ -284,6 +398,57 @@ export function FileList() {
     refresh();
   };
 
+  const getDraggedItems = useCallback((file: FileInfo) => {
+    if (selectedFiles.has(file.path) && selectedFiles.size > 1) {
+      return Array.from(selectedFiles);
+    }
+    return [file.path];
+  }, [selectedFiles]);
+
+  const canDropToDirectory = useCallback((targetDir: string, dragPaths = draggedPaths) => {
+    if (!targetDir || dragPaths.length === 0) {
+      return false;
+    }
+
+    return dragPaths.some((path) => {
+      if (getParentPath(path) === targetDir) {
+        return false;
+      }
+
+      return !isSameOrDescendantPath(targetDir, path);
+    });
+  }, [draggedPaths]);
+
+  const handleDragStart = useCallback((file: FileInfo, event: React.DragEvent<HTMLDivElement>) => {
+    const dragPaths = getDraggedItems(file);
+    startDrag(dragPaths);
+    setFileDragData(event.dataTransfer, dragPaths);
+  }, [getDraggedItems, startDrag]);
+
+  const handleDragEnd = useCallback(() => {
+    clearDrag();
+    setDropTargetPath(null);
+  }, [clearDrag]);
+
+  const handleDropToDirectory = useCallback(async (targetDir: string, dragPaths?: string[]) => {
+    const currentDraggedPaths = dragPaths && dragPaths.length > 0 ? dragPaths : draggedPaths;
+    if (currentDraggedPaths.length === 0) {
+      return;
+    }
+
+    setDropTargetPath(null);
+    await movePathsToDirectory(
+      currentDraggedPaths,
+      targetDir,
+      getPathLabel(targetDir, useProjectStore.getState().projectPath, useProjectStore.getState().projectName),
+    );
+    clearDrag();
+  }, [clearDrag, draggedPaths, movePathsToDirectory]);
+
+  const handleHoverDirectory = useCallback((targetDir: string) => {
+    setDropTargetPath(targetDir);
+  }, []);
+
   if (isSearching) {
     return (
       <div className="h-full flex items-center justify-center text-gray-400">
@@ -301,6 +466,12 @@ export function FileList() {
           onSelect={selectFile}
           onDoubleClick={handleDoubleClick}
           onContextMenu={handleContextMenu}
+          onDragStart={handleDragStart}
+          onDragEnd={handleDragEnd}
+          onDropToDirectory={handleDropToDirectory}
+          onHoverDirectory={handleHoverDirectory}
+          canDropToDirectory={canDropToDirectory}
+          dropTargetPath={dropTargetPath}
           currentPath={currentPath || ''}
           columns={columns}
           tags={tags}
@@ -313,6 +484,12 @@ export function FileList() {
           onSelect={selectFile}
           onDoubleClick={handleDoubleClick}
           onContextMenu={handleContextMenu}
+          onDragStart={handleDragStart}
+          onDragEnd={handleDragEnd}
+          onDropToDirectory={handleDropToDirectory}
+          onHoverDirectory={handleHoverDirectory}
+          canDropToDirectory={canDropToDirectory}
+          dropTargetPath={dropTargetPath}
           currentPath={currentPath || ''}
           tags={tags}
           fileTags={fileTags}
@@ -330,6 +507,8 @@ export function FileList() {
           onRefresh={handleRefresh}
         />
       )}
+
+      {conflictDialog}
     </div>
   );
 }

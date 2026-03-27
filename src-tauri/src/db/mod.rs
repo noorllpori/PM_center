@@ -2,7 +2,22 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use rusqlite::{Connection, params};
-use chrono::{DateTime, Local, Duration};
+use chrono::DateTime;
+
+fn replace_path_prefix(path: &str, old_path: &str, new_path: &str) -> Option<String> {
+    if path == old_path {
+        return Some(new_path.to_string());
+    }
+
+    let separator = std::path::MAIN_SEPARATOR;
+    let prefix = format!("{}{}", old_path, separator);
+
+    if path.starts_with(&prefix) {
+        return Some(format!("{}{}", new_path, &path[old_path.len()..]));
+    }
+
+    None
+}
 
 #[derive(Clone)]
 pub struct Database {
@@ -266,6 +281,66 @@ impl Database {
         
         Ok(())
     }
+
+    pub fn move_path_references(&self, old_path: &str, new_path: &str) -> Result<(), rusqlite::Error> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        // 迁移文件标签
+        let tag_rows: Vec<(String, String)> = {
+            let mut stmt = tx.prepare("SELECT file_path, tag_id FROM file_tags")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+
+        for (file_path, tag_id) in tag_rows {
+            if let Some(updated_path) = replace_path_prefix(&file_path, old_path, new_path) {
+                tx.execute(
+                    "DELETE FROM file_tags WHERE file_path = ?1 AND tag_id = ?2",
+                    params![file_path, tag_id],
+                )?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO file_tags (file_path, tag_id) VALUES (?1, ?2)",
+                    params![updated_path, tag_id],
+                )?;
+            }
+        }
+
+        // 迁移文件元数据
+        let metadata_rows: Vec<(String, Option<String>, Option<String>, Option<String>)> = {
+            let mut stmt = tx.prepare("SELECT file_path, status, notes, custom_data FROM file_metadata")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+
+        for (file_path, status, notes, custom_data) in metadata_rows {
+            if let Some(updated_path) = replace_path_prefix(&file_path, old_path, new_path) {
+                tx.execute(
+                    "DELETE FROM file_metadata WHERE file_path = ?1",
+                    params![file_path],
+                )?;
+                tx.execute(
+                    r#"
+                    INSERT OR REPLACE INTO file_metadata (file_path, status, notes, custom_data)
+                    VALUES (?1, ?2, ?3, ?4)
+                    "#,
+                    params![updated_path, status, notes, custom_data],
+                )?;
+            }
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
     
     // ========== 文件变更日志操作 ==========
     
@@ -324,7 +399,7 @@ impl Database {
     ) -> Result<Vec<FileChange>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         
-        let sql = if let Some(ct) = change_type {
+        let sql = if change_type.is_some() {
             "SELECT id, project_path, file_path, change_type, file_size, timestamp, depth 
              FROM file_changes 
              WHERE project_path = ? AND timestamp > ? AND change_type = ?

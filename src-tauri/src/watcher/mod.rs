@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
-use tauri::Manager;
 
 use crate::db::Database;
 

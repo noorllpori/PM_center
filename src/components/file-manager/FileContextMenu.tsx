@@ -130,14 +130,17 @@ export function FileContextMenu({ file, x, y, currentPath, onClose, onRefresh }:
     const newName = prompt('新名称:', file.name);
     if (newName && newName !== file.name) {
       try {
-        await invoke('rename_file', { 
+        await invoke('rename_project_entry', { 
           path: file.path, 
           newName 
         });
         onRefresh?.();
       } catch (error) {
         console.error('Failed to rename:', error);
-        alert('重命名失败: ' + error);
+        const message = String(error).startsWith('PM_CONFLICT:')
+          ? '目标位置已存在同名文件'
+          : `重命名失败: ${error}`;
+        alert(message);
       }
     }
     onClose();
