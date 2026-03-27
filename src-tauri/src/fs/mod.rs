@@ -4,6 +4,8 @@ use std::pin::Pin;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::future::Future;
 
+use crate::process_utils::std_command;
+
 pub const FILE_CONFLICT_ERROR_PREFIX: &str = "PM_CONFLICT:";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -238,7 +240,7 @@ pub async fn show_in_folder(path: String) -> Result<(), String> {
 pub async fn reveal_in_explorer(path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("explorer")
+        std_command("explorer")
             .args(["/select,", &path])
             .spawn()
             .map_err(|e| e.to_string())?;
@@ -246,7 +248,7 @@ pub async fn reveal_in_explorer(path: String) -> Result<(), String> {
     
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open")
+        std_command("open")
             .args(["-R", &path])
             .spawn()
             .map_err(|e| e.to_string())?;
@@ -255,7 +257,7 @@ pub async fn reveal_in_explorer(path: String) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         if let Some(parent) = std::path::Path::new(&path).parent() {
-            std::process::Command::new("xdg-open")
+            std_command("xdg-open")
                 .arg(parent)
                 .spawn()
                 .map_err(|e| e.to_string())?;
@@ -270,7 +272,7 @@ pub async fn reveal_in_explorer(path: String) -> Result<(), String> {
 pub async fn open_file(path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("cmd")
+        std_command("cmd")
             .args(["/C", "start", "", &path])
             .spawn()
             .map_err(|e| e.to_string())?;
@@ -278,7 +280,7 @@ pub async fn open_file(path: String) -> Result<(), String> {
     
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open")
+        std_command("open")
             .arg(&path)
             .spawn()
             .map_err(|e| e.to_string())?;
@@ -286,7 +288,7 @@ pub async fn open_file(path: String) -> Result<(), String> {
     
     #[cfg(target_os = "linux")]
     {
-        std::process::Command::new("xdg-open")
+        std_command("xdg-open")
             .arg(&path)
             .spawn()
             .map_err(|e| e.to_string())?;
@@ -300,7 +302,7 @@ pub async fn open_file(path: String) -> Result<(), String> {
 pub async fn open_path(path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("explorer")
+        std_command("explorer")
             .arg(&path)
             .spawn()
             .map_err(|e| e.to_string())?;
@@ -308,7 +310,7 @@ pub async fn open_path(path: String) -> Result<(), String> {
     
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open")
+        std_command("open")
             .arg(&path)
             .spawn()
             .map_err(|e| e.to_string())?;
@@ -316,7 +318,7 @@ pub async fn open_path(path: String) -> Result<(), String> {
     
     #[cfg(target_os = "linux")]
     {
-        std::process::Command::new("xdg-open")
+        std_command("xdg-open")
             .arg(&path)
             .spawn()
             .map_err(|e| e.to_string())?;

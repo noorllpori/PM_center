@@ -7,9 +7,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::Emitter;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
+
+use crate::process_utils::tokio_command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +27,24 @@ type TaskProcesses = Arc<Mutex<HashMap<String, tokio::process::Child>>>;
 
 lazy_static::lazy_static! {
     static ref TASK_PROCESSES: TaskProcesses = Arc::new(Mutex::new(HashMap::new()));
+}
+
+fn decode_process_output(bytes: &[u8]) -> String {
+    match String::from_utf8(bytes.to_vec()) {
+        Ok(text) => text,
+        Err(_) => {
+            #[cfg(windows)]
+            {
+                let (decoded, _, _) = encoding_rs::GBK.decode(bytes);
+                decoded.into_owned()
+            }
+
+            #[cfg(not(windows))]
+            {
+                String::from_utf8_lossy(bytes).into_owned()
+            }
+        }
+    }
 }
 
 /// 运行任务
@@ -66,7 +85,7 @@ pub async fn run_task(
     };
 
     // 构建命令 - 使用指定的 Python
-    let mut cmd = Command::new(&python_exe);
+    let mut cmd = tokio_command(&python_exe);
     cmd.arg(&script_path);
 
     // 设置工作目录
@@ -74,6 +93,10 @@ pub async fn run_task(
         println!("[Task] 设置工作目录: {}", work_dir);
         cmd.current_dir(work_dir);
     }
+
+    // 尽量统一 Python 管道输出编码，避免中文输出在 Windows 上退回到 GBK。
+    cmd.env("PYTHONIOENCODING", "utf-8");
+    cmd.env("PYTHONUTF8", "1");
 
     // 设置环境变量
     if let Some(env_vars) = &script.env_vars {
@@ -160,19 +183,41 @@ pub async fn run_task(
     let task_id_clone = task_id.clone();
     let app_handle_clone = app_handle.clone();
     let stdout_handle = tokio::spawn(async move {
-        let reader = BufReader::new(stdout);
-        let mut lines = reader.lines();
+        let mut reader = BufReader::new(stdout);
+        let mut buffer = Vec::new();
         
         println!("[Task] 开始读取 stdout...");
-        while let Ok(Some(line)) = lines.next_line().await {
-            println!("[Task] [{}] stdout: {}", task_id_clone, line);
-            let _ = app_handle_clone.emit(
-                "task-output",
-                serde_json::json!({
-                    "taskId": task_id_clone,
-                    "line": line,
-                }),
-            );
+        loop {
+            buffer.clear();
+
+            match reader.read_until(b'\n', &mut buffer).await {
+                Ok(0) => break,
+                Ok(_) => {
+                    let line = decode_process_output(&buffer)
+                        .trim_end_matches(['\r', '\n'])
+                        .to_string();
+
+                    println!("[Task] [{}] stdout: {}", task_id_clone, line);
+                    let _ = app_handle_clone.emit(
+                        "task-output",
+                        serde_json::json!({
+                            "taskId": task_id_clone,
+                            "line": line,
+                        }),
+                    );
+                }
+                Err(error) => {
+                    println!("[Task] [{}] stdout 读取失败: {}", task_id_clone, error);
+                    let _ = app_handle_clone.emit(
+                        "task-output",
+                        serde_json::json!({
+                            "taskId": task_id_clone,
+                            "line": format!("[stdout-read-error] {}", error),
+                        }),
+                    );
+                    break;
+                }
+            }
         }
         println!("[Task] stdout 读取结束");
     });
@@ -189,8 +234,7 @@ pub async fn run_task(
         // 读取所有 stderr 数据
         if let Ok(_) = stderr_reader.read_to_end(&mut stderr_buffer).await {
             if !stderr_buffer.is_empty() {
-                // 尝试 UTF-8 解码
-                let stderr_text = String::from_utf8_lossy(&stderr_buffer);
+                let stderr_text = decode_process_output(&stderr_buffer);
                 println!("[Task] [{}] 完整 stderr:\n{}", task_id_clone, stderr_text);
                 
                 // 按行发送

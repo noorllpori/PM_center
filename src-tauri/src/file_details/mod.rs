@@ -11,8 +11,8 @@ use serde_json::Value;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use tokio::process::Command;
 
+use crate::process_utils::tokio_command;
 use crate::python::{get_blender_file_info, resolve_blender_path};
 use crate::tools::{resolve_ffprobe_path, ToolPathsInput};
 
@@ -457,7 +457,7 @@ async fn parse_video_details(path: &Path, ffprobe_path: Option<String>) -> Parse
         );
     };
 
-    let output = match Command::new(&ffprobe_path)
+    let output = match tokio_command(&ffprobe_path)
         .args([
             "-v",
             "quiet",

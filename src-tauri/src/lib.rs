@@ -16,10 +16,12 @@ mod task;
 mod p2p;
 mod python_env;
 mod file_details;
+mod process_utils;
 mod tools;
 
 use db::{Database, Tag, FileMetadata};
 use file_details::get_file_details;
+use process_utils::std_command;
 use python::{detect_python_envs, run_python_script, run_python_file, pip_install, get_blender_file_info};
 use db::FileChange;
 use p2p::{init_p2p, update_p2p_user, start_p2p_discovery, stop_p2p_discovery, send_p2p_message};
@@ -645,7 +647,7 @@ async fn archive_old_changes(
 async fn launch_program(path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("cmd")
+        std_command("cmd")
             .args(["/c", "start", "", &path])
             .spawn()
             .map_err(|e| format!("Failed to launch: {}", e))?;
@@ -653,7 +655,7 @@ async fn launch_program(path: String) -> Result<(), String> {
     
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open")
+        std_command("open")
             .arg(&path)
             .spawn()
             .map_err(|e| format!("Failed to launch: {}", e))?;
@@ -661,7 +663,7 @@ async fn launch_program(path: String) -> Result<(), String> {
     
     #[cfg(target_os = "linux")]
     {
-        std::process::Command::new(&path)
+        std_command(&path)
             .spawn()
             .map_err(|e| format!("Failed to launch: {}", e))?;
     }

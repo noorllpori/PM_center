@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::process::Command;
+use std::sync::OnceLock;
 
+use crate::process_utils::std_command;
 use crate::python::resolve_blender_path;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -40,6 +41,8 @@ pub fn resolve_ffprobe_path(configured_path: Option<&str>) -> Option<String> {
         .and_then(validate_tool_path)
         .or_else(detect_ffprobe_on_path)
 }
+
+static DETECTED_FFPROBE_PATH: OnceLock<Option<String>> = OnceLock::new();
 
 fn build_ffprobe_status(configured_path: Option<&str>) -> ToolStatus {
     let configured_path = configured_path
@@ -144,12 +147,18 @@ fn validate_tool_path(path: &str) -> Option<String> {
 }
 
 fn detect_ffprobe_on_path() -> Option<String> {
+    DETECTED_FFPROBE_PATH
+        .get_or_init(detect_ffprobe_on_path_uncached)
+        .clone()
+}
+
+fn detect_ffprobe_on_path_uncached() -> Option<String> {
     #[cfg(target_os = "windows")]
     let lookup_cmd = "where";
     #[cfg(not(target_os = "windows"))]
     let lookup_cmd = "which";
 
-    let output = Command::new(lookup_cmd)
+    let output = std_command(lookup_cmd)
         .arg("ffprobe")
         .output()
         .ok()?;
@@ -166,7 +175,7 @@ fn detect_ffprobe_on_path() -> Option<String> {
 }
 
 fn read_tool_version(path: &str, version_arg: &str) -> Option<String> {
-    let output = Command::new(path)
+    let output = std_command(path)
         .arg(version_arg)
         .output()
         .ok()?;

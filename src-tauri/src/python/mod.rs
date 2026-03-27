@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::path::Path;
 use std::process::Stdio;
-use tokio::process::Command;
+
+use crate::process_utils::tokio_command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScriptResult {
@@ -33,7 +34,7 @@ pub async fn detect_python_envs() -> Vec<PythonEnv> {
     let mut envs = Vec::new();
 
     for cmd in &["python", "python3", "py"] {
-        if let Ok(output) = Command::new(cmd)
+        if let Ok(output) = tokio_command(cmd)
             .args(&["--version"])
             .output()
             .await
@@ -65,7 +66,7 @@ pub async fn detect_python_envs() -> Vec<PythonEnv> {
 
     let embedded_path = get_embedded_python_path();
     if embedded_path.exists() {
-        if let Ok(output) = Command::new(&embedded_path)
+        if let Ok(output) = tokio_command(&embedded_path)
             .args(&["--version"])
             .output()
             .await
@@ -151,12 +152,12 @@ pub async fn run_python_script(
 ) -> Result<ScriptResult, String> {
     let mut cmd = match env_type {
         EnvType::Blender => {
-            let mut c = Command::new(&python_path);
+            let mut c = tokio_command(&python_path);
             c.args(&["--background", "--python-exit-code", "1", "--python-expr", &script]);
             c
         }
         _ => {
-            let mut c = Command::new(&python_path);
+            let mut c = tokio_command(&python_path);
             c.arg("-c").arg(&script);
             c
         }
@@ -199,7 +200,7 @@ pub async fn run_python_file(
 ) -> Result<ScriptResult, String> {
     let mut cmd = match env_type {
         EnvType::Blender => {
-            let mut c = Command::new(&python_path);
+            let mut c = tokio_command(&python_path);
             c.args(&["--background", "--python-exit-code", "1", "--python", &script_path]);
             if !args.is_empty() {
                 c.arg("--");
@@ -208,7 +209,7 @@ pub async fn run_python_file(
             c
         }
         _ => {
-            let mut c = Command::new(&python_path);
+            let mut c = tokio_command(&python_path);
             c.arg(&script_path).args(&args);
             c
         }
@@ -240,7 +241,7 @@ pub async fn pip_install(
     python_path: String,
     packages: Vec<String>,
 ) -> Result<ScriptResult, String> {
-    let mut cmd = Command::new(&python_path);
+    let mut cmd = tokio_command(&python_path);
     cmd.args(&["-m", "pip", "install"]);
     cmd.args(&packages);
     cmd.stdout(Stdio::piped())

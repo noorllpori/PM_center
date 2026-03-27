@@ -1,8 +1,9 @@
 // Python 环境管理 - 检测系统 Python 和管理 venv
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::process::Command;
 use tauri::Manager;
+
+use crate::process_utils::std_command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -84,7 +85,7 @@ pub async fn detect_system_python() -> Result<Vec<PythonEnv>, String> {
 
 /// 检查指定命令的 Python
 async fn check_python(cmd: &str) -> Option<PythonEnv> {
-    let output = Command::new(cmd)
+    let output = std_command(cmd)
         .args(&["--version"])
         .output()
         .ok()?;
@@ -114,7 +115,7 @@ async fn check_python(cmd: &str) -> Option<PythonEnv> {
     #[cfg(not(windows))]
     let which_cmd = "which";
     
-    let which_output = Command::new(which_cmd)
+    let which_output = std_command(which_cmd)
         .arg(cmd)
         .output()
         .ok()?;
@@ -142,7 +143,7 @@ async fn check_python(cmd: &str) -> Option<PythonEnv> {
 
 /// 检查指定路径的 Python
 async fn check_python_path(path: &PathBuf) -> Option<PythonEnv> {
-    let output = Command::new(path)
+    let output = std_command(path)
         .args(&["--version"])
         .output()
         .ok()?;
@@ -202,7 +203,7 @@ pub async fn create_venv(
     println!("[PythonEnv] 创建 venv: {:?} 使用 {}", venv_dir, base_python);
     
     // 创建 venv
-    let output = Command::new(&base_python)
+    let output = std_command(&base_python)
         .args(&["-m", "venv", &venv_dir.to_string_lossy().to_string()])
         .output()
         .map_err(|e| format!("创建 venv 失败: {}", e))?;
@@ -297,7 +298,7 @@ pub async fn delete_venv(venv_path: String) -> Result<(), String> {
 pub async fn pip_install_package(python_path: String, package_name: String) -> Result<String, String> {
     println!("[PythonEnv] 安装包: {} 使用 {}", package_name, python_path);
     
-    let output = Command::new(&python_path)
+    let output = std_command(&python_path)
         .args(&["-m", "pip", "install", &package_name])
         .output()
         .map_err(|e| format!("运行 pip 失败: {}", e))?;
@@ -317,7 +318,7 @@ pub async fn pip_install_package(python_path: String, package_name: String) -> R
 pub async fn pip_uninstall_package(python_path: String, package_name: String) -> Result<String, String> {
     println!("[PythonEnv] 卸载包: {} 使用 {}", package_name, python_path);
     
-    let output = Command::new(&python_path)
+    let output = std_command(&python_path)
         .args(&["-m", "pip", "uninstall", "-y", &package_name])
         .output()
         .map_err(|e| format!("运行 pip 失败: {}", e))?;
@@ -335,7 +336,7 @@ pub async fn pip_uninstall_package(python_path: String, package_name: String) ->
 /// 获取已安装的包列表
 #[tauri::command]
 pub async fn pip_list_packages(python_path: String) -> Result<Vec<String>, String> {
-    let output = Command::new(&python_path)
+    let output = std_command(&python_path)
         .args(&["-m", "pip", "list", "--format=freeze"])
         .output()
         .map_err(|e| format!("运行 pip list 失败: {}", e))?;
