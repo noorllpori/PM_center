@@ -1,14 +1,17 @@
 {
   "name": "pm_center",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.2.2",
   "license": "GPL-2.0-only",
   "type": "module",
   "scripts": {
+    "predev": "npm run sync:version",
+    "prebuild": "npm run sync:version",
+    "sync:version": "node scripts/sync-version.mjs",
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "node scripts/tauri-command.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.1",

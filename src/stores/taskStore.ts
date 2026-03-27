@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { load } from '@tauri-apps/plugin-store';
 import type { Task, TaskStatus, TaskStats, TaskScript, TaskPriority } from '../types/task';
 import { usePythonEnvStore } from './pythonEnvStore';
 
@@ -33,6 +34,34 @@ interface TaskState {
   processQueue: () => Promise<void>;
 }
 
+interface PersistedTaskState {
+  version: 1;
+  tasks: Task[];
+  activeTaskId: string | null;
+  maxConcurrent: number;
+}
+
+const TASK_STORE_FILE = 'tasks.json';
+const TASK_STORE_KEY = 'taskState';
+const DEFAULT_MAX_CONCURRENT = 3;
+const TASK_OUTPUT_LIMIT = 500;
+const RECOVERED_TASK_MESSAGE = '[恢复] 应用重启后恢复，原任务已中断';
+const EMPTY_TASK_STATS: TaskStats = {
+  total: 0,
+  pending: 0,
+  running: 0,
+  completed: 0,
+  failed: 0,
+  cancelled: 0,
+};
+
+let taskStorePromise: Promise<Awaited<ReturnType<typeof load>>> | null = null;
+let taskStateLoadPromise: Promise<void> | null = null;
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
+let persistQueue: Promise<void> = Promise.resolve();
+let isHydratingTaskState = false;
+let hasLoadedTaskState = false;
+
 // 生成任务ID
 function generateTaskId(): string {
   return `task_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -61,11 +90,158 @@ function calcStats(tasks: Task[]): TaskStats {
   };
 }
 
+function getTaskPersistenceStore() {
+  if (!taskStorePromise) {
+    taskStorePromise = load(TASK_STORE_FILE);
+  }
+  return taskStorePromise;
+}
+
+function normalizeTask(task: Task): Task {
+  return {
+    ...task,
+    script: {
+      ...task.script,
+      workingDir: task.script.workingDir ?? task.projectPath,
+    },
+  };
+}
+
+function appendTaskLog(task: Task, line: string) {
+  const output = [...task.output, line].slice(-TASK_OUTPUT_LIMIT);
+  const prefix = task.fullLog && !task.fullLog.endsWith('\n') ? '\n' : '';
+  return {
+    output,
+    fullLog: `${task.fullLog}${prefix}${line}\n`,
+  };
+}
+
+function recoverInterruptedTask(task: Task, recoveredAt: number): Task {
+  const normalizedTask = normalizeTask(task);
+  const alreadyRecovered =
+    normalizedTask.errorMessage === RECOVERED_TASK_MESSAGE
+    || normalizedTask.output.some(line => line.includes(RECOVERED_TASK_MESSAGE))
+    || normalizedTask.fullLog.includes(RECOVERED_TASK_MESSAGE);
+
+  return {
+    ...normalizedTask,
+    ...(alreadyRecovered ? {} : appendTaskLog(normalizedTask, RECOVERED_TASK_MESSAGE)),
+    status: 'cancelled',
+    completedAt: normalizedTask.completedAt ?? recoveredAt,
+    errorMessage: RECOVERED_TASK_MESSAGE,
+  };
+}
+
+function buildPersistedTaskState(state: TaskState): PersistedTaskState {
+  return {
+    version: 1,
+    tasks: state.tasks,
+    activeTaskId: state.activeTaskId,
+    maxConcurrent: state.maxConcurrent,
+  };
+}
+
+async function persistTaskState() {
+  const store = await getTaskPersistenceStore();
+  await store.set(TASK_STORE_KEY, buildPersistedTaskState(useTaskStore.getState()));
+  await store.save();
+}
+
+function scheduleTaskStatePersist() {
+  if (isHydratingTaskState) {
+    return;
+  }
+
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+  }
+
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    persistQueue = persistQueue
+      .then(() => persistTaskState())
+      .catch(error => {
+        console.error('Failed to persist task state:', error);
+      });
+  }, 200);
+}
+
+export async function loadTaskState() {
+  if (hasLoadedTaskState) {
+    return;
+  }
+
+  if (taskStateLoadPromise) {
+    return taskStateLoadPromise;
+  }
+
+  taskStateLoadPromise = (async () => {
+    try {
+      const store = await getTaskPersistenceStore();
+      const persisted = await store.get<PersistedTaskState>(TASK_STORE_KEY);
+
+      if (!persisted) {
+        hasLoadedTaskState = true;
+        return;
+      }
+
+      const recoveredAt = Date.now();
+      let recoveredInterrupted = false;
+
+      const loadedTasks = persisted.tasks.map(task => {
+        const normalizedTask = normalizeTask(task);
+        if (normalizedTask.status === 'pending' || normalizedTask.status === 'running') {
+          recoveredInterrupted = true;
+          return recoverInterruptedTask(normalizedTask, recoveredAt);
+        }
+        return normalizedTask;
+      });
+
+      const currentState = useTaskStore.getState();
+      const mergedTasks = [...currentState.tasks];
+      const loadedTaskIds = new Set(mergedTasks.map(task => task.id));
+
+      loadedTasks.forEach(task => {
+        if (!loadedTaskIds.has(task.id)) {
+          mergedTasks.push(task);
+        }
+      });
+
+      mergedTasks.sort((a, b) => b.createdAt - a.createdAt);
+
+      const nextActiveTaskId = currentState.activeTaskId && mergedTasks.some(task => task.id === currentState.activeTaskId)
+        ? currentState.activeTaskId
+        : (mergedTasks.some(task => task.id === persisted.activeTaskId) ? persisted.activeTaskId : null);
+
+      isHydratingTaskState = true;
+      useTaskStore.setState({
+        tasks: mergedTasks,
+        activeTaskId: nextActiveTaskId,
+        maxConcurrent: persisted.maxConcurrent ?? DEFAULT_MAX_CONCURRENT,
+        stats: calcStats(mergedTasks),
+      });
+      isHydratingTaskState = false;
+      hasLoadedTaskState = true;
+
+      if (recoveredInterrupted) {
+        scheduleTaskStatePersist();
+      }
+    } catch (error) {
+      console.error('Failed to load task state:', error);
+    } finally {
+      isHydratingTaskState = false;
+      taskStateLoadPromise = null;
+    }
+  })();
+
+  return taskStateLoadPromise;
+}
+
 export const useTaskStore = create<TaskState>((set, get) => ({
   tasks: [],
   activeTaskId: null,
-  stats: { total: 0, pending: 0, running: 0, completed: 0, failed: 0, cancelled: 0 },
-  maxConcurrent: 3,
+  stats: EMPTY_TASK_STATS,
+  maxConcurrent: DEFAULT_MAX_CONCURRENT,
 
   // 添加任务（需要传入 projectPath）
   addTask: (taskData) => {
@@ -152,6 +328,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       return {
         tasks,
         stats: calcStats(tasks),
+        activeTaskId: tasks.some(t => t.id === state.activeTaskId) ? state.activeTaskId : null,
       };
     });
   },
@@ -165,7 +342,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     set({
       tasks: [],
       activeTaskId: null,
-      stats: { total: 0, pending: 0, running: 0, completed: 0, failed: 0, cancelled: 0 },
+      stats: EMPTY_TASK_STATS,
     });
   },
 
@@ -191,7 +368,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         tasks: state.tasks.map(t => {
           if (t.id !== id) return t;
           
-          const newOutput = [...t.output, line].slice(-500); // 保留最近500行
+          const newOutput = [...t.output, line].slice(-TASK_OUTPUT_LIMIT); // 保留最近500行
           return {
             ...t,
             output: newOutput,
@@ -278,6 +455,18 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }
   },
 }));
+
+useTaskStore.subscribe((state, previousState) => {
+  if (
+    state.tasks === previousState.tasks
+    && state.activeTaskId === previousState.activeTaskId
+    && state.maxConcurrent === previousState.maxConcurrent
+  ) {
+    return;
+  }
+
+  scheduleTaskStatePersist();
+});
 
 // 防止重复初始化
 let isInitialized = false;

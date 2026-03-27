@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { Dialog, ConfirmDialog, AlertDialog } from './Dialog';
 import { SettingsPanel } from './SettingsPanel';
 import pmcLogo from '../assets/pmc-logo.png';
+import { APP_NAME, APP_VERSION_TEXT } from '../config/appMeta';
 import { 
   Folder, FolderOpen, Plus, Clock, X, Trash2, Settings, 
   RefreshCw, FolderPlus, ChevronRight, EyeOff, Eye
@@ -214,14 +215,17 @@ export function WelcomeScreen({ onOpenProject }: WelcomeScreenProps) {
             <div className="flex-1 text-center">
               <img
                 src={pmcLogo}
-                alt="PM Center"
+                alt={APP_NAME}
                 className="w-20 h-20 mx-auto mb-4 object-contain"
               />
               <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-1">
-                PM Center
+                {APP_NAME}
               </h1>
               <p className="text-sm text-gray-500 dark:text-gray-400">
                 项目管理与渲染工作流工具
+              </p>
+              <p className="mt-2 text-xs font-medium uppercase tracking-[0.2em] text-gray-400">
+                {APP_VERSION_TEXT}
               </p>
             </div>
             <button

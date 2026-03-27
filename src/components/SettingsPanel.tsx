@@ -27,6 +27,7 @@ import {
   getExcludeStorageKey,
   readProjectExcludePatterns,
 } from '../utils/excludePatterns';
+import { APP_VERSION_TEXT } from '../config/appMeta';
 
 type SettingsScope = 'global' | 'project';
 
@@ -717,7 +718,7 @@ export function SettingsPanel({
       <Dialog
         isOpen={isOpen}
         onClose={() => void handleClosePanel()}
-        title="设置"
+        title={`设置 · ${APP_VERSION_TEXT}`}
         size="xl"
         footer={
           <button

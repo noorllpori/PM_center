@@ -1,10 +1,11 @@
 import { useEffect } from 'react';
 import { FileManager } from './components/file-manager';
 import { WindowManager } from './components/WindowManager';
-import { initTaskEventListeners } from './stores/taskStore';
+import { initTaskEventListeners, loadTaskState } from './stores/taskStore';
 
 function App() {
   useEffect(() => {
+    void loadTaskState();
     initTaskEventListeners();
     document.documentElement.classList.remove('dark');
     document.body.classList.remove('dark');
