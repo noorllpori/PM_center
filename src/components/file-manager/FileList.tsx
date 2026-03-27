@@ -7,7 +7,7 @@ import { useUiStore } from '../../stores/uiStore';
 import { FileIcon, FolderIcon, Image, Film, FileText, Box } from 'lucide-react';
 import { FileContextMenu } from './FileContextMenu';
 import { FileDetailsDialog } from './FileDetailsView';
-import { canMovePathsToDirectory, getPathLabel } from './dragDrop';
+import { canMovePathsToDirectory, compactDraggedPaths, getPathLabel } from './dragDrop';
 import { useFileDropMove } from './useFileDropMove';
 import { useInternalFileDrag } from './useInternalFileDrag';
 import {
@@ -490,6 +490,49 @@ export function FileList() {
     refresh();
   };
 
+  const handleDelete = useCallback(async (targetPaths: string[]) => {
+    const paths = compactDraggedPaths(targetPaths);
+    if (paths.length === 0) {
+      return;
+    }
+
+    try {
+      const deletedCount = await invoke<number>('delete_paths', { paths });
+      await refresh();
+
+      if (deletedCount === 0) {
+        showToast({
+          title: '未删除任何项目',
+          message: '选中的文件可能已经不存在，列表已刷新。',
+          tone: 'warning',
+        });
+        return;
+      }
+
+      showToast({
+        title: deletedCount > 1 ? '已移到回收站' : '文件已移到回收站',
+        message: deletedCount > 1
+          ? `已将 ${deletedCount} 个项目移到回收站。`
+          : `已将 ${paths[0].split(/[\\/]/).pop() || '该项目'} 移到回收站。`,
+        tone: 'success',
+      });
+    } catch (error) {
+      console.error('Failed to delete:', error);
+      showToast({
+        title: '删除失败',
+        message: String(error),
+        tone: 'error',
+      });
+    }
+  }, [refresh, showToast]);
+
+  const handleDeleteFromContextMenu = useCallback(async (file: FileInfo) => {
+    const targetPaths = selectedFiles.has(file.path)
+      ? Array.from(selectedFiles)
+      : [file.path];
+    await handleDelete(targetPaths);
+  }, [handleDelete, selectedFiles]);
+
   const getDraggedItems = useCallback((file: FileInfo) => {
     if (selectedFiles.has(file.path) && selectedFiles.size > 1) {
       return Array.from(selectedFiles);
@@ -593,6 +636,7 @@ export function FileList() {
           onClose={handleCloseContextMenu}
           onRefresh={handleRefresh}
           onShowDetails={handleShowDetails}
+          onDelete={handleDeleteFromContextMenu}
         />
       )}
 

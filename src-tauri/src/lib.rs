@@ -815,6 +815,7 @@ pub fn run() {
             fs::open_file,
             fs::open_path,
             fs::delete_file,
+            fs::delete_paths,
             fs::move_file,
             fs::copy_file,
             fs::rename_file,

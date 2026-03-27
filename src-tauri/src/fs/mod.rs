@@ -1,10 +1,30 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::ffi::OsStr;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::future::Future;
 
 use crate::process_utils::std_command;
+
+#[cfg(windows)]
+use windows::core::PCWSTR;
+#[cfg(windows)]
+use windows::Win32::Foundation::{BOOL, HWND};
+#[cfg(windows)]
+use windows::Win32::UI::Shell::{
+    SHFILEOPSTRUCTW,
+    SHFileOperationW,
+    FILEOPERATION_FLAGS,
+    FO_DELETE,
+    FOF_ALLOWUNDO,
+    FOF_NOCONFIRMATION,
+    FOF_NOERRORUI,
+    FOF_SILENT,
+};
 
 pub const FILE_CONFLICT_ERROR_PREFIX: &str = "PM_CONFLICT:";
 
@@ -330,6 +350,40 @@ pub async fn open_path(path: String) -> Result<(), String> {
 // 删除文件或目录
 #[tauri::command]
 pub async fn delete_file(path: String) -> Result<(), String> {
+    delete_paths(vec![path]).await.map(|_| ())
+}
+
+fn normalize_delete_targets(paths: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut unique_paths = paths
+        .into_iter()
+        .map(|path| path.trim().to_string())
+        .filter(|path| !path.is_empty())
+        .filter(|path| seen.insert(path.clone()))
+        .collect::<Vec<_>>();
+
+    unique_paths.sort_by_key(|path| path.len());
+    let mut compact_paths = Vec::new();
+
+    for candidate in unique_paths {
+        let is_child_of_existing = compact_paths.iter().any(|existing: &String| {
+            candidate.starts_with(existing)
+                && candidate
+                    .as_bytes()
+                    .get(existing.len())
+                    .is_some_and(|byte| *byte == b'\\' || *byte == b'/')
+        });
+
+        if !is_child_of_existing {
+            compact_paths.push(candidate);
+        }
+    }
+
+    compact_paths
+}
+
+#[cfg(not(windows))]
+async fn delete_file_permanently(path: &str) -> Result<(), String> {
     let metadata = tokio::fs::metadata(&path)
         .await
         .map_err(|e| e.to_string())?;
@@ -345,6 +399,73 @@ pub async fn delete_file(path: String) -> Result<(), String> {
     }
     
     Ok(())
+}
+
+#[cfg(windows)]
+fn build_double_null_terminated_paths(paths: &[String]) -> Vec<u16> {
+    let mut wide = Vec::new();
+
+    for path in paths {
+        wide.extend(OsStr::new(path).encode_wide());
+        wide.push(0);
+    }
+
+    wide.push(0);
+    wide
+}
+
+#[cfg(windows)]
+fn move_paths_to_recycle_bin(paths: &[String]) -> Result<(), String> {
+    let encoded_paths = build_double_null_terminated_paths(paths);
+    let flags: FILEOPERATION_FLAGS = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
+
+    let mut file_op = SHFILEOPSTRUCTW {
+        hwnd: HWND(0),
+        wFunc: FO_DELETE,
+        pFrom: PCWSTR(encoded_paths.as_ptr()),
+        pTo: PCWSTR::null(),
+        fFlags: flags.0 as u16,
+        fAnyOperationsAborted: BOOL(0),
+        hNameMappings: std::ptr::null_mut(),
+        lpszProgressTitle: PCWSTR::null(),
+    };
+
+    let result = unsafe { SHFileOperationW(&mut file_op) };
+    if result != 0 {
+        return Err(format!("移到回收站失败，错误代码: {}", result));
+    }
+
+    if file_op.fAnyOperationsAborted != BOOL(0) {
+        return Err("移到回收站已取消".to_string());
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_paths(paths: Vec<String>) -> Result<usize, String> {
+    let normalized_paths = normalize_delete_targets(paths)
+        .into_iter()
+        .filter(|path| PathBuf::from(path).exists())
+        .collect::<Vec<_>>();
+
+    if normalized_paths.is_empty() {
+        return Ok(0);
+    }
+
+    #[cfg(windows)]
+    {
+        move_paths_to_recycle_bin(&normalized_paths)?;
+        return Ok(normalized_paths.len());
+    }
+
+    #[cfg(not(windows))]
+    {
+        for path in &normalized_paths {
+            delete_file_permanently(path).await?;
+        }
+        Ok(normalized_paths.len())
+    }
 }
 
 // 移动文件或目录

@@ -1,6 +1,6 @@
 [package]
 name = "pm_center"
-version = "1.2.5"
+version = "1.2.7"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -46,5 +46,5 @@ blendio = { path = "crates/blendio" }
 # Lock time crate to compatible version (>=0.3.35 for Rust 1.80+)
 time = "=0.3.36"
 tauri-plugin-single-instance = "2.4.0"
-windows = { version = "0.54", features = ["Win32_Graphics_Gdi", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.54", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 encoding_rs = "0.8"

@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react';
 import { useProjectStore } from '../../stores/projectStore';
 import { SettingsPanel } from '../SettingsPanel';
+import { getParentPath, getPathLabel } from './dragDrop';
 import {
   ArrowLeft,
+  ArrowUp,
   RefreshCw,
   List,
   Grid,
@@ -16,6 +18,10 @@ export function Toolbar() {
     viewMode,
     setViewMode,
     refresh,
+    currentPath,
+    projectPath,
+    projectName,
+    loadDirectory,
     search,
     searchQuery,
     clearSearch,
@@ -37,6 +43,17 @@ export function Toolbar() {
     clearSearch();
   };
 
+  const atProjectRoot = !currentPath || !projectPath || currentPath === projectPath;
+  const currentPathLabel = getPathLabel(currentPath, projectPath, projectName);
+
+  const handleGoUp = () => {
+    if (atProjectRoot || !currentPath) {
+      return;
+    }
+
+    void loadDirectory(getParentPath(currentPath));
+  };
+
   return (
     <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
       {/* 左侧 - 返回项目列表 */}
@@ -44,14 +61,25 @@ export function Toolbar() {
         {isInitialized && (
           <button
             onClick={closeProject}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium
-                       text-gray-700 hover:text-gray-900 hover:bg-gray-100 
+            className="p-1.5 text-gray-700 hover:text-gray-900 hover:bg-gray-100 
                        dark:text-gray-300 dark:hover:text-gray-100 dark:hover:bg-gray-800
                        rounded-md transition-colors"
             title="返回项目列表"
           >
             <ArrowLeft className="w-4 h-4" />
-            <span className="hidden sm:inline">返回项目列表</span>
+          </button>
+        )}
+
+        {isInitialized && (
+          <button
+            onClick={handleGoUp}
+            disabled={atProjectRoot}
+            className="p-1.5 text-gray-600 hover:text-gray-900 dark:text-gray-400
+                       dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800
+                       rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            title={atProjectRoot ? '已经在项目根目录' : '返回上级目录'}
+          >
+            <ArrowUp className="w-4 h-4" />
           </button>
         )}
 
@@ -72,7 +100,7 @@ export function Toolbar() {
       <div className="flex-1 px-4 overflow-hidden">
         {isInitialized && (
           <div className="text-sm text-gray-600 dark:text-gray-400 truncate">
-            {useProjectStore.getState().currentPath?.replace(useProjectStore.getState().projectPath || '', useProjectStore.getState().projectName || '')}
+            {currentPathLabel}
           </div>
         )}
       </div>

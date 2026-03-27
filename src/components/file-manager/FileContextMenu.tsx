@@ -12,9 +12,10 @@ interface ContextMenuProps {
   onClose: () => void;
   onRefresh?: () => void;
   onShowDetails?: (file: FileInfo) => void;
+  onDelete?: (file: FileInfo) => Promise<void> | void;
 }
 
-export function FileContextMenu({ file, x, y, currentPath, onClose, onRefresh, onShowDetails }: ContextMenuProps) {
+export function FileContextMenu({ file, x, y, currentPath, onClose, onRefresh, onShowDetails, onDelete }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const { item: clipboardItem, cut, copy, paste, hasItem } = useClipboardStore();
 
@@ -109,17 +110,10 @@ export function FileContextMenu({ file, x, y, currentPath, onClose, onRefresh, o
 
   // 删除文件
   const handleDelete = async () => {
-    if (!confirm(`确定要删除 "${file.name}" 吗？`)) {
-      onClose();
-      return;
-    }
-
     try {
-      await invoke('delete_file', { path: file.path });
-      onRefresh?.();
+      await onDelete?.(file);
     } catch (error) {
       console.error('Failed to delete:', error);
-      alert('删除失败: ' + error);
     }
     onClose();
   };
