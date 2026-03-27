@@ -598,19 +598,201 @@ fn parse_rational(value: &str) -> Option<f64> {
 }
 
 async fn parse_blender_details(path: &Path, blender_path: Option<String>) -> ParserOutcome {
+    match parse_blendio_details(path).await {
+        Ok(outcome) => outcome,
+        Err(native_error) => parse_blender_fallback_details(path, blender_path, native_error).await,
+    }
+}
+
+async fn parse_blendio_details(path: &Path) -> Result<ParserOutcome, String> {
+    let path_buf = path.to_path_buf();
+
+    tokio::task::spawn_blocking(move || {
+        let file = blendio::BlendFile::open(&path_buf)
+            .map_err(|error| error.to_string())?;
+        let summary = blendio::summarize(&file)
+            .map_err(|error| error.to_string())?;
+
+        Ok(ParserOutcome {
+            parser: FileDetailsParser {
+                id: "blender".to_string(),
+                source: "native".to_string(),
+                status: "ok".to_string(),
+                warning: None,
+            },
+            sections: build_blendio_sections(&summary),
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+async fn parse_blender_fallback_details(
+    path: &Path,
+    blender_path: Option<String>,
+    native_error: String,
+) -> ParserOutcome {
     let Some(blender_path) = blender_path else {
         return warning_outcome(
             "blender",
-            "python",
-            "未检测到 Blender，仅显示基础信息。可在设置 > 工具路径里手动指定 Blender 可执行文件。".to_string(),
+            "native",
+            format!(
+                "内置 BlendIO 解析失败：{}。如需兼容回退，可在设置 > 工具路径里手动指定 Blender。",
+                native_error
+            ),
         );
     };
 
     let info = match get_blender_file_info(blender_path, path.to_string_lossy().to_string()).await {
         Ok(value) => value,
-        Err(error) => return warning_outcome("blender", "python", format!("Blender 信息解析失败：{}", error)),
+        Err(error) => {
+            return warning_outcome(
+                "blender",
+                "python",
+                format!(
+                    "内置 BlendIO 解析失败：{}；Blender 回退也失败：{}",
+                    native_error,
+                    error
+                ),
+            );
+        }
     };
 
+    build_blender_python_outcome(
+        &info,
+        Some(format!("内置 BlendIO 解析失败，已回退到 Blender：{}", native_error)),
+    )
+}
+
+fn build_blendio_sections(summary: &blendio::FileSummary) -> Vec<FileDetailsSection> {
+    let mut media_items = vec![
+        item("Blender 版本", format_blend_file_version(summary.header.file_version)),
+        item("压缩方式", blend_compression_label(summary.header.compression)),
+        item("字节序", blend_endian_label(summary.header.endian)),
+        item("块头类型", blend_bhead_label(summary.header.bhead_type)),
+        item("指针大小", format!("{} 位", summary.header.pointer_size * 8)),
+        item("块数量", summary.block_count.to_string()),
+        item("ID 数量", summary.id_count.to_string()),
+        item("场景数", summary.scenes.len().to_string()),
+        item("对象数", summary.objects.len().to_string()),
+        item("集合数", summary.collections.len().to_string()),
+        item("网格数", summary.meshes.len().to_string()),
+        item("材质数", summary.materials.len().to_string()),
+        item("相机数", summary.cameras.len().to_string()),
+        item("灯光数", summary.lights.len().to_string()),
+        item("动作数", summary.actions.len().to_string()),
+        item("图片数", summary.images.len().to_string()),
+    ];
+
+    if let Some(scene) = summary.scenes.first() {
+        media_items.push(item(
+            if summary.scenes.len() > 1 { "首场景" } else { "场景" },
+            scene.name.clone(),
+        ));
+
+        if scene.resolution_x > 0 && scene.resolution_y > 0 {
+            media_items.push(item(
+                "分辨率",
+                format!("{} x {}", scene.resolution_x, scene.resolution_y),
+            ));
+        }
+
+        if scene.frame_start != 0 || scene.frame_end != 0 {
+            media_items.push(item(
+                "帧范围",
+                format!("{} - {}", scene.frame_start, scene.frame_end),
+            ));
+        }
+
+        if scene.fps > 0.0 {
+            media_items.push(item("FPS", format_float(scene.fps as f64)));
+        }
+
+        push_optional(&mut media_items, "渲染引擎", scene.render_engine.clone());
+        push_optional(&mut media_items, "输出路径", scene.output_path.clone());
+        push_optional(&mut media_items, "世界", scene.world.clone());
+        push_optional(&mut media_items, "主集合", scene.master_collection.clone());
+    }
+
+    let mut metadata_items = Vec::new();
+    push_optional(
+        &mut metadata_items,
+        "场景列表",
+        preview_values(summary.scenes.iter().map(|scene| scene.name.clone()).collect(), 6),
+    );
+    push_optional(
+        &mut metadata_items,
+        "相机列表",
+        preview_values(summary.cameras.iter().map(|camera| camera.name.clone()).collect(), 6),
+    );
+    push_optional(
+        &mut metadata_items,
+        "灯光列表",
+        preview_values(summary.lights.iter().map(|light| light.name.clone()).collect(), 6),
+    );
+    push_optional(
+        &mut metadata_items,
+        "集合列表",
+        preview_values(
+            summary
+                .collections
+                .iter()
+                .map(|collection| collection.name.clone())
+                .collect(),
+            6,
+        ),
+    );
+    push_optional(
+        &mut metadata_items,
+        "材质列表",
+        preview_values(
+            summary
+                .materials
+                .iter()
+                .map(|material| material.name.clone())
+                .collect(),
+            6,
+        ),
+    );
+    push_optional(
+        &mut metadata_items,
+        "动画列表",
+        preview_values(summary.actions.iter().map(|action| action.name.clone()).collect(), 6),
+    );
+    push_optional(
+        &mut metadata_items,
+        "外部库",
+        preview_values(
+            summary
+                .libraries
+                .iter()
+                .map(|library| library.filepath.clone().unwrap_or_else(|| library.name.clone()))
+                .collect(),
+            4,
+        ),
+    );
+
+    let mut sections = vec![section("media", "媒体信息", media_items)];
+    if !metadata_items.is_empty() {
+        sections.push(section("metadata", "元数据/标签", metadata_items));
+    }
+
+    sections
+}
+
+fn build_blender_python_outcome(info: &Value, warning: Option<String>) -> ParserOutcome {
+    ParserOutcome {
+        parser: FileDetailsParser {
+            id: "blender".to_string(),
+            source: "python".to_string(),
+            status: "ok".to_string(),
+            warning,
+        },
+        sections: build_blender_python_sections(info),
+    }
+}
+
+fn build_blender_python_sections(info: &Value) -> Vec<FileDetailsSection> {
     let mut media_items = Vec::new();
 
     let scenes = info.get("scenes").and_then(Value::as_array).map(|items| items.len()).unwrap_or(0);
@@ -662,14 +844,93 @@ async fn parse_blender_details(path: &Path, blender_path: Option<String>) -> Par
         }
     }
 
-    ParserOutcome {
-        parser: FileDetailsParser {
-            id: "blender".to_string(),
-            source: "python".to_string(),
-            status: "ok".to_string(),
-            warning: None,
-        },
-        sections: vec![section("media", "媒体信息", media_items)],
+    let mut metadata_items = Vec::new();
+    push_optional(
+        &mut metadata_items,
+        "场景列表",
+        preview_values(
+            info.get("scenes")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.get("name").and_then(Value::as_str).map(str::to_string))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
+            6,
+        ),
+    );
+    push_optional(
+        &mut metadata_items,
+        "相机列表",
+        preview_values(
+            info.get("cameras")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.get("name").and_then(Value::as_str).map(str::to_string))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
+            6,
+        ),
+    );
+
+    let mut sections = vec![section("media", "媒体信息", media_items)];
+    if !metadata_items.is_empty() {
+        sections.push(section("metadata", "元数据/标签", metadata_items));
+    }
+
+    sections
+}
+
+fn preview_values(mut values: Vec<String>, limit: usize) -> Option<String> {
+    values.retain(|value| !value.trim().is_empty());
+    if values.is_empty() {
+        return None;
+    }
+
+    let total = values.len();
+    let shown = values.into_iter().take(limit).collect::<Vec<_>>();
+    let preview = shown.join("、");
+
+    if total > limit {
+        Some(format!("{} 等 {} 项", preview, total))
+    } else {
+        Some(preview)
+    }
+}
+
+fn format_blend_file_version(version: u16) -> String {
+    if version >= 100 {
+        format!("{}.{} ({})", version / 100, version % 100, version)
+    } else {
+        version.to_string()
+    }
+}
+
+fn blend_compression_label(kind: blendio::CompressionKind) -> &'static str {
+    match kind {
+        blendio::CompressionKind::None => "无压缩",
+        blendio::CompressionKind::Gzip => "Gzip",
+        blendio::CompressionKind::Zstd => "Zstd",
+    }
+}
+
+fn blend_endian_label(endian: blendio::Endian) -> &'static str {
+    match endian {
+        blendio::Endian::Little => "Little Endian",
+        blendio::Endian::Big => "Big Endian",
+    }
+}
+
+fn blend_bhead_label(kind: blendio::BHeadType) -> &'static str {
+    match kind {
+        blendio::BHeadType::BHead4 => "BHead4",
+        blendio::BHeadType::SmallBHead8 => "SmallBHead8",
+        blendio::BHeadType::LargeBHead8 => "LargeBHead8",
     }
 }
 
@@ -694,6 +955,17 @@ fn push_optional(items: &mut Vec<FileDetailsItem>, label: &str, value: Option<St
             items.push(item(label, value));
         }
     }
+}
+
+fn format_float(value: f64) -> String {
+    let mut text = format!("{:.2}", value);
+    while text.contains('.') && text.ends_with('0') {
+        text.pop();
+    }
+    if text.ends_with('.') {
+        text.pop();
+    }
+    text
 }
 
 fn format_timestamp(value: std::time::SystemTime) -> String {
@@ -792,7 +1064,10 @@ fn parse_u64(value: &str) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_video_sections, determine_display_type, parse_rational};
+    use super::{
+        build_video_sections, determine_display_type, format_blend_file_version, parse_rational,
+        preview_values,
+    };
     use serde_json::json;
 
     #[test]
@@ -808,6 +1083,28 @@ mod tests {
     fn parses_frame_rate_rational() {
         assert_eq!(parse_rational("30000/1001").map(|value| value.round() as i32), Some(30));
         assert_eq!(parse_rational("0/0"), None);
+    }
+
+    #[test]
+    fn formats_blend_version_for_display() {
+        assert_eq!(format_blend_file_version(405), "4.5 (405)");
+        assert_eq!(format_blend_file_version(293), "2.93 (293)");
+    }
+
+    #[test]
+    fn previews_long_value_lists() {
+        assert_eq!(
+            preview_values(
+                vec![
+                    "Scene".to_string(),
+                    "Camera".to_string(),
+                    "World".to_string(),
+                    "Collection".to_string(),
+                ],
+                2,
+            ),
+            Some("Scene、Camera 等 4 项".to_string())
+        );
     }
 
     #[test]

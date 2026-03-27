@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BlendIO Manual</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4efe6;
+      --panel: rgba(255, 251, 245, 0.94);
+      --ink: #1f1a16;
+      --muted: #6e6257;
+      --line: rgba(77, 56, 36, 0.15);
+      --accent: #a34a1c;
+      --accent-soft: rgba(163, 74, 28, 0.12);
+      --code-bg: #201814;
+      --code-ink: #f7efe8;
+      --shadow: 0 18px 60px rgba(72, 43, 21, 0.12);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(220, 145, 69, 0.20), transparent 32%),
+        radial-gradient(circle at 90% 10%, rgba(89, 120, 105, 0.16), transparent 28%),
+        linear-gradient(180deg, #fbf7ef 0%, var(--bg) 100%);
+      line-height: 1.65;
+    }
+
+    .shell {
+      width: min(1120px, calc(100vw - 32px));
+      margin: 32px auto 48px;
+    }
+
+    .hero,
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(12px);
+    }
+
+    .hero {
+      padding: 32px;
+      margin-bottom: 22px;
+    }
+
+    .hero h1 {
+      margin: 0 0 12px;
+      font-size: clamp(2rem, 5vw, 3.4rem);
+      line-height: 1.05;
+      letter-spacing: -0.04em;
+    }
+
+    .hero p {
+      margin: 0 0 14px;
+      color: var(--muted);
+      max-width: 820px;
+      font-size: 1.02rem;
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .chip {
+      padding: 8px 14px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.72);
+      font-size: 0.92rem;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      gap: 22px;
+    }
+
+    nav.panel {
+      padding: 22px;
+      position: sticky;
+      top: 20px;
+      align-self: start;
+    }
+
+    nav h2,
+    section h2 {
+      margin: 0 0 14px;
+      font-size: 1.15rem;
+      letter-spacing: 0.02em;
+    }
+
+    nav ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: grid;
+      gap: 10px;
+    }
+
+    nav a {
+      color: var(--ink);
+      text-decoration: none;
+      padding: 8px 10px;
+      border-radius: 10px;
+      display: block;
+    }
+
+    nav a:hover {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .content {
+      display: grid;
+      gap: 22px;
+    }
+
+    section.panel {
+      padding: 28px;
+    }
+
+    h3 {
+      margin: 22px 0 10px;
+      font-size: 1rem;
+    }
+
+    p,
+    li {
+      color: var(--ink);
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    ul,
+    ol {
+      margin: 10px 0 0 20px;
+    }
+
+    code {
+      font-family: "Cascadia Code", "Consolas", monospace;
+      font-size: 0.94em;
+      background: rgba(62, 36, 18, 0.08);
+      padding: 0.14em 0.35em;
+      border-radius: 6px;
+    }
+
+    pre {
+      margin: 14px 0 0;
+      padding: 16px 18px;
+      overflow: auto;
+      border-radius: 16px;
+      background: var(--code-bg);
+      color: var(--code-ink);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    pre code {
+      background: transparent;
+      padding: 0;
+      color: inherit;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 14px;
+      overflow: hidden;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+    }
+
+    th,
+    td {
+      text-align: left;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+
+    th {
+      background: rgba(255, 255, 255, 0.64);
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    .callout {
+      margin-top: 14px;
+      padding: 14px 16px;
+      border-radius: 16px;
+      border: 1px solid rgba(163, 74, 28, 0.24);
+      background: var(--accent-soft);
+    }
+
+    @media (max-width: 900px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      nav.panel {
+        position: static;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <h1>BlendIO / blend2glb Manual</h1>
+      <p>
+        BlendIO 是一个面向 Blender 4.5.x 的 Rust 读取与导出工具集。
+        它可以在不依赖 Blender 本体的前提下，直接读取 little-endian
+        <code>.blend</code> 文件，并提供诊断型 CLI、结构化库 API，以及
+        <code>.blend -&gt; .glb</code> 的直接导出能力。
+      </p>
+      <p>
+        当前仓库内包含两个可执行入口：
+        <code>blendio</code> 用于读取和诊断，
+        <code>blend2glb</code> 用于导出 GLB。
+        默认命令行输出是逐行可读文本，只有显式指定 <code>--json</code>
+        或 <code>--report-json</code> 时才会输出 JSON。
+      </p>
+      <div class="chips">
+        <span class="chip">Target: Blender 4.5.x</span>
+        <span class="chip">Runtime: No Blender Required</span>
+        <span class="chip">Formats: raw / gzip / zstd .blend</span>
+        <span class="chip">Export: single-file .glb</span>
+      </div>
+    </header>
+
+    <div class="grid">
+      <nav class="panel">
+        <h2>目录</h2>
+        <ul>
+          <li><a href="#overview">项目概览</a></li>
+          <li><a href="#runtime">运行时依赖</a></li>
+          <li><a href="#capabilities">支持范围</a></li>
+          <li><a href="#build">构建与打包</a></li>
+          <li><a href="#blendio-cli">blendio CLI</a></li>
+          <li><a href="#blend2glb-cli">blend2glb CLI</a></li>
+          <li><a href="#library">作为 Rust 库引用</a></li>
+          <li><a href="#json">JSON 与文本输出策略</a></li>
+          <li><a href="#limits">限制与注意事项</a></li>
+        </ul>
+      </nav>
+
+      <div class="content">
+        <section id="overview" class="panel">
+          <h2>项目概览</h2>
+          <p>
+            BlendIO 的底层读取路径不是硬编码结构体，而是依赖
+            <code>DNA1 / SDNA</code> 做动态结构解析。也就是说，
+            先把文件头和块表读出来，再从文件内部的 SDNA 构建字段布局，
+            然后在这个基础上做结构视图、指针解析、ID 汇总和更高层的摘要提取。
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>组件</th>
+                <th>作用</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>blendio</code></td>
+                <td>读取 <code>.blend</code>，查看块表、SDNA、ID、摘要信息。</td>
+              </tr>
+              <tr>
+                <td><code>blend2glb</code></td>
+                <td>从 <code>.blend</code> 直接导出单文件 <code>.glb</code>。</td>
+              </tr>
+              <tr>
+                <td><code>blendio</code> crate</td>
+                <td>给别的 Rust 程序复用，直接读取文件、遍历块、做导出。</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="runtime" class="panel">
+          <h2>运行时依赖</h2>
+          <p>
+            打包好的 <code>blendio.exe</code> 和 <code>blend2glb.exe</code>
+            在目标机器上都不需要安装 Blender。只要可执行文件本身能运行，并且输入文件符合当前支持范围，就可以直接解析或导出。
+          </p>
+          <div class="callout">
+            仓库里的集成测试会调用本机 Blender 4.5 来生成样本文件，这只是测试与逆向验证用，不是运行时依赖。
+          </div>
+        </section>
+
+        <section id="capabilities" class="panel">
+          <h2>支持范围</h2>
+          <h3>读取层</h3>
+          <ul>
+            <li>支持未压缩、gzip、zstd 三种输入。</li>
+            <li>支持 12 字节 legacy 头和 17 字节 large header。</li>
+            <li>支持 <code>BHead4</code>、<code>SmallBHead8</code>、<code>LargeBHead8</code>。</li>
+            <li>完整解析 <code>DNA1 / SDNA</code> 的 <code>NAME / TYPE / TLEN / STRC</code>。</li>
+            <li>支持 old-pointer 索引、结构视图、指针解析、数组块读取、<code>ListBase</code> 遍历。</li>
+            <li>当前完整支持路径为 Blender 4.5.x little-endian 文件。</li>
+          </ul>
+
+          <h3><code>info</code> 摘要层</h3>
+          <ul>
+            <li>文件头、压缩方式、块数量、ID 数量、SDNA 统计。</li>
+            <li>块代码分布和 ID 代码分布。</li>
+            <li>Scene：相机、世界、帧范围、FPS、分辨率、渲染引擎、输出路径。</li>
+            <li>Object：类型、父子、data 目标、TRS、旋转模式、材质槽、动画、modifier、外部库来源。</li>
+            <li>Mesh：顶点/边/loop/poly 计数、legacy 指针存在性、UV 属性、顶点属性层。</li>
+            <li>Collection、Library、Image、Action、Text、Camera、Light、Material、World。</li>
+          </ul>
+
+          <h3>导出层</h3>
+          <ul>
+            <li>首版导出 Mesh、Camera、Light、对象层级、对象 TRS 动画。</li>
+            <li>支持 <code>Principled BSDF</code> 的 glTF 原生 PBR 子集。</li>
+            <li>支持 packed 图片嵌入 GLB。</li>
+            <li>支持 <code>Triangulate</code>、<code>Mirror</code>、<code>Array</code> 三类 modifier 的受限求值。</li>
+            <li>对不支持特性走 warning / report，而不是静默吞掉。</li>
+          </ul>
+        </section>
+
+        <section id="build" class="panel">
+          <h2>构建与打包</h2>
+          <p>开发模式运行读取器：</p>
+          <pre><code class="language-powershell">cargo run --bin blendio -- info "D:\test\demo.blend"</code></pre>
+          <p>开发模式运行导出器：</p>
+          <pre><code class="language-powershell">cargo run --bin blend2glb -- "D:\test\demo.blend" "D:\test\demo.glb"</code></pre>
+          <p>发布版构建：</p>
+          <pre><code class="language-powershell">cargo build --release</code></pre>
+          <p>生成文件默认位于：</p>
+          <pre><code class="language-text">target/release/blendio.exe
+target/release/blend2glb.exe</code></pre>
+        </section>
+
+        <section id="blendio-cli" class="panel">
+          <h2>blendio CLI</h2>
+          <p>
+            默认输出是逐行可读文本，更适合直接在终端看结果。只有显式加
+            <code>--json</code> 时才会把 JSON 打到标准输出。
+          </p>
+
+          <h3>查看帮助</h3>
+          <pre><code class="language-powershell">blendio --help</code></pre>
+
+          <h3>读取完整摘要</h3>
+          <pre><code class="language-powershell">blendio info "D:\test\demo.blend"</code></pre>
+
+          <h3>查看块表</h3>
+          <pre><code class="language-powershell">blendio blocks "D:\test\demo.blend"</code></pre>
+
+          <h3>查看全部 ID</h3>
+          <pre><code class="language-powershell">blendio ids "D:\test\demo.blend"</code></pre>
+
+          <h3>查看 SDNA 概览</h3>
+          <pre><code class="language-powershell">blendio sdna "D:\test\demo.blend"</code></pre>
+
+          <h3>查看某个结构体字段</h3>
+          <pre><code class="language-powershell">blendio sdna "D:\test\demo.blend" --type Object</code></pre>
+
+          <h3>把 JSON 打到终端</h3>
+          <pre><code class="language-powershell">blendio --json info "D:\test\demo.blend"</code></pre>
+
+          <h3>把 JSON 写到文件，但终端仍保持文本输出</h3>
+          <pre><code class="language-powershell">blendio --json-out "D:\test\demo_info.json" info "D:\test\demo.blend"</code></pre>
+
+          <div class="callout">
+            如果你希望“终端是 JSON”并且“同时另存 JSON 文件”，可以把
+            <code>--json</code> 和 <code>--json-out</code> 一起用。
+          </div>
+        </section>
+
+        <section id="blend2glb-cli" class="panel">
+          <h2>blend2glb CLI</h2>
+          <p>
+            <code>blend2glb</code> 默认会输出逐行导出报告，包含 mesh/material/animation 数量、
+            warning 数量、跳过对象数量和不支持特性数量。
+          </p>
+
+          <h3>基础用法</h3>
+          <pre><code class="language-powershell">blend2glb "D:\test\demo.blend" "D:\test\demo.glb"</code></pre>
+
+          <h3>常用参数</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>参数</th>
+                <th>含义</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>--no-cameras</code></td>
+                <td>不导出 Camera。</td>
+              </tr>
+              <tr>
+                <td><code>--no-lights</code></td>
+                <td>不导出 Light。</td>
+              </tr>
+              <tr>
+                <td><code>--no-animation</code></td>
+                <td>不导出对象 TRS 动画。</td>
+              </tr>
+              <tr>
+                <td><code>--strict</code></td>
+                <td>把 warning 升级为失败。</td>
+              </tr>
+              <tr>
+                <td><code>--report-json &lt;path&gt;</code></td>
+                <td>把导出报告写到 JSON 文件。</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h3>示例</h3>
+          <pre><code class="language-powershell">blend2glb `
+  "D:\test\demo.blend" `
+  "D:\test\demo.glb" `
+  --report-json "D:\test\demo_export_report.json"</code></pre>
+        </section>
+
+        <section id="library" class="panel">
+          <h2>作为 Rust 库引用</h2>
+          <p>
+            如果你的另一个 Rust 项目想直接复用这个库，最简单的方式是先用 path dependency。
+          </p>
+
+          <h3><code>Cargo.toml</code></h3>
+          <pre><code class="language-toml">[dependencies]
+blendio = { path = "../BlendIO_rustc" }</code></pre>
+
+          <h3>读取文件并拿高层摘要</h3>
+          <pre><code class="language-rust">use blendio::{BlendFile, summarize};
+
+fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
+    let file = BlendFile::open("D:\\test\\demo.blend")?;
+    let summary = summarize(&file)?;
+
+    println!("blend version: {}", summary.header.file_version);
+    println!("object count: {}", summary.objects.len());
+
+    for object in &summary.objects {
+        println!("{} -> {}", object.name, object.object_type);
+    }
+
+    Ok(())
+}</code></pre>
+
+          <h3>读取底层块表</h3>
+          <pre><code class="language-rust">use blendio::BlendFile;
+
+fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
+    let file = BlendFile::open("D:\\test\\demo.blend")?;
+
+    for block in file.blocks() {
+        println!(
+            "{} len={} old_ptr=0x{:X}",
+            block.code,
+            block.len,
+            block.old_ptr
+        );
+    }
+
+    Ok(())
+}</code></pre>
+
+          <h3>按 old-pointer 解析结构体</h3>
+          <pre><code class="language-rust">use blendio::BlendFile;
+
+fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
+    let file = BlendFile::open("D:\\test\\demo.blend")?;
+
+    for id_block in file.ids() {
+        let view = match id_block.struct_view() {
+            Ok(view) =&gt; view,
+            Err(_) =&gt; continue,
+        };
+
+        if id_block.header().code.as_string() == "OB" {
+            if let Some(name) = view
+                .field("id")
+                .and_then(|v| v.as_struct_view())
+                .and_then(|id| id.field("name"))
+                .and_then(|v| v.as_c_string())
+            {
+                println!("object raw id name = {}", name);
+            }
+        }
+    }
+
+    Ok(())
+}</code></pre>
+
+          <h3>直接导出 GLB</h3>
+          <pre><code class="language-rust">use blendio::{ExportOptions, export_glb};
+
+fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
+    let options = ExportOptions::default();
+    let report = export_glb(
+        "D:\\test\\demo.blend",
+        "D:\\test\\demo.glb",
+        &options,
+    )?;
+
+    println!("meshes: {}", report.exported_mesh_count);
+    println!("warnings: {}", report.warnings.len());
+    Ok(())
+}</code></pre>
+
+          <h3>常用公共 API</h3>
+          <ul>
+            <li><code>BlendFile::open(path)</code></li>
+            <li><code>BlendFile::header()</code></li>
+            <li><code>BlendFile::blocks()</code></li>
+            <li><code>BlendFile::schema()</code></li>
+            <li><code>BlendFile::ids()</code></li>
+            <li><code>BlendFile::resolve_old_ptr(old_ptr)</code></li>
+            <li><code>BlendFile::view_old_ptr_as_struct(old_ptr, struct_name)</code></li>
+            <li><code>BlockRef::struct_view()</code></li>
+            <li><code>StructView::field(name)</code></li>
+            <li><code>read_struct_array(...)</code></li>
+            <li><code>read_pointer_array(...)</code></li>
+            <li><code>iter_listbase(...)</code></li>
+            <li><code>summarize(&amp;BlendFile)</code></li>
+            <li><code>build_export_scene(...)</code></li>
+            <li><code>export_glb(...)</code></li>
+          </ul>
+        </section>
+
+        <section id="json" class="panel">
+          <h2>JSON 与文本输出策略</h2>
+          <ul>
+            <li><code>blendio</code> 默认输出文本。</li>
+            <li><code>blendio --json ...</code> 输出 JSON 到 stdout。</li>
+            <li><code>blendio --json-out file.json ...</code> 把 JSON 另存到文件，同时 stdout 仍然保持文本。</li>
+            <li><code>blend2glb</code> 默认输出文本报告。</li>
+            <li><code>blend2glb --report-json report.json ...</code> 把导出报告另存为 JSON。</li>
+          </ul>
+        </section>
+
+        <section id="limits" class="panel">
+          <h2>限制与注意事项</h2>
+          <ul>
+            <li>读取层当前完整支持 Blender 4.5.x little-endian 文件。</li>
+            <li>big-endian 文件会明确返回不支持。</li>
+            <li>不支持写回 <code>.blend</code>。</li>
+            <li>不递归打开外部链接库 <code>.blend</code>。</li>
+            <li>GLB 导出首版不追求和 Blender 官方 glTF 导出逐字节一致。</li>
+            <li>导出层暂不支持骨骼/蒙皮、shape key、几何节点完整求值、复杂约束求值、外部贴图完整复刻。</li>
+          </ul>
+          <div class="callout">
+            如果你后面要把它扩成资产检查器、批量转模工具、或嵌入自己的引擎工具链，
+            推荐优先走库 API，而不是解析 CLI 文本输出。
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+</body>
+</html>

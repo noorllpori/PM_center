@@ -54,3 +54,4 @@ temp/
 .DS_Store
 Thumbs.db
 Desktop.ini
+src-tauri/temp_icon/

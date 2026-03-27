@@ -299,7 +299,7 @@ export function SettingsPanel({
           <Wrench className="w-4 h-4 text-blue-500" />
           <div className="flex-1">
             <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">工具路径</h4>
-            <p className="text-xs text-gray-500 mt-1">视频分析依赖 `ffprobe`，`.blend` 深度信息依赖 `Blender`。</p>
+            <p className="text-xs text-gray-500 mt-1">视频分析依赖 `ffprobe`，`.blend` 优先使用内置 BlendIO，`Blender` 仅用于兼容回退。</p>
           </div>
           <button
             onClick={() => void loadToolStatuses()}

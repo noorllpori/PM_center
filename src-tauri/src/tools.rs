@@ -106,19 +106,19 @@ fn build_blender_status(configured_path: Option<&str>) -> ToolStatus {
     };
 
     let message = if configured_path.is_some() && configured_valid.is_none() {
-        Some("已配置的 Blender 路径无效，当前已回退到自动探测结果或基础信息模式".to_string())
+        Some("已配置的 Blender 路径无效；.blend 仍会优先使用内置 BlendIO，必要时再回退到自动探测到的 Blender。".to_string())
     } else if resolved_path.is_none() {
-        Some("未检测到 Blender，.blend 文件目前只能显示基础属性。你可以在设置里手动指定 Blender 可执行文件路径。".to_string())
+        Some("未检测到 Blender；.blend 文件会优先使用内置 BlendIO 解析，但遇到不兼容文件时将无法使用 Blender 兼容回退。".to_string())
     } else {
         Some(match source {
-            "configured" => "正在使用你指定的 Blender 路径".to_string(),
-            _ => "正在使用自动探测到的 Blender".to_string(),
+            "configured" => "正在使用你指定的 Blender 作为兼容回退".to_string(),
+            _ => "正在使用自动探测到的 Blender 作为兼容回退".to_string(),
         })
     };
 
     ToolStatus {
         id: "blender".to_string(),
-        label: "Blender".to_string(),
+        label: "Blender 兼容回退".to_string(),
         configured_path,
         detected_path,
         resolved_path: resolved_path.clone(),
