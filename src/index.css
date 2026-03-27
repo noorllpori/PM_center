@@ -54,9 +54,12 @@ html, body {
 /* 拖拽时的样式 */
 [draggable="true"] {
   cursor: move;
+  -webkit-user-drag: element;
 }
 
 /* 禁用文本选择（拖拽时） */
 .dragging {
   user-select: none;
+  cursor: grabbing;
+  opacity: 0.72;
 }

@@ -1,11 +1,11 @@
 import { useCallback, useState } from 'react';
 import { FileInfo } from '../../types';
 import { useProjectStore } from '../../stores/projectStore';
-import { useFileDragStore } from '../../stores/fileDragStore';
 import { FileIcon, FolderIcon, Image, Film, FileText, Box } from 'lucide-react';
 import { FileContextMenu } from './FileContextMenu';
-import { getInternalDragPaths, getParentPath, getPathLabel, isSameOrDescendantPath, setFileDragData } from './dragDrop';
+import { canMovePathsToDirectory, getPathLabel } from './dragDrop';
 import { useFileDropMove } from './useFileDropMove';
+import { useInternalFileDrag } from './useInternalFileDrag';
 
 // 格式化文件大小
 function formatSize(bytes: number): string {
@@ -76,6 +76,8 @@ function ListView({
   onDropToDirectory,
   onHoverDirectory,
   canDropToDirectory,
+  getDraggedPathsFromDataTransfer,
+  suppressInteraction,
   dropTargetPath,
   currentPath,
   columns,
@@ -92,6 +94,8 @@ function ListView({
   onDropToDirectory: (targetDir: string, dragPaths?: string[]) => Promise<void>;
   onHoverDirectory: (targetDir: string) => void;
   canDropToDirectory: (targetDir: string, dragPaths?: string[]) => boolean;
+  getDraggedPathsFromDataTransfer: (dataTransfer: DataTransfer | null) => string[];
+  suppressInteraction: (event: React.SyntheticEvent<HTMLElement>) => boolean;
   dropTargetPath: string | null;
   currentPath: string;
   columns: any[];
@@ -119,14 +123,14 @@ function ListView({
       <div
         className={`flex-1 overflow-auto ${dropTargetPath === currentPath ? 'bg-blue-50/60' : ''}`}
         onDragOver={(e) => {
-          const internalDragPaths = getInternalDragPaths(e.dataTransfer);
+          const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
           if (!canDropToDirectory(currentPath, internalDragPaths)) return;
           e.preventDefault();
           e.dataTransfer.dropEffect = 'move';
           onHoverDirectory(currentPath);
         }}
         onDrop={async (e) => {
-          const internalDragPaths = getInternalDragPaths(e.dataTransfer);
+          const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
           if (!canDropToDirectory(currentPath, internalDragPaths)) return;
           e.preventDefault();
           await onDropToDirectory(currentPath, internalDragPaths);
@@ -151,8 +155,14 @@ function ListView({
                 }
                 ${isDropTarget ? 'ring-2 ring-inset ring-blue-500 bg-blue-50' : ''}
               `}
-              onClick={(e) => onSelect(file.path, e.ctrlKey || e.metaKey)}
-              onDoubleClick={() => onDoubleClick(file)}
+              onClick={(e) => {
+                if (suppressInteraction(e)) return;
+                onSelect(file.path, e.ctrlKey || e.metaKey);
+              }}
+              onDoubleClick={(e) => {
+                if (suppressInteraction(e)) return;
+                onDoubleClick(file);
+              }}
               onContextMenu={(e) => {
                 e.preventDefault();
                 onContextMenu(file, e.clientX, e.clientY);
@@ -160,20 +170,20 @@ function ListView({
               onDragStart={(e) => onDragStart(file, e)}
               onDragEnd={onDragEnd}
               onDragOver={(e) => {
-                const internalDragPaths = getInternalDragPaths(e.dataTransfer);
+                const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
                 if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
                 e.preventDefault();
                 e.dataTransfer.dropEffect = 'move';
                 onHoverDirectory(file.path);
               }}
               onDragEnter={(e) => {
-                const internalDragPaths = getInternalDragPaths(e.dataTransfer);
+                const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
                 if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
                 e.preventDefault();
                 onHoverDirectory(file.path);
               }}
               onDrop={async (e) => {
-                const internalDragPaths = getInternalDragPaths(e.dataTransfer);
+                const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
                 if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
                 e.preventDefault();
                 e.stopPropagation();
@@ -230,6 +240,8 @@ function GridView({
   onDropToDirectory,
   onHoverDirectory,
   canDropToDirectory,
+  getDraggedPathsFromDataTransfer,
+  suppressInteraction,
   dropTargetPath,
   currentPath,
   tags,
@@ -245,6 +257,8 @@ function GridView({
   onDropToDirectory: (targetDir: string, dragPaths?: string[]) => Promise<void>;
   onHoverDirectory: (targetDir: string) => void;
   canDropToDirectory: (targetDir: string, dragPaths?: string[]) => boolean;
+  getDraggedPathsFromDataTransfer: (dataTransfer: DataTransfer | null) => string[];
+  suppressInteraction: (event: React.SyntheticEvent<HTMLElement>) => boolean;
   dropTargetPath: string | null;
   currentPath: string;
   tags: any[];
@@ -254,14 +268,14 @@ function GridView({
     <div
       className={`p-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 overflow-auto ${dropTargetPath === currentPath ? 'bg-blue-50/60' : ''}`}
       onDragOver={(e) => {
-        const internalDragPaths = getInternalDragPaths(e.dataTransfer);
+        const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
         if (!canDropToDirectory(currentPath, internalDragPaths)) return;
         e.preventDefault();
         e.dataTransfer.dropEffect = 'move';
         onHoverDirectory(currentPath);
       }}
       onDrop={async (e) => {
-        const internalDragPaths = getInternalDragPaths(e.dataTransfer);
+        const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
         if (!canDropToDirectory(currentPath, internalDragPaths)) return;
         e.preventDefault();
         await onDropToDirectory(currentPath, internalDragPaths);
@@ -285,8 +299,14 @@ function GridView({
               }
               ${isDropTarget ? 'ring-2 ring-blue-500 bg-blue-50' : ''}
             `}
-            onClick={(e) => onSelect(file.path, e.ctrlKey || e.metaKey)}
-            onDoubleClick={() => onDoubleClick(file)}
+            onClick={(e) => {
+              if (suppressInteraction(e)) return;
+              onSelect(file.path, e.ctrlKey || e.metaKey);
+            }}
+            onDoubleClick={(e) => {
+              if (suppressInteraction(e)) return;
+              onDoubleClick(file);
+            }}
             onContextMenu={(e) => {
               e.preventDefault();
               onContextMenu(file, e.clientX, e.clientY);
@@ -294,20 +314,20 @@ function GridView({
             onDragStart={(e) => onDragStart(file, e)}
             onDragEnd={onDragEnd}
             onDragOver={(e) => {
-              const internalDragPaths = getInternalDragPaths(e.dataTransfer);
+              const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
               if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
               e.preventDefault();
               e.dataTransfer.dropEffect = 'move';
               onHoverDirectory(file.path);
             }}
             onDragEnter={(e) => {
-              const internalDragPaths = getInternalDragPaths(e.dataTransfer);
+              const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
               if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
               e.preventDefault();
               onHoverDirectory(file.path);
             }}
             onDrop={async (e) => {
-              const internalDragPaths = getInternalDragPaths(e.dataTransfer);
+              const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
               if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
               e.preventDefault();
               e.stopPropagation();
@@ -363,9 +383,13 @@ export function FileList() {
     isSearching,
     searchQuery,
   } = useProjectStore();
-  const draggedPaths = useFileDragStore((state) => state.draggedPaths);
-  const startDrag = useFileDragStore((state) => state.startDrag);
-  const clearDrag = useFileDragStore((state) => state.clearDrag);
+  const {
+    draggedPaths,
+    startInternalDrag,
+    finishInternalDrag,
+    suppressInteraction,
+    getDraggedPathsFromDataTransfer,
+  } = useInternalFileDrag();
   const [dropTargetPath, setDropTargetPath] = useState<string | null>(null);
   const { movePathsToDirectory, conflictDialog } = useFileDropMove(async () => {
     await refresh();
@@ -406,29 +430,17 @@ export function FileList() {
   }, [selectedFiles]);
 
   const canDropToDirectory = useCallback((targetDir: string, dragPaths = draggedPaths) => {
-    if (!targetDir || dragPaths.length === 0) {
-      return false;
-    }
-
-    return dragPaths.some((path) => {
-      if (getParentPath(path) === targetDir) {
-        return false;
-      }
-
-      return !isSameOrDescendantPath(targetDir, path);
-    });
+    return canMovePathsToDirectory(targetDir, dragPaths);
   }, [draggedPaths]);
 
   const handleDragStart = useCallback((file: FileInfo, event: React.DragEvent<HTMLDivElement>) => {
-    const dragPaths = getDraggedItems(file);
-    startDrag(dragPaths);
-    setFileDragData(event.dataTransfer, dragPaths);
-  }, [getDraggedItems, startDrag]);
+    startInternalDrag(event, getDraggedItems(file));
+  }, [getDraggedItems, startInternalDrag]);
 
   const handleDragEnd = useCallback(() => {
-    clearDrag();
+    finishInternalDrag();
     setDropTargetPath(null);
-  }, [clearDrag]);
+  }, [finishInternalDrag]);
 
   const handleDropToDirectory = useCallback(async (targetDir: string, dragPaths?: string[]) => {
     const currentDraggedPaths = dragPaths && dragPaths.length > 0 ? dragPaths : draggedPaths;
@@ -442,8 +454,7 @@ export function FileList() {
       targetDir,
       getPathLabel(targetDir, useProjectStore.getState().projectPath, useProjectStore.getState().projectName),
     );
-    clearDrag();
-  }, [clearDrag, draggedPaths, movePathsToDirectory]);
+  }, [draggedPaths, movePathsToDirectory]);
 
   const handleHoverDirectory = useCallback((targetDir: string) => {
     setDropTargetPath(targetDir);
@@ -471,6 +482,8 @@ export function FileList() {
           onDropToDirectory={handleDropToDirectory}
           onHoverDirectory={handleHoverDirectory}
           canDropToDirectory={canDropToDirectory}
+          getDraggedPathsFromDataTransfer={getDraggedPathsFromDataTransfer}
+          suppressInteraction={suppressInteraction}
           dropTargetPath={dropTargetPath}
           currentPath={currentPath || ''}
           columns={columns}
@@ -489,6 +502,8 @@ export function FileList() {
           onDropToDirectory={handleDropToDirectory}
           onHoverDirectory={handleHoverDirectory}
           canDropToDirectory={canDropToDirectory}
+          getDraggedPathsFromDataTransfer={getDraggedPathsFromDataTransfer}
+          suppressInteraction={suppressInteraction}
           dropTargetPath={dropTargetPath}
           currentPath={currentPath || ''}
           tags={tags}

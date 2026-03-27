@@ -78,6 +78,20 @@ export function setFileDragData(dataTransfer: DataTransfer, paths: string[]): vo
   dataTransfer.setData('text/plain', compactPaths.map(getFileNameFromPath).join('\n'));
 }
 
+export function canMovePathsToDirectory(targetDir: string, dragPaths: string[]): boolean {
+  if (!targetDir || dragPaths.length === 0) {
+    return false;
+  }
+
+  return dragPaths.some((path) => {
+    if (getParentPath(path) === targetDir) {
+      return false;
+    }
+
+    return !isSameOrDescendantPath(targetDir, path);
+  });
+}
+
 export function getInternalDragPaths(dataTransfer: DataTransfer | null): string[] {
   if (!dataTransfer) {
     return [];
@@ -110,4 +124,31 @@ export function isExternalFileDrag(dataTransfer: DataTransfer | null): boolean {
   }
 
   return Array.from(dataTransfer.types || []).includes('Files');
+}
+
+export function resolveInternalDragPaths(dataTransfer: DataTransfer | null, fallbackPaths: string[]): string[] {
+  const internalPaths = getInternalDragPaths(dataTransfer);
+  if (internalPaths.length > 0) {
+    return compactDraggedPaths(internalPaths);
+  }
+
+  const compactFallbackPaths = compactDraggedPaths(fallbackPaths);
+  if (compactFallbackPaths.length === 0) {
+    return [];
+  }
+
+  if (!dataTransfer) {
+    return compactFallbackPaths;
+  }
+
+  if (hasInternalDragData(dataTransfer)) {
+    return compactFallbackPaths;
+  }
+
+  const dragTypes = Array.from(dataTransfer.types || []);
+  if (!dragTypes.includes('Files')) {
+    return compactFallbackPaths;
+  }
+
+  return [];
 }

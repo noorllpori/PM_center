@@ -1,46 +1,46 @@
 import { useCallback, useState } from 'react';
 import { TreeNode } from '../../types';
 import { useProjectStore } from '../../stores/projectStore';
-import { useFileDragStore } from '../../stores/fileDragStore';
 import { ChevronRight, ChevronDown, Folder, FolderOpen } from 'lucide-react';
-import { getInternalDragPaths, getPathLabel, getParentPath, isSameOrDescendantPath, setFileDragData } from './dragDrop';
+import { canMovePathsToDirectory, getPathLabel } from './dragDrop';
 import { useFileDropMove } from './useFileDropMove';
+import { useInternalFileDrag } from './useInternalFileDrag';
 
 interface TreeItemProps {
   node: TreeNode;
   level: number;
-  draggedPaths: string[];
   dropTargetPath: string | null;
   onDragStart: (path: string, event: React.DragEvent<HTMLDivElement>) => void;
   onDragEnd: () => void;
   onDropToDirectory: (targetDir: string, dragPaths?: string[]) => Promise<void>;
   onHoverDirectory: (targetDir: string) => void;
+  canDropToDirectory: (targetDir: string, dragPaths?: string[]) => boolean;
+  getDraggedPathsFromDataTransfer: (dataTransfer: DataTransfer | null) => string[];
+  suppressInteraction: (event: React.SyntheticEvent<HTMLElement>) => boolean;
 }
 
 function TreeItem({
   node,
   level,
-  draggedPaths,
   dropTargetPath,
   onDragStart,
   onDragEnd,
   onDropToDirectory,
   onHoverDirectory,
+  canDropToDirectory,
+  getDraggedPathsFromDataTransfer,
+  suppressInteraction,
 }: TreeItemProps) {
   const { currentPath, expandedKeys, toggleExpanded, loadDirectory } = useProjectStore();
   const isExpanded = expandedKeys.has(node.path);
   const isSelected = currentPath === node.path;
   const isDropTarget = dropTargetPath === node.path;
 
-  const canDropToDirectory = draggedPaths.some((path) => {
-    if (getParentPath(path) === node.path) {
-      return false;
+  const handleClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (suppressInteraction(event)) {
+      return;
     }
 
-    return !isSameOrDescendantPath(node.path, path);
-  });
-
-  const handleClick = () => {
     loadDirectory(node.path);
   };
 
@@ -64,47 +64,23 @@ function TreeItem({
         onDragStart={(e) => onDragStart(node.path, e)}
         onDragEnd={onDragEnd}
         onDragOver={(e) => {
-          const internalDragPaths = getInternalDragPaths(e.dataTransfer);
-          if (internalDragPaths.length > 0 && !internalDragPaths.some((path) => {
-            if (getParentPath(path) === node.path) {
-              return false;
-            }
-            return !isSameOrDescendantPath(node.path, path);
-          })) {
-            return;
-          }
-          if (!canDropToDirectory && internalDragPaths.length === 0) return;
+          const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
+          if (!canDropToDirectory(node.path, internalDragPaths)) return;
           e.preventDefault();
           e.stopPropagation();
           e.dataTransfer.dropEffect = 'move';
           onHoverDirectory(node.path);
         }}
         onDragEnter={(e) => {
-          const internalDragPaths = getInternalDragPaths(e.dataTransfer);
-          if (internalDragPaths.length > 0 && !internalDragPaths.some((path) => {
-            if (getParentPath(path) === node.path) {
-              return false;
-            }
-            return !isSameOrDescendantPath(node.path, path);
-          })) {
-            return;
-          }
-          if (!canDropToDirectory && internalDragPaths.length === 0) return;
+          const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
+          if (!canDropToDirectory(node.path, internalDragPaths)) return;
           e.preventDefault();
           e.stopPropagation();
           onHoverDirectory(node.path);
         }}
         onDrop={async (e) => {
-          const internalDragPaths = getInternalDragPaths(e.dataTransfer);
-          if (internalDragPaths.length > 0 && !internalDragPaths.some((path) => {
-            if (getParentPath(path) === node.path) {
-              return false;
-            }
-            return !isSameOrDescendantPath(node.path, path);
-          })) {
-            return;
-          }
-          if (!canDropToDirectory && internalDragPaths.length === 0) return;
+          const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
+          if (!canDropToDirectory(node.path, internalDragPaths)) return;
           e.preventDefault();
           e.stopPropagation();
           await onDropToDirectory(node.path, internalDragPaths);
@@ -141,12 +117,14 @@ function TreeItem({
               key={child.path}
               node={child}
               level={level + 1}
-              draggedPaths={draggedPaths}
               dropTargetPath={dropTargetPath}
               onDragStart={onDragStart}
               onDragEnd={onDragEnd}
               onDropToDirectory={onDropToDirectory}
               onHoverDirectory={onHoverDirectory}
+              canDropToDirectory={canDropToDirectory}
+              getDraggedPathsFromDataTransfer={getDraggedPathsFromDataTransfer}
+              suppressInteraction={suppressInteraction}
             />
           ))}
         </div>
@@ -157,9 +135,13 @@ function TreeItem({
 
 export function FileTree() {
   const { treeData, projectName, projectPath } = useProjectStore();
-  const draggedPaths = useFileDragStore((state) => state.draggedPaths);
-  const startDrag = useFileDragStore((state) => state.startDrag);
-  const clearDrag = useFileDragStore((state) => state.clearDrag);
+  const {
+    draggedPaths,
+    startInternalDrag,
+    finishInternalDrag,
+    suppressInteraction,
+    getDraggedPathsFromDataTransfer,
+  } = useInternalFileDrag();
   const [searchTerm, setSearchTerm] = useState('');
   const [dropTargetPath, setDropTargetPath] = useState<string | null>(null);
   const { movePathsToDirectory, conflictDialog } = useFileDropMove(async () => {
@@ -167,15 +149,17 @@ export function FileTree() {
   });
 
   const handleDragStart = useCallback((path: string, event: React.DragEvent<HTMLDivElement>) => {
-    const paths = [path];
-    startDrag(paths);
-    setFileDragData(event.dataTransfer, paths);
-  }, [startDrag]);
+    startInternalDrag(event, [path]);
+  }, [startInternalDrag]);
 
   const handleDragEnd = useCallback(() => {
-    clearDrag();
+    finishInternalDrag();
     setDropTargetPath(null);
-  }, [clearDrag]);
+  }, [finishInternalDrag]);
+
+  const canDropToDirectory = useCallback((targetDir: string, dragPaths = draggedPaths) => {
+    return canMovePathsToDirectory(targetDir, dragPaths);
+  }, [draggedPaths]);
 
   const handleDropToDirectory = useCallback(async (targetDir: string, dragPaths?: string[]) => {
     const currentDraggedPaths = dragPaths && dragPaths.length > 0 ? dragPaths : draggedPaths;
@@ -189,8 +173,7 @@ export function FileTree() {
       targetDir,
       getPathLabel(targetDir, useProjectStore.getState().projectPath, useProjectStore.getState().projectName),
     );
-    clearDrag();
-  }, [clearDrag, draggedPaths, movePathsToDirectory]);
+  }, [draggedPaths, movePathsToDirectory]);
 
   if (!treeData) {
     return (
@@ -226,12 +209,14 @@ export function FileTree() {
         <TreeItem
           node={treeData}
           level={0}
-          draggedPaths={draggedPaths}
           dropTargetPath={dropTargetPath}
           onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
           onDropToDirectory={handleDropToDirectory}
           onHoverDirectory={setDropTargetPath}
+          canDropToDirectory={canDropToDirectory}
+          getDraggedPathsFromDataTransfer={getDraggedPathsFromDataTransfer}
+          suppressInteraction={suppressInteraction}
         />
       </div>
 
