@@ -1,6 +1,8 @@
 import { useCallback, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { FileInfo } from '../../types';
 import { useProjectStore } from '../../stores/projectStore';
+import { useUiStore } from '../../stores/uiStore';
 import { FileIcon, FolderIcon, Image, Film, FileText, Box } from 'lucide-react';
 import { FileContextMenu } from './FileContextMenu';
 import { canMovePathsToDirectory, getPathLabel } from './dragDrop';
@@ -383,6 +385,7 @@ export function FileList() {
     isSearching,
     searchQuery,
   } = useProjectStore();
+  const showToast = useUiStore((state) => state.showToast);
   const {
     draggedPaths,
     startInternalDrag,
@@ -404,11 +407,23 @@ export function FileList() {
 
   const displayFiles = searchQuery ? searchResults : files;
 
-  const handleDoubleClick = (file: FileInfo) => {
+  const handleDoubleClick = useCallback(async (file: FileInfo) => {
     if (file.is_dir) {
-      loadDirectory(file.path);
+      await loadDirectory(file.path);
+      return;
     }
-  };
+
+    try {
+      await invoke('open_file', { path: file.path });
+      showToast({
+        title: '已打开',
+        message: file.name,
+        tone: 'success',
+      });
+    } catch (error) {
+      console.error('Failed to open file:', error);
+    }
+  }, [loadDirectory, showToast]);
 
   const handleContextMenu = (file: FileInfo, x: number, y: number) => {
     setContextMenu({ file, x, y });
