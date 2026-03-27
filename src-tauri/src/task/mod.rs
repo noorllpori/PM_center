@@ -12,6 +12,7 @@ use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TaskScript {
     pub code: String,
     pub r#type: String, // 保留字段兼容性，但只支持 "python"

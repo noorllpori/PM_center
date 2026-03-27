@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { load } from '@tauri-apps/plugin-store';
+import { DEFAULT_EXCLUDE_PATTERNS } from '../utils/excludePatterns';
 
 export interface RecentProject {
   path: string;
@@ -18,6 +19,7 @@ interface SettingsState {
   projectsRootDir: string | null; // 项目根目录（扫描用）
   ignoredProjects: string[]; // 被忽略的项目路径列表
   toolPaths: ToolPaths;
+  globalExcludePatterns: string[];
   
   // 加载设置
   loadSettings: () => Promise<void>;
@@ -39,6 +41,8 @@ interface SettingsState {
   clearIgnoredProjects: () => Promise<void>;
   // 设置工具路径
   setToolPath: (tool: keyof ToolPaths, path: string | null) => Promise<void>;
+  // 设置全局排除规则
+  setGlobalExcludePatterns: (patterns: string[]) => Promise<void>;
 }
 
 // Store 文件名
@@ -54,6 +58,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     ffprobe: null,
     blender: null,
   },
+  globalExcludePatterns: [...DEFAULT_EXCLUDE_PATTERNS],
 
   loadSettings: async () => {
     try {
@@ -63,6 +68,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       const rootDir = await store.get<string | null>('projectsRootDir');
       const ignored = await store.get<string[]>('ignoredProjects');
       const toolPaths = await store.get<ToolPaths>('toolPaths');
+      const globalExcludePatterns = await store.get<string[]>('globalExcludePatterns');
       
       if (recent) {
         // 过滤掉不存在的路径（可选，这里先保留）
@@ -88,6 +94,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
             blender: toolPaths.blender ?? null,
           },
         });
+      }
+
+      if (globalExcludePatterns) {
+        set({ globalExcludePatterns });
       }
     } catch (error) {
       console.error('Failed to load settings:', error);
@@ -225,6 +235,18 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       set({ ignoredProjects: [] });
     } catch (error) {
       console.error('Failed to clear ignored projects:', error);
+    }
+  },
+
+  setGlobalExcludePatterns: async (patterns: string[]) => {
+    try {
+      const store = await load(STORE_FILE);
+      await store.set('globalExcludePatterns', patterns);
+      await store.save();
+
+      set({ globalExcludePatterns: patterns });
+    } catch (error) {
+      console.error('Failed to set global exclude patterns:', error);
     }
   },
 

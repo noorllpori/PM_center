@@ -1,14 +1,15 @@
 import { useState, useEffect } from 'react';
 import { X, Plus, Trash2, FolderOpen, FileWarning, HelpCircle } from 'lucide-react';
 import { useProjectStore } from '../../stores/projectStore';
+import {
+  PRESET_EXCLUDE_PATTERNS,
+  getExcludeStorageKey,
+  readProjectExcludePatterns,
+} from '../../utils/excludePatterns';
 
 // 获取项目的排除规则
 function getExcludePatterns(projectPath: string): string[] {
-  const saved = localStorage.getItem(`project_exclude_${projectPath}`);
-  if (saved) {
-    return JSON.parse(saved);
-  }
-  return ['.pm_center', '.git', '*.tmp', '*.temp', 'Thumbs.db', '.DS_Store'];
+  return readProjectExcludePatterns(projectPath);
 }
 
 interface ProjectSettingsProps {
@@ -20,16 +21,6 @@ interface ProjectSettingsProps {
 export { getExcludePatterns };
 
 // 预设的排除规则
-const PRESET_PATTERNS = [
-  { value: '.git', label: 'Git 目录 (.git)', desc: '版本控制目录' },
-  { value: 'node_modules', label: 'Node 模块 (node_modules)', desc: '依赖目录' },
-  { value: '__pycache__', label: 'Python 缓存 (__pycache__)', desc: '编译缓存' },
-  { value: '*.tmp', label: '临时文件 (*.tmp)', desc: '临时文件' },
-  { value: '*.bak', label: '备份文件 (*.bak)', desc: '备份文件' },
-  { value: '.DS_Store', label: 'Mac 索引 (.DS_Store)', desc: '系统文件' },
-  { value: 'Thumbs.db', label: 'Windows 缩略图 (Thumbs.db)', desc: '系统文件' },
-];
-
 export function ProjectSettings({ isOpen, onClose }: ProjectSettingsProps) {
   const { projectPath, refresh } = useProjectStore();
   
@@ -45,8 +36,7 @@ export function ProjectSettings({ isOpen, onClose }: ProjectSettingsProps) {
       if (saved) {
         setExcludePatterns(JSON.parse(saved));
       } else {
-        // 默认规则
-        setExcludePatterns(['.pm_center', '.git', '*.tmp', '*.temp', 'Thumbs.db', '.DS_Store']);
+        setExcludePatterns([]);
       }
     }
   }, [isOpen, projectPath]);
@@ -61,7 +51,7 @@ export function ProjectSettings({ isOpen, onClose }: ProjectSettingsProps) {
   const savePatterns = (patterns: string[]) => {
     setExcludePatterns(patterns);
     if (projectPath) {
-      localStorage.setItem(`project_exclude_${projectPath}`, JSON.stringify(patterns));
+      localStorage.setItem(getExcludeStorageKey(projectPath), JSON.stringify(patterns));
     }
   };
 
@@ -156,7 +146,7 @@ export function ProjectSettings({ isOpen, onClose }: ProjectSettingsProps) {
               {showPresets && (
                 <div className="mt-2 p-2 bg-gray-50 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
                   <div className="grid grid-cols-1 gap-1">
-                    {PRESET_PATTERNS.map((preset) => (
+                    {PRESET_EXCLUDE_PATTERNS.map((preset) => (
                       <button
                         key={preset.value}
                         onClick={() => addPattern(preset.value)}

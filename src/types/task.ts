@@ -88,4 +88,5 @@ export interface ProjectScript {
   filename: string;
   path: string;
   scriptType: ScriptType;
+  scope: 'project' | 'global';
 }

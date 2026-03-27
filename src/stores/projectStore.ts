@@ -2,28 +2,23 @@ import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { FileInfo, TreeNode, Tag, ColumnConfig, DisplayRule, ViewMode } from '../types';
 import { clearFileDetailsCache } from '../components/file-manager/useFileDetails';
+import { useSettingsStore } from './settingsStore';
+import {
+  mergeExcludePatterns,
+  readProjectExcludePatterns,
+  shouldExcludeFile,
+} from '../utils/excludePatterns';
 
 // 获取项目的排除规则
 function getExcludePatterns(projectPath: string): string[] {
-  const saved = localStorage.getItem(`project_exclude_${projectPath}`);
-  if (saved) {
-    return JSON.parse(saved);
-  }
-  // 默认规则
-  return ['.pm_center', '.git', '*.tmp', '*.temp', 'Thumbs.db', '.DS_Store'];
+  const globalPatterns = useSettingsStore.getState().globalExcludePatterns;
+  const projectPatterns = readProjectExcludePatterns(projectPath);
+  return mergeExcludePatterns(globalPatterns, projectPatterns);
 }
 
 // 检查文件名是否匹配排除规则
 function shouldExclude(fileName: string, patterns: string[]): boolean {
-  return patterns.some(pattern => {
-    // 简单通配符匹配
-    if (pattern.includes('*')) {
-      const regex = new RegExp('^' + pattern.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$');
-      return regex.test(fileName);
-    }
-    // 精确匹配或目录匹配
-    return fileName === pattern || fileName.startsWith(pattern + '/');
-  });
+  return shouldExcludeFile(fileName, patterns);
 }
 
 function replacePathPrefix(path: string, oldPath: string, newPath: string): string | null {

@@ -670,7 +670,7 @@ sys.exit(0)`;
                     <div className="text-center py-8 text-gray-400 text-sm">
                       <FileText className="w-8 h-8 mx-auto mb-2 opacity-50" />
                       <p>暂无脚本</p>
-                      <p className="text-xs mt-1">将 .py 脚本放入 .pm_center/scripts/</p>
+                      <p className="text-xs mt-1">可放入项目 `.pm_center/scripts/`，也可使用全局脚本目录</p>
                     </div>
                   ) : (
                     scripts.map(script => (
@@ -682,16 +682,27 @@ sys.exit(0)`;
                             ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
                             : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600'
                         }`}
-                      >
-                        <div className="flex items-start gap-2">
-                          <span className="text-blue-500 font-bold text-xs">PY</span>
-                          <div className="flex-1 min-w-0">
-                            <div className="font-medium text-sm text-gray-900 dark:text-gray-100 truncate">
-                              {script.name}
-                            </div>
-                            <div className="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">
-                              {script.description}
-                            </div>
+                        >
+                          <div className="flex items-start gap-2">
+                            <span className="text-blue-500 font-bold text-xs">PY</span>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <div className="font-medium text-sm text-gray-900 dark:text-gray-100 truncate">
+                                  {script.name}
+                                </div>
+                                <span
+                                  className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] ${
+                                    script.scope === 'project'
+                                      ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
+                                      : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
+                                  }`}
+                                >
+                                  {script.scope === 'project' ? '项目' : '全局'}
+                                </span>
+                              </div>
+                              <div className="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">
+                                {script.description}
+                              </div>
                             <div className="text-xs text-gray-400 mt-1">{script.filename}</div>
                           </div>
                         </div>

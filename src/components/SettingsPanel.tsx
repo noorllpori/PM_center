@@ -7,6 +7,7 @@ import {
   Box,
   CheckCircle2,
   Download,
+  ExternalLink,
   FolderOpen,
   HelpCircle,
   Plus,
@@ -20,6 +21,12 @@ import {
 import { AlertDialog, Dialog } from './Dialog';
 import { useProjectStore } from '../stores/projectStore';
 import { ToolPaths, useSettingsStore } from '../stores/settingsStore';
+import {
+  DEFAULT_EXCLUDE_PATTERNS,
+  PRESET_EXCLUDE_PATTERNS,
+  getExcludeStorageKey,
+  readProjectExcludePatterns,
+} from '../utils/excludePatterns';
 
 type SettingsScope = 'global' | 'project';
 
@@ -41,39 +48,7 @@ interface ToolStatus {
   message: string | null;
 }
 
-const DEFAULT_EXCLUDE_PATTERNS = ['.pm_center', '.git', '*.tmp', '*.temp', 'Thumbs.db', '.DS_Store'];
 const FFPROBE_DOWNLOAD_URL = 'https://ffmpeg.org/download.html#build-windows';
-const PRESET_PATTERNS = [
-  { value: '.git', label: 'Git 目录 (.git)', desc: '版本控制目录' },
-  { value: 'node_modules', label: 'Node 模块 (node_modules)', desc: '依赖目录' },
-  { value: '__pycache__', label: 'Python 缓存 (__pycache__)', desc: '编译缓存' },
-  { value: '*.tmp', label: '临时文件 (*.tmp)', desc: '临时文件' },
-  { value: '*.bak', label: '备份文件 (*.bak)', desc: '备份文件' },
-  { value: '.DS_Store', label: 'Mac 索引 (.DS_Store)', desc: '系统文件' },
-  { value: 'Thumbs.db', label: 'Windows 缩略图 (Thumbs.db)', desc: '系统文件' },
-];
-
-function getExcludeStorageKey(projectPath: string) {
-  return `project_exclude_${projectPath}`;
-}
-
-function readExcludePatterns(projectPath: string | null) {
-  if (!projectPath) {
-    return [...DEFAULT_EXCLUDE_PATTERNS];
-  }
-
-  const saved = localStorage.getItem(getExcludeStorageKey(projectPath));
-  if (!saved) {
-    return [...DEFAULT_EXCLUDE_PATTERNS];
-  }
-
-  try {
-    const parsed = JSON.parse(saved);
-    return Array.isArray(parsed) ? parsed : [...DEFAULT_EXCLUDE_PATTERNS];
-  } catch {
-    return [...DEFAULT_EXCLUDE_PATTERNS];
-  }
-}
 
 function toolSourceLabel(source: string) {
   switch (source) {
@@ -102,16 +77,20 @@ export function SettingsPanel({
     clearIgnoredProjects,
     unignoreProject,
     setToolPath,
+    globalExcludePatterns,
+    setGlobalExcludePatterns,
   } = useSettingsStore();
   const { isInitialized, projectPath, projectName, refresh } = useProjectStore();
 
   const [activeScope, setActiveScope] = useState<SettingsScope>('global');
-  const [excludePatterns, setExcludePatterns] = useState<string[]>(DEFAULT_EXCLUDE_PATTERNS);
+  const [globalPatterns, setGlobalPatterns] = useState<string[]>(DEFAULT_EXCLUDE_PATTERNS);
+  const [projectPatterns, setProjectPatterns] = useState<string[]>([]);
   const [newPattern, setNewPattern] = useState('');
   const [showPresets, setShowPresets] = useState(false);
   const [needsProjectRefresh, setNeedsProjectRefresh] = useState(false);
   const [toolStatuses, setToolStatuses] = useState<ToolStatus[]>([]);
   const [isLoadingTools, setIsLoadingTools] = useState(false);
+  const [globalTaskScriptsPath, setGlobalTaskScriptsPath] = useState<string | null>(null);
   const [alertDialog, setAlertDialog] = useState({
     isOpen: false,
     title: '提示',
@@ -128,22 +107,43 @@ export function SettingsPanel({
 
     void loadSettings();
     setActiveScope(resolvedDefaultScope);
+    setGlobalPatterns(globalExcludePatterns);
   }, [isOpen, loadSettings, resolvedDefaultScope]);
 
   useEffect(() => {
-    if (!isOpen || !projectPath) {
-      setExcludePatterns([...DEFAULT_EXCLUDE_PATTERNS]);
+    if (!isOpen) {
+      setGlobalPatterns(globalExcludePatterns);
+      setProjectPatterns(projectPath ? readProjectExcludePatterns(projectPath) : []);
+      setGlobalTaskScriptsPath(null);
       setNeedsProjectRefresh(false);
       setNewPattern('');
       setShowPresets(false);
       return;
     }
 
-    setExcludePatterns(readExcludePatterns(projectPath));
+    setGlobalPatterns(globalExcludePatterns);
+    setProjectPatterns(projectPath ? readProjectExcludePatterns(projectPath) : []);
     setNeedsProjectRefresh(false);
     setNewPattern('');
     setShowPresets(false);
-  }, [isOpen, projectPath]);
+  }, [isOpen, projectPath, globalExcludePatterns]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    void invoke<string>('get_global_task_scripts_path')
+      .then((path) => setGlobalTaskScriptsPath(path))
+      .catch((error) => {
+        console.error('Failed to load global task scripts path:', error);
+        setAlertDialog({
+          isOpen: true,
+          title: '读取全局脚本目录失败',
+          message: String(error),
+        });
+      });
+  }, [isOpen]);
 
   const loadToolStatuses = useCallback(async () => {
     setIsLoadingTools(true);
@@ -175,8 +175,16 @@ export function SettingsPanel({
     [recentProjects],
   );
 
-  const saveExcludePatterns = (patterns: string[]) => {
-    setExcludePatterns(patterns);
+  const currentPatterns = activeScope === 'global' ? globalPatterns : projectPatterns;
+
+  const saveGlobalPatterns = async (patterns: string[]) => {
+    setGlobalPatterns(patterns);
+    await setGlobalExcludePatterns(patterns);
+    setNeedsProjectRefresh(true);
+  };
+
+  const saveProjectPatterns = (patterns: string[]) => {
+    setProjectPatterns(patterns);
 
     if (!projectPath) {
       return;
@@ -188,18 +196,26 @@ export function SettingsPanel({
 
   const addPattern = (pattern: string) => {
     const normalized = pattern.trim();
-    if (!normalized || excludePatterns.includes(normalized)) {
+    if (!normalized || currentPatterns.includes(normalized)) {
       setNewPattern('');
       return;
     }
 
-    saveExcludePatterns([...excludePatterns, normalized]);
+    if (activeScope === 'global') {
+      void saveGlobalPatterns([...globalPatterns, normalized]);
+    } else {
+      saveProjectPatterns([...projectPatterns, normalized]);
+    }
     setNewPattern('');
     setShowPresets(false);
   };
 
   const removePattern = (pattern: string) => {
-    saveExcludePatterns(excludePatterns.filter((item) => item !== pattern));
+    if (activeScope === 'global') {
+      void saveGlobalPatterns(globalPatterns.filter((item) => item !== pattern));
+    } else {
+      saveProjectPatterns(projectPatterns.filter((item) => item !== pattern));
+    }
   };
 
   const handleClosePanel = async () => {
@@ -258,6 +274,149 @@ export function SettingsPanel({
     }
   };
 
+  const handleOpenGlobalTaskScriptsDir = async () => {
+    if (!globalTaskScriptsPath) {
+      return;
+    }
+
+    try {
+      await invoke('open_path', { path: globalTaskScriptsPath });
+    } catch (error) {
+      setAlertDialog({
+        isOpen: true,
+        title: '打开全局脚本目录失败',
+        message: String(error),
+      });
+    }
+  };
+
+  const renderExcludeRulesSection = ({
+    title,
+    description,
+    patterns,
+    emptyText,
+    onClear,
+  }: {
+    title: string;
+    description: string;
+    patterns: string[];
+    emptyText: string;
+    onClear: () => void;
+  }) => (
+    <section className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
+      <div className="flex items-start gap-2 mb-4 rounded-lg bg-blue-50 dark:bg-blue-900/20 px-3 py-3">
+        <HelpCircle className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5" />
+        <div className="text-sm text-blue-700 dark:text-blue-300">
+          <p className="font-medium">{title}</p>
+          <p className="mt-1 text-xs text-blue-600 dark:text-blue-400">{description}</p>
+        </div>
+      </div>
+
+      <div className="mb-4">
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+          添加排除规则
+        </label>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={newPattern}
+            onChange={(event) => setNewPattern(event.target.value)}
+            placeholder="例如: *.log 或 cache"
+            className="flex-1 px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg
+                       bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100
+                       focus:outline-none focus:ring-2 focus:ring-blue-500"
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                addPattern(newPattern);
+              }
+            }}
+          />
+          <button
+            onClick={() => addPattern(newPattern)}
+            disabled={!newPattern.trim()}
+            className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white transition-colors"
+          >
+            <Plus className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="mt-2">
+          <button
+            onClick={() => setShowPresets((value) => !value)}
+            className="text-sm text-blue-600 dark:text-blue-400 hover:underline"
+          >
+            {showPresets ? '隐藏预设规则' : '从预设选择...'}
+          </button>
+
+          {showPresets && (
+            <div className="mt-2 space-y-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 p-2">
+              {PRESET_EXCLUDE_PATTERNS.map((preset) => (
+                <button
+                  key={preset.value}
+                  onClick={() => addPattern(preset.value)}
+                  disabled={patterns.includes(preset.value)}
+                  className="w-full flex items-center justify-between gap-3 rounded-md px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <div>
+                    <span className="font-medium text-gray-700 dark:text-gray-200">{preset.label}</span>
+                    <span className="ml-2 text-xs text-gray-400">{preset.desc}</span>
+                  </div>
+                  {patterns.includes(preset.value) ? (
+                    <span className="text-xs text-green-600">已添加</span>
+                  ) : (
+                    <Plus className="w-4 h-4 text-gray-400" />
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+            当前排除规则 ({patterns.length})
+          </label>
+          {patterns.length > 0 && (
+            <button
+              onClick={onClear}
+              className="text-xs text-red-600 hover:text-red-700"
+            >
+              清空全部
+            </button>
+          )}
+        </div>
+
+        {patterns.length === 0 ? (
+          <div className="flex items-center justify-center py-8 text-gray-400">
+            <div className="text-center">
+              <FolderOpen className="w-8 h-8 mx-auto mb-2 opacity-50" />
+              <p className="text-sm">{emptyText}</p>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-1 max-h-64 overflow-auto">
+            {patterns.map((pattern) => (
+              <div
+                key={pattern}
+                className="flex items-center justify-between gap-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 px-3 py-2"
+              >
+                <code className="text-sm font-mono text-gray-700 dark:text-gray-300">{pattern}</code>
+                <button
+                  onClick={() => removePattern(pattern)}
+                  className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+
   const renderGlobalSettings = () => (
     <div className="space-y-4">
       <section className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
@@ -279,6 +438,43 @@ export function SettingsPanel({
             </span>
           </span>
         </label>
+      </section>
+
+      {renderExcludeRulesSection({
+        title: '全局排除规则',
+        description: '对所有项目统一生效。默认已包含 .blend1/.blend2/... 这类 Blender 备份文件规则。',
+        patterns: globalPatterns,
+        emptyText: '暂无全局排除规则',
+        onClear: () => {
+          if (confirm('确定要清空所有全局排除规则吗？')) {
+            void saveGlobalPatterns([]);
+          }
+        },
+      })}
+
+      <section className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <FolderOpen className="w-4 h-4 text-blue-500" />
+          <div className="flex-1">
+            <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">全局任务脚本目录</h4>
+            <p className="text-xs text-gray-500 mt-1">这里存放所有项目共用的通用任务脚本。</p>
+          </div>
+          <button
+            onClick={() => void handleOpenGlobalTaskScriptsDir()}
+            disabled={!globalTaskScriptsPath}
+            className="px-3 py-2 text-sm rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white transition-colors flex items-center gap-1.5"
+          >
+            <ExternalLink className="w-4 h-4" />
+            在资源管理器中打开
+          </button>
+        </div>
+
+        <div className="rounded-lg bg-gray-50 dark:bg-gray-800 px-3 py-3">
+          <p className="text-xs text-gray-500 mb-1">目录位置</p>
+          <p className="text-sm text-gray-900 dark:text-gray-100 break-all">
+            {globalTaskScriptsPath || '读取中...'}
+          </p>
+        </div>
       </section>
 
       <section className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
@@ -478,133 +674,34 @@ export function SettingsPanel({
 
   const renderProjectSettings = () => (
     <div className="space-y-4">
-      <section className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
-        <div className="flex items-start gap-2 mb-4 rounded-lg bg-blue-50 dark:bg-blue-900/20 px-3 py-3">
-          <HelpCircle className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5" />
-          <div className="text-sm text-blue-700 dark:text-blue-300">
-            <p className="font-medium">当前项目</p>
-            <p className="mt-1 text-xs">{projectName || '未打开项目'}</p>
-            {projectPath && <p className="mt-1 text-xs break-all">{projectPath}</p>}
-            <p className="mt-2 text-xs text-blue-600 dark:text-blue-400">
-              排除规则会影响文件列表显示、搜索和刷新结果；关闭设置时会自动刷新当前项目。
-            </p>
-          </div>
+      {renderExcludeRulesSection({
+        title: '项目排除规则',
+        description: `当前项目：${projectName || '未打开项目'}。这里只追加项目专属规则；全局规则会继续一起生效。`,
+        patterns: projectPatterns,
+        emptyText: '暂无项目专属排除规则',
+        onClear: () => {
+          if (confirm('确定要清空当前项目的所有排除规则吗？')) {
+            saveProjectPatterns([]);
+          }
+        },
+      })}
+
+      {projectPath && (
+        <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
+          <p className="text-sm font-medium text-gray-900 dark:text-gray-100">当前项目路径</p>
+          <p className="mt-2 text-xs text-gray-500 break-all">{projectPath}</p>
+          <p className="mt-3 text-xs text-blue-600 dark:text-blue-400">
+            项目排除规则会叠加到全局规则上，一起影响文件列表显示、搜索和刷新结果。
+          </p>
         </div>
+      )}
 
-        <div className="mb-4">
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            添加排除规则
-          </label>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={newPattern}
-              onChange={(event) => setNewPattern(event.target.value)}
-              placeholder="例如: *.log 或 cache"
-              className="flex-1 px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg
-                         bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100
-                         focus:outline-none focus:ring-2 focus:ring-blue-500"
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  addPattern(newPattern);
-                }
-              }}
-            />
-            <button
-              onClick={() => addPattern(newPattern)}
-              disabled={!newPattern.trim()}
-              className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white transition-colors"
-            >
-              <Plus className="w-4 h-4" />
-            </button>
-          </div>
-
-          <div className="mt-2">
-            <button
-              onClick={() => setShowPresets((value) => !value)}
-              className="text-sm text-blue-600 dark:text-blue-400 hover:underline"
-            >
-              {showPresets ? '隐藏预设规则' : '从预设选择...'}
-            </button>
-
-            {showPresets && (
-              <div className="mt-2 space-y-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 p-2">
-                {PRESET_PATTERNS.map((preset) => (
-                  <button
-                    key={preset.value}
-                    onClick={() => addPattern(preset.value)}
-                    disabled={excludePatterns.includes(preset.value)}
-                    className="w-full flex items-center justify-between gap-3 rounded-md px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <div>
-                      <span className="font-medium text-gray-700 dark:text-gray-200">{preset.label}</span>
-                      <span className="ml-2 text-xs text-gray-400">{preset.desc}</span>
-                    </div>
-                    {excludePatterns.includes(preset.value) ? (
-                      <span className="text-xs text-green-600">已添加</span>
-                    ) : (
-                      <Plus className="w-4 h-4 text-gray-400" />
-                    )}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+      {needsProjectRefresh && (
+        <div className="flex items-start gap-2 rounded-lg border border-yellow-200 bg-yellow-50 px-3 py-2 text-sm text-yellow-700">
+          <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+          <span>排除规则已更新，关闭设置后会自动刷新当前项目。</span>
         </div>
-
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
-              当前排除规则 ({excludePatterns.length})
-            </label>
-            {excludePatterns.length > 0 && (
-              <button
-                onClick={() => {
-                  if (confirm('确定要清空当前项目的所有排除规则吗？')) {
-                    saveExcludePatterns([]);
-                  }
-                }}
-                className="text-xs text-red-600 hover:text-red-700"
-              >
-                清空全部
-              </button>
-            )}
-          </div>
-
-          {excludePatterns.length === 0 ? (
-            <div className="flex items-center justify-center py-8 text-gray-400">
-              <div className="text-center">
-                <FolderOpen className="w-8 h-8 mx-auto mb-2 opacity-50" />
-                <p className="text-sm">暂无排除规则</p>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-1 max-h-64 overflow-auto">
-              {excludePatterns.map((pattern) => (
-                <div
-                  key={pattern}
-                  className="flex items-center justify-between gap-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 px-3 py-2"
-                >
-                  <code className="text-sm font-mono text-gray-700 dark:text-gray-300">{pattern}</code>
-                  <button
-                    onClick={() => removePattern(pattern)}
-                    className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {needsProjectRefresh && (
-            <div className="mt-3 flex items-start gap-2 rounded-lg border border-yellow-200 bg-yellow-50 px-3 py-2 text-sm text-yellow-700">
-              <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-              <span>排除规则已更新，关闭设置后会自动刷新当前项目。</span>
-            </div>
-          )}
-        </div>
-      </section>
+      )}
     </div>
   );
 

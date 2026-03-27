@@ -41,15 +41,10 @@ async fn init_project(
     let db = Database::new(&project_path)
         .map_err(|e| e.to_string())?;
     
-    // 创建 scripts 目录
     let scripts_dir = PathBuf::from(&project_path).join(".pm_center").join("scripts");
-    if !scripts_dir.exists() {
-        fs::create_dir_all(&scripts_dir)
-            .map_err(|e| format!("创建 scripts 目录失败: {}", e))?;
-        
-        // 创建示例脚本
-        create_example_scripts(&scripts_dir)?;
-    }
+    fs::create_dir_all(&scripts_dir)
+        .map_err(|e| format!("创建 scripts 目录失败: {}", e))?;
+    ensure_project_default_scripts(&scripts_dir)?;
     
     // 保存数据库状态
     {
@@ -64,128 +59,222 @@ async fn init_project(
     Ok(())
 }
 
-// 创建示例脚本
-fn create_example_scripts(scripts_dir: &std::path::Path) -> Result<(), String> {
-    use std::fs;
-    
-    // Python 进度示例
-    let python_script = r#"# -*- coding: utf-8 -*-
-# @name: Python进度示例
-# @desc: 演示如何使用 /***N*/ 格式报告进度
-
-import time
-import sys
-
-print("Starting Python task...", flush=True)
-
-for i in range(0, 101, 10):
-    print(f"progress /***{i}*/", flush=True)
-    time.sleep(0.2)
-
-print("Task completed successfully!", flush=True)
-sys.exit(0)
-"#;
-    fs::write(scripts_dir.join("example_progress.py"), python_script)
-        .map_err(|e| format!("创建示例脚本失败: {}", e))?;
-    
-    // Python Blender 渲染示例
-    let blender_script = r#"# -*- coding: utf-8 -*-
-# @name: Blender渲染示例
-# @desc: 使用 Blender Python API 渲染场景
-
-import sys
-import os
-
-print("Starting Blender render task...", flush=True)
-
-try:
-    import bpy
-    
-    # 获取当前场景
-    scene = bpy.context.scene
-    
-    # 设置渲染引擎
-    scene.render.engine = 'CYCLES'
-    
-    # 获取帧范围
-    start_frame = scene.frame_start
-    end_frame = scene.frame_end
-    total_frames = end_frame - start_frame + 1
-    
-    print(f"Rendering {total_frames} frames...", flush=True)
-    
-    # 逐帧渲染
-    for frame in range(start_frame, end_frame + 1):
-        scene.frame_set(frame)
-        scene.render.filepath = f"//render/frame_{frame:04d}.png"
-        
-        # 渲染
-        bpy.ops.render.render(write_file=True)
-        
-        # 报告进度
-        progress = int((frame - start_frame + 1) / total_frames * 100)
-        print(f"progress /***{progress}*/", flush=True)
-    
-    print("Render completed!", flush=True)
-    
-except ImportError:
-    print("Error: Blender Python module not available", flush=True)
-    print("This script should be run within Blender", flush=True)
-    sys.exit(1)
-
-sys.exit(0)
-"#;
-    fs::write(scripts_dir.join("example_blender_render.py"), blender_script)
-        .map_err(|e| format!("创建示例脚本失败: {}", e))?;
-    
-    // Python 文件处理示例
-    let file_script = r#"# -*- coding: utf-8 -*-
-# @name: 文件批处理示例
-# @desc: 批量处理项目文件
+fn ensure_project_default_scripts(scripts_dir: &std::path::Path) -> Result<(), String> {
+    let showcase_script = r#"# -*- coding: utf-8 -*-
+# @name: 项目任务示例（完整功能）
+# @desc: 演示项目任务脚本的常用能力：工作目录、文件扫描、进度输出和结果汇总
 
 import os
 import sys
+from collections import Counter
 
-print("Starting file batch processing...", flush=True)
-
-# 获取当前工作目录（项目根目录）
 project_dir = os.getcwd()
 print(f"Project directory: {project_dir}", flush=True)
+print("progress /***5*/", flush=True)
 
-# 统计文件
-extensions = {}
-file_count = 0
+all_files = []
+extensions = Counter()
 
 for root, dirs, files in os.walk(project_dir):
-    # 跳过 .pm_center 目录
-    if '.pm_center' in root:
-        continue
-    
-    for file in files:
-        file_count += 1
-        ext = os.path.splitext(file)[1].lower()
-        extensions[ext] = extensions.get(ext, 0) + 1
-    
-    # 报告进度
-    if file_count % 100 == 0:
-        progress = min(90, int(file_count / 10))
+    dirs[:] = [name for name in dirs if name != '.pm_center']
+
+    for filename in files:
+        all_files.append(os.path.join(root, filename))
+        ext = os.path.splitext(filename)[1].lower() or '(no ext)'
+        extensions[ext] += 1
+
+    if all_files and len(all_files) % 100 == 0:
+        progress = min(80, 5 + len(all_files) // 20)
         print(f"progress /***{progress}*/", flush=True)
 
-# 输出统计结果
-print(f"\nTotal files: {file_count}", flush=True)
-print("File types:", flush=True)
-for ext, count in sorted(extensions.items(), key=lambda x: -x[1])[:10]:
-    print(f"  {ext or '(no ext)'}: {count}", flush=True)
+total_size = 0
+for path in all_files:
+    try:
+        total_size += os.path.getsize(path)
+    except OSError:
+        pass
 
-print("\nprogress /***100*/", flush=True)
-print("Processing completed!", flush=True)
+print(f"Scanned files: {len(all_files)}", flush=True)
+print(f"Total size: {total_size} bytes", flush=True)
+print("Top file types:", flush=True)
+for ext, count in extensions.most_common(8):
+    print(f"  {ext}: {count}", flush=True)
 
+print("progress /***100*/", flush=True)
+print("Showcase script completed.", flush=True)
 sys.exit(0)
 "#;
-    fs::write(scripts_dir.join("example_file_batch.py"), file_script)
-        .map_err(|e| format!("创建示例脚本失败: {}", e))?;
-    
+
+    write_file_if_missing(
+        &scripts_dir.join("project_showcase_task.py"),
+        showcase_script,
+        "项目默认脚本",
+    )
+}
+
+fn ensure_global_task_scripts(scripts_dir: &std::path::Path) -> Result<(), String> {
+    let cleanup_blender_backups = r#"# -*- coding: utf-8 -*-
+# @name: 清理 Blender 备份文件
+# @desc: 查找项目下所有 .blend1/.blend2/... 备份文件，统计大小、输出位置并删除
+
+import os
+import re
+import sys
+
+BACKUP_PATTERN = re.compile(r".*\.blend\d+$", re.IGNORECASE)
+
+
+def format_size(size):
+    units = ["B", "KB", "MB", "GB", "TB"]
+    value = float(size)
+    index = 0
+    while value >= 1024 and index < len(units) - 1:
+        value /= 1024
+        index += 1
+    return f"{value:.1f} {units[index]}"
+
+
+project_dir = os.getcwd()
+print(f"Project directory: {project_dir}", flush=True)
+print("Scanning Blender backup files...", flush=True)
+print("progress /***5*/", flush=True)
+
+matches = []
+
+for root, dirs, files in os.walk(project_dir):
+    dirs[:] = [name for name in dirs if name != '.pm_center']
+
+    for filename in files:
+        if not BACKUP_PATTERN.match(filename):
+            continue
+
+        path = os.path.join(root, filename)
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = 0
+        matches.append((path, size))
+
+if not matches:
+    print("No Blender backup files found.", flush=True)
+    print("progress /***100*/", flush=True)
+    sys.exit(0)
+
+matches.sort(key=lambda item: item[0].lower())
+total_size = sum(size for _, size in matches)
+
+print(f"Found {len(matches)} backup files.", flush=True)
+print(f"Total size: {format_size(total_size)} ({total_size} bytes)", flush=True)
+print("Backup file list:", flush=True)
+
+for index, (path, size) in enumerate(matches, 1):
+    print(f"  [{index}/{len(matches)}] {format_size(size)}  {path}", flush=True)
+
+print("progress /***50*/", flush=True)
+print("Deleting backup files...", flush=True)
+
+deleted = 0
+for index, (path, _) in enumerate(matches, 1):
+    try:
+        os.remove(path)
+        deleted += 1
+        print(f"Deleted: {path}", flush=True)
+    except OSError as exc:
+        print(f"Failed: {path} -> {exc}", flush=True)
+
+    progress = 50 + int(index / len(matches) * 50)
+    print(f"progress /***{progress}*/", flush=True)
+
+print(f"Cleanup finished. Deleted {deleted}/{len(matches)} files.", flush=True)
+sys.exit(0)
+"#;
+
+    let scan_project_files = r#"# -*- coding: utf-8 -*-
+# @name: 统计项目文件类型
+# @desc: 统计项目目录中的文件总数、大小和主要扩展名分布
+
+import os
+import sys
+from collections import Counter
+
+project_dir = os.getcwd()
+print(f"Project directory: {project_dir}", flush=True)
+print("progress /***5*/", flush=True)
+
+counter = Counter()
+total_files = 0
+total_size = 0
+
+for root, dirs, files in os.walk(project_dir):
+    dirs[:] = [name for name in dirs if name != '.pm_center']
+
+    for filename in files:
+        path = os.path.join(root, filename)
+        total_files += 1
+        counter[os.path.splitext(filename)[1].lower() or '(no ext)'] += 1
+        try:
+            total_size += os.path.getsize(path)
+        except OSError:
+            pass
+
+    if total_files and total_files % 100 == 0:
+        progress = min(85, 5 + total_files // 20)
+        print(f"progress /***{progress}*/", flush=True)
+
+print(f"Total files: {total_files}", flush=True)
+print(f"Total size: {total_size} bytes", flush=True)
+print("Top file types:", flush=True)
+for ext, count in counter.most_common(10):
+    print(f"  {ext}: {count}", flush=True)
+
+print("progress /***100*/", flush=True)
+print("Statistics completed.", flush=True)
+sys.exit(0)
+"#;
+
+    write_file_if_missing(
+        &scripts_dir.join("cleanup_blender_backups.py"),
+        cleanup_blender_backups,
+        "全局脚本",
+    )?;
+    write_file_if_missing(
+        &scripts_dir.join("scan_project_file_types.py"),
+        scan_project_files,
+        "全局脚本",
+    )?;
+
     Ok(())
+}
+
+fn write_file_if_missing(path: &std::path::Path, content: &str, label: &str) -> Result<(), String> {
+    use std::fs;
+
+    if path.exists() {
+        return Ok(());
+    }
+
+    fs::write(path, content).map_err(|e| format!("创建{}失败: {}", label, e))
+}
+
+fn get_global_task_scripts_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("获取应用数据目录失败: {}", e))?;
+
+    Ok(app_data_dir.join("task_scripts"))
+}
+
+#[tauri::command]
+async fn get_global_task_scripts_path(app_handle: tauri::AppHandle) -> Result<String, String> {
+    use std::fs;
+
+    let scripts_dir = get_global_task_scripts_dir(&app_handle)?;
+    fs::create_dir_all(&scripts_dir)
+        .map_err(|e| format!("创建全局脚本目录失败: {}", e))?;
+    ensure_global_task_scripts(&scripts_dir)?;
+
+    Ok(scripts_dir.to_string_lossy().to_string())
 }
 
 // 脚本信息
@@ -198,22 +287,32 @@ struct ScriptInfo {
     filename: String,
     path: String,
     script_type: String,
+    scope: String,
 }
 
 #[tauri::command]
-async fn get_project_scripts(project_path: String) -> Result<Vec<ScriptInfo>, String> {
+async fn get_project_scripts(app_handle: tauri::AppHandle, project_path: String) -> Result<Vec<ScriptInfo>, String> {
     use std::fs;
     use std::path::PathBuf;
     
-    let scripts_dir = PathBuf::from(&project_path).join(".pm_center").join("scripts");
-    
-    if !scripts_dir.exists() {
-        return Ok(vec![]);
-    }
-    
+    let project_scripts_dir = PathBuf::from(&project_path).join(".pm_center").join("scripts");
+    fs::create_dir_all(&project_scripts_dir)
+        .map_err(|e| format!("创建项目脚本目录失败: {}", e))?;
+    ensure_project_default_scripts(&project_scripts_dir)?;
+
+    let global_scripts_dir = get_global_task_scripts_dir(&app_handle)?;
+    fs::create_dir_all(&global_scripts_dir)
+        .map_err(|e| format!("创建全局脚本目录失败: {}", e))?;
+    ensure_global_task_scripts(&global_scripts_dir)?;
+
     let mut scripts = vec![];
     
-    fn scan_dir(dir: &std::path::Path, base_dir: &std::path::Path, scripts: &mut Vec<ScriptInfo>) -> Result<(), String> {
+    fn scan_dir(
+        dir: &std::path::Path,
+        base_dir: &std::path::Path,
+        scope: &str,
+        scripts: &mut Vec<ScriptInfo>,
+    ) -> Result<(), String> {
         let entries = fs::read_dir(dir)
             .map_err(|e| format!("读取目录失败: {}", e))?;
         
@@ -222,40 +321,32 @@ async fn get_project_scripts(project_path: String) -> Result<Vec<ScriptInfo>, St
             let path = entry.path();
             
             if path.is_dir() {
-                // 递归扫描子目录
-                scan_dir(&path, base_dir, scripts)?;
+                scan_dir(&path, base_dir, scope, scripts)?;
             } else {
                 let filename = path.file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("");
                 
-                // 只识别 Python 脚本
                 if !filename.ends_with(".py") {
                     continue;
                 }
-                let script_type = "python"; 
-                
-                // 跳过示例脚本（可选）
-                // if filename.starts_with("example_") {
-                //     continue;
-                // }
-                
-                // 读取文件内容解析元数据
+                let script_type = "python";
+
                 let content = fs::read_to_string(&path).unwrap_or_default();
                 let (name, description) = parse_script_metadata(&content, filename);
                 
-                // 计算相对路径作为 ID
                 let relative_path = path.strip_prefix(base_dir)
-                    .map(|p| p.to_string_lossy().to_string())
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
                     .unwrap_or_else(|_| filename.to_string());
                 
                 scripts.push(ScriptInfo {
-                    id: relative_path.clone(),
+                    id: format!("{}:{}", scope, relative_path),
                     name,
                     description,
                     filename: filename.to_string(),
                     path: path.to_string_lossy().to_string(),
                     script_type: script_type.to_string(),
+                    scope: scope.to_string(),
                 });
             }
         }
@@ -263,10 +354,15 @@ async fn get_project_scripts(project_path: String) -> Result<Vec<ScriptInfo>, St
         Ok(())
     }
     
-    scan_dir(&scripts_dir, &scripts_dir, &mut scripts)?;
-    
-    // 按名称排序
-    scripts.sort_by(|a, b| a.name.cmp(&b.name));
+    scan_dir(&project_scripts_dir, &project_scripts_dir, "project", &mut scripts)?;
+    scan_dir(&global_scripts_dir, &global_scripts_dir, "global", &mut scripts)?;
+
+    scripts.sort_by(|a, b| {
+        let scope_rank = |scope: &str| if scope == "project" { 0 } else { 1 };
+        scope_rank(&a.scope)
+            .cmp(&scope_rank(&b.scope))
+            .then(a.name.cmp(&b.name))
+    });
     
     Ok(scripts)
 }
@@ -748,6 +844,7 @@ pub fn run() {
             get_file_changes,
             get_change_stats,
             archive_old_changes,
+            get_global_task_scripts_path,
             get_project_scripts,
             scan_projects_root,
             create_project,

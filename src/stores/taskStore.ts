@@ -72,6 +72,10 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     const id = generateTaskId();
     const newTask: Task = {
       ...taskData,
+      script: {
+        ...taskData.script,
+        workingDir: taskData.script.workingDir ?? taskData.projectPath,
+      },
       id,
       status: 'pending',
       progress: 0,
