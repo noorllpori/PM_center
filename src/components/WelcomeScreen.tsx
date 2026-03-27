@@ -4,6 +4,7 @@ import { scanProjectsRoot, createProject, ScannedProject } from '../api/projects
 import { invoke } from '@tauri-apps/api/core';
 import { Dialog, ConfirmDialog, AlertDialog } from './Dialog';
 import { SettingsPanel } from './SettingsPanel';
+import pmcLogo from '../assets/pmc-logo.png';
 import { 
   Folder, FolderOpen, Plus, Clock, X, Trash2, Settings, 
   RefreshCw, FolderPlus, ChevronRight, EyeOff, Eye
@@ -211,10 +212,11 @@ export function WelcomeScreen({ onOpenProject }: WelcomeScreenProps) {
         <div className="mb-8">
           <div className="flex items-start justify-between gap-4">
             <div className="flex-1 text-center">
-              <div className="w-20 h-20 mx-auto mb-4 bg-gradient-to-br from-blue-500 to-purple-600 rounded-2xl 
-                              flex items-center justify-center shadow-lg">
-                <FolderOpen className="w-10 h-10 text-white" />
-              </div>
+              <img
+                src={pmcLogo}
+                alt="PM Center"
+                className="w-20 h-20 mx-auto mb-4 object-contain"
+              />
               <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-1">
                 PM Center
               </h1>
