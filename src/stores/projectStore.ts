@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { FileInfo, TreeNode, Tag, ColumnConfig, DisplayRule, ViewMode } from '../types';
+import { clearFileDetailsCache } from '../components/file-manager/useFileDetails';
 
 // 获取项目的排除规则
 function getExcludePatterns(projectPath: string): string[] {
@@ -132,6 +133,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   // 设置项目
   setProject: async (path: string) => {
     try {
+      clearFileDetailsCache();
       await invoke('init_project', { projectPath: path });
       const name = path.split(/[\\/]/).pop() || 'Project';
       
@@ -211,6 +213,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   // 关闭项目（返回项目列表）
   closeProject: () => {
+    clearFileDetailsCache();
     set({
       projectPath: null,
       projectName: null,

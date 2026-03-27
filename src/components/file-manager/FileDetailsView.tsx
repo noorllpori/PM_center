@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Box, ExternalLink, FileIcon, FileText, Film, FolderIcon, Hash, Image, Music4, Tag as TagIcon } from 'lucide-react';
+import { Box, ExternalLink, FileIcon, FileText, Film, FolderIcon, Hash, Image, Music4, RefreshCw, Tag as TagIcon } from 'lucide-react';
 import { Dialog } from '../Dialog';
 import { FileDetailsResponse, FileInfo, Tag } from '../../types';
-import { useSettingsStore } from '../../stores/settingsStore';
+import { useFileDetails } from './useFileDetails';
 
 interface FileDetailsContentProps {
   file: FileInfo | null;
@@ -77,57 +77,12 @@ function SectionBlock({ title, items }: { title: string; items: FileDetailsRespo
 }
 
 function FileDetailsContent({ file, fileTagList, view, selectedCount = 0 }: FileDetailsContentProps) {
-  const [details, setDetails] = useState<FileDetailsResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const toolPaths = useSettingsStore((state) => state.toolPaths);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const loadDetails = async () => {
-      if (!file) {
-        setDetails(null);
-        setErrorMessage(null);
-        setIsLoading(false);
-        return;
-      }
-
-      setIsLoading(true);
-      setErrorMessage(null);
-
-      try {
-        const result = await invoke<FileDetailsResponse>('get_file_details', {
-          path: file.path,
-          view,
-          toolPaths,
-        });
-
-        if (!cancelled) {
-          setDetails(result);
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setDetails(null);
-          setErrorMessage(String(error));
-        }
-      } finally {
-        if (!cancelled) {
-          setIsLoading(false);
-        }
-      }
-    };
-
-    loadDetails();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [file, toolPaths, view]);
+  const { details, isLoading, isRefreshing, errorMessage, refresh } = useFileDetails(file, view);
 
   const displayPath = details?.basic.path || file?.path || '';
   const displayName = details?.basic.name || file?.name || '';
   const sections = details?.sections || [];
+  const hasDetails = details !== null;
 
   const actionButton = useMemo(() => {
     if (!file) {
@@ -183,9 +138,21 @@ function FileDetailsContent({ file, fileTagList, view, selectedCount = 0 }: File
           </div>
         )}
 
+        {isRefreshing && hasDetails && (
+          <div className="rounded-lg border border-blue-200 bg-blue-50/80 px-3 py-2 text-sm text-blue-700">
+            正在刷新文件信息...
+          </div>
+        )}
+
         {errorMessage && (
-          <div className="rounded-lg border border-red-200 bg-red-50/80 px-3 py-2 text-sm text-red-700 break-all">
-            无法读取详细信息：{errorMessage}
+          <div
+            className={`rounded-lg px-3 py-2 text-sm break-all ${
+              hasDetails
+                ? 'border border-yellow-200 bg-yellow-50/80 text-yellow-800'
+                : 'border border-red-200 bg-red-50/80 text-red-700'
+            }`}
+          >
+            {hasDetails ? errorMessage : `无法读取详细信息：${errorMessage}`}
           </div>
         )}
 
@@ -221,6 +188,18 @@ function FileDetailsContent({ file, fileTagList, view, selectedCount = 0 }: File
         </div>
 
         <div className="pt-4 border-t border-gray-200 dark:border-gray-700 space-y-2">
+          <button
+            className="w-full px-3 py-2 text-sm text-gray-700 bg-gray-100 hover:bg-gray-200
+                       dark:text-gray-300 dark:bg-gray-800 dark:hover:bg-gray-700
+                       rounded transition-colors flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
+            onClick={() => {
+              void refresh();
+            }}
+            disabled={isLoading || isRefreshing}
+          >
+            <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+            {isRefreshing ? '刷新中...' : '刷新'}
+          </button>
           {actionButton}
         </div>
       </div>

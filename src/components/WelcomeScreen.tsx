@@ -193,7 +193,7 @@ export function WelcomeScreen({ onOpenProject }: WelcomeScreenProps) {
       const selected = await open({
         directory: true,
         multiple: false,
-        title: '选择项目目录',
+        title: '手动导入单个项目',
       });
       
       if (selected && typeof selected === 'string') {
@@ -288,12 +288,17 @@ export function WelcomeScreen({ onOpenProject }: WelcomeScreenProps) {
             </div>
 
             {/* 快速操作 */}
-            {projectsRootDir && (
-              <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4">
-                <h3 className="font-medium text-gray-900 dark:text-gray-100 mb-3">
-                  快速操作
-                </h3>
-                <div className="space-y-2">
+            <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4">
+              <h3 className="font-medium text-gray-900 dark:text-gray-100 mb-3">
+                快速操作
+              </h3>
+              {!projectsRootDir && (
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-3 leading-5">
+                  不设置项目根目录时，也可以直接手动导入并打开单个项目。
+                </p>
+              )}
+              <div className="space-y-2">
+                {projectsRootDir && (
                   <button
                     onClick={() => setShowCreateDialog(true)}
                     className="w-full flex items-center gap-2 px-3 py-2 
@@ -303,30 +308,30 @@ export function WelcomeScreen({ onOpenProject }: WelcomeScreenProps) {
                     <FolderPlus className="w-4 h-4" />
                     创建新项目
                   </button>
+                )}
+                <button
+                  onClick={handleOpenOtherProject}
+                  className="w-full flex items-center gap-2 px-3 py-2 
+                             bg-gray-50 dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-700
+                             text-gray-700 dark:text-gray-300 rounded-lg text-sm transition-colors"
+                >
+                  <FolderOpen className="w-4 h-4" />
+                  手动导入单个项目
+                </button>
+                {/* 已忽略项目按钮（仅在有被忽略项目时显示） */}
+                {ignoredProjects.length > 0 && (
                   <button
-                    onClick={handleOpenOtherProject}
+                    onClick={() => setShowIgnoredList(true)}
                     className="w-full flex items-center gap-2 px-3 py-2 
-                               bg-gray-50 dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-700
-                               text-gray-700 dark:text-gray-300 rounded-lg text-sm transition-colors"
+                               bg-orange-50 dark:bg-orange-900/10 hover:bg-orange-100 dark:hover:bg-orange-900/20
+                               text-orange-600 dark:text-orange-400 rounded-lg text-sm transition-colors"
                   >
-                    <FolderOpen className="w-4 h-4" />
-                    打开其他项目
+                    <EyeOff className="w-4 h-4" />
+                    已忽略项目 ({ignoredProjects.length})
                   </button>
-                  {/* 已忽略项目按钮（仅在有被忽略项目时显示） */}
-                  {ignoredProjects.length > 0 && (
-                    <button
-                      onClick={() => setShowIgnoredList(true)}
-                      className="w-full flex items-center gap-2 px-3 py-2 
-                                 bg-orange-50 dark:bg-orange-900/10 hover:bg-orange-100 dark:hover:bg-orange-900/20
-                                 text-orange-600 dark:text-orange-400 rounded-lg text-sm transition-colors"
-                    >
-                      <EyeOff className="w-4 h-4" />
-                      已忽略项目 ({ignoredProjects.length})
-                    </button>
-                  )}
-                </div>
+                )}
               </div>
-            )}
+            </div>
           </div>
 
           {/* 右侧：项目列表 */}
@@ -373,7 +378,7 @@ export function WelcomeScreen({ onOpenProject }: WelcomeScreenProps) {
                         <Folder className="w-12 h-12 mx-auto mb-3 opacity-50" />
                         <p className="text-sm">该目录下暂无项目</p>
                         <p className="text-xs mt-1 opacity-70">
-                          点击"创建新项目"或"打开其他项目"
+                          点击"创建新项目"或"手动导入单个项目"
                         </p>
                       </div>
                     ) : (

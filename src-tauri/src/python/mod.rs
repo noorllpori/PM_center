@@ -152,7 +152,7 @@ pub async fn run_python_script(
     let mut cmd = match env_type {
         EnvType::Blender => {
             let mut c = Command::new(&python_path);
-            c.args(&["--background", "--python", "-c", &script]);
+            c.args(&["--background", "--python-exit-code", "1", "--python-expr", &script]);
             c
         }
         _ => {
@@ -200,8 +200,11 @@ pub async fn run_python_file(
     let mut cmd = match env_type {
         EnvType::Blender => {
             let mut c = Command::new(&python_path);
-            c.args(&["--background", "--python", &script_path]);
-            c.args(&args);
+            c.args(&["--background", "--python-exit-code", "1", "--python", &script_path]);
+            if !args.is_empty() {
+                c.arg("--");
+                c.args(&args);
+            }
             c
         }
         _ => {

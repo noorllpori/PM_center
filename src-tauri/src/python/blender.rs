@@ -1,5 +1,11 @@
 use serde_json;
-use super::{run_python_script, EnvType};
+use tokio::fs;
+use uuid::Uuid;
+
+use super::{run_python_file, EnvType};
+
+const JSON_START_MARKER: &str = "__PM_CENTER_BLEND_INFO_START__";
+const JSON_END_MARKER: &str = "__PM_CENTER_BLEND_INFO_END__";
 
 // 获取 Blender 文件信息（专用命令）
 #[tauri::command]
@@ -7,6 +13,8 @@ pub async fn get_blender_file_info(
     blender_path: String,
     blend_file: String,
 ) -> Result<serde_json::Value, String> {
+    let temp_script_path = std::env::temp_dir()
+        .join(format!("pm_center_blender_info_{}.py", Uuid::new_v4()));
     let script = format!(
         r#"import bpy
 import json
@@ -49,23 +57,41 @@ for cam in bpy.data.cameras:
 info["objects"].append({{"count": len(bpy.data.objects)}})
 info["materials"].append({{"count": len(bpy.data.materials)}})
 
+print("{start}")
 print(json.dumps(info, ensure_ascii=False))
+print("{end}")
 "#,
-        blend_file.replace("\\", "\\\\").replace("\"", "\\\"")
+        blend_file.replace("\\", "\\\\").replace("\"", "\\\""),
+        start = JSON_START_MARKER,
+        end = JSON_END_MARKER,
     );
 
-    let result = run_python_script(
+    fs::write(&temp_script_path, script)
+        .await
+        .map_err(|e| format!("Failed to write temporary Blender script: {}", e))?;
+
+    let result = run_python_file(
         EnvType::Blender,
         blender_path,
-        script,
+        temp_script_path.to_string_lossy().to_string(),
+        vec![],
         None,
-        None,
-    ).await?;
+    ).await;
+
+    let _ = fs::remove_file(&temp_script_path).await;
+    let result = result?;
 
     if result.success {
-        let json_start = result.stdout.find('{')
-            .ok_or("No JSON output")?;
-        let json_str = result.stdout[json_start..].trim();
+        let start = result.stdout.find(JSON_START_MARKER)
+            .ok_or("No JSON start marker")?;
+        let end = result.stdout.find(JSON_END_MARKER)
+            .ok_or("No JSON end marker")?;
+
+        if end <= start {
+            return Err("Invalid JSON marker order".to_string());
+        }
+
+        let json_str = result.stdout[start + JSON_START_MARKER.len()..end].trim();
         
         serde_json::from_str(json_str)
             .map_err(|e| format!("JSON parse error: {}", e))
