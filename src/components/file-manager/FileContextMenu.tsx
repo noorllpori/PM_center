@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { FileInfo } from '../../types';
 import { FolderOpen, Trash2, Copy, FileEdit, Scissors, ClipboardCopy, ExternalLink, Info, FileInput } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
@@ -11,13 +11,12 @@ interface ContextMenuProps {
   currentPath: string;
   onClose: () => void;
   onRefresh?: () => void;
+  onShowDetails?: (file: FileInfo) => void;
 }
 
-export function FileContextMenu({ file, x, y, currentPath, onClose, onRefresh }: ContextMenuProps) {
+export function FileContextMenu({ file, x, y, currentPath, onClose, onRefresh, onShowDetails }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const { item: clipboardItem, cut, copy, paste, hasItem } = useClipboardStore();
-  const [showPropertyModal, setShowPropertyModal] = useState(false);
-  const [fileProperty, setFileProperty] = useState<FileProperty | null>(null);
 
   // 点击外部关闭菜单
   useEffect(() => {
@@ -146,15 +145,9 @@ export function FileContextMenu({ file, x, y, currentPath, onClose, onRefresh }:
     onClose();
   };
 
-  // 查看属性
-  const handleProperty = async () => {
-    try {
-      const property: FileProperty = await invoke('get_file_property', { path: file.path });
-      setFileProperty(property);
-      setShowPropertyModal(true);
-    } catch (error) {
-      console.error('Failed to get property:', error);
-    }
+  // 查看详细信息
+  const handleShowDetails = () => {
+    onShowDetails?.(file);
     onClose();
   };
 
@@ -241,19 +234,11 @@ export function FileContextMenu({ file, x, y, currentPath, onClose, onRefresh }:
 
         <MenuDivider />
 
-        {/* 属性 */}
-        <MenuItem onClick={handleProperty} icon={<Info className="w-4 h-4" />}>
-          属性
+        {/* 详细信息 */}
+        <MenuItem onClick={handleShowDetails} icon={<Info className="w-4 h-4" />}>
+          详细信息
         </MenuItem>
       </div>
-
-      {/* 属性对话框 */}
-      {showPropertyModal && fileProperty && (
-        <PropertyModal 
-          property={fileProperty} 
-          onClose={() => setShowPropertyModal(false)} 
-        />
-      )}
     </>
   );
 }
@@ -303,89 +288,5 @@ function MenuItem({
 function MenuDivider() {
   return (
     <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
-  );
-}
-
-// 文件属性类型
-interface FileProperty {
-  name: string;
-  path: string;
-  size: number;
-  size_formatted: string;
-  is_dir: boolean;
-  created: string;
-  modified: string;
-  accessed: string;
-  readonly: boolean;
-  hidden: boolean;
-  extension?: string;
-}
-
-// 属性对话框
-function PropertyModal({ property, onClose }: { property: FileProperty; onClose: () => void }) {
-  useEffect(() => {
-    const handleEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleEsc);
-    return () => window.removeEventListener('keydown', handleEsc);
-  }, [onClose]);
-
-  return (
-    <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50">
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-[400px] max-w-[90vw]">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
-          <h3 className="font-medium text-gray-900 dark:text-gray-100">属性</h3>
-          <button 
-            onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
-          >
-            ✕
-          </button>
-        </div>
-        
-        <div className="p-4 space-y-3">
-          <PropertyRow label="名称" value={property.name} />
-          <PropertyRow label="类型" value={property.is_dir ? '文件夹' : (property.extension?.toUpperCase() || '文件') + ' 文件'} />
-          <PropertyRow label="位置" value={property.path.replace(/\\[^\\]+$/, '')} truncate />
-          <PropertyRow label="大小" value={property.size_formatted} />
-          <div className="border-t border-gray-200 dark:border-gray-700 my-2" />
-          <PropertyRow label="创建时间" value={property.created} />
-          <PropertyRow label="修改时间" value={property.modified} />
-          <PropertyRow label="访问时间" value={property.accessed} />
-          <div className="border-t border-gray-200 dark:border-gray-700 my-2" />
-          <div className="flex gap-4">
-            <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-              <input type="checkbox" checked={property.readonly} disabled className="rounded" />
-              只读
-            </label>
-            <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-              <input type="checkbox" checked={property.hidden} disabled className="rounded" />
-              隐藏
-            </label>
-          </div>
-        </div>
-
-        <div className="flex justify-end px-4 py-3 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 rounded-b-lg">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm"
-          >
-            确定
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function PropertyRow({ label, value, truncate = false }: { label: string; value: string; truncate?: boolean }) {
-  return (
-    <div className="flex">
-      <span className="w-20 text-sm text-gray-500 dark:text-gray-400 flex-shrink-0">{label}</span>
-      <span className={`text-sm text-gray-900 dark:text-gray-100 ${truncate ? 'truncate' : ''}`} title={value}>
-        {value}
-      </span>
-    </div>
   );
 }

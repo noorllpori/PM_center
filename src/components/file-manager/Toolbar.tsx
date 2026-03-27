@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useProjectStore } from '../../stores/projectStore';
-import { ProjectSettings } from './ProjectSettings';
+import { SettingsPanel } from '../SettingsPanel';
 import {
   ArrowLeft,
   RefreshCw,
@@ -171,10 +171,11 @@ export function Toolbar() {
         {/* 快捷启动器和任务按钮将由 FileManager 添加 */}
       </div>
 
-      {/* 项目设置面板 */}
-      <ProjectSettings
+      {/* 统一设置面板 */}
+      <SettingsPanel
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
+        defaultScope="project"
       />
     </div>
   );

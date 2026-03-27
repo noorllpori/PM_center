@@ -15,12 +15,16 @@ mod icon_extractor;
 mod task;
 mod p2p;
 mod python_env;
+mod file_details;
+mod tools;
 
 use db::{Database, Tag, FileMetadata};
+use file_details::get_file_details;
 use python::{detect_python_envs, run_python_script, run_python_file, pip_install, get_blender_file_info};
 use db::FileChange;
 use p2p::{init_p2p, update_p2p_user, start_p2p_discovery, stop_p2p_discovery, send_p2p_message};
 use python_env::{detect_system_python, scan_app_venvs, create_venv, delete_venv, pip_install_package, pip_uninstall_package, pip_list_packages};
+use tools::inspect_tool_paths;
 
 // 全局状态
 type DbState = Arc<Mutex<Option<Database>>>;
@@ -719,6 +723,8 @@ pub fn run() {
             fs::path_exists,
             fs::get_file_property,
             fs::read_file,
+            get_file_details,
+            inspect_tool_paths,
             move_project_entry,
             rename_project_entry,
             task::run_task,

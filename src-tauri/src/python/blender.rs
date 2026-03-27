@@ -49,7 +49,7 @@ for cam in bpy.data.cameras:
 info["objects"].append({{"count": len(bpy.data.objects)}})
 info["materials"].append({{"count": len(bpy.data.materials)}})
 
-print(json.dumps(info, indent=2))
+print(json.dumps(info, ensure_ascii=False))
 "#,
         blend_file.replace("\\", "\\\\").replace("\"", "\\\"")
     );
@@ -63,9 +63,9 @@ print(json.dumps(info, indent=2))
     ).await?;
 
     if result.success {
-        let json_str = result.stdout.lines()
-            .find(|line| line.trim().starts_with('{'))
+        let json_start = result.stdout.find('{')
             .ok_or("No JSON output")?;
+        let json_str = result.stdout[json_start..].trim();
         
         serde_json::from_str(json_str)
             .map_err(|e| format!("JSON parse error: {}", e))

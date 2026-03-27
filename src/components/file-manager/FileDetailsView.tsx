@@ -1,0 +1,265 @@
+import { useEffect, useMemo, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { Box, ExternalLink, FileIcon, FileText, Film, FolderIcon, Hash, Image, Music4, Tag as TagIcon } from 'lucide-react';
+import { Dialog } from '../Dialog';
+import { FileDetailsResponse, FileInfo, Tag } from '../../types';
+import { useSettingsStore } from '../../stores/settingsStore';
+
+interface FileDetailsContentProps {
+  file: FileInfo | null;
+  fileTagList: Tag[];
+  view: 'panel' | 'dialog';
+  selectedCount?: number;
+}
+
+interface FileDetailsDialogProps {
+  file: FileInfo | null;
+  fileTagList: Tag[];
+  isOpen: boolean;
+  onClose: () => void;
+}
+
+function getFileIcon(file: FileInfo | null) {
+  if (!file) {
+    return <FileIcon className="w-16 h-16 text-gray-400" />;
+  }
+
+  if (file.is_dir) {
+    return <FolderIcon className="w-16 h-16 text-yellow-500" />;
+  }
+
+  const ext = file.extension?.toLowerCase();
+
+  if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'exr', 'hdr', 'tif', 'tiff'].includes(ext || '')) {
+    return <Image className="w-16 h-16 text-purple-500" />;
+  }
+
+  if (['mp3', 'flac', 'wav', 'ogg', 'opus', 'm4a', 'aac'].includes(ext || '')) {
+    return <Music4 className="w-16 h-16 text-emerald-500" />;
+  }
+
+  if (['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v'].includes(ext || '')) {
+    return <Film className="w-16 h-16 text-red-500" />;
+  }
+
+  if (ext === 'blend') {
+    return <Box className="w-16 h-16 text-orange-500" />;
+  }
+
+  if (['txt', 'md', 'json', 'xml', 'py', 'js', 'ts', 'tsx', 'jsx', 'html', 'css'].includes(ext || '')) {
+    return <FileText className="w-16 h-16 text-blue-500" />;
+  }
+
+  return <FileIcon className="w-16 h-16 text-gray-400" />;
+}
+
+function SectionBlock({ title, items }: { title: string; items: FileDetailsResponse['sections'][number]['items'] }) {
+  if (items.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="pt-4 border-t border-gray-200 dark:border-gray-700 first:pt-0 first:border-t-0">
+      <div className="flex items-center gap-2 mb-3">
+        <Hash className="w-4 h-4 text-gray-400" />
+        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{title}</span>
+      </div>
+      <div className="space-y-3">
+        {items.map((entry, index) => (
+          <div key={`${entry.label}-${index}`} className="flex items-start gap-3 text-sm">
+            <span className="min-w-[72px] text-gray-500">{entry.label}</span>
+            <span className="flex-1 text-right text-gray-900 dark:text-gray-100 break-all">{entry.value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FileDetailsContent({ file, fileTagList, view, selectedCount = 0 }: FileDetailsContentProps) {
+  const [details, setDetails] = useState<FileDetailsResponse | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const toolPaths = useSettingsStore((state) => state.toolPaths);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadDetails = async () => {
+      if (!file) {
+        setDetails(null);
+        setErrorMessage(null);
+        setIsLoading(false);
+        return;
+      }
+
+      setIsLoading(true);
+      setErrorMessage(null);
+
+      try {
+        const result = await invoke<FileDetailsResponse>('get_file_details', {
+          path: file.path,
+          view,
+          toolPaths,
+        });
+
+        if (!cancelled) {
+          setDetails(result);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setDetails(null);
+          setErrorMessage(String(error));
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoading(false);
+        }
+      }
+    };
+
+    loadDetails();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [file, toolPaths, view]);
+
+  const displayPath = details?.basic.path || file?.path || '';
+  const displayName = details?.basic.name || file?.name || '';
+  const sections = details?.sections || [];
+
+  const actionButton = useMemo(() => {
+    if (!file) {
+      return null;
+    }
+
+    return (
+      <button
+        className="w-full px-3 py-2 text-sm text-gray-700 bg-gray-100 hover:bg-gray-200
+                   dark:text-gray-300 dark:bg-gray-800 dark:hover:bg-gray-700
+                   rounded transition-colors flex items-center justify-center gap-2"
+        onClick={() => {
+          invoke('show_in_folder', { path: file.path }).catch(() => {});
+        }}
+      >
+        <ExternalLink className="w-4 h-4" />
+        在文件夹中显示
+      </button>
+    );
+  }, [file]);
+
+  if (!file) {
+    return (
+      <div className="h-full flex flex-col bg-white dark:bg-gray-900">
+        <div className="flex-1 flex items-center justify-center text-gray-400 text-sm p-4 text-center">
+          <div>
+            <FileIcon className="w-12 h-12 mx-auto mb-3 opacity-50" />
+            <p>选择一个文件查看详情</p>
+            <p className="text-xs mt-1 text-gray-300">
+              {selectedCount > 1 ? `已选择 ${selectedCount} 个文件` : '没有选择文件'}
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`h-full flex flex-col bg-white dark:bg-gray-900 ${view === 'panel' ? 'overflow-auto' : ''}`}>
+      <div className="flex justify-center py-8 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+        {getFileIcon(file)}
+      </div>
+
+      <div className="p-4 space-y-4">
+        <div>
+          <h3 className="font-medium text-sm text-gray-900 dark:text-gray-100 break-all">{displayName}</h3>
+          <p className="text-xs text-gray-500 mt-1 break-all">{displayPath}</p>
+        </div>
+
+        {isLoading && (
+          <div className="rounded-lg border border-blue-200 bg-blue-50/80 px-3 py-2 text-sm text-blue-700">
+            正在分析文件信息...
+          </div>
+        )}
+
+        {errorMessage && (
+          <div className="rounded-lg border border-red-200 bg-red-50/80 px-3 py-2 text-sm text-red-700 break-all">
+            无法读取详细信息：{errorMessage}
+          </div>
+        )}
+
+        {!isLoading && sections.map((section) => (
+          <SectionBlock key={section.id} title={section.title} items={section.items} />
+        ))}
+
+        <div className="pt-4 border-t border-gray-200 dark:border-gray-700">
+          <div className="flex items-center gap-2 mb-3">
+            <TagIcon className="w-4 h-4 text-gray-400" />
+            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">标签</span>
+          </div>
+
+          {fileTagList.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {fileTagList.map((tag) => (
+                <span
+                  key={tag.id}
+                  className="px-2 py-1 text-xs rounded"
+                  style={{
+                    backgroundColor: `${tag.color}20`,
+                    color: tag.color,
+                    border: `1px solid ${tag.color}40`,
+                  }}
+                >
+                  {tag.name}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-gray-400">暂无标签</p>
+          )}
+        </div>
+
+        <div className="pt-4 border-t border-gray-200 dark:border-gray-700 space-y-2">
+          {actionButton}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function FileDetailsPanel({
+  file,
+  fileTagList,
+  selectedCount = 0,
+}: {
+  file: FileInfo | null;
+  fileTagList: Tag[];
+  selectedCount?: number;
+}) {
+  return (
+    <FileDetailsContent
+      file={file}
+      fileTagList={fileTagList}
+      view="panel"
+      selectedCount={selectedCount}
+    />
+  );
+}
+
+export function FileDetailsDialog({ file, fileTagList, isOpen, onClose }: FileDetailsDialogProps) {
+  return (
+    <Dialog
+      isOpen={isOpen && !!file}
+      onClose={onClose}
+      title="详细信息"
+      size="lg"
+    >
+      <FileDetailsContent
+        file={file}
+        fileTagList={fileTagList}
+        view="dialog"
+      />
+    </Dialog>
+  );
+}

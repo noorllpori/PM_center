@@ -10,6 +10,47 @@ export interface FileInfo {
   thumbnail: string | null;
 }
 
+export interface FileDetailsItem {
+  label: string;
+  value: string;
+}
+
+export interface FileDetailsSection {
+  id: string;
+  title: string;
+  items: FileDetailsItem[];
+}
+
+export interface FileDetailsBasic {
+  name: string;
+  path: string;
+  size: number;
+  size_formatted: string;
+  is_dir: boolean;
+  created: string | null;
+  modified: string | null;
+  accessed: string | null;
+  readonly: boolean;
+  hidden: boolean;
+  extension: string | null;
+  mime: string | null;
+  detected_kind: string;
+  display_type: string;
+}
+
+export interface FileDetailsParser {
+  id: string;
+  source: string;
+  status: string;
+  warning: string | null;
+}
+
+export interface FileDetailsResponse {
+  basic: FileDetailsBasic;
+  parser: FileDetailsParser;
+  sections: FileDetailsSection[];
+}
+
 // 树节点
 export interface TreeNode {
   name: string;

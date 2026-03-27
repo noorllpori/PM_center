@@ -7,11 +7,17 @@ export interface RecentProject {
   openedAt: number; // 时间戳
 }
 
+export interface ToolPaths {
+  ffprobe: string | null;
+  blender: string | null;
+}
+
 interface SettingsState {
   recentProjects: RecentProject[];
   autoOpenLastProject: boolean;
   projectsRootDir: string | null; // 项目根目录（扫描用）
   ignoredProjects: string[]; // 被忽略的项目路径列表
+  toolPaths: ToolPaths;
   
   // 加载设置
   loadSettings: () => Promise<void>;
@@ -31,6 +37,8 @@ interface SettingsState {
   unignoreProject: (path: string) => Promise<void>;
   // 清除所有忽略
   clearIgnoredProjects: () => Promise<void>;
+  // 设置工具路径
+  setToolPath: (tool: keyof ToolPaths, path: string | null) => Promise<void>;
 }
 
 // Store 文件名
@@ -42,6 +50,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   autoOpenLastProject: true,
   projectsRootDir: null,
   ignoredProjects: [],
+  toolPaths: {
+    ffprobe: null,
+    blender: null,
+  },
 
   loadSettings: async () => {
     try {
@@ -50,6 +62,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       const autoOpen = await store.get<boolean>('autoOpenLastProject');
       const rootDir = await store.get<string | null>('projectsRootDir');
       const ignored = await store.get<string[]>('ignoredProjects');
+      const toolPaths = await store.get<ToolPaths>('toolPaths');
       
       if (recent) {
         // 过滤掉不存在的路径（可选，这里先保留）
@@ -66,6 +79,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       
       if (ignored) {
         set({ ignoredProjects: ignored });
+      }
+
+      if (toolPaths) {
+        set({
+          toolPaths: {
+            ffprobe: toolPaths.ffprobe ?? null,
+            blender: toolPaths.blender ?? null,
+          },
+        });
       }
     } catch (error) {
       console.error('Failed to load settings:', error);
@@ -203,6 +225,23 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       set({ ignoredProjects: [] });
     } catch (error) {
       console.error('Failed to clear ignored projects:', error);
+    }
+  },
+
+  setToolPath: async (tool, path) => {
+    try {
+      const nextToolPaths = {
+        ...get().toolPaths,
+        [tool]: path,
+      };
+
+      const store = await load(STORE_FILE);
+      await store.set('toolPaths', nextToolPaths);
+      await store.save();
+
+      set({ toolPaths: nextToolPaths });
+    } catch (error) {
+      console.error(`Failed to set tool path for ${tool}:`, error);
     }
   },
 }));

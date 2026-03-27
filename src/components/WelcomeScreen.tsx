@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react';
 import { useSettingsStore } from '../stores/settingsStore';
-import { useProjectStore } from '../stores/projectStore';
 import { scanProjectsRoot, createProject, ScannedProject } from '../api/projects';
 import { invoke } from '@tauri-apps/api/core';
 import { Dialog, ConfirmDialog, AlertDialog } from './Dialog';
+import { SettingsPanel } from './SettingsPanel';
 import { 
   Folder, FolderOpen, Plus, Clock, X, Trash2, Settings, 
-  RefreshCw, FolderPlus, Search, ChevronRight, EyeOff, Eye
+  RefreshCw, FolderPlus, ChevronRight, EyeOff, Eye
 } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
 
@@ -173,8 +173,8 @@ export function WelcomeScreen({ onOpenProject }: WelcomeScreenProps) {
     setIsCreating(true);
     try {
       const projectPath = await createProject(projectsRootDir, newProjectName.trim());
-      setShowCreateDialog(false);
-      setNewProjectName('');
+    setShowCreateDialog(false);
+    setNewProjectName('');
       onOpenProject(projectPath);
     } catch (err) {
       setAlertDialog({
@@ -208,17 +208,29 @@ export function WelcomeScreen({ onOpenProject }: WelcomeScreenProps) {
     <div className="flex-1 flex items-center justify-center p-8 overflow-auto">
       <div className="w-full max-w-4xl">
         {/* Logo 和标题 */}
-        <div className="text-center mb-8">
-          <div className="w-20 h-20 mx-auto mb-4 bg-gradient-to-br from-blue-500 to-purple-600 rounded-2xl 
-                          flex items-center justify-center shadow-lg">
-            <FolderOpen className="w-10 h-10 text-white" />
+        <div className="mb-8">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex-1 text-center">
+              <div className="w-20 h-20 mx-auto mb-4 bg-gradient-to-br from-blue-500 to-purple-600 rounded-2xl 
+                              flex items-center justify-center shadow-lg">
+                <FolderOpen className="w-10 h-10 text-white" />
+              </div>
+              <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-1">
+                PM Center
+              </h1>
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                项目管理与渲染工作流工具
+              </p>
+            </div>
+            <button
+              onClick={() => setShowSettings(true)}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+              title="全局设置"
+            >
+              <Settings className="w-4 h-4" />
+              <span className="text-sm">全局设置</span>
+            </button>
           </div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-1">
-            PM Center
-          </h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400">
-            项目管理与渲染工作流工具
-          </p>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -495,6 +507,12 @@ export function WelcomeScreen({ onOpenProject }: WelcomeScreenProps) {
         onClose={() => setAlertDialog({ ...alertDialog, isOpen: false })}
         title={alertDialog.title}
         message={alertDialog.message}
+      />
+
+      <SettingsPanel
+        isOpen={showSettings}
+        onClose={() => setShowSettings(false)}
+        defaultScope="global"
       />
 
       {/* 已忽略项目列表对话框 */}

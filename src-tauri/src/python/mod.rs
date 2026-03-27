@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::path::Path;
 use std::process::Stdio;
 use tokio::process::Command;
 
@@ -54,36 +55,12 @@ pub async fn detect_python_envs() -> Vec<PythonEnv> {
         }
     }
 
-    #[cfg(target_os = "windows")]
-    let blender_paths = vec![
-        "C:\\Program Files\\Blender Foundation\\Blender 4.5\\blender.exe",
-        "C:\\Program Files\\Blender Foundation\\Blender 4.4\\blender.exe",
-        "C:\\Program Files\\Blender Foundation\\Blender 4.3\\blender.exe",
-        "C:\\Program Files\\Blender Foundation\\Blender 4.2\\blender.exe",
-        "C:\\Program Files\\Blender Foundation\\Blender 4.1\\blender.exe",
-        "C:\\Program Files\\Blender Foundation\\Blender 4.0\\blender.exe",
-    ];
-
-    #[cfg(target_os = "macos")]
-    let blender_paths: Vec<&str> = vec![
-        "/Applications/Blender.app/Contents/MacOS/Blender",
-    ];
-
-    #[cfg(target_os = "linux")]
-    let blender_paths: Vec<&str> = vec![
-        "/usr/bin/blender",
-        "/usr/local/bin/blender",
-    ];
-
-    for blender_path in blender_paths {
-        if std::path::Path::new(blender_path).exists() {
-            envs.push(PythonEnv {
-                python_path: blender_path.to_string(),
-                env_type: EnvType::Blender,
-                version: "Blender".to_string(),
-            });
-            break;
-        }
+    if let Some(blender_path) = find_blender_path() {
+        envs.push(PythonEnv {
+            python_path: blender_path,
+            env_type: EnvType::Blender,
+            version: "Blender".to_string(),
+        });
     }
 
     let embedded_path = get_embedded_python_path();
@@ -106,6 +83,48 @@ pub async fn detect_python_envs() -> Vec<PythonEnv> {
     }
 
     envs
+}
+
+pub fn find_blender_path() -> Option<String> {
+    resolve_blender_path(None)
+}
+
+pub fn resolve_blender_path(configured_path: Option<&str>) -> Option<String> {
+    if let Some(path) = configured_path {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() && Path::new(trimmed).exists() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    known_blender_paths()
+        .into_iter()
+        .find(|path| Path::new(path).exists())
+        .map(str::to_string)
+}
+
+fn known_blender_paths() -> Vec<&'static str> {
+    #[cfg(target_os = "windows")]
+    {
+        vec![
+            "C:\\Program Files\\Blender Foundation\\Blender 4.5\\blender.exe",
+            "C:\\Program Files\\Blender Foundation\\Blender 4.4\\blender.exe",
+            "C:\\Program Files\\Blender Foundation\\Blender 4.3\\blender.exe",
+            "C:\\Program Files\\Blender Foundation\\Blender 4.2\\blender.exe",
+            "C:\\Program Files\\Blender Foundation\\Blender 4.1\\blender.exe",
+            "C:\\Program Files\\Blender Foundation\\Blender 4.0\\blender.exe",
+        ]
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        vec!["/Applications/Blender.app/Contents/MacOS/Blender"]
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        vec!["/usr/bin/blender", "/usr/local/bin/blender"]
+    }
 }
 
 fn get_embedded_python_path() -> PathBuf {

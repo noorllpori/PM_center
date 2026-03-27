@@ -5,6 +5,7 @@ import { useProjectStore } from '../../stores/projectStore';
 import { useUiStore } from '../../stores/uiStore';
 import { FileIcon, FolderIcon, Image, Film, FileText, Box } from 'lucide-react';
 import { FileContextMenu } from './FileContextMenu';
+import { FileDetailsDialog } from './FileDetailsView';
 import { canMovePathsToDirectory, getPathLabel } from './dragDrop';
 import { useFileDropMove } from './useFileDropMove';
 import { useInternalFileDrag } from './useInternalFileDrag';
@@ -404,8 +405,13 @@ export function FileList() {
     x: number;
     y: number;
   } | null>(null);
+  const [detailsDialogFile, setDetailsDialogFile] = useState<FileInfo | null>(null);
 
   const displayFiles = searchQuery ? searchResults : files;
+  const detailsDialogTagIds = detailsDialogFile ? (fileTags.get(detailsDialogFile.path) || []) : [];
+  const detailsDialogTagList = detailsDialogFile
+    ? tags.filter((tag) => detailsDialogTagIds.includes(tag.id))
+    : [];
 
   const handleDoubleClick = useCallback(async (file: FileInfo) => {
     if (file.is_dir) {
@@ -432,6 +438,14 @@ export function FileList() {
   const handleCloseContextMenu = () => {
     setContextMenu(null);
   };
+
+  const handleShowDetails = useCallback((file: FileInfo) => {
+    setDetailsDialogFile(file);
+  }, []);
+
+  const handleCloseDetailsDialog = useCallback(() => {
+    setDetailsDialogFile(null);
+  }, []);
 
   const handleRefresh = () => {
     refresh();
@@ -535,8 +549,16 @@ export function FileList() {
           currentPath={currentPath || ''}
           onClose={handleCloseContextMenu}
           onRefresh={handleRefresh}
+          onShowDetails={handleShowDetails}
         />
       )}
+
+      <FileDetailsDialog
+        file={detailsDialogFile}
+        fileTagList={detailsDialogTagList}
+        isOpen={!!detailsDialogFile}
+        onClose={handleCloseDetailsDialog}
+      />
 
       {conflictDialog}
     </div>

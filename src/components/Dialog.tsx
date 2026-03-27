@@ -7,7 +7,7 @@ interface DialogProps {
   title: string;
   children: React.ReactNode;
   footer?: React.ReactNode;
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'sm' | 'md' | 'lg' | 'xl';
 }
 
 export function Dialog({ 
@@ -49,6 +49,7 @@ export function Dialog({
     sm: 'w-[360px]',
     md: 'w-[420px]',
     lg: 'w-[560px]',
+    xl: 'w-[760px]',
   };
 
   return (
