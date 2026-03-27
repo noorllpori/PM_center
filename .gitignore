@@ -43,7 +43,7 @@ temp/
 .idea/
 *.suo
 *.user
-*.userossc
+*.userosscache
 *.sln.docstates
 *.ntvs*
 *.njsproj
