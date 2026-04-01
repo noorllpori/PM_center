@@ -19,7 +19,7 @@ export function Dialog({
   size = 'md' 
 }: DialogProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
-  const contentRef = useRef<HTMLDivElement>(null);
+  const shouldCloseOnMouseUpRef = useRef(false);
 
   // ESC 键关闭
   useEffect(() => {
@@ -35,10 +35,18 @@ export function Dialog({
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, onClose]);
 
-  // 点击外部关闭
-  const handleOverlayClick = (e: React.MouseEvent) => {
-    // 只有点击遮罩层本身时才关闭，不是点击内容区
-    if (e.target === overlayRef.current) {
+  // 只有在按下和抬起都发生在遮罩层本身时才关闭，避免误触关闭
+  const handleOverlayMouseDown = (e: React.MouseEvent) => {
+    shouldCloseOnMouseUpRef.current = e.target === overlayRef.current;
+  };
+
+  const handleOverlayMouseUp = (e: React.MouseEvent) => {
+    const shouldClose =
+      shouldCloseOnMouseUpRef.current && e.target === overlayRef.current;
+
+    shouldCloseOnMouseUpRef.current = false;
+
+    if (shouldClose) {
       onClose();
     }
   };
@@ -55,11 +63,11 @@ export function Dialog({
   return (
     <div
       ref={overlayRef}
-      onClick={handleOverlayClick}
+      onMouseDown={handleOverlayMouseDown}
+      onMouseUp={handleOverlayMouseUp}
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150"
     >
       <div
-        ref={contentRef}
         onClick={(e) => e.stopPropagation()}
         className={`bg-white dark:bg-gray-900 rounded-xl shadow-2xl ${sizeClasses[size]} max-w-[95vw] max-h-[90vh] flex flex-col animate-in zoom-in-95 duration-150`}
       >

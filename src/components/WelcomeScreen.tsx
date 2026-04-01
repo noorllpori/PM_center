@@ -31,6 +31,13 @@ function formatTime(timestamp: number): string {
   return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
 }
 
+function getProjectDatePrefix(date = new Date()): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}${month}${day}@`;
+}
+
 interface WelcomeScreenProps {
   onOpenProject: (path: string) => void;
 }
@@ -71,6 +78,13 @@ export function WelcomeScreen({ onOpenProject }: WelcomeScreenProps) {
     title: string;
     message: string;
   }>({ isOpen: false, title: '提示', message: '' });
+
+  const projectDatePrefix = getProjectDatePrefix();
+  const trimmedProjectName = newProjectName.trim();
+  const finalProjectName = trimmedProjectName
+    ? `${projectDatePrefix}${trimmedProjectName}`
+    : projectDatePrefix;
+  const canCreateProject = trimmedProjectName.length > 0;
 
   // 处理项目点击（支持未初始化的项目）
   const handleProjectClick = async (project: ScannedProject) => {
@@ -170,13 +184,13 @@ export function WelcomeScreen({ onOpenProject }: WelcomeScreenProps) {
 
   // 创建新项目
   const handleCreateProject = async () => {
-    if (!projectsRootDir || !newProjectName.trim()) return;
+    if (!projectsRootDir || !canCreateProject) return;
     
     setIsCreating(true);
     try {
-      const projectPath = await createProject(projectsRootDir, newProjectName.trim());
-    setShowCreateDialog(false);
-    setNewProjectName('');
+      const projectPath = await createProject(projectsRootDir, finalProjectName);
+      setShowCreateDialog(false);
+      setNewProjectName('');
       onOpenProject(projectPath);
     } catch (err) {
       setAlertDialog({
@@ -187,6 +201,16 @@ export function WelcomeScreen({ onOpenProject }: WelcomeScreenProps) {
     } finally {
       setIsCreating(false);
     }
+  };
+
+  const openCreateDialog = () => {
+    setNewProjectName('');
+    setShowCreateDialog(true);
+  };
+
+  const closeCreateDialog = () => {
+    setShowCreateDialog(false);
+    setNewProjectName('');
   };
 
   // 打开其他目录的项目
@@ -306,7 +330,7 @@ export function WelcomeScreen({ onOpenProject }: WelcomeScreenProps) {
               <div className="space-y-2">
                 {projectsRootDir && (
                   <button
-                    onClick={() => setShowCreateDialog(true)}
+                    onClick={openCreateDialog}
                     className="w-full flex items-center gap-2 px-3 py-2 
                                bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/30
                                text-blue-600 dark:text-blue-400 rounded-lg text-sm transition-colors"
@@ -573,26 +597,20 @@ export function WelcomeScreen({ onOpenProject }: WelcomeScreenProps) {
       {/* 创建新项目对话框（使用新组件） */}
       <Dialog
         isOpen={showCreateDialog}
-        onClose={() => {
-          setShowCreateDialog(false);
-          setNewProjectName('');
-        }}
+        onClose={closeCreateDialog}
         title="创建新项目"
         size="sm"
         footer={
           <>
             <button
-              onClick={() => {
-                setShowCreateDialog(false);
-                setNewProjectName('');
-              }}
+              onClick={closeCreateDialog}
               className="px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg"
             >
               取消
             </button>
             <button
               onClick={handleCreateProject}
-              disabled={!newProjectName.trim() || isCreating}
+              disabled={!canCreateProject || isCreating}
               className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white rounded-lg"
             >
               {isCreating ? '创建中...' : '创建'}
@@ -605,20 +623,28 @@ export function WelcomeScreen({ onOpenProject }: WelcomeScreenProps) {
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
               项目名称
             </label>
-            <input
-              type="text"
-              value={newProjectName}
-              onChange={(e) => setNewProjectName(e.target.value)}
-              placeholder="输入项目名称"
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
-              onKeyDown={(e) => e.key === 'Enter' && handleCreateProject()}
-              autoFocus
-            />
+            <div className="flex items-center rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 focus-within:ring-2 focus-within:ring-blue-500/20 focus-within:border-blue-500">
+              <span className="px-3 py-2 text-gray-500 dark:text-gray-400 select-none border-r border-gray-200 dark:border-gray-700">
+                {projectDatePrefix}
+              </span>
+              <input
+                type="text"
+                value={newProjectName}
+                onChange={(e) => setNewProjectName(e.target.value)}
+                placeholder="输入项目名称"
+                className="w-full px-3 py-2 bg-transparent text-gray-900 dark:text-gray-100 outline-none"
+                onKeyDown={(e) => e.key === 'Enter' && handleCreateProject()}
+                autoFocus
+              />
+            </div>
+            <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+              日期前缀固定为当天日期，你只需要输入后面的项目名称
+            </p>
           </div>
           <div className="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
             <p className="text-xs text-gray-500 dark:text-gray-400">将在以下位置创建项目：</p>
             <p className="text-sm text-gray-900 dark:text-gray-100 break-all mt-1">
-              {projectsRootDir}/{newProjectName}
+              {projectsRootDir}/{finalProjectName}
             </p>
           </div>
         </div>

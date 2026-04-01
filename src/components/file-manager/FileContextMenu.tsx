@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { FileInfo } from '../../types';
-import { FolderOpen, Trash2, Copy, FileEdit, Scissors, ClipboardCopy, ExternalLink, Info, FileInput } from 'lucide-react';
+import { FolderOpen, Trash2, Copy, FileEdit, Scissors, ClipboardCopy, ExternalLink, Info, FileInput, FolderPlus } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useClipboardStore } from '../../stores/clipboardStore';
 
@@ -13,13 +13,10 @@ interface ContextMenuProps {
   onRefresh?: () => void;
   onShowDetails?: (file: FileInfo) => void;
   onDelete?: (file: FileInfo) => Promise<void> | void;
+  onCreateFolder?: () => Promise<void> | void;
 }
 
-export function FileContextMenu({ file, x, y, currentPath, onClose, onRefresh, onShowDetails, onDelete }: ContextMenuProps) {
-  const menuRef = useRef<HTMLDivElement>(null);
-  const { item: clipboardItem, cut, copy, paste, hasItem } = useClipboardStore();
-
-  // 点击外部关闭菜单
+function useContextMenuDismiss(menuRef: React.RefObject<HTMLDivElement | null>, onClose: () => void) {
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
@@ -41,6 +38,32 @@ export function FileContextMenu({ file, x, y, currentPath, onClose, onRefresh, o
       document.removeEventListener('keydown', handleEsc);
     };
   }, [onClose]);
+}
+
+function getMenuStyle(x: number, y: number, estimatedHeight: number): React.CSSProperties {
+  return {
+    position: 'fixed',
+    left: Math.min(x, window.innerWidth - 220),
+    top: Math.min(y, window.innerHeight - estimatedHeight),
+    zIndex: 9999,
+  };
+}
+
+export function FileContextMenu({
+  file,
+  x,
+  y,
+  currentPath,
+  onClose,
+  onRefresh,
+  onShowDetails,
+  onDelete,
+  onCreateFolder,
+}: ContextMenuProps) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const { item: clipboardItem, cut, copy, paste, hasItem } = useClipboardStore();
+
+  useContextMenuDismiss(menuRef, onClose);
 
   // 打开文件/文件夹
   const handleOpen = async () => {
@@ -139,22 +162,25 @@ export function FileContextMenu({ file, x, y, currentPath, onClose, onRefresh, o
     onClose();
   };
 
+  // 在当前目录创建文件夹
+  const handleCreateFolder = async () => {
+    try {
+      await onCreateFolder?.();
+    } catch (error) {
+      console.error('Failed to create folder:', error);
+    }
+    onClose();
+  };
+
   // 查看详细信息
   const handleShowDetails = () => {
     onShowDetails?.(file);
     onClose();
   };
 
-  // 计算菜单位置，防止超出视口
-  const menuStyle: React.CSSProperties = {
-    position: 'fixed',
-    left: Math.min(x, window.innerWidth - 200),
-    top: Math.min(y, window.innerHeight - 350),
-    zIndex: 9999,
-  };
-
   const canPaste = hasItem() && (file.is_dir || !!clipboardItem);
   const isCutItem = clipboardItem?.action === 'cut' && clipboardItem?.path === file.path;
+  const menuStyle = getMenuStyle(x, y, 420);
 
   return (
     <>
@@ -200,6 +226,12 @@ export function FileContextMenu({ file, x, y, currentPath, onClose, onRefresh, o
 
         <MenuDivider />
 
+        <MenuItem onClick={handleCreateFolder} icon={<FolderPlus className="w-4 h-4" />}>
+          在当前目录新建文件夹
+        </MenuItem>
+
+        <MenuDivider />
+
         {/* 复制文件名 */}
         <MenuItem onClick={handleCopyName} icon={<ClipboardCopy className="w-4 h-4" />}>
           复制文件名
@@ -237,6 +269,44 @@ export function FileContextMenu({ file, x, y, currentPath, onClose, onRefresh, o
   );
 }
 
+interface CurrentDirectoryContextMenuProps {
+  x: number;
+  y: number;
+  onClose: () => void;
+  onCreateFolder: () => Promise<void> | void;
+}
+
+export function CurrentDirectoryContextMenu({
+  x,
+  y,
+  onClose,
+  onCreateFolder,
+}: CurrentDirectoryContextMenuProps) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  useContextMenuDismiss(menuRef, onClose);
+
+  const handleCreateFolder = async () => {
+    try {
+      await onCreateFolder();
+    } catch (error) {
+      console.error('Failed to create folder:', error);
+    }
+    onClose();
+  };
+
+  return (
+    <div
+      ref={menuRef}
+      className="bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 py-1 min-w-[180px]"
+      style={getMenuStyle(x, y, 120)}
+    >
+      <MenuItem onClick={handleCreateFolder} icon={<FolderPlus className="w-4 h-4" />}>
+        新建文件夹
+      </MenuItem>
+    </div>
+  );
+}
+
 // 菜单项组件
 function MenuItem({
   children,
@@ -247,7 +317,7 @@ function MenuItem({
   active = false,
 }: {
   children: React.ReactNode;
-  onClick: () => void;
+  onClick: () => void | Promise<void>;
   icon: React.ReactNode;
   disabled?: boolean;
   danger?: boolean;

@@ -29,7 +29,7 @@
       "id": "main-tray",
       "iconPath": "icons/icon.png",
       "iconAsTemplate": true,
-      "menuOnLeftClick": true
+      "showMenuOnLeftClick": true
     }
   },
   "bundle": {

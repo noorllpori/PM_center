@@ -5,9 +5,9 @@ import { useProjectStore } from '../../stores/projectStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useUiStore } from '../../stores/uiStore';
 import { FileIcon, FolderIcon, Image, Film, FileText, Box } from 'lucide-react';
-import { FileContextMenu } from './FileContextMenu';
+import { CurrentDirectoryContextMenu, FileContextMenu } from './FileContextMenu';
 import { FileDetailsDialog } from './FileDetailsView';
-import { canMovePathsToDirectory, compactDraggedPaths, getPathLabel } from './dragDrop';
+import { canMovePathsToDirectory, compactDraggedPaths, getPathLabel, joinPath } from './dragDrop';
 import { useFileDropMove } from './useFileDropMove';
 import { useInternalFileDrag } from './useInternalFileDrag';
 import {
@@ -80,6 +80,7 @@ function ListView({
   onSelect,
   onDoubleClick,
   onContextMenu,
+  onBackgroundContextMenu,
   onDragStart,
   onDragEnd,
   onDropToDirectory,
@@ -100,6 +101,7 @@ function ListView({
   onSelect: (path: string, multi: boolean) => void;
   onDoubleClick: (file: FileInfo) => void;
   onContextMenu: (file: FileInfo, x: number, y: number) => void;
+  onBackgroundContextMenu: (x: number, y: number) => void;
   onDragStart: (file: FileInfo, event: React.DragEvent<HTMLDivElement>) => void;
   onDragEnd: () => void;
   onDropToDirectory: (targetDir: string, dragPaths?: string[]) => Promise<void>;
@@ -135,6 +137,11 @@ function ListView({
       {/* 文件列表 */}
       <div
         className={`flex-1 overflow-auto ${dropTargetPath === currentPath ? 'bg-blue-50/60' : ''}`}
+        onContextMenu={(e) => {
+          if (e.target !== e.currentTarget) return;
+          e.preventDefault();
+          onBackgroundContextMenu(e.clientX, e.clientY);
+        }}
         onDragOver={(e) => {
           const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
           if (!canDropToDirectory(currentPath, internalDragPaths)) return;
@@ -255,6 +262,7 @@ function GridView({
   onSelect,
   onDoubleClick,
   onContextMenu,
+  onBackgroundContextMenu,
   onDragStart,
   onDragEnd,
   onDropToDirectory,
@@ -274,6 +282,7 @@ function GridView({
   onSelect: (path: string, multi: boolean) => void;
   onDoubleClick: (file: FileInfo) => void;
   onContextMenu: (file: FileInfo, x: number, y: number) => void;
+  onBackgroundContextMenu: (x: number, y: number) => void;
   onDragStart: (file: FileInfo, event: React.DragEvent<HTMLDivElement>) => void;
   onDragEnd: () => void;
   onDropToDirectory: (targetDir: string, dragPaths?: string[]) => Promise<void>;
@@ -291,6 +300,11 @@ function GridView({
   return (
     <div
       className={`p-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 overflow-auto ${dropTargetPath === currentPath ? 'bg-blue-50/60' : ''}`}
+      onContextMenu={(e) => {
+        if (e.target !== e.currentTarget) return;
+        e.preventDefault();
+        onBackgroundContextMenu(e.clientX, e.clientY);
+      }}
       onDragOver={(e) => {
         const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
         if (!canDropToDirectory(currentPath, internalDragPaths)) return;
@@ -409,6 +423,7 @@ export function FileList() {
     tags,
     fileTags,
     selectFile,
+    clearSelection,
     loadDirectory,
     refresh,
     currentPath,
@@ -433,11 +448,11 @@ export function FileList() {
   });
 
   // 右键菜单状态
-  const [contextMenu, setContextMenu] = useState<{
-    file: FileInfo;
-    x: number;
-    y: number;
-  } | null>(null);
+  const [contextMenu, setContextMenu] = useState<
+    | { kind: 'file'; file: FileInfo; x: number; y: number }
+    | { kind: 'directory'; x: number; y: number }
+    | null
+  >(null);
   const [detailsDialogFile, setDetailsDialogFile] = useState<FileInfo | null>(null);
 
   const displayFiles = searchQuery ? searchResults : files;
@@ -470,9 +485,14 @@ export function FileList() {
     }
   }, [loadDirectory, showToast]);
 
-  const handleContextMenu = (file: FileInfo, x: number, y: number) => {
-    setContextMenu({ file, x, y });
-  };
+  const handleContextMenu = useCallback((file: FileInfo, x: number, y: number) => {
+    setContextMenu({ kind: 'file', file, x, y });
+  }, []);
+
+  const handleBackgroundContextMenu = useCallback((x: number, y: number) => {
+    clearSelection();
+    setContextMenu({ kind: 'directory', x, y });
+  }, [clearSelection]);
 
   const handleCloseContextMenu = () => {
     setContextMenu(null);
@@ -489,6 +509,79 @@ export function FileList() {
   const handleRefresh = () => {
     refresh();
   };
+
+  const getSuggestedFolderName = useCallback(async (targetDir: string) => {
+    const baseName = '新建文件夹';
+    let candidate = baseName;
+    let index = 2;
+
+    while (await invoke<boolean>('path_exists', { path: joinPath(targetDir, candidate) })) {
+      candidate = `${baseName} ${index}`;
+      index += 1;
+    }
+
+    return candidate;
+  }, []);
+
+  const handleCreateFolder = useCallback(async () => {
+    if (!currentPath) {
+      return;
+    }
+
+    try {
+      const suggestedName = await getSuggestedFolderName(currentPath);
+      const folderName = prompt('文件夹名称:', suggestedName)?.trim();
+
+      if (!folderName) {
+        return;
+      }
+
+      if (/[\\/]/.test(folderName)) {
+        showToast({
+          title: '创建失败',
+          message: '文件夹名称不能包含路径分隔符。',
+          tone: 'error',
+        });
+        return;
+      }
+
+      if (folderName === '.' || folderName === '..') {
+        showToast({
+          title: '创建失败',
+          message: '请输入有效的文件夹名称。',
+          tone: 'error',
+        });
+        return;
+      }
+
+      const targetPath = joinPath(currentPath, folderName);
+      const exists = await invoke<boolean>('path_exists', { path: targetPath });
+
+      if (exists) {
+        showToast({
+          title: '创建失败',
+          message: '当前目录已存在同名文件夹。',
+          tone: 'error',
+        });
+        return;
+      }
+
+      await invoke('create_directory', { path: targetPath });
+      await refresh();
+      showToast({
+        title: '文件夹已创建',
+        message: folderName,
+        tone: 'success',
+      });
+    } catch (error) {
+      console.error('Failed to create folder:', error);
+      showToast({
+        title: '创建失败',
+        message: String(error),
+        tone: 'error',
+      });
+    }
+  }, [currentPath, getSuggestedFolderName, refresh, showToast]);
 
   const handleDelete = useCallback(async (targetPaths: string[]) => {
     const paths = compactDraggedPaths(targetPaths);
@@ -588,6 +681,7 @@ export function FileList() {
           onSelect={selectFile}
           onDoubleClick={handleDoubleClick}
           onContextMenu={handleContextMenu}
+          onBackgroundContextMenu={handleBackgroundContextMenu}
           onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
           onDropToDirectory={handleDropToDirectory}
@@ -610,6 +704,7 @@ export function FileList() {
           onSelect={selectFile}
           onDoubleClick={handleDoubleClick}
           onContextMenu={handleContextMenu}
+          onBackgroundContextMenu={handleBackgroundContextMenu}
           onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
           onDropToDirectory={handleDropToDirectory}
@@ -627,7 +722,7 @@ export function FileList() {
       )}
 
       {/* 右键菜单 */}
-      {contextMenu && (
+      {contextMenu?.kind === 'file' && (
         <FileContextMenu
           file={contextMenu.file}
           x={contextMenu.x}
@@ -637,6 +732,16 @@ export function FileList() {
           onRefresh={handleRefresh}
           onShowDetails={handleShowDetails}
           onDelete={handleDeleteFromContextMenu}
+          onCreateFolder={handleCreateFolder}
+        />
+      )}
+
+      {contextMenu?.kind === 'directory' && (
+        <CurrentDirectoryContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onClose={handleCloseContextMenu}
+          onCreateFolder={handleCreateFolder}
         />
       )}
 

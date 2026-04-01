@@ -74,12 +74,13 @@ export function Toolbar() {
           <button
             onClick={handleGoUp}
             disabled={atProjectRoot}
-            className="p-1.5 text-gray-600 hover:text-gray-900 dark:text-gray-400
-                       dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800
+            className="p-1.5 bg-gray-100 text-gray-600 hover:text-gray-900 dark:bg-gray-800 dark:text-gray-400
+                       hover:bg-gray-200 dark:hover:text-gray-100 dark:hover:bg-gray-700
                        rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             title={atProjectRoot ? '已经在项目根目录' : '返回上级目录'}
           >
-            <ArrowUp className="w-4 h-4" />
+            {/* <ArrowUp className="w-4 h-4" />  */}
+            返回上级目录
           </button>
         )}
 
