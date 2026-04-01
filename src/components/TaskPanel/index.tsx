@@ -1,11 +1,10 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useTaskStore, initTaskEventListeners } from '../../stores/taskStore';
 import { useProjectStore } from '../../stores/projectStore';
 import type { Task, TaskStatus, TaskPriority, ProjectScript } from '../../types/task';
 import { getProjectScripts } from '../../api/scripts';
 import { invoke } from '@tauri-apps/api/core';
 import { 
-  Play, 
   Square, 
   RotateCcw, 
   Trash2, 
@@ -19,8 +18,6 @@ import {
   ChevronRight,
   ChevronDown,
   FileCode,
-  Settings,
-  Filter,
   Eraser,
   Folder,
   FileText,
@@ -31,6 +28,21 @@ import {
 interface TaskPanelProps {
   isOpen: boolean;
   onClose: () => void;
+}
+
+const ALL_PROJECTS_VALUE = '__all_projects__';
+
+function getProjectDisplayName(
+  targetProjectPath: string,
+  currentProjectPath: string | null,
+  currentProjectName: string | null,
+) {
+  if (currentProjectPath && targetProjectPath === currentProjectPath && currentProjectName) {
+    return currentProjectName;
+  }
+
+  const parts = targetProjectPath.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] || targetProjectPath;
 }
 
 export function TaskPanel({ isOpen, onClose }: TaskPanelProps) {
@@ -44,14 +56,61 @@ export function TaskPanel({ isOpen, onClose }: TaskPanelProps) {
     removeTask,
     clearCompleted,
   } = useTaskStore();
+  const [projectFilter, setProjectFilter] = useState<string>(ALL_PROJECTS_VALUE);
 
-  // 只显示当前项目的任务
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    setProjectFilter(projectPath || ALL_PROJECTS_VALUE);
+  }, [isOpen, projectPath]);
+
+  const projectOptions = useMemo(() => {
+    const options = new Map<string, string>();
+
+    allTasks.forEach((task) => {
+      if (!options.has(task.projectPath)) {
+        options.set(
+          task.projectPath,
+          getProjectDisplayName(task.projectPath, projectPath, projectName),
+        );
+      }
+    });
+
+    if (projectPath) {
+      options.set(projectPath, projectName || getProjectDisplayName(projectPath, projectPath, projectName));
+    }
+
+    return Array.from(options.entries())
+      .map(([path, label]) => ({ path, label }))
+      .sort((a, b) => {
+        if (projectPath) {
+          if (a.path === projectPath && b.path !== projectPath) return -1;
+          if (b.path === projectPath && a.path !== projectPath) return 1;
+        }
+
+        return a.label.localeCompare(b.label, 'zh-CN');
+      });
+  }, [allTasks, projectName, projectPath]);
+
+  const selectedProjectPath = projectFilter === ALL_PROJECTS_VALUE ? null : projectFilter;
+  const selectedProjectLabel = selectedProjectPath
+    ? (projectOptions.find((option) => option.path === selectedProjectPath)?.label
+      || getProjectDisplayName(selectedProjectPath, projectPath, projectName))
+    : '所有项目';
+  const isViewingAllProjects = selectedProjectPath === null;
+
+  // 按当前项目范围显示任务
   const tasks = useMemo(() => {
-    if (!projectPath) return [];
-    return allTasks.filter(t => t.projectPath === projectPath);
-  }, [allTasks, projectPath]);
+    if (!selectedProjectPath) {
+      return allTasks;
+    }
 
-  // 计算当前项目的统计
+    return allTasks.filter((task) => task.projectPath === selectedProjectPath);
+  }, [allTasks, selectedProjectPath]);
+
+  // 计算当前范围统计
   const stats = useMemo(() => ({
     total: tasks.length,
     pending: tasks.filter(t => t.status === 'pending').length,
@@ -64,6 +123,17 @@ export function TaskPanel({ isOpen, onClose }: TaskPanelProps) {
   const [showNewTask, setShowNewTask] = useState(false);
   const [filter, setFilter] = useState<TaskStatus | 'all'>('all');
   const [showLog, setShowLog] = useState(true);
+
+  useEffect(() => {
+    if (projectFilter === ALL_PROJECTS_VALUE) {
+      return;
+    }
+
+    const filterStillExists = projectOptions.some((option) => option.path === projectFilter);
+    if (!filterStillExists) {
+      setProjectFilter(projectPath || ALL_PROJECTS_VALUE);
+    }
+  }, [projectFilter, projectOptions, projectPath]);
 
   // 初始化事件监听
   useEffect(() => {
@@ -83,13 +153,39 @@ export function TaskPanel({ isOpen, onClose }: TaskPanelProps) {
     return () => window.removeEventListener('keydown', handleEsc);
   }, [isOpen, onClose]);
 
-  if (!isOpen) return null;
-
   const filteredTasks = filter === 'all' 
     ? tasks 
     : tasks.filter(t => t.status === filter);
 
-  const activeTask = tasks.find(t => t.id === activeTaskId);
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    if (!activeTaskId) {
+      return;
+    }
+
+    const activeTaskVisible = filteredTasks.some((task) => task.id === activeTaskId);
+    if (!activeTaskVisible) {
+      selectTask(filteredTasks[0]?.id ?? null);
+    }
+  }, [activeTaskId, filteredTasks, isOpen, selectTask]);
+
+  const activeTask = filteredTasks.find(t => t.id === activeTaskId) ?? null;
+
+  const handleClearCompleted = useCallback(() => {
+    if (isViewingAllProjects) {
+      clearCompleted();
+      return;
+    }
+
+    tasks
+      .filter((task) => task.status === 'completed')
+      .forEach((task) => removeTask(task.id));
+  }, [clearCompleted, isViewingAllProjects, removeTask, tasks]);
+
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
@@ -100,10 +196,14 @@ export function TaskPanel({ isOpen, onClose }: TaskPanelProps) {
             <Terminal className="w-5 h-5 text-blue-500" />
             <div>
               <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">任务中心</h2>
+              <div className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
+                <Folder className="w-3 h-3" />
+                当前视图: {selectedProjectLabel}
+              </div>
               {projectName && (
                 <div className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
                   <Folder className="w-3 h-3" />
-                  {projectName}
+                  当前打开项目: {projectName}
                 </div>
               )}
             </div>
@@ -116,7 +216,7 @@ export function TaskPanel({ isOpen, onClose }: TaskPanelProps) {
               onClick={() => setShowNewTask(true)}
               disabled={!projectPath}
               className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white text-sm rounded-lg transition-colors"
-              title={projectPath ? '新建任务' : '请先打开项目'}
+              title={projectPath ? '在当前打开项目中新建任务' : '请先打开项目'}
             >
               <Plus className="w-4 h-4" />
               新建任务
@@ -125,9 +225,9 @@ export function TaskPanel({ isOpen, onClose }: TaskPanelProps) {
             {/* 清理已完成 */}
             {stats.completed > 0 && (
               <button
-                onClick={clearCompleted}
+                onClick={handleClearCompleted}
                 className="p-1.5 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg"
-                title="清理已完成"
+                title={isViewingAllProjects ? '清理所有项目中已完成的任务' : '清理当前项目范围中已完成的任务'}
               >
                 <Eraser className="w-4 h-4" />
               </button>
@@ -146,6 +246,32 @@ export function TaskPanel({ isOpen, onClose }: TaskPanelProps) {
         <div className="flex-1 flex overflow-hidden">
           {/* 左侧任务列表 */}
           <div className="w-[400px] border-r border-gray-200 dark:border-gray-700 flex flex-col">
+            <div className="p-3 border-b border-gray-200 dark:border-gray-700 space-y-2">
+              <div className="text-xs font-medium text-gray-500 dark:text-gray-400">项目范围</div>
+              <select
+                value={projectFilter}
+                onChange={(event) => setProjectFilter(event.target.value)}
+                className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+              >
+                <option value={ALL_PROJECTS_VALUE}>所有项目</option>
+                {projectOptions.map((option) => (
+                  <option key={option.path} value={option.path}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              {projectPath && selectedProjectPath && selectedProjectPath !== projectPath && (
+                <p className="text-xs text-amber-600 dark:text-amber-400">
+                  当前打开项目仍是 {projectName || selectedProjectLabel}，这里只是切换查看别的项目任务。
+                </p>
+              )}
+              {!projectPath && (
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  主页模式默认汇总全部项目任务，你也可以按项目单独查看。
+                </p>
+              )}
+            </div>
+
             {/* 过滤器 */}
             <div className="flex items-center gap-1 p-2 border-b border-gray-200 dark:border-gray-700">
               <FilterButton active={filter === 'all'} onClick={() => setFilter('all')} count={stats.total}>
@@ -178,6 +304,7 @@ export function TaskPanel({ isOpen, onClose }: TaskPanelProps) {
                     <TaskItem
                       key={task.id}
                       task={task}
+                      projectLabel={getProjectDisplayName(task.projectPath, projectPath, projectName)}
                       isActive={task.id === activeTaskId}
                       onClick={() => selectTask(task.id)}
                       onCancel={() => cancelTask(task.id)}
@@ -200,6 +327,10 @@ export function TaskPanel({ isOpen, onClose }: TaskPanelProps) {
                     <div>
                       <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100">{activeTask.name}</h3>
                       <p className="text-sm text-gray-500 dark:text-gray-400">{activeTask.subName}</p>
+                      <div className="mt-1 flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
+                        <Folder className="w-3.5 h-3.5" />
+                        {getProjectDisplayName(activeTask.projectPath, projectPath, projectName)}
+                      </div>
                     </div>
                     <TaskStatusBadge status={activeTask.status} />
                   </div>
@@ -271,6 +402,7 @@ export function TaskPanel({ isOpen, onClose }: TaskPanelProps) {
                 {/* 任务信息栏 */}
                 <div className="px-4 py-2 bg-gray-100 dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400">
                   <div className="flex items-center gap-4">
+                    <span>项目: {getProjectDisplayName(activeTask.projectPath, projectPath, projectName)}</span>
                     <span>ID: {activeTask.id.slice(0, 16)}...</span>
                     <span>类型: {activeTask.script.type}</span>
                     <span>优先级: {activeTask.priority}</span>
@@ -358,6 +490,7 @@ function FilterButton({
 // 任务项
 function TaskItem({ 
   task, 
+  projectLabel,
   isActive, 
   onClick, 
   onCancel, 
@@ -365,6 +498,7 @@ function TaskItem({
   onRemove 
 }: { 
   task: Task;
+  projectLabel: string;
   isActive: boolean;
   onClick: () => void;
   onCancel: () => void;
@@ -389,6 +523,10 @@ function TaskItem({
       </div>
       
       <p className="text-xs text-gray-500 dark:text-gray-400 truncate mb-2">{task.subName}</p>
+      <div className="mb-2 flex items-center gap-1 text-[11px] text-gray-500 dark:text-gray-400">
+        <Folder className="w-3 h-3" />
+        <span className="truncate">{projectLabel}</span>
+      </div>
       
       {/* 进度条 */}
       <div className="h-1 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden mb-2">
