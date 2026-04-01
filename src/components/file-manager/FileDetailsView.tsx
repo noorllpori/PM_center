@@ -1,5 +1,5 @@
-import { useMemo } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { useEffect, useMemo, useState } from 'react';
+import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { Box, ExternalLink, FileIcon, FileText, Film, FolderIcon, Hash, Image, Music4, RefreshCw, Tag as TagIcon } from 'lucide-react';
 import { Dialog } from '../Dialog';
 import { FileDetailsResponse, FileInfo, Tag } from '../../types';
@@ -19,6 +19,15 @@ interface FileDetailsDialogProps {
   onClose: () => void;
 }
 
+const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'exr', 'hdr', 'tif', 'tiff', 'svg']);
+const AUDIO_EXTENSIONS = new Set(['mp3', 'flac', 'wav', 'ogg', 'opus', 'm4a', 'aac']);
+const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v']);
+const TEXT_EXTENSIONS = new Set(['txt', 'md', 'json', 'xml', 'py', 'js', 'ts', 'tsx', 'jsx', 'html', 'css']);
+
+function getFileExtension(file: FileInfo | null) {
+  return file?.extension?.toLowerCase() || '';
+}
+
 function getFileIcon(file: FileInfo | null) {
   if (!file) {
     return <FileIcon className="w-16 h-16 text-gray-400" />;
@@ -28,17 +37,17 @@ function getFileIcon(file: FileInfo | null) {
     return <FolderIcon className="w-16 h-16 text-yellow-500" />;
   }
 
-  const ext = file.extension?.toLowerCase();
+  const ext = getFileExtension(file);
 
-  if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'exr', 'hdr', 'tif', 'tiff'].includes(ext || '')) {
+  if (IMAGE_EXTENSIONS.has(ext)) {
     return <Image className="w-16 h-16 text-purple-500" />;
   }
 
-  if (['mp3', 'flac', 'wav', 'ogg', 'opus', 'm4a', 'aac'].includes(ext || '')) {
+  if (AUDIO_EXTENSIONS.has(ext)) {
     return <Music4 className="w-16 h-16 text-emerald-500" />;
   }
 
-  if (['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v'].includes(ext || '')) {
+  if (VIDEO_EXTENSIONS.has(ext)) {
     return <Film className="w-16 h-16 text-red-500" />;
   }
 
@@ -46,11 +55,93 @@ function getFileIcon(file: FileInfo | null) {
     return <Box className="w-16 h-16 text-orange-500" />;
   }
 
-  if (['txt', 'md', 'json', 'xml', 'py', 'js', 'ts', 'tsx', 'jsx', 'html', 'css'].includes(ext || '')) {
+  if (TEXT_EXTENSIONS.has(ext)) {
     return <FileText className="w-16 h-16 text-blue-500" />;
   }
 
   return <FileIcon className="w-16 h-16 text-gray-400" />;
+}
+
+function resolvePreviewSource(path: string | null) {
+  if (!path) {
+    return null;
+  }
+
+  if (/^(asset|https?|data|blob):/i.test(path)) {
+    return path;
+  }
+
+  return convertFileSrc(path);
+}
+
+function getFilePreview(file: FileInfo | null): { kind: 'image' | 'video'; src: string } | null {
+  if (!file || file.is_dir) {
+    return null;
+  }
+
+  if (file.thumbnail) {
+    const src = resolvePreviewSource(file.thumbnail);
+    return src ? { kind: 'image', src } : null;
+  }
+
+  const ext = getFileExtension(file);
+  const src = resolvePreviewSource(file.path);
+  if (!src) {
+    return null;
+  }
+
+  if (IMAGE_EXTENSIONS.has(ext)) {
+    return { kind: 'image', src };
+  }
+
+  if (VIDEO_EXTENSIONS.has(ext)) {
+    return { kind: 'video', src };
+  }
+
+  return null;
+}
+
+function FilePreviewHeader({ file }: { file: FileInfo | null }) {
+  const preview = useMemo(() => getFilePreview(file), [file]);
+  const [hasPreviewError, setHasPreviewError] = useState(false);
+
+  useEffect(() => {
+    setHasPreviewError(false);
+  }, [preview?.kind, preview?.src, file?.path]);
+
+  if (!preview || hasPreviewError) {
+    return (
+      <div className="flex justify-center py-8 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+        {getFileIcon(file)}
+      </div>
+    );
+  }
+
+  return (
+    <div className="border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
+      <div className="flex justify-center px-4 py-4">
+        <div className="flex w-full items-center justify-center overflow-hidden rounded-xl border border-white/70 bg-gradient-to-br from-white to-gray-100 shadow-sm dark:border-gray-700 dark:from-gray-900 dark:to-gray-800">
+          {preview.kind === 'image' ? (
+            <img
+              src={preview.src}
+              alt={file?.name || '文件预览'}
+              className="max-h-[260px] w-full object-contain"
+              onError={() => setHasPreviewError(true)}
+            />
+          ) : (
+            <video
+              src={preview.src}
+              className="max-h-[260px] w-full bg-black object-contain"
+              controls
+              preload="metadata"
+              muted
+              onError={() => setHasPreviewError(true)}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function SectionBlock({ title, items }: { title: string; items: FileDetailsResponse['sections'][number]['items'] }) {
@@ -122,9 +213,7 @@ function FileDetailsContent({ file, fileTagList, view, selectedCount = 0 }: File
 
   return (
     <div className={`h-full flex flex-col bg-white dark:bg-gray-900 ${view === 'panel' ? 'overflow-auto' : ''}`}>
-      <div className="flex justify-center py-8 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
-        {getFileIcon(file)}
-      </div>
+      <FilePreviewHeader file={file} />
 
       <div className="p-4 space-y-4">
         <div>
