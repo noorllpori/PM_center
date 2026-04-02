@@ -6,17 +6,20 @@ import { ColumnSettings } from './ColumnSettings';
 import { FileDetail } from './FileDetail';
 import { getPathLabel, isExternalFileDrag } from './dragDrop';
 import { importExternalDrop } from './externalImport';
-import { ScriptRunner } from '../ScriptRunner';
 import { ChangeLog } from '../ChangeLog';
 import { TaskButton } from '../TaskButton';
 import { LauncherButton } from '../Launcher';
 import { WelcomeScreen } from '../WelcomeScreen';
 import { P2PChat } from '../P2PChat';
 import { PythonEnvManager } from '../PythonEnvManager';
+import { ImageViewerSurface } from '../image-viewer/ImageViewerSurface';
+import { TextEditorSurface } from '../text-editor/TextEditorSurface';
+import { WorkspaceTabBar } from '../workspace/WorkspaceTabBar';
 import { useProjectStore } from '../../stores/projectStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useSettingsStore } from '../../stores/settingsStore';
-import { Folder, Code, Clock, History, MessageCircle, Terminal, Upload, X } from 'lucide-react';
+import { useWorkspaceTabStore } from '../../stores/workspaceTabStore';
+import { History, MessageCircle, Terminal, Upload, X } from 'lucide-react';
 
 const FILE_DETAILS_PANEL_WIDTH_KEY = 'pm-center:file-details-panel-width';
 const FILE_DETAILS_PANEL_MIN_WIDTH = 260;
@@ -67,8 +70,15 @@ export function FileManager() {
     loadSettings, 
     addRecentProject, 
   } = useSettingsStore();
-  
-  const [activeTab, setActiveTab] = useState<'files' | 'scripts' | 'logs'>('files');
+  const tabs = useWorkspaceTabStore((state) => state.tabs);
+  const activeTabId = useWorkspaceTabStore((state) => state.activeTabId);
+  const activateTab = useWorkspaceTabStore((state) => state.activateTab);
+  const closeTab = useWorkspaceTabStore((state) => state.closeTab);
+  const reorderTabs = useWorkspaceTabStore((state) => state.reorderTabs);
+  const openLogsTab = useWorkspaceTabStore((state) => state.openLogsTab);
+  const updateTabDirty = useWorkspaceTabStore((state) => state.updateTabDirty);
+  const resetTabs = useWorkspaceTabStore((state) => state.resetTabs);
+
   const [isP2PChatOpen, setIsP2PChatOpen] = useState(false);
   const [isPythonEnvOpen, setIsPythonEnvOpen] = useState(false);
   const [isDragImportActive, setIsDragImportActive] = useState(false);
@@ -77,11 +87,19 @@ export function FileManager() {
   const [isResizingFileDetails, setIsResizingFileDetails] = useState(false);
   const externalDragDepthRef = useRef(0);
   const fileDetailsResizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const activeWorkspaceTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
+  const isFilesWorkspaceActive = activeWorkspaceTab?.type === 'files';
 
   // 初始化：加载设置
   useEffect(() => {
     loadSettings();
   }, []);
+
+  useEffect(() => {
+    if (!isInitialized) {
+      resetTabs();
+    }
+  }, [isInitialized, resetTabs]);
 
   // 当成功打开项目后，添加到历史
   useEffect(() => {
@@ -113,7 +131,7 @@ export function FileManager() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (!isInitialized || activeTab !== 'files') {
+      if (!isInitialized || !isFilesWorkspaceActive) {
         return;
       }
 
@@ -145,7 +163,7 @@ export function FileManager() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeTab, isInitialized, refresh, showToast, toggleShowExcludedFiles]);
+  }, [isFilesWorkspaceActive, isInitialized, refresh, showToast, toggleShowExcludedFiles]);
 
   const resetExternalDragState = useCallback(() => {
     externalDragDepthRef.current = 0;
@@ -153,10 +171,10 @@ export function FileManager() {
   }, []);
 
   useEffect(() => {
-    if (activeTab !== 'files' || !isInitialized) {
+    if (!isFilesWorkspaceActive || !isInitialized) {
       resetExternalDragState();
     }
-  }, [activeTab, isInitialized, resetExternalDragState]);
+  }, [isFilesWorkspaceActive, isInitialized, resetExternalDragState]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -219,17 +237,17 @@ export function FileManager() {
   }, [fileDetailsPanelWidth]);
 
   const handleExternalDragEnter = useCallback((event: React.DragEvent<HTMLDivElement>) => {
-    if (!isInitialized || activeTab !== 'files' || !isExternalFileDrag(event.dataTransfer)) {
+    if (!isInitialized || !isFilesWorkspaceActive || !isExternalFileDrag(event.dataTransfer)) {
       return;
     }
 
     event.preventDefault();
     externalDragDepthRef.current += 1;
     setIsDragImportActive(true);
-  }, [activeTab, isInitialized]);
+  }, [isFilesWorkspaceActive, isInitialized]);
 
   const handleExternalDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
-    if (!isInitialized || activeTab !== 'files' || !isExternalFileDrag(event.dataTransfer)) {
+    if (!isInitialized || !isFilesWorkspaceActive || !isExternalFileDrag(event.dataTransfer)) {
       return;
     }
 
@@ -239,10 +257,10 @@ export function FileManager() {
     if (!isDragImportActive) {
       setIsDragImportActive(true);
     }
-  }, [activeTab, isDragImportActive, isInitialized]);
+  }, [isDragImportActive, isFilesWorkspaceActive, isInitialized]);
 
   const handleExternalDragLeave = useCallback((event: React.DragEvent<HTMLDivElement>) => {
-    if (!isInitialized || activeTab !== 'files' || !isExternalFileDrag(event.dataTransfer)) {
+    if (!isInitialized || !isFilesWorkspaceActive || !isExternalFileDrag(event.dataTransfer)) {
       return;
     }
 
@@ -252,10 +270,10 @@ export function FileManager() {
     if (externalDragDepthRef.current === 0 && !isImportingDrop) {
       setIsDragImportActive(false);
     }
-  }, [activeTab, isImportingDrop, isInitialized]);
+  }, [isFilesWorkspaceActive, isImportingDrop, isInitialized]);
 
   const handleExternalDrop = useCallback(async (event: React.DragEvent<HTMLDivElement>) => {
-    if (!isInitialized || activeTab !== 'files' || !isExternalFileDrag(event.dataTransfer)) {
+    if (!isInitialized || !isFilesWorkspaceActive || !isExternalFileDrag(event.dataTransfer)) {
       return;
     }
 
@@ -288,10 +306,10 @@ export function FileManager() {
     } finally {
       setIsImportingDrop(false);
     }
-  }, [activeTab, currentPath, isInitialized, projectPath, refresh, resetExternalDragState]);
+  }, [currentPath, isFilesWorkspaceActive, isInitialized, projectPath, refresh, resetExternalDragState]);
 
   const dropTargetLabel = getPathLabel(currentPath || projectPath, projectPath, projectName);
-  const showDropOverlay = isInitialized && activeTab === 'files' && (isDragImportActive || isImportingDrop);
+  const showDropOverlay = isInitialized && isFilesWorkspaceActive && (isDragImportActive || isImportingDrop);
   const toastStyles = {
     info: 'border-blue-200 bg-white text-gray-900',
     success: 'border-green-200 bg-white text-gray-900',
@@ -314,6 +332,19 @@ export function FileManager() {
         </div>
         {/* 全局按钮区域 */}
         <div className="flex items-center gap-2 px-3 border-l border-gray-200 dark:border-gray-700">
+          {isInitialized && (
+            <button
+              onClick={() => openLogsTab()}
+              className={`p-2 rounded-lg transition-colors ${
+                activeWorkspaceTab?.type === 'logs'
+                  ? 'bg-amber-50 text-amber-600 dark:bg-amber-900/20 dark:text-amber-300'
+                  : 'text-gray-500 hover:text-amber-600 dark:text-gray-400 dark:hover:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/20'
+              }`}
+              title="日志"
+            >
+              <History className="w-5 h-5" />
+            </button>
+          )}
           <button
             onClick={() => setIsPythonEnvOpen(true)}
             className="p-2 text-gray-500 hover:text-green-600 dark:text-gray-400 
@@ -337,55 +368,20 @@ export function FileManager() {
         </div>
       </div>
 
-      {isInitialized && activeTab === 'files' && showExcludedFiles && (
+      {isInitialized && isFilesWorkspaceActive && showExcludedFiles && (
         <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-700">
           当前正在显示排除规则隐藏的文件，按 `Ctrl+H` 可切回隐藏。
         </div>
       )}
 
-      {/* Tab 切换 */}
       {isInitialized && (
-        <div className="flex border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
-          <button
-            onClick={() => setActiveTab('files')}
-            className={`
-              flex items-center gap-1.5 px-4 py-2 text-sm font-medium
-              ${activeTab === 'files'
-                ? 'text-blue-600 border-b-2 border-blue-600'
-                : 'text-gray-600 hover:text-gray-900'
-              }
-            `}
-          >
-            <Folder className="w-4 h-4" />
-            文件
-          </button>
-          <button
-            onClick={() => setActiveTab('scripts')}
-            className={`
-              flex items-center gap-1.5 px-4 py-2 text-sm font-medium
-              ${activeTab === 'scripts'
-                ? 'text-blue-600 border-b-2 border-blue-600'
-                : 'text-gray-600 hover:text-gray-900'
-              }
-            `}
-          >
-            <Code className="w-4 h-4" />
-            脚本
-          </button>
-          <button
-            onClick={() => setActiveTab('logs')}
-            className={`
-              flex items-center gap-1.5 px-4 py-2 text-sm font-medium
-              ${activeTab === 'logs'
-                ? 'text-blue-600 border-b-2 border-blue-600'
-                : 'text-gray-600 hover:text-gray-900'
-              }
-            `}
-          >
-            <History className="w-4 h-4" />
-            日志
-          </button>
-        </div>
+        <WorkspaceTabBar
+          tabs={tabs}
+          activeTabId={activeTabId}
+          onActivateTab={activateTab}
+          onCloseTab={closeTab}
+          onReorderTabs={reorderTabs}
+        />
       )}
 
       {/* 主内容区 */}
@@ -398,44 +394,77 @@ export function FileManager() {
       >
         {!isInitialized ? (
           <WelcomeScreen onOpenProject={handleOpenProject} />
-        ) : activeTab === 'scripts' ? (
-          <ScriptRunner />
-        ) : activeTab === 'logs' ? (
-          <ChangeLog />
         ) : (
-          <>
-            {/* 左侧：文件树 */}
-            <div className="w-64 border-r border-gray-200 dark:border-gray-700 flex-shrink-0">
-              <FileTree />
-            </div>
+          <div className="flex-1 overflow-hidden">
+            {tabs.map((tab) => {
+              const isActive = tab.id === activeTabId;
 
-            {/* 中间：文件列表 */}
-            <div className="flex-1 overflow-hidden">
-              <FileList />
-            </div>
+              return (
+                <div
+                  key={tab.id}
+                  className={`${isActive ? 'h-full w-full min-w-0' : 'hidden h-full w-full min-w-0'}`}
+                >
+                  {tab.type === 'files' && (
+                    <div className="flex h-full w-full min-w-0">
+                      <div className="w-64 border-r border-gray-200 dark:border-gray-700 flex-shrink-0">
+                        <FileTree />
+                      </div>
 
-            <div
-              className="group relative w-2 cursor-col-resize flex-shrink-0 bg-transparent"
-              onMouseDown={handleStartFileDetailsResize}
-              title="拖动调整详情栏宽度"
-            >
-              <div
-                className={`absolute inset-y-0 left-1/2 w-px -translate-x-1/2 transition-colors ${
-                  isResizingFileDetails
-                    ? 'bg-blue-500'
-                    : 'bg-gray-200 dark:bg-gray-700 group-hover:bg-blue-400 dark:group-hover:bg-blue-500'
-                }`}
-              />
-            </div>
+                      <div className="flex-1 overflow-hidden">
+                        <FileList />
+                      </div>
 
-            {/* 右侧：文件详情 */}
-            <div
-              className="border-l border-gray-200 dark:border-gray-700 flex-shrink-0 bg-white dark:bg-gray-900 min-w-0"
-              style={{ width: `${fileDetailsPanelWidth}px` }}
-            >
-              <FileDetail />
-            </div>
-          </>
+                      <div
+                        className="group relative w-2 cursor-col-resize flex-shrink-0 bg-transparent"
+                        onMouseDown={handleStartFileDetailsResize}
+                        title="拖动调整详情栏宽度"
+                      >
+                        <div
+                          className={`absolute inset-y-0 left-1/2 w-px -translate-x-1/2 transition-colors ${
+                            isResizingFileDetails
+                              ? 'bg-blue-500'
+                              : 'bg-gray-200 dark:bg-gray-700 group-hover:bg-blue-400 dark:group-hover:bg-blue-500'
+                          }`}
+                        />
+                      </div>
+
+                      <div
+                        className="border-l border-gray-200 dark:border-gray-700 flex-shrink-0 bg-white dark:bg-gray-900 min-w-0"
+                        style={{ width: `${fileDetailsPanelWidth}px` }}
+                      >
+                        <FileDetail />
+                      </div>
+                    </div>
+                  )}
+
+                  {tab.type === 'logs' && (
+                    <div className="h-full w-full min-w-0">
+                      <ChangeLog />
+                    </div>
+                  )}
+
+                  {tab.type === 'image' && tab.filePath && (
+                    <div className="h-full w-full min-w-0">
+                      <ImageViewerSurface
+                        title={tab.title}
+                        source={tab.filePath}
+                      />
+                    </div>
+                  )}
+
+                  {tab.type === 'text' && tab.filePath && (
+                    <div className="h-full w-full min-w-0">
+                      <TextEditorSurface
+                        title={tab.title}
+                        filePath={tab.filePath}
+                        onDirtyChange={(isDirty) => updateTabDirty(tab.id, isDirty)}
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         )}
 
         {showDropOverlay && (
@@ -458,7 +487,7 @@ export function FileManager() {
       </div>
 
       {/* 列设置 */}
-      {isInitialized && activeTab === 'files' && <ColumnSettings />}
+      {isInitialized && isFilesWorkspaceActive && <ColumnSettings />}
 
       {/* P2P 聊天 */}
       <P2PChat 

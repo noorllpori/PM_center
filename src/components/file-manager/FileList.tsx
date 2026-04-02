@@ -4,14 +4,14 @@ import { FileInfo } from '../../types';
 import { useProjectStore } from '../../stores/projectStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useUiStore } from '../../stores/uiStore';
+import { useWorkspaceTabStore } from '../../stores/workspaceTabStore';
 import { FileIcon, FolderIcon, Image, Film, FileText, Box } from 'lucide-react';
 import { CurrentDirectoryContextMenu, FileContextMenu } from './FileContextMenu';
 import { FileDetailsDialog } from './FileDetailsView';
 import { canMovePathsToDirectory, compactDraggedPaths, getPathLabel, joinPath } from './dragDrop';
 import { useFileDropMove } from './useFileDropMove';
 import { useInternalFileDrag } from './useInternalFileDrag';
-import { isImageExtension } from '../image-viewer/imageViewerUtils';
-import { openStandaloneImageViewer } from '../image-viewer/openStandaloneImageViewer';
+import { getWorkspaceOpenTarget } from '../workspace/fileOpeners';
 import {
   mergeExcludePatterns,
   readProjectExcludePatterns,
@@ -101,7 +101,7 @@ function ListView({
   files: FileInfo[];
   selectedFiles: Set<string>;
   onSelect: (path: string, multi: boolean) => void;
-  onDoubleClick: (file: FileInfo) => void;
+  onDoubleClick: (file: FileInfo, openInStandalone: boolean) => void;
   onContextMenu: (file: FileInfo, x: number, y: number) => void;
   onBackgroundContextMenu: (x: number, y: number) => void;
   onDragStart: (file: FileInfo, event: React.DragEvent<HTMLDivElement>) => void;
@@ -185,7 +185,7 @@ function ListView({
               }}
               onDoubleClick={(e) => {
                 if (suppressInteraction(e)) return;
-                onDoubleClick(file);
+                onDoubleClick(file, e.ctrlKey || e.metaKey);
               }}
               onContextMenu={(e) => {
                 e.preventDefault();
@@ -282,7 +282,7 @@ function GridView({
   files: FileInfo[];
   selectedFiles: Set<string>;
   onSelect: (path: string, multi: boolean) => void;
-  onDoubleClick: (file: FileInfo) => void;
+  onDoubleClick: (file: FileInfo, openInStandalone: boolean) => void;
   onContextMenu: (file: FileInfo, x: number, y: number) => void;
   onBackgroundContextMenu: (x: number, y: number) => void;
   onDragStart: (file: FileInfo, event: React.DragEvent<HTMLDivElement>) => void;
@@ -347,7 +347,7 @@ function GridView({
             }}
             onDoubleClick={(e) => {
               if (suppressInteraction(e)) return;
-              onDoubleClick(file);
+              onDoubleClick(file, e.ctrlKey || e.metaKey);
             }}
             onContextMenu={(e) => {
               e.preventDefault();
@@ -437,6 +437,8 @@ export function FileList() {
   } = useProjectStore();
   const showToast = useUiStore((state) => state.showToast);
   const globalExcludePatterns = useSettingsStore((state) => state.globalExcludePatterns);
+  const openFileInTab = useWorkspaceTabStore((state) => state.openFileInTab);
+  const openFileInStandaloneWindow = useWorkspaceTabStore((state) => state.openFileInStandaloneWindow);
   const {
     draggedPaths,
     startInternalDrag,
@@ -469,13 +471,8 @@ export function FileList() {
     ? tags.filter((tag) => detailsDialogTagIds.includes(tag.id))
     : [];
 
-  const handleOpenFile = useCallback(async (file: FileInfo) => {
+  const handleSystemOpenFile = useCallback(async (file: FileInfo) => {
     try {
-      if (isImageExtension(file.extension)) {
-        await openStandaloneImageViewer(file.path);
-        return;
-      }
-
       await invoke('open_file', { path: file.path });
       showToast({
         title: '已打开',
@@ -492,14 +489,40 @@ export function FileList() {
     }
   }, [showToast]);
 
-  const handleDoubleClick = useCallback(async (file: FileInfo) => {
+  const handleDoubleClick = useCallback(async (file: FileInfo, openInStandalone: boolean) => {
     if (file.is_dir) {
       await loadDirectory(file.path);
       return;
     }
-    
-    await handleOpenFile(file);
-  }, [handleOpenFile, loadDirectory]);
+
+    const openTarget = getWorkspaceOpenTarget(file.path);
+    if (!openTarget) {
+      await handleSystemOpenFile(file);
+      return;
+    }
+
+    try {
+      if (openInStandalone) {
+        const opened = await openFileInStandaloneWindow(file.path);
+        if (!opened) {
+          await handleSystemOpenFile(file);
+        }
+        return;
+      }
+
+      const tabId = await openFileInTab(file.path);
+      if (!tabId) {
+        await handleSystemOpenFile(file);
+      }
+    } catch (error) {
+      console.error('Failed to open in workspace:', error);
+      showToast({
+        title: '打开失败',
+        message: String(error),
+        tone: 'error',
+      });
+    }
+  }, [handleSystemOpenFile, loadDirectory, openFileInStandaloneWindow, openFileInTab, showToast]);
 
   const handleContextMenu = useCallback((file: FileInfo, x: number, y: number) => {
     setContextMenu({ kind: 'file', file, x, y });
@@ -749,7 +772,7 @@ export function FileList() {
           onShowDetails={handleShowDetails}
           onDelete={handleDeleteFromContextMenu}
           onCreateFolder={handleCreateFolder}
-          onOpenFile={handleOpenFile}
+          onOpenFile={handleSystemOpenFile}
         />
       )}
 

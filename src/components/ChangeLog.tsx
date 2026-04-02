@@ -131,7 +131,7 @@ export function ChangeLog() {
   }, {} as Record<string, FileChange[]>);
 
   return (
-    <div className="h-full flex flex-col bg-white dark:bg-gray-900">
+    <div className="flex h-full w-full min-w-0 flex-col bg-white dark:bg-gray-900">
       {/* 统计卡片 */}
       <div className="grid grid-cols-4 gap-4 p-4 border-b border-gray-200 dark:border-gray-700">
         <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3">

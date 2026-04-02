@@ -359,10 +359,10 @@ export function LauncherButton() {
   const [isOpen, setIsOpen] = useState(false);
   const { loadItems } = useLauncherStore();
 
-  // 监听快捷键 Ctrl+W
+  // 监听快捷键 Ctrl+Q
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key === 'w') {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'q') {
         e.preventDefault();
         setIsOpen(true);
         loadItems();
@@ -388,11 +388,11 @@ export function LauncherButton() {
                    hover:from-blue-600 hover:to-purple-700
                    text-white rounded-lg shadow-sm
                    transition-all hover:shadow-md"
-        title="快捷启动 (Ctrl+W)"
+        title="快捷启动 (Ctrl+Q)"
       >
         <Rocket className="w-4 h-4" />
         <span className="hidden sm:inline">启动</span>
-        <span className="text-xs opacity-70">Ctrl+W</span>
+        <span className="text-xs opacity-70">Ctrl+Q</span>
       </button>
 
       <LauncherPanel isOpen={isOpen} onClose={() => setIsOpen(false)} />
