@@ -14,6 +14,7 @@ interface ContextMenuProps {
   onShowDetails?: (file: FileInfo) => void;
   onDelete?: (file: FileInfo) => Promise<void> | void;
   onCreateFolder?: () => Promise<void> | void;
+  onOpenFile?: (file: FileInfo) => Promise<void> | void;
 }
 
 function useContextMenuDismiss(menuRef: React.RefObject<HTMLDivElement | null>, onClose: () => void) {
@@ -59,6 +60,7 @@ export function FileContextMenu({
   onShowDetails,
   onDelete,
   onCreateFolder,
+  onOpenFile,
 }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const { item: clipboardItem, cut, copy, paste, hasItem } = useClipboardStore();
@@ -70,6 +72,8 @@ export function FileContextMenu({
     try {
       if (file.is_dir) {
         await invoke('open_path', { path: file.path });
+      } else if (onOpenFile) {
+        await onOpenFile(file);
       } else {
         await invoke('open_file', { path: file.path });
       }

@@ -10,6 +10,8 @@ import { FileDetailsDialog } from './FileDetailsView';
 import { canMovePathsToDirectory, compactDraggedPaths, getPathLabel, joinPath } from './dragDrop';
 import { useFileDropMove } from './useFileDropMove';
 import { useInternalFileDrag } from './useInternalFileDrag';
+import { isImageExtension } from '../image-viewer/imageViewerUtils';
+import { openStandaloneImageViewer } from '../image-viewer/openStandaloneImageViewer';
 import {
   mergeExcludePatterns,
   readProjectExcludePatterns,
@@ -467,13 +469,13 @@ export function FileList() {
     ? tags.filter((tag) => detailsDialogTagIds.includes(tag.id))
     : [];
 
-  const handleDoubleClick = useCallback(async (file: FileInfo) => {
-    if (file.is_dir) {
-      await loadDirectory(file.path);
-      return;
-    }
-
+  const handleOpenFile = useCallback(async (file: FileInfo) => {
     try {
+      if (isImageExtension(file.extension)) {
+        await openStandaloneImageViewer(file.path);
+        return;
+      }
+
       await invoke('open_file', { path: file.path });
       showToast({
         title: '已打开',
@@ -482,8 +484,22 @@ export function FileList() {
       });
     } catch (error) {
       console.error('Failed to open file:', error);
+      showToast({
+        title: '打开失败',
+        message: String(error),
+        tone: 'error',
+      });
     }
-  }, [loadDirectory, showToast]);
+  }, [showToast]);
+
+  const handleDoubleClick = useCallback(async (file: FileInfo) => {
+    if (file.is_dir) {
+      await loadDirectory(file.path);
+      return;
+    }
+    
+    await handleOpenFile(file);
+  }, [handleOpenFile, loadDirectory]);
 
   const handleContextMenu = useCallback((file: FileInfo, x: number, y: number) => {
     setContextMenu({ kind: 'file', file, x, y });
@@ -733,6 +749,7 @@ export function FileList() {
           onShowDetails={handleShowDetails}
           onDelete={handleDeleteFromContextMenu}
           onCreateFolder={handleCreateFolder}
+          onOpenFile={handleOpenFile}
         />
       )}
 
