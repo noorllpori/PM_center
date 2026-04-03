@@ -143,17 +143,19 @@ function FilePreviewHeader({ file }: { file: FileInfo | null }) {
     <div className="border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
       <div className="flex justify-center px-4 py-4">
         <div className="flex w-full items-center justify-center overflow-hidden rounded-xl border border-white/70 bg-gradient-to-br from-white to-gray-100 shadow-sm dark:border-gray-700 dark:from-gray-900 dark:to-gray-800">
-          {preview.kind === 'image' && resolvedSource ? (
-            <img
-              src={resolvedSource}
-              alt={file?.name || '文件预览'}
-              className="max-h-[260px] w-full object-contain"
-              onError={() => setHasPreviewError(true)}
-            />
-          ) : preview.kind === 'image' && isImageLoading ? (
-            <div className="flex min-h-[180px] w-full items-center justify-center text-sm text-gray-500 dark:text-gray-400">
-              正在读取预览...
-            </div>
+          {preview.kind === 'image' ? (
+            resolvedSource ? (
+              <img
+                src={resolvedSource}
+                alt={file?.name || '文件预览'}
+                className="max-h-[260px] w-full object-contain"
+                onError={() => setHasPreviewError(true)}
+              />
+            ) : (
+              <div className="flex min-h-[180px] w-full items-center justify-center text-sm text-gray-500 dark:text-gray-400">
+                {isImageLoading ? '正在读取预览...' : '正在准备预览...'}
+              </div>
+            )
           ) : (
             <video
               src={preview.src}
