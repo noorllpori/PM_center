@@ -48,6 +48,8 @@ function ProjectLogsButton({ onOpen }: { onOpen: () => void }) {
 
 export function FileManager() {
   const loadSettings = useSettingsStore((state) => state.loadSettings);
+  const recentProjects = useSettingsStore((state) => state.recentProjects);
+  const autoOpenLastProject = useSettingsStore((state) => state.autoOpenLastProject);
   const addRecentProject = useSettingsStore((state) => state.addRecentProject);
   const toast = useUiStore((state) => state.toast);
   const hideToast = useUiStore((state) => state.hideToast);
@@ -64,10 +66,25 @@ export function FileManager() {
 
   const [isP2PChatOpen, setIsP2PChatOpen] = useState(false);
   const [isPythonEnvOpen, setIsPythonEnvOpen] = useState(false);
+  const [isSettingsLoaded, setIsSettingsLoaded] = useState(false);
   const sessionsRef = useRef<Map<string, ProjectSession>>(new Map());
+  const hasHandledStartupProjectRef = useRef(false);
 
   useEffect(() => {
-    void loadSettings();
+    let isActive = true;
+
+    const initializeSettings = async () => {
+      await loadSettings();
+      if (isActive) {
+        setIsSettingsLoaded(true);
+      }
+    };
+
+    void initializeSettings();
+
+    return () => {
+      isActive = false;
+    };
   }, [loadSettings]);
 
   useEffect(() => {
@@ -94,6 +111,25 @@ export function FileManager() {
 
     void session.projectStore.getState().activateProject();
   }, [activeShellTab]);
+
+  useEffect(() => {
+    if (!isSettingsLoaded || hasHandledStartupProjectRef.current) {
+      return;
+    }
+
+    hasHandledStartupProjectRef.current = true;
+
+    if (!autoOpenLastProject || recentProjects.length === 0) {
+      return;
+    }
+
+    const [latestProject] = [...recentProjects].sort((left, right) => right.openedAt - left.openedAt);
+    if (!latestProject?.path) {
+      return;
+    }
+
+    void handleOpenProject(latestProject.path);
+  }, [autoOpenLastProject, isSettingsLoaded, recentProjects]);
 
   const activeProjectSession = activeShellTab?.type === 'project' && activeShellTab.projectPath
     ? sessionsRef.current.get(normalizeProjectPath(activeShellTab.projectPath)) ?? null
@@ -190,7 +226,16 @@ export function FileManager() {
           >
             <MessageCircle className="w-5 h-5" />
           </button>
-          <TaskButton />
+          {activeProjectSession ? (
+            <ProjectSessionProvider
+              projectStore={activeProjectSession.projectStore}
+              workspaceTabStore={activeProjectSession.workspaceTabStore}
+            >
+              <TaskButton />
+            </ProjectSessionProvider>
+          ) : (
+            <TaskButton />
+          )}
           <LauncherButton />
         </div>
       </div>
