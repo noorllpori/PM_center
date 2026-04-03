@@ -22,14 +22,18 @@ pub struct P2PUser {
     pub id: String,
     pub name: String,
     pub ip: String,
+    #[serde(alias = "lastSeen")]
     pub last_seen: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct P2PMessage {
     pub id: String,
+    #[serde(alias = "fromId")]
     pub from_id: String,
+    #[serde(alias = "fromName")]
     pub from_name: String,
+    #[serde(alias = "toId")]
     pub to_id: Option<String>, // None 表示广播
     pub content: String,
     pub timestamp: u64,
@@ -268,6 +272,8 @@ fn receive_discovery_broadcast(
                     if user_id == locked.user_id {
                         continue;
                     }
+
+                    let previous_user = locked.online_users.get(&user_id).cloned();
                     
                     let user = P2PUser {
                         id: user_id.clone(),
@@ -275,8 +281,16 @@ fn receive_discovery_broadcast(
                         ip: addr.ip().to_string(),
                         last_seen: now_millis(),
                     };
-                    
-                    println!("[P2P] 发现用户: {} ({}) @ {}", user.name, user.id, user.ip);
+
+                    let is_new_user = previous_user.is_none();
+                    let user_changed = previous_user
+                        .map(|existing| existing.name != user.name || existing.ip != user.ip)
+                        .unwrap_or(false);
+
+                    if is_new_user || user_changed {
+                        println!("[P2P] 发现用户: {} ({}) @ {}", user.name, user.id, user.ip);
+                    }
+
                     locked.online_users.insert(user_id, user);
                 }
             }

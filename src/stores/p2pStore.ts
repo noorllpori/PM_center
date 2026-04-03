@@ -19,6 +19,26 @@ export interface P2PMessage {
   timestamp: number;
 }
 
+interface RawP2PUser {
+  id: string;
+  name: string;
+  ip: string;
+  lastSeen?: number;
+  last_seen?: number;
+}
+
+interface RawP2PMessage {
+  id: string;
+  fromId?: string;
+  from_id?: string;
+  fromName?: string;
+  from_name?: string;
+  toId?: string | null;
+  to_id?: string | null;
+  content: string;
+  timestamp: number;
+}
+
 interface P2PState {
   // 当前用户
   userId: string | null;
@@ -59,6 +79,26 @@ const STORE_FILE = 'p2p-settings.json';
 const USER_ID_KEY = 'p2p-user-id';
 const USER_NAME_KEY = 'p2p-user-name';
 let p2pEventListenersInitialized = false;
+
+function normalizeP2PUser(user: RawP2PUser): P2PUser {
+  return {
+    id: user.id,
+    name: user.name,
+    ip: user.ip,
+    lastSeen: user.lastSeen ?? user.last_seen ?? Date.now(),
+  };
+}
+
+function normalizeP2PMessage(message: RawP2PMessage): P2PMessage {
+  return {
+    id: message.id,
+    fromId: message.fromId ?? message.from_id ?? '',
+    fromName: message.fromName ?? message.from_name ?? '未知用户',
+    toId: message.toId ?? message.to_id ?? null,
+    content: message.content,
+    timestamp: message.timestamp,
+  };
+}
 
 // 生成 UUID
 function generateUUID(): string {
@@ -149,7 +189,7 @@ export const useP2PStore = create<P2PState>((set, get) => ({
   },
 
   updateOnlineUsers: (users: P2PUser[]) => {
-    set({ onlineUsers: users });
+    set({ onlineUsers: users.map(normalizeP2PUser) });
   },
 
   removeOfflineUsers: () => {
@@ -217,12 +257,12 @@ function setupEventListeners(
   p2pEventListenersInitialized = true;
 
   // 监听新消息
-  void listen<P2PMessage>('p2p-message', (event) => {
-    onMessage(event.payload);
+  void listen<RawP2PMessage>('p2p-message', (event) => {
+    onMessage(normalizeP2PMessage(event.payload));
   });
   
   // 监听在线用户更新
-  void listen<{ users: P2PUser[] }>('p2p-users', (event) => {
-    onUsersUpdate(event.payload.users);
+  void listen<{ users: RawP2PUser[] }>('p2p-users', (event) => {
+    onUsersUpdate(event.payload.users.map(normalizeP2PUser));
   });
 }
