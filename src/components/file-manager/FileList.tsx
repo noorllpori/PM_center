@@ -13,6 +13,7 @@ import { canMovePathsToDirectory, compactDraggedPaths, getPathLabel, joinPath } 
 import { useFileDropMove } from './useFileDropMove';
 import { useInternalFileDrag } from './useInternalFileDrag';
 import { getWorkspaceOpenTarget, isTextExtension, isVideoExtension } from '../workspace/fileOpeners';
+import { isImageExtension } from '../image-viewer/imageViewerUtils';
 import {
   mergeExcludePatterns,
   readProjectExcludePatterns,
@@ -54,7 +55,7 @@ function getFileIcon(file: FileInfo) {
   const ext = file.extension?.toLowerCase();
   
   // 图片
-  if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'exr', 'hdr'].includes(ext || '')) {
+  if (isImageExtension(ext)) {
     return <Image className="w-5 h-5 text-purple-500" />;
   }
   

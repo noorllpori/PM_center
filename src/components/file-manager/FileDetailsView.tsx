@@ -4,6 +4,8 @@ import { Box, ExternalLink, FileIcon, FileText, Film, FolderIcon, Hash, Image, M
 import { Dialog } from '../Dialog';
 import { FileDetailsResponse, FileInfo, Tag } from '../../types';
 import { useFileDetails } from './useFileDetails';
+import { isImageExtension } from '../image-viewer/imageViewerUtils';
+import { useResolvedImageSource } from '../image-viewer/useResolvedImageSource';
 
 interface FileDetailsContentProps {
   file: FileInfo | null;
@@ -19,9 +21,9 @@ interface FileDetailsDialogProps {
   onClose: () => void;
 }
 
-const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'exr', 'hdr', 'tif', 'tiff', 'svg']);
 const AUDIO_EXTENSIONS = new Set(['mp3', 'flac', 'wav', 'ogg', 'opus', 'm4a', 'aac']);
 const VIDEO_EXTENSIONS = new Set(['mp4', 'm4v', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'flv', 'mpeg', 'mpg', 'm2ts']);
+const DIRECT_PREVIEW_IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'exr', 'hdr', 'tif', 'tiff', 'svg', 'psd']);
 const TEXT_EXTENSIONS = new Set([
   'txt', 'md', 'markdown', 'mdx', 'csv', 'tsv', 'json', 'jsonc', 'xml',
   'py', 'pyi', 'pyw', 'js', 'mjs', 'cjs', 'ts', 'mts', 'cts', 'tsx', 'jsx',
@@ -48,7 +50,7 @@ function getFileIcon(file: FileInfo | null) {
 
   const ext = getFileExtension(file);
 
-  if (IMAGE_EXTENSIONS.has(ext)) {
+  if (isImageExtension(ext)) {
     return <Image className="w-16 h-16 text-purple-500" />;
   }
 
@@ -99,8 +101,8 @@ function getFilePreview(file: FileInfo | null): { kind: 'image' | 'video'; src: 
     return null;
   }
 
-  if (IMAGE_EXTENSIONS.has(ext)) {
-    return { kind: 'image', src };
+  if (DIRECT_PREVIEW_IMAGE_EXTENSIONS.has(ext)) {
+    return { kind: 'image', src: file.path };
   }
 
   if (VIDEO_EXTENSIONS.has(ext)) {
@@ -112,11 +114,22 @@ function getFilePreview(file: FileInfo | null): { kind: 'image' | 'video'; src: 
 
 function FilePreviewHeader({ file }: { file: FileInfo | null }) {
   const preview = useMemo(() => getFilePreview(file), [file]);
+  const {
+    resolvedSource,
+    isLoading: isImageLoading,
+    errorMessage: imageErrorMessage,
+  } = useResolvedImageSource(preview?.kind === 'image' ? preview.src : '');
   const [hasPreviewError, setHasPreviewError] = useState(false);
 
   useEffect(() => {
     setHasPreviewError(false);
   }, [preview?.kind, preview?.src, file?.path]);
+
+  useEffect(() => {
+    if (preview?.kind === 'image' && imageErrorMessage) {
+      setHasPreviewError(true);
+    }
+  }, [imageErrorMessage, preview?.kind]);
 
   if (!preview || hasPreviewError) {
     return (
@@ -130,13 +143,17 @@ function FilePreviewHeader({ file }: { file: FileInfo | null }) {
     <div className="border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
       <div className="flex justify-center px-4 py-4">
         <div className="flex w-full items-center justify-center overflow-hidden rounded-xl border border-white/70 bg-gradient-to-br from-white to-gray-100 shadow-sm dark:border-gray-700 dark:from-gray-900 dark:to-gray-800">
-          {preview.kind === 'image' ? (
+          {preview.kind === 'image' && resolvedSource ? (
             <img
-              src={preview.src}
+              src={resolvedSource}
               alt={file?.name || '文件预览'}
               className="max-h-[260px] w-full object-contain"
               onError={() => setHasPreviewError(true)}
             />
+          ) : preview.kind === 'image' && isImageLoading ? (
+            <div className="flex min-h-[180px] w-full items-center justify-center text-sm text-gray-500 dark:text-gray-400">
+              正在读取预览...
+            </div>
           ) : (
             <video
               src={preview.src}

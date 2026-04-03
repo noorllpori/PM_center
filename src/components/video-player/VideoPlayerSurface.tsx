@@ -50,11 +50,16 @@ export function VideoPlayerSurface({
       <div className="flex min-h-0 flex-1 items-center justify-center p-3">
         <div className="relative flex h-full w-full items-center justify-center overflow-hidden rounded-xl border border-white/10 bg-black shadow-2xl">
           <div
-            className={`pointer-events-none absolute left-3 right-3 top-3 z-10 transition-all duration-200 ${
-              showTitleInToolbar ? 'opacity-0 group-hover:opacity-100 translate-y-0 group-hover:translate-y-0' : 'hidden'
+            className={`${showTitleInToolbar ? 'peer' : 'hidden'} absolute inset-x-0 top-0 z-20 h-16`}
+            aria-hidden="true"
+          />
+
+          <div
+            className={`pointer-events-none absolute left-3 right-3 top-0 z-10 transition-all duration-200 ${
+              showTitleInToolbar ? 'opacity-0 -translate-y-2 peer-hover:translate-y-0 peer-hover:opacity-100' : 'hidden'
             }`}
           >
-            <div className="rounded-xl border border-white/10 bg-black/60 px-3 py-2 backdrop-blur-md">
+            <div className="rounded-b-xl border border-white/10 border-t-0 bg-black/60 px-3 py-2 backdrop-blur-md">
               <div className="flex items-center gap-2">
                 <PlayCircle className="h-4 w-4 shrink-0 text-red-400" />
                 <p className="truncate text-sm font-medium text-white/95">

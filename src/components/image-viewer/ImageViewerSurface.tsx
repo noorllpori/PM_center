@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { readFile } from '@tauri-apps/plugin-fs';
 import { Image as ImageIcon, Maximize, RefreshCw, RotateCw, ZoomIn, ZoomOut } from 'lucide-react';
 import { TransformComponent, TransformWrapper, type ReactZoomPanPinchContentRef } from 'react-zoom-pan-pinch';
-import { getImageMimeType } from './imageViewerUtils';
+import { useResolvedImageSource } from './useResolvedImageSource';
 
 interface ImageViewerSurfaceProps {
   title: string;
@@ -17,79 +16,6 @@ const WHEEL_SMOOTH_STEP = 0.0012;
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
-}
-
-function isDirectBrowserSource(source: string): boolean {
-  return /^(asset:|blob:|data:|https?:|http:\/\/asset\.localhost)/i.test(source);
-}
-
-function useResolvedImageSource(source: string) {
-  const [resolvedSource, setResolvedSource] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-
-  useEffect(() => {
-    let isActive = true;
-    let objectUrl: string | null = null;
-
-    async function loadSource() {
-      if (!source) {
-        setResolvedSource(null);
-        setErrorMessage('没有可显示的图片路径。');
-        setIsLoading(false);
-        return;
-      }
-
-      if (isDirectBrowserSource(source)) {
-        setResolvedSource(source);
-        setErrorMessage(null);
-        setIsLoading(false);
-        return;
-      }
-
-      setIsLoading(true);
-      setErrorMessage(null);
-
-      try {
-        const bytes = await readFile(source);
-        if (!isActive) {
-          return;
-        }
-
-        const blob = new Blob([bytes], {
-          type: getImageMimeType(source),
-        });
-        objectUrl = URL.createObjectURL(blob);
-        setResolvedSource(objectUrl);
-      } catch (error) {
-        if (!isActive) {
-          return;
-        }
-
-        setResolvedSource(null);
-        setErrorMessage(`读取图片失败：${String(error)}`);
-      } finally {
-        if (isActive) {
-          setIsLoading(false);
-        }
-      }
-    }
-
-    void loadSource();
-
-    return () => {
-      isActive = false;
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl);
-      }
-    };
-  }, [source]);
-
-  return {
-    resolvedSource,
-    isLoading,
-    errorMessage,
-  };
 }
 
 export function ImageViewerSurface({

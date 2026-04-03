@@ -2,6 +2,7 @@ import { useWindowStore, type WindowContentType } from '../../stores/windowStore
 import { WindowFrame, WindowTaskbar } from './WindowFrame';
 import { CodeEditorWindow, createCodeEditorWindow } from './CodeEditorWindow';
 import { ImageViewerWindow, createImageViewerWindow } from './ImageViewerWindow';
+import { isImageExtension } from '../image-viewer/imageViewerUtils';
 
 // 窗口内容组件映射
 const windowContentComponents: Record<WindowContentType, React.FC<{ windowInstance: import('../../stores/windowStore').WindowInstance }>> = {
@@ -60,8 +61,7 @@ export function openFile(
   const fileName = filePath.split('/').pop() || filePath.split('\\').pop() || 'Untitled';
 
   // 图片文件
-  const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg'];
-  if (imageExts.includes(ext || '')) {
+  if (isImageExtension(ext)) {
     return createImageViewerWindow(createWindow, {
       title: fileName,
       imageUrl: filePath, // 需要转换为实际可访问的 URL

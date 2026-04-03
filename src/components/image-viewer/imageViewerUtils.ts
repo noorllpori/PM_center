@@ -8,6 +8,7 @@ export const IMAGE_FILE_EXTENSIONS = new Set([
   'jpeg',
   'jpg',
   'png',
+  'psd',
   'svg',
   'tif',
   'tiff',
@@ -36,12 +37,21 @@ export function isImageExtension(extension?: string | null): boolean {
   return !!extension && IMAGE_FILE_EXTENSIONS.has(extension.toLowerCase());
 }
 
-export function getImageMimeType(pathOrExtension: string): string {
-  const normalized = pathOrExtension
-    .split('.')
+export function isPsdExtension(extension?: string | null): boolean {
+  return !!extension && extension.toLowerCase() === 'psd';
+}
+
+export function getImageExtension(pathOrExtension: string): string {
+  return pathOrExtension
+    .split(/[\\/]/)
+    .pop()
+    ?.split('.')
     .pop()
     ?.toLowerCase() || '';
+}
+
+export function getImageMimeType(pathOrExtension: string): string {
+  const normalized = getImageExtension(pathOrExtension);
 
   return IMAGE_MIME_TYPES[normalized] || 'application/octet-stream';
 }
-
