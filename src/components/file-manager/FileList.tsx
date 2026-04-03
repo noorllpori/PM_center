@@ -8,6 +8,7 @@ import { useWorkspaceTabStore } from '../../stores/workspaceTabStore';
 import { FileIcon, FolderIcon, Image, Film, FileText, Box } from 'lucide-react';
 import { CurrentDirectoryContextMenu, FileContextMenu } from './FileContextMenu';
 import { FileDetailsDialog } from './FileDetailsView';
+import { InputDialog } from '../Dialog';
 import { canMovePathsToDirectory, compactDraggedPaths, getPathLabel, joinPath } from './dragDrop';
 import { useFileDropMove } from './useFileDropMove';
 import { useInternalFileDrag } from './useInternalFileDrag';
@@ -476,6 +477,12 @@ export function FileList() {
     | null
   >(null);
   const [detailsDialogFile, setDetailsDialogFile] = useState<FileInfo | null>(null);
+  const [createFolderDialog, setCreateFolderDialog] = useState({
+    isOpen: false,
+    suggestedName: '',
+    folderName: '',
+  });
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
 
   const displayFiles = searchQuery ? searchResults : files;
   const excludePatterns = projectPath
@@ -543,8 +550,13 @@ export function FileList() {
   }, [handleSystemOpenFile, loadDirectory, openFileInStandaloneWindow, openFileInTab, showToast]);
 
   const handleContextMenu = useCallback((file: FileInfo, x: number, y: number) => {
+    if (!selectedFiles.has(file.path)) {
+      projectStore.setState({
+        selectedFiles: new Set([file.path]),
+      });
+    }
     setContextMenu({ kind: 'file', file, x, y });
-  }, []);
+  }, [projectStore, selectedFiles]);
 
   const handleBackgroundContextMenu = useCallback((x: number, y: number) => {
     clearSelection();
@@ -587,30 +599,75 @@ export function FileList() {
 
     try {
       const suggestedName = await getSuggestedFolderName(currentPath);
-      const folderName = prompt('文件夹名称:', suggestedName)?.trim();
+      setCreateFolderDialog({
+        isOpen: true,
+        suggestedName,
+        folderName: suggestedName,
+      });
+    } catch (error) {
+      console.error('Failed to open create folder dialog:', error);
+      showToast({
+        title: '创建失败',
+        message: String(error),
+        tone: 'error',
+      });
+    }
+  }, [currentPath, getSuggestedFolderName, showToast]);
 
-      if (!folderName) {
-        return;
-      }
+  const handleCloseCreateFolderDialog = useCallback(() => {
+    if (isCreatingFolder) {
+      return;
+    }
 
-      if (/[\\/]/.test(folderName)) {
-        showToast({
-          title: '创建失败',
-          message: '文件夹名称不能包含路径分隔符。',
-          tone: 'error',
-        });
-        return;
-      }
+    setCreateFolderDialog((state) => ({
+      ...state,
+      isOpen: false,
+    }));
+  }, [isCreatingFolder]);
 
-      if (folderName === '.' || folderName === '..') {
-        showToast({
-          title: '创建失败',
-          message: '请输入有效的文件夹名称。',
-          tone: 'error',
-        });
-        return;
-      }
+  const handleCreateFolderNameChange = useCallback((folderName: string) => {
+    setCreateFolderDialog((state) => ({
+      ...state,
+      folderName,
+    }));
+  }, []);
 
+  const handleConfirmCreateFolder = useCallback(async (rawFolderName: string) => {
+    if (!currentPath) {
+      return;
+    }
+
+    const folderName = rawFolderName.trim();
+
+    if (!folderName) {
+      showToast({
+        title: '创建失败',
+        message: '请输入文件夹名称。',
+        tone: 'error',
+      });
+      return;
+    }
+
+    if (/[\\/]/.test(folderName)) {
+      showToast({
+        title: '创建失败',
+        message: '文件夹名称不能包含路径分隔符。',
+        tone: 'error',
+      });
+      return;
+    }
+
+    if (folderName === '.' || folderName === '..') {
+      showToast({
+        title: '创建失败',
+        message: '请输入有效的文件夹名称。',
+        tone: 'error',
+      });
+      return;
+    }
+
+    setIsCreatingFolder(true);
+    try {
       const targetPath = joinPath(currentPath, folderName);
       const exists = await invoke<boolean>('path_exists', { path: targetPath });
 
@@ -625,6 +682,10 @@ export function FileList() {
 
       await invoke('create_directory', { path: targetPath });
       await refresh();
+      setCreateFolderDialog((state) => ({
+        ...state,
+        isOpen: false,
+      }));
       showToast({
         title: '文件夹已创建',
         message: folderName,
@@ -637,8 +698,10 @@ export function FileList() {
         message: String(error),
         tone: 'error',
       });
+    } finally {
+      setIsCreatingFolder(false);
     }
-  }, [currentPath, getSuggestedFolderName, refresh, showToast]);
+  }, [currentPath, refresh, showToast]);
 
   const handleDelete = useCallback(async (targetPaths: string[]) => {
     const paths = compactDraggedPaths(targetPaths);
@@ -803,7 +866,10 @@ export function FileList() {
         <CurrentDirectoryContextMenu
           x={contextMenu.x}
           y={contextMenu.y}
+          currentPath={currentPath || ''}
+          projectPath={projectPath || ''}
           onClose={handleCloseContextMenu}
+          onRefresh={handleRefresh}
           onCreateFolder={handleCreateFolder}
         />
       )}
@@ -813,6 +879,24 @@ export function FileList() {
         fileTagList={detailsDialogTagList}
         isOpen={!!detailsDialogFile}
         onClose={handleCloseDetailsDialog}
+      />
+
+      <InputDialog
+        isOpen={createFolderDialog.isOpen}
+        onClose={handleCloseCreateFolderDialog}
+        onConfirm={handleConfirmCreateFolder}
+        title="新建文件夹"
+        label="文件夹名称"
+        value={createFolderDialog.folderName}
+        onChange={handleCreateFolderNameChange}
+        confirmText={isCreatingFolder ? '创建中...' : '创建'}
+        disabled={isCreatingFolder}
+        description={
+          createFolderDialog.suggestedName
+            ? `默认名称：${createFolderDialog.suggestedName}`
+            : undefined
+        }
+        selectOnOpen
       />
 
       {conflictDialog}

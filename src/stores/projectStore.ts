@@ -309,12 +309,8 @@ export function createProjectStore() {
             newSelection.add(path);
           }
         } else {
-          if (newSelection.has(path) && newSelection.size === 1) {
-            newSelection.clear();
-          } else {
-            newSelection.clear();
-            newSelection.add(path);
-          }
+          newSelection.clear();
+          newSelection.add(path);
         }
 
         return { selectedFiles: newSelection };

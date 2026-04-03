@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::ffi::OsStr;
 #[cfg(windows)]
+use base64::Engine;
+#[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -53,6 +55,156 @@ pub struct ProjectInfo {
     pub name: String,
     pub path: String,
     pub root_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemClipboardStatus {
+    #[serde(rename = "hasFiles")]
+    pub has_files: bool,
+    #[serde(rename = "hasImage")]
+    pub has_image: bool,
+}
+
+#[cfg(windows)]
+fn read_system_clipboard_status() -> Result<SystemClipboardStatus, String> {
+    let script = r#"
+Add-Type -AssemblyName System.Windows.Forms
+$utf8 = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = $utf8
+$OutputEncoding = $utf8
+$result = @{
+  hasFiles = [System.Windows.Forms.Clipboard]::ContainsFileDropList()
+  hasImage = [System.Windows.Forms.Clipboard]::ContainsImage()
+}
+ConvertTo-Json -InputObject $result -Compress
+"#;
+
+    let output = std_command("powershell")
+        .args(["-NoProfile", "-STA", "-Command", script])
+        .output()
+        .map_err(|e| format!("读取系统剪贴板失败: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "读取系统剪贴板失败".to_string()
+        } else {
+            stderr
+        });
+    }
+
+    serde_json::from_slice::<SystemClipboardStatus>(&output.stdout)
+        .map_err(|e| format!("解析系统剪贴板状态失败: {}", e))
+}
+
+#[cfg(not(windows))]
+fn read_system_clipboard_status() -> Result<SystemClipboardStatus, String> {
+    Ok(SystemClipboardStatus {
+        has_files: false,
+        has_image: false,
+    })
+}
+
+#[cfg(windows)]
+fn read_system_clipboard_file_list() -> Result<Vec<PathBuf>, String> {
+    let script = r#"
+Add-Type -AssemblyName System.Windows.Forms
+$utf8 = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = $utf8
+$OutputEncoding = $utf8
+if (-not [System.Windows.Forms.Clipboard]::ContainsFileDropList()) {
+  '[]'
+  exit 0
+}
+$files = @(
+  [System.Windows.Forms.Clipboard]::GetFileDropList() |
+    ForEach-Object { [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($_)) }
+)
+ConvertTo-Json -InputObject @($files) -Compress
+"#;
+
+    let output = std_command("powershell")
+        .args(["-NoProfile", "-STA", "-Command", script])
+        .output()
+        .map_err(|e| format!("读取系统剪贴板文件失败: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "读取系统剪贴板文件失败".to_string()
+        } else {
+            stderr
+        });
+    }
+
+    let encoded_paths = serde_json::from_slice::<Vec<String>>(&output.stdout)
+        .map_err(|e| format!("解析系统剪贴板文件失败: {}", e))?;
+
+    encoded_paths
+        .into_iter()
+        .map(|encoded_path| {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(encoded_path)
+                .map_err(|e| format!("解码系统剪贴板文件路径失败: {}", e))?;
+            let path = String::from_utf8(bytes)
+                .map_err(|e| format!("系统剪贴板文件路径编码无效: {}", e))?;
+            Ok(PathBuf::from(path))
+        })
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn read_system_clipboard_file_list() -> Result<Vec<PathBuf>, String> {
+    Ok(Vec::new())
+}
+
+#[cfg(windows)]
+fn save_system_clipboard_image(target_path: &PathBuf) -> Result<(), String> {
+    let output = std_command("powershell")
+        .env("PM_CENTER_CLIPBOARD_IMAGE_PATH", target_path.to_string_lossy().to_string())
+        .args([
+            "-NoProfile",
+            "-STA",
+            "-Command",
+            r#"
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$outputPath = $env:PM_CENTER_CLIPBOARD_IMAGE_PATH
+if ([string]::IsNullOrWhiteSpace($outputPath)) {
+  throw '缺少剪贴板图片输出路径'
+}
+if (-not [System.Windows.Forms.Clipboard]::ContainsImage()) {
+  throw '剪贴板中没有图片'
+}
+$image = [System.Windows.Forms.Clipboard]::GetImage()
+if ($null -eq $image) {
+  throw '读取剪贴板图片失败'
+}
+try {
+  $image.Save($outputPath, [System.Drawing.Imaging.ImageFormat]::Png)
+} finally {
+  $image.Dispose()
+}
+"#,
+        ])
+        .output()
+        .map_err(|e| format!("保存剪贴板图片失败: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "保存剪贴板图片失败".to_string()
+        } else {
+            stderr
+        });
+    }
+
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn save_system_clipboard_image(_target_path: &PathBuf) -> Result<(), String> {
+    Err("当前平台暂不支持系统剪贴板图片粘贴".to_string())
 }
 
 // 格式化时间为 ISO 8601 字符串
@@ -600,37 +752,88 @@ pub async fn move_file(source: String, target: String) -> Result<(), String> {
         .map(|_| ())
 }
 
-// 复制文件或目录
-#[tauri::command]
-pub async fn copy_file(source: String, target: String) -> Result<(), String> {
-    let source_path = PathBuf::from(&source);
+async fn copy_path_to_directory(
+    source_path: PathBuf,
+    target_dir: PathBuf,
+    rename_on_conflict: bool,
+) -> Result<PathBuf, String> {
     let file_name = source_path.file_name()
         .ok_or("Invalid source path")?
         .to_string_lossy()
         .to_string();
-    
-    let target_path = PathBuf::from(&target).join(&file_name);
-    
-    // 检查目标是否已存在
+
+    let mut target_path = target_dir.join(&file_name);
+
     if target_path.exists() {
-        return Err("目标位置已存在同名文件".to_string());
+        if rename_on_conflict {
+            target_path = build_renamed_path(&target_path);
+        } else {
+            return Err("目标位置已存在同名文件".to_string());
+        }
     }
-    
-    let metadata = tokio::fs::metadata(&source)
+
+    let metadata = tokio::fs::metadata(&source_path)
         .await
         .map_err(|e| e.to_string())?;
-    
+
     if metadata.is_dir() {
-        // 递归复制目录
-        copy_dir_recursive(source_path, target_path).await?;
+        copy_dir_recursive(source_path, target_path.clone()).await?;
     } else {
-        // 复制文件
-        tokio::fs::copy(&source, &target_path)
+        tokio::fs::copy(&source_path, &target_path)
             .await
             .map_err(|e| e.to_string())?;
     }
-    
+
+    Ok(target_path)
+}
+
+// 复制文件或目录
+#[tauri::command]
+pub async fn copy_file(source: String, target: String) -> Result<(), String> {
+    copy_path_to_directory(PathBuf::from(source), PathBuf::from(target), false)
+        .await?;
+
     Ok(())
+}
+
+#[tauri::command]
+pub async fn get_system_clipboard_status() -> Result<SystemClipboardStatus, String> {
+    read_system_clipboard_status()
+}
+
+#[tauri::command]
+pub async fn paste_system_clipboard(target_dir: String) -> Result<Vec<String>, String> {
+    let target_dir_path = PathBuf::from(&target_dir);
+    let metadata = tokio::fs::metadata(&target_dir_path)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !metadata.is_dir() {
+        return Err("目标位置不是文件夹".to_string());
+    }
+
+    let status = read_system_clipboard_status()?;
+    let mut pasted_paths = Vec::new();
+
+    if status.has_files {
+        for source_path in read_system_clipboard_file_list()? {
+            let pasted_path = copy_path_to_directory(source_path, target_dir_path.clone(), true).await?;
+            pasted_paths.push(pasted_path.to_string_lossy().to_string());
+        }
+        return Ok(pasted_paths);
+    }
+
+    if status.has_image {
+        let mut target_path = target_dir_path.join("粘贴的图像.png");
+        if target_path.exists() {
+            target_path = build_renamed_path(&target_path);
+        }
+        save_system_clipboard_image(&target_path)?;
+        pasted_paths.push(target_path.to_string_lossy().to_string());
+        return Ok(pasted_paths);
+    }
+
+    Err("系统剪贴板中没有可粘贴的文件或图片".to_string())
 }
 
 // 递归复制目录

@@ -1,8 +1,14 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { FileInfo } from '../../types';
 import { FolderOpen, Trash2, Copy, FileEdit, Scissors, ClipboardCopy, ExternalLink, Info, FileInput, FolderPlus } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useClipboardStore } from '../../stores/clipboardStore';
+import { useUiStore } from '../../stores/uiStore';
+
+interface SystemClipboardStatus {
+  hasFiles: boolean;
+  hasImage: boolean;
+}
 
 interface ContextMenuProps {
   file: FileInfo;
@@ -66,8 +72,34 @@ export function FileContextMenu({
 }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const { item: clipboardItem, cut, copy, paste, hasItem } = useClipboardStore();
+  const showToast = useUiStore((state) => state.showToast);
+  const [systemClipboardStatus, setSystemClipboardStatus] = useState<SystemClipboardStatus>({
+    hasFiles: false,
+    hasImage: false,
+  });
 
   useContextMenuDismiss(menuRef, onClose);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    const loadSystemClipboardStatus = async () => {
+      try {
+        const status = await invoke<SystemClipboardStatus>('get_system_clipboard_status');
+        if (!isCancelled) {
+          setSystemClipboardStatus(status);
+        }
+      } catch (error) {
+        console.error('Failed to get system clipboard status:', error);
+      }
+    };
+
+    void loadSystemClipboardStatus();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
 
   // 打开文件/文件夹
   const handleOpen = async () => {
@@ -130,10 +162,29 @@ export function FileContextMenu({
   // 粘贴
   const handlePaste = async () => {
     const targetDir = file.is_dir ? file.path : currentPath;
-    const success = await paste(targetDir, projectPath);
-    if (success) {
-      onRefresh?.();
+
+    try {
+      let success = false;
+
+      if (clipboardItem) {
+        success = await paste(targetDir, projectPath);
+      } else {
+        const pastedPaths = await invoke<string[]>('paste_system_clipboard', { targetDir });
+        success = pastedPaths.length > 0;
+      }
+
+      if (success) {
+        onRefresh?.();
+      }
+    } catch (error) {
+      console.error('Failed to paste:', error);
+      showToast({
+        title: '粘贴失败',
+        message: String(error),
+        tone: 'error',
+      });
     }
+
     onClose();
   };
 
@@ -185,7 +236,8 @@ export function FileContextMenu({
     onClose();
   };
 
-  const canPaste = hasItem() && (file.is_dir || !!clipboardItem);
+  const hasSystemPasteSource = systemClipboardStatus.hasFiles || systemClipboardStatus.hasImage;
+  const canPaste = hasItem() || hasSystemPasteSource;
   const isCutItem = clipboardItem?.action === 'cut' && clipboardItem?.path === file.path;
   const menuStyle = getMenuStyle(x, y, 420);
 
@@ -279,18 +331,52 @@ export function FileContextMenu({
 interface CurrentDirectoryContextMenuProps {
   x: number;
   y: number;
+  currentPath: string;
+  projectPath: string;
   onClose: () => void;
+  onRefresh?: () => void;
   onCreateFolder: () => Promise<void> | void;
 }
 
 export function CurrentDirectoryContextMenu({
   x,
   y,
+  currentPath,
+  projectPath,
   onClose,
+  onRefresh,
   onCreateFolder,
 }: CurrentDirectoryContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
+  const { item: clipboardItem, paste, hasItem } = useClipboardStore();
+  const showToast = useUiStore((state) => state.showToast);
+  const [systemClipboardStatus, setSystemClipboardStatus] = useState<SystemClipboardStatus>({
+    hasFiles: false,
+    hasImage: false,
+  });
+
   useContextMenuDismiss(menuRef, onClose);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    const loadSystemClipboardStatus = async () => {
+      try {
+        const status = await invoke<SystemClipboardStatus>('get_system_clipboard_status');
+        if (!isCancelled) {
+          setSystemClipboardStatus(status);
+        }
+      } catch (error) {
+        console.error('Failed to get system clipboard status:', error);
+      }
+    };
+
+    void loadSystemClipboardStatus();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
 
   const handleCreateFolder = async () => {
     try {
@@ -301,12 +387,50 @@ export function CurrentDirectoryContextMenu({
     onClose();
   };
 
+  const handlePaste = async () => {
+    try {
+      let success = false;
+
+      if (clipboardItem) {
+        success = await paste(currentPath, projectPath);
+      } else {
+        const pastedPaths = await invoke<string[]>('paste_system_clipboard', { targetDir: currentPath });
+        success = pastedPaths.length > 0;
+      }
+
+      if (success) {
+        onRefresh?.();
+      }
+    } catch (error) {
+      console.error('Failed to paste:', error);
+      showToast({
+        title: '粘贴失败',
+        message: String(error),
+        tone: 'error',
+      });
+    }
+    onClose();
+  };
+
+  const hasSystemPasteSource = systemClipboardStatus.hasFiles || systemClipboardStatus.hasImage;
+  const canPaste = hasItem() || hasSystemPasteSource;
+
   return (
     <div
       ref={menuRef}
       className="bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 py-1 min-w-[180px]"
-      style={getMenuStyle(x, y, 120)}
+      style={getMenuStyle(x, y, 160)}
     >
+      <MenuItem
+        onClick={handlePaste}
+        icon={<FileInput className="w-4 h-4" />}
+        disabled={!canPaste}
+      >
+        粘贴
+      </MenuItem>
+
+      <MenuDivider />
+
       <MenuItem onClick={handleCreateFolder} icon={<FolderPlus className="w-4 h-4" />}>
         新建文件夹
       </MenuItem>

@@ -854,6 +854,8 @@ pub fn run() {
             fs::copy_file,
             fs::rename_file,
             fs::path_exists,
+            fs::get_system_clipboard_status,
+            fs::paste_system_clipboard,
             fs::get_file_property,
             fs::read_file,
             get_file_details,

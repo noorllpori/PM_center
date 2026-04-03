@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
+import { useUiStore } from './uiStore';
 
 type ClipboardAction = 'cut' | 'copy';
 
@@ -63,7 +64,11 @@ export const useClipboardStore = create<ClipboardState>((set, get) => ({
       const message = String(error).startsWith('PM_CONFLICT:')
         ? '目标位置已存在同名文件'
         : '操作失败: ' + error;
-      alert(message);
+      useUiStore.getState().showToast({
+        title: '粘贴失败',
+        message,
+        tone: 'error',
+      });
       return false;
     }
   },
