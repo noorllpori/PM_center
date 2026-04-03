@@ -39,14 +39,14 @@ function getProjectDatePrefix(date = new Date()): string {
 
 interface WelcomeScreenProps {
   onOpenProject: (path: string) => Promise<void> | void;
+  settingsLoaded: boolean;
 }
 
-export function WelcomeScreen({ onOpenProject }: WelcomeScreenProps) {
+export function WelcomeScreen({ onOpenProject, settingsLoaded }: WelcomeScreenProps) {
   const { 
     recentProjects, 
     projectsRootDir,
     ignoredProjects,
-    loadSettings, 
     removeRecentProject,
     clearAllRecentProjects,
     setProjectsRootDir,
@@ -61,7 +61,7 @@ export function WelcomeScreen({ onOpenProject }: WelcomeScreenProps) {
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
   const [isCreating, setIsCreating] = useState(false);
-  const [activeTab, setActiveTab] = useState<'recent' | 'projects'>('projects');
+  const [activeTab, setActiveTab] = useState<'recent' | 'projects'>('recent');
   const [showIgnoredList, setShowIgnoredList] = useState(false);
   
   // 弹窗状态
@@ -124,11 +124,6 @@ export function WelcomeScreen({ onOpenProject }: WelcomeScreenProps) {
       },
     });
   };
-
-  // 加载设置
-  useEffect(() => {
-    loadSettings();
-  }, []);
 
   // 扫描项目（过滤掉被忽略的）
   const scanProjects = async () => {
@@ -364,7 +359,17 @@ export function WelcomeScreen({ onOpenProject }: WelcomeScreenProps) {
             <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 h-full flex flex-col">
               {/* 标签切换 */}
               <div className="flex border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
-                {projectsRootDir && (
+                <button
+                  onClick={() => setActiveTab('recent')}
+                  className={`flex-1 px-4 py-3 text-sm font-medium transition-colors
+                    ${activeTab === 'recent'
+                      ? 'text-blue-600 border-b-2 border-blue-600'
+                      : 'text-gray-600 hover:text-gray-900 dark:hover:text-gray-100'
+                    }`}
+                >
+                  最近打开 ({recentProjects.length})
+                </button>
+                {settingsLoaded && projectsRootDir && (
                   <button
                     onClick={() => setActiveTab('projects')}
                     className={`flex-1 px-4 py-3 text-sm font-medium transition-colors
@@ -376,21 +381,16 @@ export function WelcomeScreen({ onOpenProject }: WelcomeScreenProps) {
                     项目列表 ({scannedProjects.length})
                   </button>
                 )}
-                <button
-                  onClick={() => setActiveTab('recent')}
-                  className={`flex-1 px-4 py-3 text-sm font-medium transition-colors
-                    ${activeTab === 'recent'
-                      ? 'text-blue-600 border-b-2 border-blue-600'
-                      : 'text-gray-600 hover:text-gray-900 dark:hover:text-gray-100'
-                    }`}
-                >
-                  最近打开 ({recentProjects.length})
-                </button>
               </div>
 
               {/* 内容区 */}
               <div className="p-4 h-[calc(100%-49px)] overflow-y-auto">
-                {activeTab === 'projects' && projectsRootDir ? (
+                {!settingsLoaded ? (
+                  <div className="flex items-center justify-center py-12 text-gray-400">
+                    <RefreshCw className="w-5 h-5 animate-spin mr-2" />
+                    加载项目列表...
+                  </div>
+                ) : activeTab === 'projects' && projectsRootDir ? (
                   // 项目列表
                   <div className="space-y-2 min-h-[100px]">
                     {isScanning ? (

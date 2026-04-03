@@ -6,7 +6,7 @@ import { P2PChat } from '../P2PChat';
 import { PythonEnvManager } from '../PythonEnvManager';
 import { TaskButton } from '../TaskButton';
 import { LauncherButton } from '../Launcher';
-import { Toolbar } from './Toolbar';
+import { Toolbar, TOOLBAR_SEARCH_FOCUS_EVENT } from './Toolbar';
 import { ProjectWorkspace } from './ProjectWorkspace';
 import { ProjectSessionProvider } from './ProjectSessionProvider';
 import { ShellTabBar } from '../shell/ShellTabBar';
@@ -99,6 +99,30 @@ export function FileManager() {
     return () => window.clearTimeout(timeout);
   }, [hideToast, toast.isOpen, toast.tone]);
 
+  const activeProjectSession = activeShellTab?.type === 'project' && activeShellTab.projectPath
+    ? sessionsRef.current.get(normalizeProjectPath(activeShellTab.projectPath)) ?? null
+    : null;
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const hasCommandModifier = event.ctrlKey || event.metaKey;
+      if (!hasCommandModifier || event.shiftKey || event.altKey || event.key.toLowerCase() !== 'f') {
+        return;
+      }
+
+      event.preventDefault();
+
+      if (!activeProjectSession) {
+        return;
+      }
+
+      window.dispatchEvent(new Event(TOOLBAR_SEARCH_FOCUS_EVENT));
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeProjectSession]);
+
   useEffect(() => {
     if (activeShellTab?.type !== 'project' || !activeShellTab.projectPath) {
       return;
@@ -130,10 +154,6 @@ export function FileManager() {
 
     void handleOpenProject(latestProject.path);
   }, [autoOpenLastProject, isSettingsLoaded, recentProjects]);
-
-  const activeProjectSession = activeShellTab?.type === 'project' && activeShellTab.projectPath
-    ? sessionsRef.current.get(normalizeProjectPath(activeShellTab.projectPath)) ?? null
-    : null;
 
   const handleOpenProject = async (path: string) => {
     const normalizedPath = normalizeProjectPath(path);
@@ -257,7 +277,10 @@ export function FileManager() {
             <ProjectWorkspace />
           </ProjectSessionProvider>
         ) : (
-          <WelcomeScreen onOpenProject={handleOpenProject} />
+          <WelcomeScreen
+            onOpenProject={handleOpenProject}
+            settingsLoaded={isSettingsLoaded}
+          />
         )}
       </div>
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useProjectStoreShallow } from '../../stores/projectStore';
 import { SettingsPanel } from '../SettingsPanel';
 import {
@@ -8,6 +8,8 @@ import {
   X,
   Settings,
 } from 'lucide-react';
+
+export const TOOLBAR_SEARCH_FOCUS_EVENT = 'pm-center:focus-toolbar-search';
 
 export function Toolbar() {
   const {
@@ -35,6 +37,7 @@ export function Toolbar() {
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [localSearch, setLocalSearch] = useState('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     setLocalSearch(searchQuery);
@@ -44,6 +47,30 @@ export function Toolbar() {
     setLocalSearch(searchQuery);
     setIsSearchOpen(Boolean(searchQuery));
   }, [projectPath]);
+
+  useEffect(() => {
+    if (!isSearchOpen) {
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    });
+  }, [isSearchOpen]);
+
+  useEffect(() => {
+    const handleFocusSearch = () => {
+      if (!isInitialized) {
+        return;
+      }
+
+      setIsSearchOpen(true);
+    };
+
+    window.addEventListener(TOOLBAR_SEARCH_FOCUS_EVENT, handleFocusSearch);
+    return () => window.removeEventListener(TOOLBAR_SEARCH_FOCUS_EVENT, handleFocusSearch);
+  }, [isInitialized]);
 
   const handleSearch = (value: string) => {
     setLocalSearch(value);
@@ -74,6 +101,7 @@ export function Toolbar() {
               <div className="flex items-center gap-1 bg-gray-100 dark:bg-gray-800 rounded-md px-2 py-1">
                 <Search className="w-4 h-4 text-gray-400" />
                 <input
+                  ref={searchInputRef}
                   type="text"
                   value={localSearch}
                   onChange={(e) => handleSearch(e.target.value)}
