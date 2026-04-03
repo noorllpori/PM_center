@@ -51,7 +51,7 @@ export function P2PChat({ isOpen, onClose }: P2PChatProps) {
     if (isOpen) {
       markAllAsRead();
     }
-  }, [isOpen]);
+  }, [isOpen, messages, markAllAsRead]);
 
   // 开始/停止发现
   const toggleDiscovery = async () => {

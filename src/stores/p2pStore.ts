@@ -58,6 +58,7 @@ interface P2PState {
 const STORE_FILE = 'p2p-settings.json';
 const USER_ID_KEY = 'p2p-user-id';
 const USER_NAME_KEY = 'p2p-user-name';
+let p2pEventListenersInitialized = false;
 
 // 生成 UUID
 function generateUUID(): string {
@@ -98,6 +99,9 @@ export const useP2PStore = create<P2PState>((set, get) => ({
       
       // 监听事件
       setupEventListeners(get().receiveMessage, get().updateOnlineUsers);
+
+      // 默认进入发现状态
+      await get().startDiscovery();
     } catch (error) {
       console.error('Failed to load P2P settings:', error);
     }
@@ -123,9 +127,14 @@ export const useP2PStore = create<P2PState>((set, get) => ({
 
   startDiscovery: async () => {
     try {
+      if (get().isDiscoveryEnabled) {
+        return;
+      }
+
       await invoke('start_p2p_discovery');
       set({ isDiscoveryEnabled: true });
     } catch (error) {
+      set({ isDiscoveryEnabled: false });
       console.error('Failed to start discovery:', error);
     }
   },
@@ -154,27 +163,37 @@ export const useP2PStore = create<P2PState>((set, get) => ({
     try {
       const { userId, userName } = get();
       if (!userId) return;
-      
-      await invoke('send_p2p_message', {
-        message: {
-          id: generateUUID(),
-          fromId: userId,
-          fromName: userName,
-          toId,
-          content,
-          timestamp: Date.now(),
-        }
-      });
+
+      const message: P2PMessage = {
+        id: generateUUID(),
+        fromId: userId,
+        fromName: userName,
+        toId,
+        content,
+        timestamp: Date.now(),
+      };
+
+      await invoke('send_p2p_message', { message });
+
+      set(state => ({
+        messages: [...state.messages, message],
+      }));
     } catch (error) {
       console.error('Failed to send message:', error);
     }
   },
 
   receiveMessage: (message: P2PMessage) => {
-    set(state => ({
-      messages: [...state.messages, message],
-      unreadCount: state.unreadCount + 1,
-    }));
+    set(state => {
+      if (state.messages.some(existing => existing.id === message.id)) {
+        return state;
+      }
+
+      return {
+        messages: [...state.messages, message],
+        unreadCount: message.fromId === state.userId ? state.unreadCount : state.unreadCount + 1,
+      };
+    });
   },
 
   markAllAsRead: () => {
@@ -191,13 +210,19 @@ function setupEventListeners(
   onMessage: (msg: P2PMessage) => void,
   onUsersUpdate: (users: P2PUser[]) => void
 ) {
+  if (p2pEventListenersInitialized) {
+    return;
+  }
+
+  p2pEventListenersInitialized = true;
+
   // 监听新消息
-  listen<P2PMessage>('p2p-message', (event) => {
+  void listen<P2PMessage>('p2p-message', (event) => {
     onMessage(event.payload);
   });
   
   // 监听在线用户更新
-  listen<{ users: P2PUser[] }>('p2p-users', (event) => {
+  void listen<{ users: P2PUser[] }>('p2p-users', (event) => {
     onUsersUpdate(event.payload.users);
   });
 }
