@@ -1,4 +1,7 @@
 import { spawn } from 'node:child_process';
+import { access } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { resolve } from 'node:path';
 import { syncAppVersionFiles, ensureVersionedExeArtifacts } from './app-version.mjs';
 
 const args = process.argv.slice(2);
@@ -6,12 +9,24 @@ const isDebugBuild = args.includes('--debug');
 
 await syncAppVersionFiles();
 
-const command = process.platform === 'win32' ? 'cmd.exe' : 'npx';
-const commandArgs = process.platform === 'win32'
-  ? ['/d', '/s', '/c', 'npx', 'tauri', ...args]
-  : ['tauri', ...args];
+const tauriCliEntry = resolve(
+  process.cwd(),
+  'node_modules',
+  '@tauri-apps',
+  'cli',
+  'tauri.js',
+);
 
-const child = spawn(command, commandArgs, {
+try {
+  await access(tauriCliEntry, constants.F_OK);
+} catch {
+  console.error(
+    '[tauri-wrapper] missing local @tauri-apps/cli. Run "npm install" in the project root before starting Tauri.',
+  );
+  process.exit(1);
+}
+
+const child = spawn(process.execPath, [tauriCliEntry, ...args], {
   stdio: 'inherit',
   cwd: process.cwd(),
 });
