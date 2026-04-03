@@ -14,6 +14,10 @@ import { useProjectStoreApi, useProjectStoreShallow } from '../../stores/project
 import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceTabStore } from '../../stores/workspaceTabStore';
 
+const FILE_TREE_PANEL_WIDTH_KEY = 'pm-center:file-tree-panel-width';
+const FILE_TREE_PANEL_MIN_WIDTH = 220;
+const FILE_TREE_PANEL_MAX_WIDTH = 520;
+const FILE_TREE_PANEL_DEFAULT_WIDTH = 256;
 const FILE_DETAILS_PANEL_WIDTH_KEY = 'pm-center:file-details-panel-width';
 const FILE_DETAILS_PANEL_MIN_WIDTH = 260;
 const FILE_DETAILS_PANEL_MAX_WIDTH = 720;
@@ -26,6 +30,25 @@ function isEditableTarget(target: EventTarget | null) {
 
   const tagName = target.tagName.toLowerCase();
   return tagName === 'input' || tagName === 'textarea' || tagName === 'select' || target.isContentEditable;
+}
+
+function clampFileTreePanelWidth(width: number) {
+  return Math.min(FILE_TREE_PANEL_MAX_WIDTH, Math.max(FILE_TREE_PANEL_MIN_WIDTH, width));
+}
+
+function getInitialFileTreePanelWidth() {
+  if (typeof window === 'undefined') {
+    return FILE_TREE_PANEL_DEFAULT_WIDTH;
+  }
+
+  const storedWidth = window.localStorage.getItem(FILE_TREE_PANEL_WIDTH_KEY);
+  const parsedWidth = storedWidth ? Number.parseInt(storedWidth, 10) : Number.NaN;
+
+  if (!Number.isFinite(parsedWidth)) {
+    return FILE_TREE_PANEL_DEFAULT_WIDTH;
+  }
+
+  return clampFileTreePanelWidth(parsedWidth);
 }
 
 function clampFileDetailsPanelWidth(width: number) {
@@ -76,9 +99,12 @@ export function ProjectWorkspace() {
 
   const [isDragImportActive, setIsDragImportActive] = useState(false);
   const [isImportingDrop, setIsImportingDrop] = useState(false);
+  const [fileTreePanelWidth, setFileTreePanelWidth] = useState(getInitialFileTreePanelWidth);
+  const [isResizingFileTree, setIsResizingFileTree] = useState(false);
   const [fileDetailsPanelWidth, setFileDetailsPanelWidth] = useState(getInitialFileDetailsPanelWidth);
   const [isResizingFileDetails, setIsResizingFileDetails] = useState(false);
   const externalDragDepthRef = useRef(0);
+  const fileTreeResizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const fileDetailsResizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const activeWorkspaceTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
   const isFilesWorkspaceActive = activeWorkspaceTab?.type === 'files';
@@ -135,8 +161,51 @@ export function ProjectWorkspace() {
       return;
     }
 
+    window.localStorage.setItem(FILE_TREE_PANEL_WIDTH_KEY, String(fileTreePanelWidth));
+  }, [fileTreePanelWidth]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
     window.localStorage.setItem(FILE_DETAILS_PANEL_WIDTH_KEY, String(fileDetailsPanelWidth));
   }, [fileDetailsPanelWidth]);
+
+  const stopFileTreeResize = useCallback(() => {
+    fileTreeResizeStateRef.current = null;
+    setIsResizingFileTree(false);
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  }, []);
+
+  useEffect(() => {
+    if (!isResizingFileTree) {
+      return;
+    }
+
+    const handleMouseMove = (event: MouseEvent) => {
+      const resizeState = fileTreeResizeStateRef.current;
+      if (!resizeState) {
+        return;
+      }
+
+      const nextWidth = resizeState.startWidth + (event.clientX - resizeState.startX);
+      setFileTreePanelWidth(clampFileTreePanelWidth(nextWidth));
+    };
+
+    const handleMouseUp = () => {
+      stopFileTreeResize();
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isResizingFileTree, stopFileTreeResize]);
 
   const stopFileDetailsResize = useCallback(() => {
     fileDetailsResizeStateRef.current = null;
@@ -175,9 +244,21 @@ export function ProjectWorkspace() {
 
   useEffect(() => {
     return () => {
+      stopFileTreeResize();
       stopFileDetailsResize();
     };
-  }, [stopFileDetailsResize]);
+  }, [stopFileDetailsResize, stopFileTreeResize]);
+
+  const handleStartFileTreeResize = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    fileTreeResizeStateRef.current = {
+      startX: event.clientX,
+      startWidth: fileTreePanelWidth,
+    };
+    setIsResizingFileTree(true);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }, [fileTreePanelWidth]);
 
   const handleStartFileDetailsResize = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -306,8 +387,25 @@ export function ProjectWorkspace() {
               >
                 {tab.type === 'files' && (
                   <div className="flex h-full w-full min-w-0 min-h-0">
-                    <div className="w-64 border-r border-gray-200 dark:border-gray-700 flex-shrink-0">
+                    <div
+                      className="border-r border-gray-200 dark:border-gray-700 flex-shrink-0 min-w-0"
+                      style={{ width: `${fileTreePanelWidth}px` }}
+                    >
                       <FileTree />
+                    </div>
+
+                    <div
+                      className="group relative w-2 cursor-col-resize flex-shrink-0 bg-transparent"
+                      onMouseDown={handleStartFileTreeResize}
+                      title="拖动调整目录栏宽度"
+                    >
+                      <div
+                        className={`absolute inset-y-0 left-1/2 w-px -translate-x-1/2 transition-colors ${
+                          isResizingFileTree
+                            ? 'bg-blue-500'
+                            : 'bg-gray-200 dark:bg-gray-700 group-hover:bg-blue-400 dark:group-hover:bg-blue-500'
+                        }`}
+                      />
                     </div>
 
                     <div className="flex-1 min-w-0 min-h-0 overflow-hidden">

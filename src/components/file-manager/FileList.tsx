@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { FileInfo } from '../../types';
 import { useProjectStoreApi, useProjectStoreShallow } from '../../stores/projectStore';
@@ -76,6 +76,18 @@ function getFileIcon(file: FileInfo) {
   return <FileIcon className="w-5 h-5 text-gray-400" />;
 }
 
+const MIN_COLUMN_WIDTHS: Record<string, number> = {
+  name: 220,
+  size: 90,
+  modified: 150,
+  type: 100,
+  tags: 120,
+};
+
+function clampColumnWidth(key: string, width: number) {
+  return Math.max(MIN_COLUMN_WIDTHS[key] ?? 80, Math.round(width));
+}
+
 // 列表视图
 function ListView({
   files,
@@ -94,6 +106,8 @@ function ListView({
   dropTargetPath,
   currentPath,
   columns,
+  resizingColumnKey,
+  onStartColumnResize,
   tags,
   fileTags,
   isExcluded,
@@ -115,31 +129,71 @@ function ListView({
   dropTargetPath: string | null;
   currentPath: string;
   columns: any[];
+  resizingColumnKey: string | null;
+  onStartColumnResize: (key: string, width: number, event: React.MouseEvent<HTMLDivElement>) => void;
   tags: any[];
   fileTags: Map<string, string[]>;
   isExcluded: (file: FileInfo) => boolean;
   showExcludedFiles: boolean;
 }) {
   const visibleColumns = columns.filter(c => c.visible);
+  const headerScrollRef = useRef<HTMLDivElement>(null);
+  const bodyScrollRef = useRef<HTMLDivElement>(null);
+
+  const syncHeaderScroll = useCallback(() => {
+    if (!headerScrollRef.current || !bodyScrollRef.current) {
+      return;
+    }
+
+    headerScrollRef.current.scrollLeft = bodyScrollRef.current.scrollLeft;
+  }, []);
   
   return (
     <div className="flex flex-col h-full">
       {/* 表头 */}
-      <div className="flex border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
-        {visibleColumns.map(col => (
-          <div
-            key={col.key}
-            className="px-3 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider"
-            style={{ width: col.width, textAlign: col.align || 'left' }}
-          >
-            {col.title}
-          </div>
-        ))}
+      <div
+        ref={headerScrollRef}
+        className="overflow-hidden border-b border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800"
+      >
+        <div className="flex min-w-max">
+          {visibleColumns.map((col, index) => {
+            const isLastVisibleColumn = index === visibleColumns.length - 1;
+            const isResizing = resizingColumnKey === col.key;
+
+            return (
+              <div
+                key={col.key}
+                className="relative shrink-0 px-3 py-2 text-xs font-medium uppercase tracking-wider text-gray-500"
+                style={{ width: col.width, textAlign: col.align || 'left' }}
+              >
+                {col.title}
+
+                {!isLastVisibleColumn && (
+                  <div
+                    onMouseDown={(event) => onStartColumnResize(col.key, col.width, event)}
+                    className="absolute inset-y-0 -right-1 z-10 flex w-2 cursor-col-resize items-center justify-center"
+                    title="拖动调整列宽"
+                  >
+                    <div
+                      className={`h-5 w-px transition-colors ${
+                        isResizing
+                          ? 'bg-blue-500'
+                          : 'bg-gray-200 dark:bg-gray-700 hover:bg-blue-400 dark:hover:bg-blue-500'
+                      }`}
+                    />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
       
       {/* 文件列表 */}
       <div
+        ref={bodyScrollRef}
         className={`flex-1 overflow-auto ${dropTargetPath === currentPath ? 'bg-blue-50/60' : ''}`}
+        onScroll={syncHeaderScroll}
         onContextMenu={(e) => {
           if (e.target !== e.currentTarget) return;
           e.preventDefault();
@@ -171,10 +225,10 @@ function ListView({
               key={file.path}
               draggable
               className={`
-                flex items-center border-b border-gray-100 dark:border-gray-800
-                cursor-pointer select-none
+                relative flex min-w-max items-center border-b border-gray-100 dark:border-gray-800
+                cursor-pointer select-none transition-colors
                 ${isSelected 
-                  ? 'bg-blue-50 dark:bg-blue-900/20' 
+                  ? 'bg-blue-100/90 dark:bg-blue-950/45 text-blue-950 dark:text-blue-50 ring-1 ring-inset ring-blue-500/70 shadow-[inset_4px_0_0_0_#2563eb] dark:shadow-[inset_4px_0_0_0_#60a5fa]' 
                   : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'
                 }
                 ${isDropTarget ? 'ring-2 ring-inset ring-blue-500 bg-blue-50' : ''}
@@ -215,16 +269,22 @@ function ListView({
                 await onDropToDirectory(file.path, internalDragPaths);
               }}
             >
+              {isSelected && (
+                <div className="absolute left-0 top-1/2 h-6 w-1 -translate-y-1/2 rounded-r-full bg-blue-600 dark:bg-blue-400" />
+              )}
+
               {visibleColumns.map(col => (
                 <div
                   key={col.key}
-                  className="px-3 py-2 text-sm truncate"
+                  className={`shrink-0 px-3 py-2 text-sm truncate ${
+                    isSelected ? 'text-blue-950 dark:text-blue-50' : 'text-gray-700 dark:text-gray-200'
+                  }`}
                   style={{ width: col.width, textAlign: col.align || 'left' }}
                 >
                   {col.key === 'name' && (
                     <div className="flex items-center gap-2">
                       {getFileIcon(file)}
-                      <span className="truncate">{file.name}</span>
+                      <span className={`truncate ${isSelected ? 'font-semibold' : ''}`}>{file.name}</span>
                       {showExcludedFiles && excluded && (
                         <span className="shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
                           已排除
@@ -334,9 +394,9 @@ function GridView({
             key={file.path}
             draggable
             className={`
-              group relative p-3 rounded-lg cursor-pointer select-none
+              group relative p-3 rounded-lg cursor-pointer select-none transition-all
               ${isSelected 
-                ? 'bg-blue-50 dark:bg-blue-900/20 ring-2 ring-blue-500' 
+                ? 'bg-blue-100 dark:bg-blue-950/40 ring-2 ring-blue-500 shadow-lg shadow-blue-500/10 dark:shadow-blue-950/30' 
                 : 'hover:bg-gray-50 dark:hover:bg-gray-800'
               }
               ${isDropTarget ? 'ring-2 ring-blue-500 bg-blue-50' : ''}
@@ -377,13 +437,26 @@ function GridView({
               await onDropToDirectory(file.path, internalDragPaths);
             }}
           >
+            {isSelected && (
+              <div className="absolute right-2 top-2 rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium text-white dark:bg-blue-500">
+                已选中
+              </div>
+            )}
+
             {/* 图标 */}
-            <div className="aspect-square flex items-center justify-center mb-2">
+            <div className={`mb-2 aspect-square flex items-center justify-center rounded-xl transition-colors ${
+              isSelected ? 'bg-blue-200/70 dark:bg-blue-900/50' : ''
+            }`}>
               {getFileIcon(file)}
             </div>
             
             {/* 名称 */}
-            <div className="text-sm text-center truncate" title={file.name}>
+            <div
+              className={`text-sm text-center truncate ${
+                isSelected ? 'font-semibold text-blue-950 dark:text-blue-50' : ''
+              }`}
+              title={file.name}
+            >
               {file.name}
             </div>
             {showExcludedFiles && excluded && (
@@ -424,6 +497,7 @@ export function FileList() {
     selectedFiles,
     viewMode,
     columns,
+    updateColumn,
     tags,
     fileTags,
     selectFile,
@@ -441,6 +515,7 @@ export function FileList() {
     selectedFiles: state.selectedFiles,
     viewMode: state.viewMode,
     columns: state.columns,
+    updateColumn: state.updateColumn,
     tags: state.tags,
     fileTags: state.fileTags,
     selectFile: state.selectFile,
@@ -483,6 +558,8 @@ export function FileList() {
     folderName: '',
   });
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
+  const [resizingColumnKey, setResizingColumnKey] = useState<string | null>(null);
+  const columnResizeStateRef = useRef<{ key: string; startX: number; startWidth: number } | null>(null);
 
   const displayFiles = searchQuery ? searchResults : files;
   const excludePatterns = projectPath
@@ -578,6 +655,60 @@ export function FileList() {
   const handleRefresh = () => {
     refresh();
   };
+
+  const stopColumnResize = useCallback(() => {
+    columnResizeStateRef.current = null;
+    setResizingColumnKey(null);
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  }, []);
+
+  useEffect(() => {
+    if (!resizingColumnKey) {
+      return;
+    }
+
+    const handleMouseMove = (event: MouseEvent) => {
+      const resizeState = columnResizeStateRef.current;
+      if (!resizeState) {
+        return;
+      }
+
+      const nextWidth = resizeState.startWidth + (event.clientX - resizeState.startX);
+      updateColumn(resizeState.key, { width: clampColumnWidth(resizeState.key, nextWidth) });
+    };
+
+    const handleMouseUp = () => {
+      stopColumnResize();
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [resizingColumnKey, stopColumnResize, updateColumn]);
+
+  useEffect(() => {
+    return () => {
+      stopColumnResize();
+    };
+  }, [stopColumnResize]);
+
+  const handleStartColumnResize = useCallback((key: string, width: number, event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    columnResizeStateRef.current = {
+      key,
+      startX: event.clientX,
+      startWidth: width,
+    };
+    setResizingColumnKey(key);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }, []);
 
   const getSuggestedFolderName = useCallback(async (targetDir: string) => {
     const baseName = '新建文件夹';
@@ -816,6 +947,8 @@ export function FileList() {
           dropTargetPath={dropTargetPath}
           currentPath={currentPath || ''}
           columns={columns}
+          resizingColumnKey={resizingColumnKey}
+          onStartColumnResize={handleStartColumnResize}
           tags={tags}
           fileTags={fileTags}
           isExcluded={isExcluded}
