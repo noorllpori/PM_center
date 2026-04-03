@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
 import { AlertCircle, CheckCircle2, FileCode, Loader2, Save, Type } from 'lucide-react';
 import { CodeEditor } from '../CodeEditor/CodeEditor';
@@ -44,17 +44,21 @@ export function TextEditorSurface({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [showLanguageMenu, setShowLanguageMenu] = useState(false);
+  const [lineWrapping, setLineWrapping] = useState(true);
   const saveMessageTimerRef = useRef<number | null>(null);
 
   const isDirty = content !== originalContent;
+  const emitDirtyChange = useEffectEvent((nextIsDirty: boolean) => {
+    onDirtyChange?.(nextIsDirty);
+  });
 
   useEffect(() => {
     setLanguage(resolveLanguage(filePath, title, initialLanguage));
   }, [filePath, initialLanguage, title]);
 
   useEffect(() => {
-    onDirtyChange?.(isDirty);
-  }, [isDirty, onDirtyChange]);
+    emitDirtyChange(isDirty);
+  }, [emitDirtyChange, isDirty]);
 
   useEffect(() => {
     if (saveMessageTimerRef.current) {
@@ -210,6 +214,18 @@ export function TextEditorSurface({
         )}
 
         <button
+          onClick={() => setLineWrapping((value) => !value)}
+          className={`flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors ${
+            lineWrapping
+              ? 'bg-blue-50 text-blue-600 hover:bg-blue-100 dark:bg-blue-900/30 dark:text-blue-300 dark:hover:bg-blue-900/50'
+              : 'text-gray-600 hover:bg-gray-200 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-gray-700 dark:hover:text-gray-100'
+          }`}
+          title={lineWrapping ? '关闭自动换行' : '开启自动换行'}
+        >
+          自动换行
+        </button>
+
+        <button
           onClick={handleSave}
           disabled={isLoading || !isDirty}
           className="flex items-center gap-1 rounded bg-blue-600 px-2 py-1 text-xs text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300 dark:disabled:bg-gray-700"
@@ -263,7 +279,7 @@ export function TextEditorSurface({
         </div>
       </div>
 
-      <div className="relative flex-1 overflow-hidden bg-white dark:bg-gray-950">
+      <div className="relative flex-1 min-h-0 overflow-hidden bg-white dark:bg-gray-950">
         {isLoading ? (
           <div className="flex h-full items-center justify-center text-sm text-gray-400">
             <div className="flex items-center gap-2">
@@ -284,6 +300,7 @@ export function TextEditorSurface({
             initialContent={content}
             language={language}
             theme="light"
+            lineWrapping={lineWrapping}
             onChange={setContent}
             onSave={handleSave}
           />

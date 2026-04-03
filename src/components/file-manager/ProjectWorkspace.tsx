@@ -10,6 +10,7 @@ import { importExternalDrop } from './externalImport';
 import { ChangeLog } from '../ChangeLog';
 import { ImageViewerSurface } from '../image-viewer/ImageViewerSurface';
 import { TextEditorSurface } from '../text-editor/TextEditorSurface';
+import { VideoPlayerSurface } from '../video-player/VideoPlayerSurface';
 import { WorkspaceTabBar } from '../workspace/WorkspaceTabBar';
 import { useProjectStoreApi, useProjectStoreShallow } from '../../stores/projectStore';
 import { useClipboardStore } from '../../stores/clipboardStore';
@@ -638,6 +639,15 @@ export function ProjectWorkspace() {
                 {tab.type === 'image' && tab.filePath && (
                   <div className="h-full w-full min-w-0 min-h-0 overflow-hidden">
                     <ImageViewerSurface
+                      title={tab.title}
+                      source={tab.filePath}
+                    />
+                  </div>
+                )}
+
+                {tab.type === 'video' && tab.filePath && (
+                  <div className="h-full w-full min-w-0 min-h-0 overflow-hidden">
+                    <VideoPlayerSurface
                       title={tab.title}
                       source={tab.filePath}
                     />

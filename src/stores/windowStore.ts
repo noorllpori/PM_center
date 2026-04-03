@@ -15,21 +15,31 @@ export type EditorLanguage =
 
 // 检测文件语言类型
 export function detectLanguage(filename: string): EditorLanguage {
-  const ext = filename.split('.').pop()?.toLowerCase();
+  const normalizedFilename = filename.split(/[\\/]/).pop()?.toLowerCase() || filename.toLowerCase();
+  const ext = normalizedFilename.split('.').pop()?.toLowerCase();
   switch (ext) {
     case 'py':
+    case 'pyi':
+    case 'pyw':
       return 'python';
     case 'js':
+    case 'mjs':
+    case 'cjs':
       return 'javascript';
     case 'ts':
+    case 'mts':
+    case 'cts':
       return 'typescript';
     case 'tsx':
       return 'typescript';
     case 'jsx':
       return 'javascript';
     case 'html':
-      return 'html';
     case 'htm':
+    case 'xml':
+    case 'vue':
+    case 'svelte':
+    case 'astro':
       return 'html';
     case 'css':
       return 'css';
@@ -40,12 +50,13 @@ export function detectLanguage(filename: string): EditorLanguage {
     case 'less':
       return 'css';
     case 'json':
+    case 'jsonc':
       return 'json';
     case 'rs':
       return 'rust';
     case 'md':
-      return 'markdown';
     case 'markdown':
+    case 'mdx':
       return 'markdown';
     default:
       return 'plaintext';

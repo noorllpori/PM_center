@@ -19,6 +19,7 @@ interface CodeEditorProps {
   language?: EditorLanguage;
   theme?: 'light' | 'dark';
   readOnly?: boolean;
+  lineWrapping?: boolean;
   onChange?: (content: string) => void;
   onSave?: () => void;
   className?: string;
@@ -42,6 +43,7 @@ export function CodeEditor({
   language = 'plaintext',
   theme = 'light',
   readOnly = false,
+  lineWrapping = false,
   onChange,
   onSave,
   className = '',
@@ -88,6 +90,8 @@ export function CodeEditor({
       
       // 语法高亮
       syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+
+      lineWrapping ? EditorView.lineWrapping : [],
       
       // 主题
       theme === 'dark' ? oneDark : [],
@@ -109,14 +113,20 @@ export function CodeEditor({
       EditorView.theme({
         '&': {
           fontSize: '14px',
+          height: '100%',
         },
         '.cm-content': {
           fontFamily: '"JetBrains Mono", "Fira Code", "Consolas", monospace',
           padding: '10px',
         },
+        '.cm-scroller': {
+          overflow: 'auto',
+          minHeight: '100%',
+        },
         '.cm-gutters': {
           backgroundColor: theme === 'dark' ? '#1e1e1e' : '#f5f5f5',
           borderRight: 'none',
+          minHeight: '100%',
         },
         '.cm-activeLineGutter': {
           backgroundColor: theme === 'dark' ? '#2a2a2a' : '#e8e8e8',
@@ -138,7 +148,7 @@ export function CodeEditor({
     });
 
     viewRef.current = view;
-  }, [theme, language, readOnly, initialContent]);
+  }, [theme, language, readOnly, lineWrapping]);
 
   // 初始化编辑器
   useEffect(() => {
@@ -163,20 +173,10 @@ export function CodeEditor({
     }
   }, [initialContent]);
 
-  // 更新语言
-  useEffect(() => {
-    const view = viewRef.current;
-    if (!view) return;
-    
-    // 重新创建编辑器以应用新语言
-    view.destroy();
-    createEditor();
-  }, [language, createEditor]);
-
   return (
     <div
       ref={editorRef}
-      className={`w-full h-full overflow-hidden ${className}`}
+      className={`h-full min-h-0 w-full overflow-hidden ${className}`}
       style={{ fontFamily: 'monospace' }}
     />
   );

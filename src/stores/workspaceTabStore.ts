@@ -4,9 +4,10 @@ import { useShallow } from 'zustand/react/shallow';
 import { createStore } from 'zustand/vanilla';
 import { openStandaloneImageViewer } from '../components/image-viewer/openStandaloneImageViewer';
 import { openStandaloneTextEditor } from '../components/text-editor/openStandaloneTextEditor';
+import { openStandaloneVideoPlayer } from '../components/video-player/openStandaloneVideoPlayer';
 import { getFileNameFromPath, getWorkspaceOpenTarget } from '../components/workspace/fileOpeners';
 
-export type WorkspaceTabType = 'files' | 'logs' | 'image' | 'text';
+export type WorkspaceTabType = 'files' | 'logs' | 'image' | 'text' | 'video';
 
 export interface WorkspaceTab {
   id: string;
@@ -27,7 +28,7 @@ const FILES_TAB: WorkspaceTab = {
   closable: false,
 };
 
-function createFileTab(type: 'image' | 'text', filePath: string): WorkspaceTab {
+function createFileTab(type: 'image' | 'text' | 'video', filePath: string): WorkspaceTab {
   return {
     id: `${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     type,
@@ -88,6 +89,11 @@ export function createWorkspaceTabStore() {
 
       if (target === 'image') {
         await openStandaloneImageViewer(filePath);
+        return true;
+      }
+
+      if (target === 'video') {
+        await openStandaloneVideoPlayer(filePath);
         return true;
       }
 
@@ -180,11 +186,30 @@ export function createWorkspaceTabStore() {
     },
 
     updateTabDirty: (tabId, isDirty) => {
-      set((state) => ({
-        tabs: state.tabs.map((tab) => (
-          tab.id === tabId ? { ...tab, isDirty } : tab
-        )),
-      }));
+      set((state) => {
+        let hasChanged = false;
+
+        const nextTabs = state.tabs.map((tab) => {
+          if (tab.id !== tabId) {
+            return tab;
+          }
+
+          if ((tab.isDirty ?? false) === isDirty) {
+            return tab;
+          }
+
+          hasChanged = true;
+          return { ...tab, isDirty };
+        });
+
+        if (!hasChanged) {
+          return state;
+        }
+
+        return {
+          tabs: nextTabs,
+        };
+      });
     },
 
     resetTabs: () => {

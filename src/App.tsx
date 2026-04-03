@@ -3,12 +3,14 @@ import { FileManager } from './components/file-manager';
 import { WindowManager } from './components/WindowManager';
 import { StandaloneImageViewerPage, isStandaloneImageViewerRoute } from './components/image-viewer/StandaloneImageViewerPage';
 import { StandaloneTextEditorPage, isStandaloneTextEditorRoute } from './components/text-editor/StandaloneTextEditorPage';
+import { StandaloneVideoPlayerPage, isStandaloneVideoPlayerRoute } from './components/video-player/StandaloneVideoPlayerPage';
 import { initTaskEventListeners, loadTaskState } from './stores/taskStore';
 
 function App() {
   const isImageViewerWindow = isStandaloneImageViewerRoute();
   const isTextEditorWindow = isStandaloneTextEditorRoute();
-  const isStandaloneWindow = isImageViewerWindow || isTextEditorWindow;
+  const isVideoPlayerWindow = isStandaloneVideoPlayerRoute();
+  const isStandaloneWindow = isImageViewerWindow || isTextEditorWindow || isVideoPlayerWindow;
 
   useEffect(() => {
     if (isStandaloneWindow) {
@@ -29,6 +31,10 @@ function App() {
 
   if (isTextEditorWindow) {
     return <StandaloneTextEditorPage />;
+  }
+
+  if (isVideoPlayerWindow) {
+    return <StandaloneVideoPlayerPage />;
   }
 
   return (

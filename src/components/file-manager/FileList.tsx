@@ -12,7 +12,7 @@ import { InputDialog } from '../Dialog';
 import { canMovePathsToDirectory, compactDraggedPaths, getPathLabel, joinPath } from './dragDrop';
 import { useFileDropMove } from './useFileDropMove';
 import { useInternalFileDrag } from './useInternalFileDrag';
-import { getWorkspaceOpenTarget } from '../workspace/fileOpeners';
+import { getWorkspaceOpenTarget, isTextExtension, isVideoExtension } from '../workspace/fileOpeners';
 import {
   mergeExcludePatterns,
   readProjectExcludePatterns,
@@ -59,7 +59,7 @@ function getFileIcon(file: FileInfo) {
   }
   
   // 视频
-  if (['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext || '')) {
+  if (isVideoExtension(ext)) {
     return <Film className="w-5 h-5 text-red-500" />;
   }
   
@@ -69,7 +69,7 @@ function getFileIcon(file: FileInfo) {
   }
   
   // 文本
-  if (['txt', 'md', 'json', 'xml', 'py'].includes(ext || '')) {
+  if (isTextExtension(ext)) {
     return <FileText className="w-5 h-5 text-blue-500" />;
   }
   

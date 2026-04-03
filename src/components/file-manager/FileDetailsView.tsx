@@ -21,8 +21,17 @@ interface FileDetailsDialogProps {
 
 const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'exr', 'hdr', 'tif', 'tiff', 'svg']);
 const AUDIO_EXTENSIONS = new Set(['mp3', 'flac', 'wav', 'ogg', 'opus', 'm4a', 'aac']);
-const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v']);
-const TEXT_EXTENSIONS = new Set(['txt', 'md', 'json', 'xml', 'py', 'js', 'ts', 'tsx', 'jsx', 'html', 'css']);
+const VIDEO_EXTENSIONS = new Set(['mp4', 'm4v', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'flv', 'mpeg', 'mpg', 'm2ts']);
+const TEXT_EXTENSIONS = new Set([
+  'txt', 'md', 'markdown', 'mdx', 'csv', 'tsv', 'json', 'jsonc', 'xml',
+  'py', 'pyi', 'pyw', 'js', 'mjs', 'cjs', 'ts', 'mts', 'cts', 'tsx', 'jsx',
+  'html', 'htm', 'css', 'scss', 'sass', 'less', 'vue', 'svelte', 'astro',
+  'rs', 'c', 'h', 'cc', 'cpp', 'cxx', 'hpp', 'hxx', 'cs', 'java', 'kt', 'kts',
+  'go', 'php', 'rb', 'swift', 'sh', 'bash', 'zsh', 'bat', 'cmd', 'ps1', 'psm1',
+  'psd1', 'yml', 'yaml', 'toml', 'ini', 'conf', 'cfg', 'config', 'properties',
+  'env', 'gitignore', 'gitattributes', 'editorconfig', 'dockerfile', 'makefile',
+  'mk', 'gradle', 'sql', 'prisma', 'graphql', 'gql', 'lua', 'log',
+]);
 
 function getFileExtension(file: FileInfo | null) {
   return file?.extension?.toLowerCase() || '';
