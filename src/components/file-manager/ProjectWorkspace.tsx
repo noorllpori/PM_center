@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { Upload } from 'lucide-react';
 import { FileTree } from './FileTree';
 import { FileList } from './FileList';
@@ -11,6 +12,7 @@ import { ImageViewerSurface } from '../image-viewer/ImageViewerSurface';
 import { TextEditorSurface } from '../text-editor/TextEditorSurface';
 import { WorkspaceTabBar } from '../workspace/WorkspaceTabBar';
 import { useProjectStoreApi, useProjectStoreShallow } from '../../stores/projectStore';
+import { useClipboardStore } from '../../stores/clipboardStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceTabStore } from '../../stores/workspaceTabStore';
 
@@ -22,6 +24,11 @@ const FILE_DETAILS_PANEL_WIDTH_KEY = 'pm-center:file-details-panel-width';
 const FILE_DETAILS_PANEL_MIN_WIDTH = 260;
 const FILE_DETAILS_PANEL_MAX_WIDTH = 720;
 const FILE_DETAILS_PANEL_DEFAULT_WIDTH = 320;
+
+interface SystemClipboardStatus {
+  hasFiles: boolean;
+  hasImage: boolean;
+}
 
 function isEditableTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) {
@@ -70,6 +77,10 @@ function getInitialFileDetailsPanelWidth() {
   return clampFileDetailsPanelWidth(parsedWidth);
 }
 
+function getPathName(path: string) {
+  return path.split(/[\\/]/).pop() || path;
+}
+
 export function ProjectWorkspace() {
   const projectStore = useProjectStoreApi();
   const {
@@ -109,17 +120,154 @@ export function ProjectWorkspace() {
   const activeWorkspaceTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
   const isFilesWorkspaceActive = activeWorkspaceTab?.type === 'files';
 
+  const getSelectedClipboardItems = useCallback(() => {
+    const state = projectStore.getState();
+    if (!state.projectPath) {
+      return [];
+    }
+
+    const displayFiles = state.searchQuery ? state.searchResults : state.files;
+    const fileMap = new Map(
+      [...state.files, ...displayFiles].map((file) => [file.path, file]),
+    );
+
+    return Array.from(state.selectedFiles).map((path) => {
+      const file = fileMap.get(path);
+      return {
+        path,
+        name: file?.name || getPathName(path),
+        projectPath: state.projectPath!,
+      };
+    });
+  }, [projectStore]);
+
+  const handleCopySelection = useCallback((action: 'copy' | 'cut') => {
+    const selectedItems = getSelectedClipboardItems();
+    if (selectedItems.length === 0) {
+      return false;
+    }
+
+    if (action === 'copy') {
+      useClipboardStore.getState().copyItems(selectedItems);
+    } else {
+      useClipboardStore.getState().cutItems(selectedItems);
+    }
+
+    showToast({
+      title: action === 'copy' ? '已复制' : '已剪切',
+      message: selectedItems.length === 1
+        ? selectedItems[0].name
+        : `已选择 ${selectedItems.length} 个项目`,
+      tone: 'success',
+    });
+    return true;
+  }, [getSelectedClipboardItems, showToast]);
+
+  const handlePasteIntoCurrentDirectory = useCallback(async () => {
+    const state = projectStore.getState();
+    const targetDir = state.currentPath || state.projectPath;
+    if (!state.projectPath || !targetDir) {
+      return false;
+    }
+
+    try {
+      const clipboardStore = useClipboardStore.getState();
+      const internalClipboardItems = clipboardStore.items;
+      let pastedCount = 0;
+      let success = false;
+
+      if (internalClipboardItems.length > 0) {
+        pastedCount = internalClipboardItems.length;
+        success = await clipboardStore.paste(targetDir, state.projectPath);
+      } else {
+        const clipboardStatus = await invoke<SystemClipboardStatus>('get_system_clipboard_status');
+        if (!clipboardStatus.hasFiles && !clipboardStatus.hasImage) {
+          return false;
+        }
+
+        const pastedPaths = await invoke<string[]>('paste_system_clipboard', { targetDir });
+        pastedCount = pastedPaths.length;
+        success = pastedCount > 0;
+      }
+
+      if (!success) {
+        return false;
+      }
+
+      await refresh();
+      showToast({
+        title: '已粘贴',
+        message: pastedCount > 1 ? `已粘贴 ${pastedCount} 个项目。` : '已粘贴到当前目录。',
+        tone: 'success',
+      });
+      return true;
+    } catch (error) {
+      console.error('Failed to paste from keyboard shortcut:', error);
+      showToast({
+        title: '粘贴失败',
+        message: String(error),
+        tone: 'error',
+      });
+      return false;
+    }
+  }, [projectStore, refresh, showToast]);
+
+  const handleSelectAllVisibleFiles = useCallback(() => {
+    const state = projectStore.getState();
+    const displayFiles = state.searchQuery ? state.searchResults : state.files;
+
+    if (displayFiles.length === 0) {
+      return false;
+    }
+
+    projectStore.setState({
+      selectedFiles: new Set(displayFiles.map((file) => file.path)),
+    });
+    return true;
+  }, [projectStore]);
+
+  const handleDeleteSelection = useCallback(async () => {
+    const state = projectStore.getState();
+    const selectedPaths = Array.from(state.selectedFiles);
+    if (selectedPaths.length === 0) {
+      return false;
+    }
+
+    try {
+      const deletedCount = await invoke<number>('delete_paths', { paths: selectedPaths });
+      await refresh();
+
+      if (deletedCount === 0) {
+        showToast({
+          title: '未删除任何项目',
+          message: '选中的文件可能已经不存在，列表已刷新。',
+          tone: 'warning',
+        });
+        return false;
+      }
+
+      showToast({
+        title: deletedCount > 1 ? '已移到回收站' : '文件已移到回收站',
+        message: deletedCount > 1
+          ? `已将 ${deletedCount} 个项目移到回收站。`
+          : `已将 ${getPathName(selectedPaths[0])} 移到回收站。`,
+        tone: 'success',
+      });
+      return true;
+    } catch (error) {
+      console.error('Failed to delete from keyboard shortcut:', error);
+      showToast({
+        title: '删除失败',
+        message: String(error),
+        tone: 'error',
+      });
+      return false;
+    }
+  }, [projectStore, refresh, showToast]);
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (!isInitialized || !isFilesWorkspaceActive) {
-        return;
-      }
-
-      if (!(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey) {
-        return;
-      }
-
-      if (event.key.toLowerCase() !== 'h') {
         return;
       }
 
@@ -127,23 +275,69 @@ export function ProjectWorkspace() {
         return;
       }
 
-      event.preventDefault();
+      const lowerKey = event.key.toLowerCase();
+      const hasCommandModifier = event.ctrlKey || event.metaKey;
 
-      const nextShowExcluded = !projectStore.getState().showExcludedFiles;
-      toggleShowExcludedFiles();
-      void refresh();
-      showToast({
-        title: nextShowExcluded ? '已显示排除项' : '已隐藏排除项',
-        message: nextShowExcluded
-          ? '当前目录会显示被排除规则隐藏的文件，按 Ctrl+H 可切回隐藏。'
-          : '当前目录已恢复隐藏被排除规则匹配的文件。',
-        tone: 'info',
-      });
+      if (!hasCommandModifier && !event.altKey && !event.shiftKey && event.key === 'Delete') {
+        event.preventDefault();
+        void handleDeleteSelection();
+        return;
+      }
+
+      if (!hasCommandModifier || event.shiftKey || event.altKey) {
+        return;
+      }
+
+      switch (lowerKey) {
+        case 'a':
+          event.preventDefault();
+          handleSelectAllVisibleFiles();
+          return;
+        case 'c':
+          event.preventDefault();
+          handleCopySelection('copy');
+          return;
+        case 'x':
+          event.preventDefault();
+          handleCopySelection('cut');
+          return;
+        case 'v':
+          event.preventDefault();
+          void handlePasteIntoCurrentDirectory();
+          return;
+        case 'h': {
+          event.preventDefault();
+          const nextShowExcluded = !projectStore.getState().showExcludedFiles;
+          toggleShowExcludedFiles();
+          void refresh();
+          showToast({
+            title: nextShowExcluded ? '已显示排除项' : '已隐藏排除项',
+            message: nextShowExcluded
+              ? '当前目录会显示被排除规则隐藏的文件，按 Ctrl+H 可切回隐藏。'
+              : '当前目录已恢复隐藏被排除规则匹配的文件。',
+            tone: 'info',
+          });
+          return;
+        }
+        default:
+          return;
+      }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isFilesWorkspaceActive, isInitialized, projectStore, refresh, showToast, toggleShowExcludedFiles]);
+  }, [
+    handleCopySelection,
+    handleDeleteSelection,
+    handlePasteIntoCurrentDirectory,
+    handleSelectAllVisibleFiles,
+    isFilesWorkspaceActive,
+    isInitialized,
+    projectStore,
+    refresh,
+    showToast,
+    toggleShowExcludedFiles,
+  ]);
 
   const resetExternalDragState = useCallback(() => {
     externalDragDepthRef.current = 0;

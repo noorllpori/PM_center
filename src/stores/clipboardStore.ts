@@ -4,20 +4,28 @@ import { useUiStore } from './uiStore';
 
 type ClipboardAction = 'cut' | 'copy';
 
-interface ClipboardItem {
+export interface ClipboardItem {
   path: string;
   name: string;
   action: ClipboardAction;
   projectPath: string;
 }
 
+interface ClipboardSourceItem {
+  path: string;
+  name: string;
+  projectPath: string;
+}
+
 interface ClipboardState {
-  item: ClipboardItem | null;
+  items: ClipboardItem[];
   
   // 剪切
   cut: (path: string, name: string, projectPath: string) => void;
+  cutItems: (items: ClipboardSourceItem[]) => void;
   // 复制
   copy: (path: string, name: string, projectPath: string) => void;
+  copyItems: (items: ClipboardSourceItem[]) => void;
   // 粘贴
   paste: (targetDir: string, targetProjectPath: string) => Promise<boolean>;
   // 清空
@@ -26,36 +34,66 @@ interface ClipboardState {
   hasItem: () => boolean;
 }
 
+function buildClipboardItems(items: ClipboardSourceItem[], action: ClipboardAction): ClipboardItem[] {
+  return items.map((item) => ({
+    ...item,
+    action,
+  }));
+}
+
 export const useClipboardStore = create<ClipboardState>((set, get) => ({
-  item: null,
+  items: [],
 
   cut: (path: string, name: string, projectPath: string) => {
-    set({ item: { path, name, action: 'cut', projectPath } });
+    set({
+      items: buildClipboardItems([{ path, name, projectPath }], 'cut'),
+    });
+  },
+
+  cutItems: (items: ClipboardSourceItem[]) => {
+    set({
+      items: buildClipboardItems(items, 'cut'),
+    });
   },
 
   copy: (path: string, name: string, projectPath: string) => {
-    set({ item: { path, name, action: 'copy', projectPath } });
+    set({
+      items: buildClipboardItems([{ path, name, projectPath }], 'copy'),
+    });
+  },
+
+  copyItems: (items: ClipboardSourceItem[]) => {
+    set({
+      items: buildClipboardItems(items, 'copy'),
+    });
   },
 
   paste: async (targetDir: string, targetProjectPath: string) => {
-    const { item } = get();
-    if (!item) return false;
+    const { items } = get();
+    if (items.length === 0) return false;
 
     try {
-      if (item.action === 'cut') {
-        await invoke('move_project_entry', { 
-          projectPath: item.projectPath,
-          source: item.path, 
-          target: targetDir,
-          conflictStrategy: 'error',
-        });
-        // 移动后清空剪贴板
-        set({ item: null });
+      const action = items[0].action;
+
+      for (const item of items) {
+        if (action === 'cut') {
+          await invoke('move_project_entry', {
+            projectPath: item.projectPath,
+            source: item.path,
+            target: targetDir,
+            conflictStrategy: 'error',
+          });
+        } else {
+          await invoke('copy_file', {
+            source: item.path,
+            target: targetDir,
+          });
+        }
+      }
+
+      if (action === 'cut') {
+        set({ items: [] });
       } else {
-        await invoke('copy_file', { 
-          source: item.path, 
-          target: targetDir 
-        });
         // 复制后保留剪贴板
       }
       return true;
@@ -74,10 +112,10 @@ export const useClipboardStore = create<ClipboardState>((set, get) => ({
   },
 
   clear: () => {
-    set({ item: null });
+    set({ items: [] });
   },
 
   hasItem: () => {
-    return get().item !== null;
+    return get().items.length > 0;
   },
 }));

@@ -71,7 +71,7 @@ export function FileContextMenu({
   onOpenFile,
 }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
-  const { item: clipboardItem, cut, copy, paste, hasItem } = useClipboardStore();
+  const { items: clipboardItems, cut, copy, paste, hasItem } = useClipboardStore();
   const showToast = useUiStore((state) => state.showToast);
   const [systemClipboardStatus, setSystemClipboardStatus] = useState<SystemClipboardStatus>({
     hasFiles: false,
@@ -166,7 +166,7 @@ export function FileContextMenu({
     try {
       let success = false;
 
-      if (clipboardItem) {
+      if (clipboardItems.length > 0) {
         success = await paste(targetDir, projectPath);
       } else {
         const pastedPaths = await invoke<string[]>('paste_system_clipboard', { targetDir });
@@ -238,7 +238,7 @@ export function FileContextMenu({
 
   const hasSystemPasteSource = systemClipboardStatus.hasFiles || systemClipboardStatus.hasImage;
   const canPaste = hasItem() || hasSystemPasteSource;
-  const isCutItem = clipboardItem?.action === 'cut' && clipboardItem?.path === file.path;
+  const isCutItem = clipboardItems.some((item) => item.action === 'cut' && item.path === file.path);
   const menuStyle = getMenuStyle(x, y, 420);
 
   return (
@@ -348,7 +348,7 @@ export function CurrentDirectoryContextMenu({
   onCreateFolder,
 }: CurrentDirectoryContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
-  const { item: clipboardItem, paste, hasItem } = useClipboardStore();
+  const { items: clipboardItems, paste, hasItem } = useClipboardStore();
   const showToast = useUiStore((state) => state.showToast);
   const [systemClipboardStatus, setSystemClipboardStatus] = useState<SystemClipboardStatus>({
     hasFiles: false,
@@ -391,7 +391,7 @@ export function CurrentDirectoryContextMenu({
     try {
       let success = false;
 
-      if (clipboardItem) {
+      if (clipboardItems.length > 0) {
         success = await paste(currentPath, projectPath);
       } else {
         const pastedPaths = await invoke<string[]>('paste_system_clipboard', { targetDir: currentPath });

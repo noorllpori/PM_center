@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { FileInfo, TreeNode, Tag, FileMetadata, ColumnConfig, DisplayRule, ViewMode } from '../types';
 import { clearFileDetailsCache } from '../components/file-manager/useFileDetails';
 import { useSettingsStore } from './settingsStore';
+import { getParentPath, normalizePath } from '../components/file-manager/dragDrop';
 import {
   mergeExcludePatterns,
   readProjectExcludePatterns,
@@ -36,6 +37,40 @@ function replacePathPrefix(path: string, oldPath: string, newPath: string): stri
 
 function getFileName(path: string): string {
   return path.split(/[\\/]/).pop() || path;
+}
+
+function buildExpandedPathChain(projectPath: string, targetPath: string): Set<string> {
+  const expandedPaths = new Set<string>();
+  const normalizedProjectPath = normalizePath(projectPath);
+  const normalizedTargetPath = normalizePath(targetPath);
+
+  if (
+    normalizedTargetPath !== normalizedProjectPath &&
+    !normalizedTargetPath.startsWith(`${normalizedProjectPath}/`)
+  ) {
+    expandedPaths.add(projectPath);
+    return expandedPaths;
+  }
+
+  let currentPath = targetPath;
+
+  while (true) {
+    expandedPaths.add(currentPath);
+
+    if (normalizePath(currentPath) === normalizedProjectPath) {
+      break;
+    }
+
+    const parentPath = getParentPath(currentPath);
+    if (!parentPath || normalizePath(parentPath) === normalizePath(currentPath)) {
+      break;
+    }
+
+    currentPath = parentPath;
+  }
+
+  expandedPaths.add(projectPath);
+  return expandedPaths;
 }
 
 // 默认列配置
@@ -221,6 +256,9 @@ export function createProjectStore() {
           files,
           fileTags: new Map([...state.fileTags, ...fileTags]),
           selectedFiles: new Set(),
+          expandedKeys: projectPath
+            ? new Set([...state.expandedKeys, ...buildExpandedPathChain(projectPath, path)])
+            : state.expandedKeys,
         }));
       } catch (error) {
         console.error('Failed to load directory:', error);

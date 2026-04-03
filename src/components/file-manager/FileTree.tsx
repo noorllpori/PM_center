@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { TreeNode } from '../../types';
 import { useProjectStoreApi, useProjectStoreShallow } from '../../stores/projectStore';
 import { useSettingsStore } from '../../stores/settingsStore';
@@ -51,6 +51,17 @@ function TreeItem({
   const isSelected = currentPath === node.path;
   const isDropTarget = dropTargetPath === node.path;
   const excluded = isExcluded(node);
+  const itemRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isSelected) {
+      return;
+    }
+
+    itemRef.current?.scrollIntoView({
+      block: 'nearest',
+    });
+  }, [isSelected]);
 
   const handleClick = (event: React.MouseEvent<HTMLDivElement>) => {
     if (suppressInteraction(event)) {
@@ -68,6 +79,7 @@ function TreeItem({
   return (
     <div>
       <div
+        ref={itemRef}
         className={`
           flex items-center py-1 px-2 cursor-pointer select-none
           hover:bg-gray-100 dark:hover:bg-gray-800
