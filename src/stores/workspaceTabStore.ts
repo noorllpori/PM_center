@@ -43,7 +43,13 @@ export interface WorkspaceTabState {
   tabs: WorkspaceTab[];
   activeTabId: string;
   openFileInTab: (filePath: string) => Promise<string | null>;
-  openFileInStandaloneWindow: (filePath: string) => Promise<boolean>;
+  openFileInStandaloneWindow: (
+    filePath: string,
+    options?: {
+      projectPath?: string;
+      title?: string;
+    },
+  ) => Promise<boolean>;
   openLogsTab: () => string;
   activateTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
@@ -81,23 +87,35 @@ export function createWorkspaceTabStore() {
       return nextTab.id;
     },
 
-    openFileInStandaloneWindow: async (filePath) => {
+    openFileInStandaloneWindow: async (filePath, options) => {
       const target = getWorkspaceOpenTarget(filePath);
       if (!target) {
         return false;
       }
 
       if (target === 'image') {
-        await openStandaloneImageViewer(filePath);
+        await openStandaloneImageViewer({
+          filePath,
+          title: options?.title,
+          projectPath: options?.projectPath,
+        });
         return true;
       }
 
       if (target === 'video') {
-        await openStandaloneVideoPlayer(filePath);
+        await openStandaloneVideoPlayer({
+          filePath,
+          title: options?.title,
+          projectPath: options?.projectPath,
+        });
         return true;
       }
 
-      await openStandaloneTextEditor(filePath);
+      await openStandaloneTextEditor({
+        filePath,
+        title: options?.title,
+        projectPath: options?.projectPath,
+      });
       return true;
     },
 

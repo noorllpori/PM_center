@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { emitTo, once } from '@tauri-apps/api/event';
 import { Upload } from 'lucide-react';
 import { FileTree } from './FileTree';
 import { FileList } from './FileList';
@@ -10,12 +11,22 @@ import { importExternalDrop } from './externalImport';
 import { ChangeLog } from '../ChangeLog';
 import { ImageViewerSurface } from '../image-viewer/ImageViewerSurface';
 import { TextEditorSurface } from '../text-editor/TextEditorSurface';
+import { openStandaloneTextEditor } from '../text-editor/openStandaloneTextEditor';
+import {
+  createTextDetachAckEvent,
+  createTextDetachPayloadEvent,
+  createTextDetachReadyEvent,
+  createTextDetachTransferId,
+  type TextEditorDetachAckPayload,
+  type TextEditorDetachReadyPayload,
+  type TextEditorTransferPayload,
+} from '../text-editor/textEditorWindowTransfer';
 import { VideoPlayerSurface } from '../video-player/VideoPlayerSurface';
 import { WorkspaceTabBar } from '../workspace/WorkspaceTabBar';
 import { useProjectStoreApi, useProjectStoreShallow } from '../../stores/projectStore';
 import { useClipboardStore } from '../../stores/clipboardStore';
 import { useUiStore } from '../../stores/uiStore';
-import { useWorkspaceTabStore } from '../../stores/workspaceTabStore';
+import { useWorkspaceTabStore, useWorkspaceTabStoreApi } from '../../stores/workspaceTabStore';
 
 const FILE_TREE_PANEL_WIDTH_KEY = 'pm-center:file-tree-panel-width';
 const FILE_TREE_PANEL_MIN_WIDTH = 220;
@@ -25,6 +36,7 @@ const FILE_DETAILS_PANEL_WIDTH_KEY = 'pm-center:file-details-panel-width';
 const FILE_DETAILS_PANEL_MIN_WIDTH = 260;
 const FILE_DETAILS_PANEL_MAX_WIDTH = 720;
 const FILE_DETAILS_PANEL_DEFAULT_WIDTH = 320;
+const TEXT_DETACH_EVENT_TIMEOUT_MS = 10000;
 
 interface SystemClipboardStatus {
   hasFiles: boolean;
@@ -82,8 +94,55 @@ function getPathName(path: string) {
   return path.split(/[\\/]/).pop() || path;
 }
 
+function waitForAppEvent<T>(eventName: string, timeoutMs = TEXT_DETACH_EVENT_TIMEOUT_MS) {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    let unlisten: (() => void) | null = null;
+
+    const timeoutId = window.setTimeout(() => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      if (unlisten) {
+        void unlisten();
+      }
+      reject(new Error(`Timed out waiting for ${eventName}`));
+    }, timeoutMs);
+
+    void once<T>(eventName, (event) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      window.clearTimeout(timeoutId);
+      resolve(event.payload);
+    })
+      .then((nextUnlisten) => {
+        if (settled) {
+          void nextUnlisten();
+          return;
+        }
+
+        unlisten = nextUnlisten;
+      })
+      .catch((error) => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        window.clearTimeout(timeoutId);
+        reject(error);
+      });
+  });
+}
+
 export function ProjectWorkspace() {
   const projectStore = useProjectStoreApi();
+  const workspaceTabStore = useWorkspaceTabStoreApi();
   const {
     isInitialized,
     projectPath,
@@ -106,6 +165,7 @@ export function ProjectWorkspace() {
   const activeTabId = useWorkspaceTabStore((state) => state.activeTabId);
   const activateTab = useWorkspaceTabStore((state) => state.activateTab);
   const closeTab = useWorkspaceTabStore((state) => state.closeTab);
+  const openFileInStandaloneWindow = useWorkspaceTabStore((state) => state.openFileInStandaloneWindow);
   const reorderTabs = useWorkspaceTabStore((state) => state.reorderTabs);
   const updateTabDirty = useWorkspaceTabStore((state) => state.updateTabDirty);
 
@@ -118,8 +178,27 @@ export function ProjectWorkspace() {
   const externalDragDepthRef = useRef(0);
   const fileTreeResizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const fileDetailsResizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const textEditorSnapshotsRef = useRef(new Map<string, TextEditorTransferPayload>());
   const activeWorkspaceTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
   const isFilesWorkspaceActive = activeWorkspaceTab?.type === 'files';
+
+  useEffect(() => {
+    const activeTextTabIds = new Set(
+      tabs
+        .filter((tab) => tab.type === 'text')
+        .map((tab) => tab.id),
+    );
+
+    for (const tabId of textEditorSnapshotsRef.current.keys()) {
+      if (!activeTextTabIds.has(tabId)) {
+        textEditorSnapshotsRef.current.delete(tabId);
+      }
+    }
+  }, [tabs]);
+
+  const handleTextEditorStateChange = useCallback((tabId: string, snapshot: TextEditorTransferPayload) => {
+    textEditorSnapshotsRef.current.set(tabId, snapshot);
+  }, []);
 
   const getSelectedClipboardItems = useCallback(() => {
     const state = projectStore.getState();
@@ -466,6 +545,121 @@ export function ProjectWorkspace() {
     document.body.style.userSelect = 'none';
   }, [fileDetailsPanelWidth]);
 
+  const handleDetachTab = useCallback(async (tabId: string) => {
+    const tab = workspaceTabStore.getState().tabs.find((item) => item.id === tabId);
+    if (!tab?.closable || !tab.filePath) {
+      return;
+    }
+
+    const detachWithToast = async () => {
+      const opened = await openFileInStandaloneWindow(tab.filePath!, {
+        projectPath: projectPath || undefined,
+        title: tab.title,
+      });
+      if (!opened) {
+        throw new Error('当前标签类型不支持独立窗口。');
+      }
+
+      workspaceTabStore.getState().closeTab(tabId);
+    };
+
+    if (tab.type !== 'text') {
+      try {
+        await detachWithToast();
+      } catch (error) {
+        showToast({
+          title: '打开独立窗口失败',
+          message: String(error),
+          tone: 'error',
+        });
+      }
+      return;
+    }
+
+    if (!tab.isDirty) {
+      try {
+        await detachWithToast();
+      } catch (error) {
+        showToast({
+          title: '打开独立窗口失败',
+          message: String(error),
+          tone: 'error',
+        });
+      }
+      return;
+    }
+
+    const snapshot = textEditorSnapshotsRef.current.get(tabId);
+    if (!snapshot || snapshot.filePath !== tab.filePath) {
+      showToast({
+        title: '请先保存',
+        message: '该文本标签的未保存内容当前无法安全迁移，请先保存后再独立打开。',
+        tone: 'warning',
+      });
+      return;
+    }
+
+    const transferId = createTextDetachTransferId();
+    const readyEvent = createTextDetachReadyEvent(transferId);
+    const payloadEvent = createTextDetachPayloadEvent(transferId);
+    const ackEvent = createTextDetachAckEvent(transferId);
+    let textWindow: Awaited<ReturnType<typeof openStandaloneTextEditor>> | null = null;
+    let readyPromise: Promise<TextEditorDetachReadyPayload> | null = null;
+    let ackPromise: Promise<TextEditorDetachAckPayload> | null = null;
+
+    try {
+      readyPromise = waitForAppEvent<TextEditorDetachReadyPayload>(readyEvent);
+      textWindow = await openStandaloneTextEditor({
+        filePath: tab.filePath,
+        title: tab.title,
+        projectPath: projectPath || undefined,
+        transferId,
+        visible: false,
+        focus: false,
+      });
+
+      const readyPayload = await readyPromise;
+      if (!readyPayload.targetLabel) {
+        throw new Error('独立窗口未返回有效的接收标识。');
+      }
+
+      const payload: TextEditorTransferPayload = {
+        ...snapshot,
+        filePath: tab.filePath,
+        title: tab.title,
+      };
+
+      ackPromise = waitForAppEvent<TextEditorDetachAckPayload>(ackEvent);
+      await emitTo(readyPayload.targetLabel, payloadEvent, payload);
+      await ackPromise;
+      await textWindow.show();
+      await textWindow.setFocus();
+      workspaceTabStore.getState().closeTab(tabId);
+    } catch (error) {
+      if (readyPromise) {
+        void readyPromise.catch(() => {});
+      }
+      if (ackPromise) {
+        void ackPromise.catch(() => {});
+      }
+
+      if (textWindow) {
+        try {
+          await textWindow.destroy();
+        } catch (destroyError) {
+          console.error('Failed to destroy detached text window after handoff failure:', destroyError);
+        }
+      }
+
+      console.error('Failed to detach workspace tab:', error);
+      showToast({
+        title: '打开独立窗口失败',
+        message: String(error),
+        tone: 'error',
+      });
+    }
+  }, [openFileInStandaloneWindow, projectPath, showToast, workspaceTabStore]);
+
   const handleExternalDragEnter = useCallback((event: React.DragEvent<HTMLDivElement>) => {
     if (!isInitialized || !isFilesWorkspaceActive || !isExternalFileDrag(event.dataTransfer)) {
       return;
@@ -562,6 +756,7 @@ export function ProjectWorkspace() {
         onActivateTab={activateTab}
         onCloseTab={closeTab}
         onReorderTabs={reorderTabs}
+        onDetachTab={handleDetachTab}
       />
 
       <div
@@ -660,6 +855,7 @@ export function ProjectWorkspace() {
                       title={tab.title}
                       filePath={tab.filePath}
                       onDirtyChange={(isDirty) => updateTabDirty(tab.id, isDirty)}
+                      onEditorStateChange={(snapshot) => handleTextEditorStateChange(tab.id, snapshot)}
                     />
                   </div>
                 )}

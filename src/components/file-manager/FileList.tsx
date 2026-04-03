@@ -606,7 +606,9 @@ export function FileList() {
 
     try {
       if (openInStandalone) {
-        const opened = await openFileInStandaloneWindow(file.path);
+        const opened = await openFileInStandaloneWindow(file.path, {
+          projectPath: projectPath || undefined,
+        });
         if (!opened) {
           await handleSystemOpenFile(file);
         }
@@ -625,7 +627,7 @@ export function FileList() {
         tone: 'error',
       });
     }
-  }, [handleSystemOpenFile, loadDirectory, openFileInStandaloneWindow, openFileInTab, showToast]);
+  }, [handleSystemOpenFile, loadDirectory, openFileInStandaloneWindow, openFileInTab, projectPath, showToast]);
 
   const handleContextMenu = useCallback((file: FileInfo, x: number, y: number) => {
     if (!selectedFiles.has(file.path)) {

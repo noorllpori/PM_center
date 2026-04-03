@@ -1,14 +1,39 @@
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { getFileNameFromPath } from '../workspace/fileOpeners';
 
-export async function openStandaloneVideoPlayer(filePath: string): Promise<WebviewWindow> {
-  const title = getFileNameFromPath(filePath);
+export interface OpenStandaloneVideoPlayerOptions {
+  filePath: string;
+  title?: string;
+  projectPath?: string;
+  visible?: boolean;
+  focus?: boolean;
+}
+
+export async function openStandaloneVideoPlayer(
+  options: string | OpenStandaloneVideoPlayerOptions,
+): Promise<WebviewWindow> {
+  const normalizedOptions = typeof options === 'string'
+    ? { filePath: options }
+    : options;
+
+  const {
+    filePath,
+    title = getFileNameFromPath(normalizedOptions.filePath),
+    projectPath,
+    visible = true,
+    focus = true,
+  } = normalizedOptions;
+
   const label = `video-player-${Date.now()}`;
   const searchParams = new URLSearchParams({
     view: 'video-player',
     path: filePath,
     title,
   });
+
+  if (projectPath) {
+    searchParams.set('projectPath', projectPath);
+  }
 
   const videoWindow = new WebviewWindow(label, {
     url: `/?${searchParams.toString()}`,
@@ -19,7 +44,8 @@ export async function openStandaloneVideoPlayer(filePath: string): Promise<Webvi
     minHeight: 420,
     center: true,
     resizable: true,
-    focus: true,
+    focus,
+    visible,
   });
 
   return await new Promise<WebviewWindow>((resolve, reject) => {

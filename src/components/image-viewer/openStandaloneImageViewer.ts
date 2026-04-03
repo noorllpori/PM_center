@@ -4,14 +4,39 @@ function getFileNameFromPath(path: string): string {
   return path.split(/[\\/]/).pop() || path;
 }
 
-export async function openStandaloneImageViewer(filePath: string): Promise<WebviewWindow> {
-  const title = getFileNameFromPath(filePath);
+export interface OpenStandaloneImageViewerOptions {
+  filePath: string;
+  title?: string;
+  projectPath?: string;
+  visible?: boolean;
+  focus?: boolean;
+}
+
+export async function openStandaloneImageViewer(
+  options: string | OpenStandaloneImageViewerOptions,
+): Promise<WebviewWindow> {
+  const normalizedOptions = typeof options === 'string'
+    ? { filePath: options }
+    : options;
+
+  const {
+    filePath,
+    title = getFileNameFromPath(normalizedOptions.filePath),
+    projectPath,
+    visible = true,
+    focus = true,
+  } = normalizedOptions;
+
   const label = `image-viewer-${Date.now()}`;
   const searchParams = new URLSearchParams({
     view: 'image-viewer',
     path: filePath,
     title,
   });
+
+  if (projectPath) {
+    searchParams.set('projectPath', projectPath);
+  }
 
   const imageWindow = new WebviewWindow(label, {
     url: `/?${searchParams.toString()}`,
@@ -22,7 +47,8 @@ export async function openStandaloneImageViewer(filePath: string): Promise<Webvi
     minHeight: 320,
     center: true,
     resizable: true,
-    focus: true,
+    focus,
+    visible,
   });
 
   return await new Promise<WebviewWindow>((resolve, reject) => {

@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { History, MessageCircle, Terminal, X } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { WelcomeScreen } from '../WelcomeScreen';
 import { P2PChat } from '../P2PChat';
 import { PythonEnvManager } from '../PythonEnvManager';
@@ -15,6 +15,10 @@ import { createWorkspaceTabStore, type WorkspaceTabStoreApi, useWorkspaceTabStor
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useShellTabStore, normalizeProjectPath } from '../../stores/shellTabStore';
+import {
+  STANDALONE_RETURN_TO_WORKSPACE_EVENT,
+  type StandaloneReturnToWorkspacePayload,
+} from '../workspace/standaloneWindowReturn';
 
 interface ProjectSession {
   projectStore: ProjectStoreApi;
@@ -23,6 +27,10 @@ interface ProjectSession {
 
 function getProjectNameFromPath(path: string) {
   return path.split(/[\\/]/).pop() || 'Project';
+}
+
+function getFileNameFromPath(path: string) {
+  return path.split(/[\\/]/).pop() || path;
 }
 
 function ProjectLogsButton({ onOpen }: { onOpen: () => void }) {
@@ -51,6 +59,7 @@ export function FileManager() {
   const recentProjects = useSettingsStore((state) => state.recentProjects);
   const autoOpenLastProject = useSettingsStore((state) => state.autoOpenLastProject);
   const addRecentProject = useSettingsStore((state) => state.addRecentProject);
+  const showToast = useUiStore((state) => state.showToast);
   const toast = useUiStore((state) => state.toast);
   const hideToast = useUiStore((state) => state.hideToast);
   const tabs = useShellTabStore((state) => state.tabs);
@@ -136,6 +145,24 @@ export function FileManager() {
     void session.projectStore.getState().activateProject();
   }, [activeShellTab]);
 
+  const handleOpenProject = useCallback(async (path: string) => {
+    const normalizedPath = normalizeProjectPath(path);
+    let session = sessionsRef.current.get(normalizedPath);
+
+    if (!session) {
+      session = {
+        projectStore: createProjectStore(),
+        workspaceTabStore: createWorkspaceTabStore(),
+      };
+      await session.projectStore.getState().setProject(path);
+      sessionsRef.current.set(normalizedPath, session);
+    }
+
+    const projectName = session.projectStore.getState().projectName || getProjectNameFromPath(path);
+    openProjectTab(path, projectName);
+    await addRecentProject(path, projectName);
+  }, [addRecentProject, openProjectTab]);
+
   useEffect(() => {
     if (!isSettingsLoaded || hasHandledStartupProjectRef.current) {
       return;
@@ -153,25 +180,73 @@ export function FileManager() {
     }
 
     void handleOpenProject(latestProject.path);
-  }, [autoOpenLastProject, isSettingsLoaded, recentProjects]);
+  }, [autoOpenLastProject, handleOpenProject, isSettingsLoaded, recentProjects]);
 
-  const handleOpenProject = async (path: string) => {
-    const normalizedPath = normalizeProjectPath(path);
-    let session = sessionsRef.current.get(normalizedPath);
+  useEffect(() => {
+    let isActive = true;
+    let unlisten: (() => void) | null = null;
 
-    if (!session) {
-      session = {
-        projectStore: createProjectStore(),
-        workspaceTabStore: createWorkspaceTabStore(),
-      };
-      await session.projectStore.getState().setProject(path);
-      sessionsRef.current.set(normalizedPath, session);
-    }
+    const registerReturnListener = async () => {
+      try {
+        unlisten = await listen<StandaloneReturnToWorkspacePayload>(
+          STANDALONE_RETURN_TO_WORKSPACE_EVENT,
+          async (event) => {
+            const payload = event.payload;
+            if (!payload?.projectPath || !payload?.filePath) {
+              showToast({
+                title: '回归失败',
+                message: '缺少项目路径或文件路径。',
+                tone: 'error',
+              });
+              return;
+            }
 
-    const projectName = session.projectStore.getState().projectName || getProjectNameFromPath(path);
-    openProjectTab(path, projectName);
-    await addRecentProject(path, projectName);
-  };
+            try {
+              await handleOpenProject(payload.projectPath);
+              const session = sessionsRef.current.get(normalizeProjectPath(payload.projectPath));
+              if (!session) {
+                throw new Error('未找到目标项目会话');
+              }
+
+              const openedTabId = await session.workspaceTabStore.getState().openFileInTab(payload.filePath);
+              if (!openedTabId) {
+                throw new Error('该文件类型暂不支持回归到项目标签页');
+              }
+
+              showToast({
+                title: '已回归项目',
+                message: getFileNameFromPath(payload.filePath),
+                tone: 'success',
+              });
+            } catch (error) {
+              console.error('Failed to return detached window to workspace tab:', error);
+              showToast({
+                title: '回归失败',
+                message: String(error),
+                tone: 'error',
+              });
+            }
+          },
+        );
+
+        if (!isActive && unlisten) {
+          await unlisten();
+          unlisten = null;
+        }
+      } catch (error) {
+        console.error('Failed to register standalone return listener:', error);
+      }
+    };
+
+    void registerReturnListener();
+
+    return () => {
+      isActive = false;
+      if (unlisten) {
+        void unlisten();
+      }
+    };
+  }, [handleOpenProject, showToast]);
 
   const handleCloseShellTab = (tabId: string) => {
     const closingTab = tabs.find((tab) => tab.id === tabId);

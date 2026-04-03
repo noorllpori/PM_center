@@ -114,7 +114,13 @@ function drawPsdLayers(context: CanvasRenderingContext2D, layers: PsdPreviewLaye
 }
 
 export function useResolvedImageSource(source: string) {
-  const [resolvedSource, setResolvedSource] = useState<string | null>(null);
+  const [resolvedSourceState, setResolvedSourceState] = useState<{
+    source: string;
+    value: string | null;
+  }>({
+    source: '',
+    value: null,
+  });
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -124,14 +130,20 @@ export function useResolvedImageSource(source: string) {
 
     async function loadSource() {
       if (!source) {
-        setResolvedSource(null);
+        setResolvedSourceState({
+          source: '',
+          value: null,
+        });
         setErrorMessage('没有可显示的图片路径。');
         setIsLoading(false);
         return;
       }
 
       if (isDirectBrowserSource(source)) {
-        setResolvedSource(source);
+        setResolvedSourceState({
+          source,
+          value: source,
+        });
         setErrorMessage(null);
         setIsLoading(false);
         return;
@@ -139,6 +151,10 @@ export function useResolvedImageSource(source: string) {
 
       setIsLoading(true);
       setErrorMessage(null);
+      setResolvedSourceState({
+        source,
+        value: null,
+      });
 
       try {
         const extension = getImageExtension(source);
@@ -150,13 +166,19 @@ export function useResolvedImageSource(source: string) {
           return;
         }
 
-        setResolvedSource(objectUrl);
+        setResolvedSourceState({
+          source,
+          value: objectUrl,
+        });
       } catch (error) {
         if (!isActive) {
           return;
         }
 
-        setResolvedSource(null);
+        setResolvedSourceState({
+          source,
+          value: null,
+        });
         setErrorMessage(`读取图片失败：${String(error)}`);
       } finally {
         if (isActive) {
@@ -174,6 +196,10 @@ export function useResolvedImageSource(source: string) {
       }
     };
   }, [source]);
+
+  const resolvedSource = resolvedSourceState.source === source
+    ? resolvedSourceState.value
+    : null;
 
   return {
     resolvedSource,

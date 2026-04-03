@@ -3,14 +3,17 @@ import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
 import { AlertCircle, CheckCircle2, FileCode, Loader2, Save, Type } from 'lucide-react';
 import { CodeEditor } from '../CodeEditor/CodeEditor';
 import { detectLanguage, getLanguageName, type EditorLanguage } from '../../stores/windowStore';
+import type { TextEditorTransferPayload } from './textEditorWindowTransfer';
 
 interface TextEditorSurfaceProps {
   title: string;
   filePath?: string;
   initialContent?: string;
+  initialOriginalContent?: string;
   initialLanguage?: EditorLanguage;
   showTitleInToolbar?: boolean;
   onDirtyChange?: (isDirty: boolean) => void;
+  onEditorStateChange?: (snapshot: TextEditorTransferPayload) => void;
 }
 
 function resolveLanguage(
@@ -33,23 +36,29 @@ export function TextEditorSurface({
   title,
   filePath,
   initialContent,
+  initialOriginalContent,
   initialLanguage,
   showTitleInToolbar = true,
   onDirtyChange,
+  onEditorStateChange,
 }: TextEditorSurfaceProps) {
-  const [content, setContent] = useState(initialContent || '');
-  const [originalContent, setOriginalContent] = useState(initialContent || '');
+  const [content, setContent] = useState(initialContent ?? '');
+  const [originalContent, setOriginalContent] = useState(initialOriginalContent ?? initialContent ?? '');
   const [language, setLanguage] = useState<EditorLanguage>(() => resolveLanguage(filePath, title, initialLanguage));
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [showLanguageMenu, setShowLanguageMenu] = useState(false);
   const [lineWrapping, setLineWrapping] = useState(true);
+  const [hasResolvedInitialState, setHasResolvedInitialState] = useState(() => initialContent !== undefined || !filePath);
   const saveMessageTimerRef = useRef<number | null>(null);
 
   const isDirty = content !== originalContent;
   const emitDirtyChange = useEffectEvent((nextIsDirty: boolean) => {
     onDirtyChange?.(nextIsDirty);
+  });
+  const emitEditorStateChange = useEffectEvent((snapshot: TextEditorTransferPayload) => {
+    onEditorStateChange?.(snapshot);
   });
 
   useEffect(() => {
@@ -59,6 +68,30 @@ export function TextEditorSurface({
   useEffect(() => {
     emitDirtyChange(isDirty);
   }, [emitDirtyChange, isDirty]);
+
+  useEffect(() => {
+    if (!filePath || !hasResolvedInitialState) {
+      return;
+    }
+
+    emitEditorStateChange({
+      filePath,
+      title,
+      content,
+      originalContent,
+      language,
+      isDirty,
+    });
+  }, [
+    content,
+    emitEditorStateChange,
+    filePath,
+    hasResolvedInitialState,
+    isDirty,
+    language,
+    originalContent,
+    title,
+  ]);
 
   useEffect(() => {
     if (saveMessageTimerRef.current) {
@@ -78,10 +111,12 @@ export function TextEditorSurface({
 
     async function loadContent() {
       if (initialContent !== undefined) {
+        const nextOriginalContent = initialOriginalContent ?? initialContent;
         setContent(initialContent);
-        setOriginalContent(initialContent);
+        setOriginalContent(nextOriginalContent);
         setErrorMessage(null);
         setIsLoading(false);
+        setHasResolvedInitialState(true);
         return;
       }
 
@@ -90,11 +125,13 @@ export function TextEditorSurface({
         setOriginalContent('');
         setErrorMessage('没有可读取的文件路径。');
         setIsLoading(false);
+        setHasResolvedInitialState(true);
         return;
       }
 
       setIsLoading(true);
       setErrorMessage(null);
+      setHasResolvedInitialState(false);
 
       try {
         const nextContent = await readTextFile(filePath);
@@ -105,6 +142,7 @@ export function TextEditorSurface({
         setContent(nextContent);
         setOriginalContent(nextContent);
         setErrorMessage(null);
+        setHasResolvedInitialState(true);
       } catch (error) {
         if (!isActive) {
           return;
@@ -113,6 +151,7 @@ export function TextEditorSurface({
         setContent('');
         setOriginalContent('');
         setErrorMessage(`读取文本失败：${String(error)}`);
+        setHasResolvedInitialState(true);
       } finally {
         if (isActive) {
           setIsLoading(false);
@@ -125,7 +164,7 @@ export function TextEditorSurface({
     return () => {
       isActive = false;
     };
-  }, [filePath, initialContent]);
+  }, [filePath, initialContent, initialOriginalContent]);
 
   const dismissLanguageMenu = () => {
     setShowLanguageMenu(false);
