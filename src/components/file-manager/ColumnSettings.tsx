@@ -1,10 +1,14 @@
 import { useState } from 'react';
-import { useProjectStore } from '../../stores/projectStore';
+import { useProjectStoreShallow } from '../../stores/projectStore';
 import { Settings, GripVertical, Eye, EyeOff } from 'lucide-react';
 
 export function ColumnSettings() {
   const [isOpen, setIsOpen] = useState(false);
-  const { columns, updateColumn, reorderColumns } = useProjectStore();
+  const { columns, updateColumn, reorderColumns } = useProjectStoreShallow((state) => ({
+    columns: state.columns,
+    updateColumn: state.updateColumn,
+    reorderColumns: state.reorderColumns,
+  }));
   
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
 

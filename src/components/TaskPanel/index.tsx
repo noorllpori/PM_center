@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useTaskStore, initTaskEventListeners } from '../../stores/taskStore';
-import { useProjectStore } from '../../stores/projectStore';
+import { useOptionalProjectStoreShallow } from '../../stores/projectStore';
 import type { Task, TaskStatus, TaskPriority, ProjectScript } from '../../types/task';
 import { getProjectScripts } from '../../api/scripts';
 import { invoke } from '@tauri-apps/api/core';
@@ -46,7 +46,10 @@ function getProjectDisplayName(
 }
 
 export function TaskPanel({ isOpen, onClose }: TaskPanelProps) {
-  const { projectPath, projectName } = useProjectStore();
+  const { projectPath, projectName } = useOptionalProjectStoreShallow((state) => ({
+    projectPath: state.projectPath,
+    projectName: state.projectName,
+  }));
   const { 
     tasks: allTasks, 
     activeTaskId, 

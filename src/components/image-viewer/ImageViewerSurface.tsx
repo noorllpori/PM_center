@@ -276,7 +276,7 @@ export function ImageViewerSurface({
   const effectiveErrorMessage = sourceErrorMessage || renderErrorMessage;
 
   return (
-    <div className="flex h-full w-full min-w-0 flex-col bg-white dark:bg-gray-900">
+    <div className="flex h-full w-full min-w-0 min-h-0 flex-col bg-white dark:bg-gray-900">
       <div className="flex items-center gap-2 border-b border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-800/80">
         {showTitleInToolbar && (
           <div className="min-w-0 flex-1">
@@ -342,7 +342,7 @@ export function ImageViewerSurface({
 
       <div
         ref={viewportRef}
-        className="relative flex-1 overflow-hidden bg-gray-950 p-[2px]"
+        className="relative flex-1 min-h-0 overflow-hidden bg-gray-950 p-[2px]"
         style={{
           backgroundImage:
             'linear-gradient(45deg, rgba(255,255,255,0.04) 25%, transparent 25%), linear-gradient(-45deg, rgba(255,255,255,0.04) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, rgba(255,255,255,0.04) 75%), linear-gradient(-45deg, transparent 75%, rgba(255,255,255,0.04) 75%)',

@@ -1,37 +1,33 @@
 import { useState } from 'react';
-import { FileText, Folder, History, Image as ImageIcon, X } from 'lucide-react';
-import type { WorkspaceTab } from '../../stores/workspaceTabStore';
+import { Folder, Home, X } from 'lucide-react';
+import type { ShellTab } from '../../stores/shellTabStore';
 
-interface WorkspaceTabBarProps {
-  tabs: WorkspaceTab[];
+interface ShellTabBarProps {
+  tabs: ShellTab[];
   activeTabId: string;
   onActivateTab: (tabId: string) => void;
   onCloseTab: (tabId: string) => void;
   onReorderTabs: (fromId: string, toId: string) => void;
 }
 
-function getTabIcon(tab: WorkspaceTab) {
+function getTabIcon(tab: ShellTab) {
   switch (tab.type) {
-    case 'files':
+    case 'home':
+      return <Home className="h-4 w-4 text-sky-500" />;
+    case 'project':
       return <Folder className="h-4 w-4 text-blue-500" />;
-    case 'logs':
-      return <History className="h-4 w-4 text-amber-500" />;
-    case 'image':
-      return <ImageIcon className="h-4 w-4 text-green-500" />;
-    case 'text':
-      return <FileText className="h-4 w-4 text-sky-500" />;
     default:
       return null;
   }
 }
 
-export function WorkspaceTabBar({
+export function ShellTabBar({
   tabs,
   activeTabId,
   onActivateTab,
   onCloseTab,
   onReorderTabs,
-}: WorkspaceTabBarProps) {
+}: ShellTabBarProps) {
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
 
@@ -40,7 +36,7 @@ export function WorkspaceTabBar({
       <div className="flex items-stretch gap-1 overflow-x-auto px-2 py-1">
         {tabs.map((tab) => {
           const isActive = tab.id === activeTabId;
-          const isDropTarget = tab.id === dropTargetId && tab.id !== 'files';
+          const isDropTarget = tab.id === dropTargetId && tab.id !== 'home';
 
           return (
             <div
@@ -53,7 +49,7 @@ export function WorkspaceTabBar({
               } ${
                 isDropTarget ? 'ring-2 ring-blue-400' : ''
               } ${tab.closable ? 'cursor-grab active:cursor-grabbing' : 'cursor-default'}`}
-              title={tab.filePath || tab.title}
+              title={tab.projectPath || tab.title}
               onClick={() => onActivateTab(tab.id)}
               onDragStart={() => {
                 if (!tab.closable) {
@@ -91,10 +87,7 @@ export function WorkspaceTabBar({
               }}
             >
               <span className="shrink-0 opacity-90">{getTabIcon(tab)}</span>
-              <span className="truncate">
-                {tab.title}
-                {tab.isDirty ? ' *' : ''}
-              </span>
+              <span className="truncate">{tab.title}</span>
               {tab.closable && (
                 <button
                   className={`rounded-sm p-0.5 transition-colors ${

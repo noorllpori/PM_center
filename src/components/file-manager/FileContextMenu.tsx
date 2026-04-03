@@ -9,6 +9,7 @@ interface ContextMenuProps {
   x: number;
   y: number;
   currentPath: string;
+  projectPath: string;
   onClose: () => void;
   onRefresh?: () => void;
   onShowDetails?: (file: FileInfo) => void;
@@ -55,6 +56,7 @@ export function FileContextMenu({
   x,
   y,
   currentPath,
+  projectPath,
   onClose,
   onRefresh,
   onShowDetails,
@@ -115,20 +117,20 @@ export function FileContextMenu({
 
   // 剪切
   const handleCut = () => {
-    cut(file.path, file.name);
+    cut(file.path, file.name, projectPath);
     onClose();
   };
 
   // 复制到剪贴板
   const handleCopyToClipboard = () => {
-    copy(file.path, file.name);
+    copy(file.path, file.name, projectPath);
     onClose();
   };
 
   // 粘贴
   const handlePaste = async () => {
     const targetDir = file.is_dir ? file.path : currentPath;
-    const success = await paste(targetDir);
+    const success = await paste(targetDir, projectPath);
     if (success) {
       onRefresh?.();
     }
@@ -151,6 +153,7 @@ export function FileContextMenu({
     if (newName && newName !== file.name) {
       try {
         await invoke('rename_project_entry', { 
+          projectPath,
           path: file.path, 
           newName 
         });

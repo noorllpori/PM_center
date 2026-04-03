@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useSettingsStore } from '../stores/settingsStore';
 import { scanProjectsRoot, createProject, ScannedProject } from '../api/projects';
-import { invoke } from '@tauri-apps/api/core';
 import { Dialog, ConfirmDialog, AlertDialog } from './Dialog';
 import { SettingsPanel } from './SettingsPanel';
 import pmcLogo from '../assets/pmc-logo.png';
@@ -39,7 +38,7 @@ function getProjectDatePrefix(date = new Date()): string {
 }
 
 interface WelcomeScreenProps {
-  onOpenProject: (path: string) => void;
+  onOpenProject: (path: string) => Promise<void> | void;
 }
 
 export function WelcomeScreen({ onOpenProject }: WelcomeScreenProps) {
@@ -90,7 +89,7 @@ export function WelcomeScreen({ onOpenProject }: WelcomeScreenProps) {
   const handleProjectClick = async (project: ScannedProject) => {
     if (project.hasPmCenter) {
       // 已初始化，直接打开
-      onOpenProject(project.path);
+      await onOpenProject(project.path);
     } else {
       // 未初始化，弹出确认对话框
       setConfirmDialog({
@@ -99,11 +98,7 @@ export function WelcomeScreen({ onOpenProject }: WelcomeScreenProps) {
         message: `项目 "${project.name}" 未初始化，是否现在初始化？`,
         onConfirm: async () => {
           try {
-            await invoke('init_project', { projectPath: project.path });
-            // 刷新列表
-            await scanProjects();
-            // 打开项目
-            onOpenProject(project.path);
+            await onOpenProject(project.path);
           } catch (err) {
             setAlertDialog({
               isOpen: true,
@@ -191,7 +186,7 @@ export function WelcomeScreen({ onOpenProject }: WelcomeScreenProps) {
       const projectPath = await createProject(projectsRootDir, finalProjectName);
       setShowCreateDialog(false);
       setNewProjectName('');
-      onOpenProject(projectPath);
+      await onOpenProject(projectPath);
     } catch (err) {
       setAlertDialog({
         isOpen: true,
@@ -223,7 +218,7 @@ export function WelcomeScreen({ onOpenProject }: WelcomeScreenProps) {
       });
       
       if (selected && typeof selected === 'string') {
-        onOpenProject(selected);
+        await onOpenProject(selected);
       }
     } catch (error) {
       console.error('打开项目失败:', error);

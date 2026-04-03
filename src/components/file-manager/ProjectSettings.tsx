@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { X, Plus, Trash2, FolderOpen, FileWarning, HelpCircle } from 'lucide-react';
-import { useProjectStore } from '../../stores/projectStore';
+import { useProjectStoreShallow } from '../../stores/projectStore';
 import {
   PRESET_EXCLUDE_PATTERNS,
   getExcludeStorageKey,
@@ -22,7 +22,10 @@ export { getExcludePatterns };
 
 // 预设的排除规则
 export function ProjectSettings({ isOpen, onClose }: ProjectSettingsProps) {
-  const { projectPath, refresh } = useProjectStore();
+  const { projectPath, refresh } = useProjectStoreShallow((state) => ({
+    projectPath: state.projectPath,
+    refresh: state.refresh,
+  }));
   
   // 排除规则列表
   const [excludePatterns, setExcludePatterns] = useState<string[]>([]);

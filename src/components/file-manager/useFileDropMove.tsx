@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { MoveConflictDialog } from './MoveConflictDialog';
 import { compactDraggedPaths, getFileNameFromPath, isSameOrDescendantPath } from './dragDrop';
-import { useProjectStore } from '../../stores/projectStore';
+import { useProjectStoreShallow } from '../../stores/projectStore';
 import { useUiStore } from '../../stores/uiStore';
 
 type ConflictChoice = 'overwrite' | 'rename' | 'cancel';
@@ -17,7 +17,10 @@ const CONFLICT_ERROR_PREFIX = 'PM_CONFLICT:';
 
 export function useFileDropMove(onAfterMove: () => Promise<void> | void) {
   const showToast = useUiStore((state) => state.showToast);
-  const applyMovedPath = useProjectStore((state) => state.applyMovedPath);
+  const { projectPath, applyMovedPath } = useProjectStoreShallow((state) => ({
+    projectPath: state.projectPath,
+    applyMovedPath: state.applyMovedPath,
+  }));
 
   const [conflictState, setConflictState] = useState<ConflictState>({
     isOpen: false,
@@ -57,6 +60,9 @@ export function useFileDropMove(onAfterMove: () => Promise<void> | void) {
 
   const movePathsToDirectory = useCallback(async (sourcePaths: string[], targetDir: string, targetLabel: string) => {
     const compactPaths = compactDraggedPaths(sourcePaths);
+    if (!projectPath) {
+      return;
+    }
 
     let successCount = 0;
     let overwriteCount = 0;
@@ -75,6 +81,7 @@ export function useFileDropMove(onAfterMove: () => Promise<void> | void) {
       while (true) {
         try {
           const finalPath = await invoke<string>('move_project_entry', {
+            projectPath,
             source: sourcePath,
             target: targetDir,
             conflictStrategy: strategy,
@@ -130,7 +137,7 @@ export function useFileDropMove(onAfterMove: () => Promise<void> | void) {
       message: `${summaryParts.join('，')}，目标目录：${targetLabel}`,
       tone: failedCount > 0 ? (successCount > 0 ? 'warning' : 'error') : 'success',
     });
-  }, [applyMovedPath, onAfterMove, requestConflictChoice, showToast]);
+  }, [applyMovedPath, onAfterMove, projectPath, requestConflictChoice, showToast]);
 
   const conflictDialog = (
     <MoveConflictDialog

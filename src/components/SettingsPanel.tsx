@@ -19,7 +19,7 @@ import {
   Wrench,
 } from 'lucide-react';
 import { AlertDialog, Dialog } from './Dialog';
-import { useProjectStore } from '../stores/projectStore';
+import { useOptionalProjectStoreShallow } from '../stores/projectStore';
 import { ToolPaths, useSettingsStore } from '../stores/settingsStore';
 import {
   DEFAULT_EXCLUDE_PATTERNS,
@@ -81,7 +81,12 @@ export function SettingsPanel({
     globalExcludePatterns,
     setGlobalExcludePatterns,
   } = useSettingsStore();
-  const { isInitialized, projectPath, projectName, refresh } = useProjectStore();
+  const { isInitialized, projectPath, projectName, refresh } = useOptionalProjectStoreShallow((state) => ({
+    isInitialized: state.isInitialized,
+    projectPath: state.projectPath,
+    projectName: state.projectName,
+    refresh: state.refresh,
+  }));
 
   const [activeScope, setActiveScope] = useState<SettingsScope>('global');
   const [globalPatterns, setGlobalPatterns] = useState<string[]>(DEFAULT_EXCLUDE_PATTERNS);

@@ -1,8 +1,15 @@
 import { FileDetailsPanel } from './FileDetailsView';
-import { useProjectStore } from '../../stores/projectStore';
+import { useProjectStoreShallow } from '../../stores/projectStore';
 
 export function FileDetail() {
-  const { selectedFiles, files, searchResults, searchQuery, fileTags, tags } = useProjectStore();
+  const { selectedFiles, files, searchResults, searchQuery, fileTags, tags } = useProjectStoreShallow((state) => ({
+    selectedFiles: state.selectedFiles,
+    files: state.files,
+    searchResults: state.searchResults,
+    searchQuery: state.searchQuery,
+    fileTags: state.fileTags,
+    tags: state.tags,
+  }));
 
   const selectedPaths = Array.from(selectedFiles);
   const displayFiles = searchQuery ? searchResults : files;

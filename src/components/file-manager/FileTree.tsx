@@ -1,9 +1,9 @@
 import { useCallback, useMemo, useState } from 'react';
 import { TreeNode } from '../../types';
-import { useProjectStore } from '../../stores/projectStore';
+import { useProjectStoreApi, useProjectStoreShallow } from '../../stores/projectStore';
 import { useSettingsStore } from '../../stores/settingsStore';
-import { ChevronRight, ChevronDown, Folder, FolderOpen } from 'lucide-react';
-import { canMovePathsToDirectory, getPathLabel } from './dragDrop';
+import { ChevronRight, ChevronDown, Folder, FolderOpen, ArrowUp, RefreshCw } from 'lucide-react';
+import { canMovePathsToDirectory, getParentPath, getPathLabel } from './dragDrop';
 import { useFileDropMove } from './useFileDropMove';
 import { useInternalFileDrag } from './useInternalFileDrag';
 import {
@@ -41,7 +41,12 @@ function TreeItem({
   isExcluded,
   showExcludedFiles,
 }: TreeItemProps) {
-  const { currentPath, expandedKeys, toggleExpanded, loadDirectory } = useProjectStore();
+  const { currentPath, expandedKeys, toggleExpanded, loadDirectory } = useProjectStoreShallow((state) => ({
+    currentPath: state.currentPath,
+    expandedKeys: state.expandedKeys,
+    toggleExpanded: state.toggleExpanded,
+    loadDirectory: state.loadDirectory,
+  }));
   const isExpanded = expandedKeys.has(node.path);
   const isSelected = currentPath === node.path;
   const isDropTarget = dropTargetPath === node.path;
@@ -173,7 +178,24 @@ function filterTreeNode(
 }
 
 export function FileTree() {
-  const { treeData, projectName, projectPath, showExcludedFiles } = useProjectStore();
+  const projectStore = useProjectStoreApi();
+  const {
+    treeData,
+    projectName,
+    projectPath,
+    currentPath,
+    showExcludedFiles,
+    refresh,
+    loadDirectory,
+  } = useProjectStoreShallow((state) => ({
+    treeData: state.treeData,
+    projectName: state.projectName,
+    projectPath: state.projectPath,
+    currentPath: state.currentPath,
+    showExcludedFiles: state.showExcludedFiles,
+    refresh: state.refresh,
+    loadDirectory: state.loadDirectory,
+  }));
   const globalExcludePatterns = useSettingsStore((state) => state.globalExcludePatterns);
   const {
     draggedPaths,
@@ -185,7 +207,7 @@ export function FileTree() {
   const [searchTerm, setSearchTerm] = useState('');
   const [dropTargetPath, setDropTargetPath] = useState<string | null>(null);
   const { movePathsToDirectory, conflictDialog } = useFileDropMove(async () => {
-    await useProjectStore.getState().refresh();
+    await projectStore.getState().refresh();
   });
 
   const handleDragStart = useCallback((path: string, event: React.DragEvent<HTMLDivElement>) => {
@@ -211,9 +233,13 @@ export function FileTree() {
     await movePathsToDirectory(
       currentDraggedPaths,
       targetDir,
-      getPathLabel(targetDir, useProjectStore.getState().projectPath, useProjectStore.getState().projectName),
+      getPathLabel(
+        targetDir,
+        projectStore.getState().projectPath,
+        projectStore.getState().projectName,
+      ),
     );
-  }, [draggedPaths, movePathsToDirectory]);
+  }, [draggedPaths, movePathsToDirectory, projectStore]);
 
   const excludePatterns = projectPath
     ? mergeExcludePatterns(globalExcludePatterns, readProjectExcludePatterns(projectPath))
@@ -238,16 +264,39 @@ export function FileTree() {
     );
   }
 
+  const atProjectRoot = !currentPath || !projectPath || currentPath === projectPath;
+
+  const handleGoUp = () => {
+    if (atProjectRoot || !currentPath) {
+      return;
+    }
+
+    void loadDirectory(getParentPath(currentPath));
+  };
+
   return (
     <div className="h-full flex flex-col bg-white dark:bg-gray-900">
-      {/* 项目标题 */}
-      <div className="px-3 py-2 border-b border-gray-200 dark:border-gray-700">
-        <h2 className="font-semibold text-sm truncate" title={projectPath || ''}>
+      <div className="px-3 py-2 border-b border-gray-200 dark:border-gray-700 flex items-center gap-2">
+        <h2 className="flex-1 font-semibold text-sm truncate" title={projectPath || ''}>
           {projectName}
         </h2>
+        <button
+          onClick={handleGoUp}
+          disabled={atProjectRoot}
+          className="p-1.5 rounded-md text-gray-500 hover:text-gray-900 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-gray-100 dark:hover:bg-gray-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          title={atProjectRoot ? '已经在项目根目录' : '返回上级目录'}
+        >
+          <ArrowUp className="w-4 h-4" />
+        </button>
+        <button
+          onClick={() => void refresh()}
+          className="p-1.5 rounded-md text-gray-500 hover:text-gray-900 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-gray-100 dark:hover:bg-gray-800 transition-colors"
+          title="刷新"
+        >
+          <RefreshCw className="w-4 h-4" />
+        </button>
       </div>
-      
-      {/* 搜索 */}
+
       <div className="px-2 py-2">
         <input
           type="text"
@@ -259,7 +308,6 @@ export function FileTree() {
         />
       </div>
       
-      {/* 树 */}
       <div className="flex-1 overflow-auto">
         <TreeItem
           node={visibleTreeData}

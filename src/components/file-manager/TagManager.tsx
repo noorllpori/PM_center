@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useProjectStore } from '../../stores/projectStore';
+import { useProjectStoreShallow } from '../../stores/projectStore';
 import { Plus, X, Tag } from 'lucide-react';
 
 const PRESET_COLORS = [
@@ -9,7 +9,15 @@ const PRESET_COLORS = [
 ];
 
 export function TagManager() {
-  const { tags, selectedFiles, addTag, deleteTag, addTagToFile, removeTagFromFile, fileTags } = useProjectStore();
+  const { tags, selectedFiles, addTag, deleteTag, addTagToFile, removeTagFromFile, fileTags } = useProjectStoreShallow((state) => ({
+    tags: state.tags,
+    selectedFiles: state.selectedFiles,
+    addTag: state.addTag,
+    deleteTag: state.deleteTag,
+    addTagToFile: state.addTagToFile,
+    removeTagFromFile: state.removeTagFromFile,
+    fileTags: state.fileTags,
+  }));
   const [isCreating, setIsCreating] = useState(false);
   const [newTagName, setNewTagName] = useState('');
   const [selectedColor, setSelectedColor] = useState(PRESET_COLORS[6]);

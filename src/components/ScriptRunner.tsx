@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useScriptStore } from '../stores/scriptStore';
-import { useProjectStore } from '../stores/projectStore';
+import { useOptionalProjectStoreShallow } from '../stores/projectStore';
 import { Play, Square, Terminal, Package, RefreshCw, Plus, Trash2, FileCode } from 'lucide-react';
 import { Script, EnvType } from '../types';
 
@@ -19,7 +19,9 @@ export function ScriptRunner() {
     loadBuiltinScripts,
   } = useScriptStore();
   
-  const { projectPath } = useProjectStore();
+  const { projectPath } = useOptionalProjectStoreShallow((state) => ({
+    projectPath: state.projectPath,
+  }));
   
   const [selectedScript, setSelectedScript] = useState<Script | null>(null);
   const [output, setOutput] = useState<string>('');

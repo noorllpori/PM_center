@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { useProjectStore } from '../stores/projectStore';
+import { useProjectStoreShallow } from '../stores/projectStore';
 import { FileChange } from '../types';
 import { Clock, FilePlus, FileEdit, FileMinus, RefreshCw, Filter, Archive } from 'lucide-react';
 
@@ -57,7 +57,10 @@ function getChangeTypeInfo(type: string) {
 }
 
 export function ChangeLog() {
-  const { projectPath, projectName } = useProjectStore();
+  const { projectPath, projectName } = useProjectStoreShallow((state) => ({
+    projectPath: state.projectPath,
+    projectName: state.projectName,
+  }));
   const [changes, setChanges] = useState<FileChange[]>([]);
   const [stats, setStats] = useState({ total: 0, created: 0, modified: 0, deleted: 0 });
   const [filter, setFilter] = useState<'all' | 'created' | 'modified' | 'deleted'>('all');
@@ -104,8 +107,12 @@ export function ChangeLog() {
 
   // 手动归档
   const handleArchive = async () => {
+    if (!projectPath) {
+      return;
+    }
+
     try {
-      const count = await invoke<number>('archive_old_changes');
+      const count = await invoke<number>('archive_old_changes', { projectPath });
       alert(`已归档 ${count} 条旧记录`);
       loadChanges();
     } catch (error) {

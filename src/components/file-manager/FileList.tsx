@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { FileInfo } from '../../types';
-import { useProjectStore } from '../../stores/projectStore';
+import { useProjectStoreApi, useProjectStoreShallow } from '../../stores/projectStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceTabStore } from '../../stores/workspaceTabStore';
@@ -417,6 +417,7 @@ function GridView({
 }
 
 export function FileList() {
+  const projectStore = useProjectStoreApi();
   const {
     files,
     selectedFiles,
@@ -434,7 +435,24 @@ export function FileList() {
     searchQuery,
     projectPath,
     showExcludedFiles,
-  } = useProjectStore();
+  } = useProjectStoreShallow((state) => ({
+    files: state.files,
+    selectedFiles: state.selectedFiles,
+    viewMode: state.viewMode,
+    columns: state.columns,
+    tags: state.tags,
+    fileTags: state.fileTags,
+    selectFile: state.selectFile,
+    clearSelection: state.clearSelection,
+    loadDirectory: state.loadDirectory,
+    refresh: state.refresh,
+    currentPath: state.currentPath,
+    searchResults: state.searchResults,
+    isSearching: state.isSearching,
+    searchQuery: state.searchQuery,
+    projectPath: state.projectPath,
+    showExcludedFiles: state.showExcludedFiles,
+  }));
   const showToast = useUiStore((state) => state.showToast);
   const globalExcludePatterns = useSettingsStore((state) => state.globalExcludePatterns);
   const openFileInTab = useWorkspaceTabStore((state) => state.openFileInTab);
@@ -695,9 +713,13 @@ export function FileList() {
     await movePathsToDirectory(
       currentDraggedPaths,
       targetDir,
-      getPathLabel(targetDir, useProjectStore.getState().projectPath, useProjectStore.getState().projectName),
+      getPathLabel(
+        targetDir,
+        projectStore.getState().projectPath,
+        projectStore.getState().projectName,
+      ),
     );
-  }, [draggedPaths, movePathsToDirectory]);
+  }, [draggedPaths, movePathsToDirectory, projectStore]);
 
   const handleHoverDirectory = useCallback((targetDir: string) => {
     setDropTargetPath(targetDir);
@@ -767,6 +789,7 @@ export function FileList() {
           x={contextMenu.x}
           y={contextMenu.y}
           currentPath={currentPath || ''}
+          projectPath={projectPath || ''}
           onClose={handleCloseContextMenu}
           onRefresh={handleRefresh}
           onShowDetails={handleShowDetails}

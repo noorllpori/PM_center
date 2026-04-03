@@ -225,7 +225,7 @@ fn handle_notify_event(event: Event, db: &Database) {
 }
 
 // 休眠项目轮询 - 降低频率到5分钟，减少CPU占用
-pub async fn run_dormant_scan(db: &Database) {
+pub async fn run_dormant_scan(databases: HashMap<String, Database>) {
     // 先收集需要处理的项目路径
     let dormant_projects: Vec<(String, WatchConfig)> = {
         let projects = PROJECTS.lock().unwrap();
@@ -243,6 +243,9 @@ pub async fn run_dormant_scan(db: &Database) {
         
         if let Ok(changes) = scan_dormant_project(&path, &config) {
             if !changes.is_empty() {
+                let Some(db) = databases.get(&path) else {
+                    continue;
+                };
                 let db_changes: Vec<crate::db::FileChange> = changes
                     .into_iter()
                     .map(|c| crate::db::FileChange {

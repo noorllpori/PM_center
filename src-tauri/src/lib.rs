@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tauri::{
@@ -28,36 +29,62 @@ use p2p::{init_p2p, update_p2p_user, start_p2p_discovery, stop_p2p_discovery, se
 use python_env::{detect_system_python, scan_app_venvs, create_venv, delete_venv, pip_install_package, pip_uninstall_package, pip_list_packages};
 use tools::inspect_tool_paths;
 
-// 全局状态
-type DbState = Arc<Mutex<Option<Database>>>;
+#[derive(Default)]
+struct DbStateInner {
+    databases: HashMap<String, Database>,
+}
+
+type DbState = Arc<Mutex<DbStateInner>>;
+
+async fn get_or_create_db(
+    db_state: &tauri::State<'_, DbState>,
+    project_path: &str,
+) -> Result<Database, String> {
+    let mut guard = db_state.lock().await;
+
+    if let Some(db) = guard.databases.get(project_path) {
+        return Ok(db.clone());
+    }
+
+    let db = Database::new(project_path)
+        .map_err(|e| e.to_string())?;
+    guard.databases.insert(project_path.to_string(), db.clone());
+
+    Ok(db)
+}
+
+fn ensure_project_support_files(project_path: &str) -> Result<(), String> {
+    use std::fs;
+
+    let scripts_dir = PathBuf::from(project_path).join(".pm_center").join("scripts");
+    fs::create_dir_all(&scripts_dir)
+        .map_err(|e| format!("创建 scripts 目录失败: {}", e))?;
+    ensure_project_default_scripts(&scripts_dir)?;
+
+    Ok(())
+}
 
 #[tauri::command]
 async fn init_project(
     db_state: tauri::State<'_, DbState>,
     project_path: String,
 ) -> Result<(), String> {
-    use std::fs;
-    use std::path::PathBuf;
-    
-    // 初始化数据库
-    let db = Database::new(&project_path)
-        .map_err(|e| e.to_string())?;
-    
-    let scripts_dir = PathBuf::from(&project_path).join(".pm_center").join("scripts");
-    fs::create_dir_all(&scripts_dir)
-        .map_err(|e| format!("创建 scripts 目录失败: {}", e))?;
-    ensure_project_default_scripts(&scripts_dir)?;
-    
-    // 保存数据库状态
-    {
-        let mut guard = db_state.lock().await;
-        *guard = Some(db.clone());
-    }
-    
-    // 简化 watcher 初始化 - 只初始化活跃项目
+    ensure_project_support_files(&project_path)?;
+    let db = get_or_create_db(&db_state, &project_path).await?;
+
     let _ = watcher::init_project(project_path.clone(), true);
     let _ = watcher::set_active_project(&project_path, &db);
     
+    Ok(())
+}
+
+#[tauri::command]
+async fn activate_project(
+    db_state: tauri::State<'_, DbState>,
+    project_path: String,
+) -> Result<(), String> {
+    let db = get_or_create_db(&db_state, &project_path).await?;
+    let _ = watcher::set_active_project(&project_path, &db);
     Ok(())
 }
 
@@ -489,6 +516,7 @@ async fn create_project(
 #[tauri::command]
 async fn move_project_entry(
     db_state: tauri::State<'_, DbState>,
+    project_path: String,
     source: String,
     target: String,
     conflict_strategy: String,
@@ -500,12 +528,9 @@ async fn move_project_entry(
     ).await?;
 
     let final_path_str = final_path.to_string_lossy().to_string();
-
-    let guard = db_state.lock().await;
-    if let Some(db) = guard.as_ref() {
-        db.move_path_references(&source, &final_path_str)
-            .map_err(|e| e.to_string())?;
-    }
+    let db = get_or_create_db(&db_state, &project_path).await?;
+    db.move_path_references(&source, &final_path_str)
+        .map_err(|e| e.to_string())?;
 
     Ok(final_path_str)
 }
@@ -513,96 +538,99 @@ async fn move_project_entry(
 #[tauri::command]
 async fn rename_project_entry(
     db_state: tauri::State<'_, DbState>,
+    project_path: String,
     path: String,
     new_name: String,
 ) -> Result<String, String> {
     let final_path = fs::rename_path(PathBuf::from(&path), new_name).await?;
     let final_path_str = final_path.to_string_lossy().to_string();
-
-    let guard = db_state.lock().await;
-    if let Some(db) = guard.as_ref() {
-        db.move_path_references(&path, &final_path_str)
-            .map_err(|e| e.to_string())?;
-    }
+    let db = get_or_create_db(&db_state, &project_path).await?;
+    db.move_path_references(&path, &final_path_str)
+        .map_err(|e| e.to_string())?;
 
     Ok(final_path_str)
 }
 
 #[tauri::command]
-async fn get_tags(db_state: tauri::State<'_, DbState>) -> Result<Vec<Tag>, String> {
-    let guard = db_state.lock().await;
-    let db = guard.as_ref().ok_or("Project not initialized")?;
+async fn get_tags(
+    db_state: tauri::State<'_, DbState>,
+    project_path: String,
+) -> Result<Vec<Tag>, String> {
+    let db = get_or_create_db(&db_state, &project_path).await?;
     db.get_all_tags().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn add_tag(
     db_state: tauri::State<'_, DbState>,
+    project_path: String,
     id: String,
     name: String,
     color: String,
 ) -> Result<(), String> {
-    let guard = db_state.lock().await;
-    let db = guard.as_ref().ok_or("Project not initialized")?;
+    let db = get_or_create_db(&db_state, &project_path).await?;
     db.add_tag(&id, &name, &color).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn delete_tag(db_state: tauri::State<'_, DbState>, id: String) -> Result<(), String> {
-    let guard = db_state.lock().await;
-    let db = guard.as_ref().ok_or("Project not initialized")?;
+async fn delete_tag(
+    db_state: tauri::State<'_, DbState>,
+    project_path: String,
+    id: String,
+) -> Result<(), String> {
+    let db = get_or_create_db(&db_state, &project_path).await?;
     db.delete_tag(&id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn get_file_tags(
     db_state: tauri::State<'_, DbState>,
+    project_path: String,
     file_path: String,
 ) -> Result<Vec<String>, String> {
-    let guard = db_state.lock().await;
-    let db = guard.as_ref().ok_or("Project not initialized")?;
+    let db = get_or_create_db(&db_state, &project_path).await?;
     db.get_file_tags(&file_path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn add_tag_to_file(
     db_state: tauri::State<'_, DbState>,
+    project_path: String,
     file_path: String,
     tag_id: String,
 ) -> Result<(), String> {
-    let guard = db_state.lock().await;
-    let db = guard.as_ref().ok_or("Project not initialized")?;
+    let db = get_or_create_db(&db_state, &project_path).await?;
     db.add_tag_to_file(&file_path, &tag_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn remove_tag_from_file(
     db_state: tauri::State<'_, DbState>,
+    project_path: String,
     file_path: String,
     tag_id: String,
 ) -> Result<(), String> {
-    let guard = db_state.lock().await;
-    let db = guard.as_ref().ok_or("Project not initialized")?;
+    let db = get_or_create_db(&db_state, &project_path).await?;
     db.remove_tag_from_file(&file_path, &tag_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn get_file_metadata(
     db_state: tauri::State<'_, DbState>,
+    project_path: String,
     file_path: String,
 ) -> Result<Option<FileMetadata>, String> {
-    let guard = db_state.lock().await;
-    let db = guard.as_ref().ok_or("Project not initialized")?;
+    let db = get_or_create_db(&db_state, &project_path).await?;
     db.get_file_metadata(&file_path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn update_file_metadata(
     db_state: tauri::State<'_, DbState>,
+    project_path: String,
     metadata: FileMetadata,
 ) -> Result<(), String> {
-    let guard = db_state.lock().await;
-    let db = guard.as_ref().ok_or("Project not initialized")?;
+    let db = get_or_create_db(&db_state, &project_path).await?;
     db.update_file_metadata(&metadata).map_err(|e| e.to_string())
 }
 
@@ -614,8 +642,7 @@ async fn get_file_changes(
     change_type: Option<String>,
     limit: i64,
 ) -> Result<Vec<FileChange>, String> {
-    let db_guard = db_state.lock().await;
-    let db = db_guard.as_ref().ok_or("Database not initialized")?;
+    let db = get_or_create_db(&db_state, &project_path).await?;
     db.get_file_changes(&project_path, since, change_type.as_deref(), limit)
         .map_err(|e| e.to_string())
 }
@@ -626,8 +653,7 @@ async fn get_change_stats(
     project_path: String,
     since: i64,
 ) -> Result<serde_json::Value, String> {
-    let db_guard = db_state.lock().await;
-    let db = db_guard.as_ref().ok_or("Database not initialized")?;
+    let db = get_or_create_db(&db_state, &project_path).await?;
     db.get_change_stats(&project_path, since)
         .map_err(|e| e.to_string())
 }
@@ -635,9 +661,9 @@ async fn get_change_stats(
 #[tauri::command]
 async fn archive_old_changes(
     db_state: tauri::State<'_, DbState>,
+    project_path: String,
 ) -> Result<usize, String> {
-    let db_guard = db_state.lock().await;
-    let db = db_guard.as_ref().ok_or("Database not initialized")?;
+    let db = get_or_create_db(&db_state, &project_path).await?;
     db.archive_old_changes()
         .map_err(|e| e.to_string())
 }
@@ -696,7 +722,7 @@ fn show_window<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), Box<dyn std:
 }
 
 pub fn run() {
-    let db_state: DbState = Arc::new(Mutex::new(None));
+    let db_state: DbState = Arc::new(Mutex::new(DbStateInner::default()));
     let db_state_for_single = db_state.clone();
     
     tauri::Builder::default()
@@ -779,10 +805,14 @@ pub fn run() {
                 
                 loop {
                     tokio::time::sleep(tokio::time::Duration::from_secs(300)).await; // 5分钟
-                    
-                    let guard = db_state_for_scan.lock().await;
-                    if let Some(db) = guard.as_ref() {
-                        watcher::run_dormant_scan(db).await;
+
+                    let databases = {
+                        let guard = db_state_for_scan.lock().await;
+                        guard.databases.clone()
+                    };
+
+                    if !databases.is_empty() {
+                        watcher::run_dormant_scan(databases).await;
                     }
                 }
             });
@@ -794,9 +824,13 @@ pub fn run() {
                 
                 loop {
                     archive_interval.tick().await;
-                    
-                    let guard = db_state_for_archive.lock().await;
-                    if let Some(db) = guard.as_ref() {
+
+                    let databases = {
+                        let guard = db_state_for_archive.lock().await;
+                        guard.databases.values().cloned().collect::<Vec<_>>()
+                    };
+
+                    for db in databases {
                         let _ = db.archive_old_changes();
                     }
                 }
@@ -831,6 +865,7 @@ pub fn run() {
             launch_program,
             icon_extractor::extract_icon,
             init_project,
+            activate_project,
             get_tags,
             add_tag,
             delete_tag,
