@@ -121,8 +121,14 @@ export function useResolvedImageSource(source: string) {
     source: '',
     value: null,
   });
+  const [errorState, setErrorState] = useState<{
+    source: string;
+    value: string | null;
+  }>({
+    source: '',
+    value: null,
+  });
   const [isLoading, setIsLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let isActive = true;
@@ -134,7 +140,10 @@ export function useResolvedImageSource(source: string) {
           source: '',
           value: null,
         });
-        setErrorMessage('没有可显示的图片路径。');
+        setErrorState({
+          source: '',
+          value: null,
+        });
         setIsLoading(false);
         return;
       }
@@ -144,14 +153,20 @@ export function useResolvedImageSource(source: string) {
           source,
           value: source,
         });
-        setErrorMessage(null);
+        setErrorState({
+          source,
+          value: null,
+        });
         setIsLoading(false);
         return;
       }
 
       setIsLoading(true);
-      setErrorMessage(null);
       setResolvedSourceState({
+        source,
+        value: null,
+      });
+      setErrorState({
         source,
         value: null,
       });
@@ -179,7 +194,10 @@ export function useResolvedImageSource(source: string) {
           source,
           value: null,
         });
-        setErrorMessage(`读取图片失败：${String(error)}`);
+        setErrorState({
+          source,
+          value: `读取图片失败：${String(error)}`,
+        });
       } finally {
         if (isActive) {
           setIsLoading(false);
@@ -199,6 +217,9 @@ export function useResolvedImageSource(source: string) {
 
   const resolvedSource = resolvedSourceState.source === source
     ? resolvedSourceState.value
+    : null;
+  const errorMessage = errorState.source === source
+    ? errorState.value
     : null;
 
   return {

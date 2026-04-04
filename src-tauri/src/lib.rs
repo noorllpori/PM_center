@@ -28,6 +28,7 @@ use db::FileChange;
 use p2p::{init_p2p, update_p2p_user, start_p2p_discovery, stop_p2p_discovery, send_p2p_message};
 use python_env::{detect_system_python, scan_app_venvs, create_venv, delete_venv, pip_install_package, pip_uninstall_package, pip_list_packages};
 use tools::inspect_tool_paths;
+use tauri_plugin_global_shortcut::ShortcutState;
 
 #[derive(Default)]
 struct DbStateInner {
@@ -724,12 +725,24 @@ fn show_window<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), Box<dyn std:
 pub fn run() {
     let db_state: DbState = Arc::new(Mutex::new(DbStateInner::default()));
     let db_state_for_single = db_state.clone();
+
+    let global_shortcut_plugin = tauri_plugin_global_shortcut::Builder::new()
+        .with_shortcut("Ctrl+Alt+S")
+        .expect("Failed to register global shortcut Ctrl+Alt+S")
+        .with_handler(|app, _shortcut, event| {
+            if event.state != ShortcutState::Pressed {
+                return;
+            }
+            let _ = show_window(app);
+        })
+        .build();
     
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(global_shortcut_plugin)
         .plugin(tauri_plugin_single_instance::init(move |app, _args, _cwd| {
             // 当检测到重复实例时，显示已存在的窗口
             let _ = show_window(app);
