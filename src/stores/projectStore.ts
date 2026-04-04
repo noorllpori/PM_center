@@ -113,9 +113,9 @@ export interface ProjectState {
   // 操作
   setProject: (path: string) => Promise<void>;
   activateProject: () => Promise<void>;
-  loadDirectory: (path: string, forceRefresh?: boolean, isResyncPass?: boolean) => Promise<void>;
-  loadTree: (forceRefresh?: boolean, isResyncPass?: boolean) => Promise<void>;
-  refresh: (forceRefresh?: boolean) => Promise<void>;
+  loadDirectory: (path: string, forceRefresh?: boolean, preserveSelection?: boolean) => Promise<void>;
+  loadTree: (forceRefresh?: boolean) => Promise<void>;
+  refresh: (forceRefresh?: boolean, preserveSelection?: boolean) => Promise<void>;
   closeProject: () => void;
   applyMovedPath: (oldPath: string, newPath: string) => void;
 
@@ -187,9 +187,6 @@ function createInitialProjectState(): Omit<ProjectState, keyof {
 }
 
 export function createProjectStore() {
-  let directoryResyncTimer: number | null = null;
-  let treeResyncTimer: number | null = null;
-
   return createStore<ProjectState>((set, get) => ({
     ...createInitialProjectState(),
 
@@ -230,7 +227,7 @@ export function createProjectStore() {
       }
     },
 
-    loadDirectory: async (path: string, forceRefresh = false, isResyncPass = false) => {
+    loadDirectory: async (path: string, forceRefresh = false, preserveSelection = false) => {
       try {
         const activeProjectPath = get().projectPath;
         let files = await invoke<FileInfo[]>('read_directory', {
@@ -247,53 +244,41 @@ export function createProjectStore() {
 
         const fileTags = new Map<string, string[]>();
         if (activeProjectPath) {
-          for (const file of files) {
-            const tags = await invoke<string[]>('get_file_tags', {
+          const filePaths = files.map((file) => file.path);
+          if (filePaths.length > 0) {
+            const tagsByPath = await invoke<Record<string, string[]>>('get_file_tags_batch', {
               projectPath: activeProjectPath,
-              filePath: file.path,
+              filePaths,
             });
-            if (tags.length > 0) {
-              fileTags.set(file.path, tags);
+
+            for (const [filePath, tags] of Object.entries(tagsByPath)) {
+              if (Array.isArray(tags) && tags.length > 0) {
+                fileTags.set(filePath, tags);
+              }
             }
           }
         }
+
+        const filePathSet = new Set(files.map((file) => file.path));
 
         set((state) => ({
           currentPath: path,
           files,
           fileTags: new Map([...state.fileTags, ...fileTags]),
-          selectedFiles: new Set(),
+          selectedFiles: preserveSelection
+            ? new Set(Array.from(state.selectedFiles).filter((selectedPath) => filePathSet.has(selectedPath)))
+            : new Set(),
           expandedKeys: projectPath
             ? new Set([...state.expandedKeys, ...buildExpandedPathChain(projectPath, path)])
             : state.expandedKeys,
         }));
 
-        if (
-          !forceRefresh &&
-          !isResyncPass &&
-          typeof window !== 'undefined' &&
-          activeProjectPath
-        ) {
-          if (directoryResyncTimer !== null) {
-            window.clearTimeout(directoryResyncTimer);
-          }
-          directoryResyncTimer = window.setTimeout(() => {
-            directoryResyncTimer = null;
-            const state = get();
-            if (
-              state.projectPath === activeProjectPath &&
-              state.currentPath === path
-            ) {
-              void state.loadDirectory(path, false, true);
-            }
-          }, 2200);
-        }
       } catch (error) {
         console.error('Failed to load directory:', error);
       }
     },
 
-    loadTree: async (forceRefresh = false, isResyncPass = false) => {
+    loadTree: async (forceRefresh = false) => {
       const { projectPath } = get();
       if (!projectPath) return;
 
@@ -304,50 +289,23 @@ export function createProjectStore() {
           forceRefresh,
         });
         set({ treeData });
-
-        if (
-          !forceRefresh &&
-          !isResyncPass &&
-          typeof window !== 'undefined'
-        ) {
-          if (treeResyncTimer !== null) {
-            window.clearTimeout(treeResyncTimer);
-          }
-          treeResyncTimer = window.setTimeout(() => {
-            treeResyncTimer = null;
-            const state = get();
-            if (state.projectPath === projectPath) {
-              void state.loadTree(false, true);
-            }
-          }, 2200);
-        }
       } catch (error) {
         console.error('Failed to load tree:', error);
       }
     },
 
-    refresh: async (forceRefresh = true) => {
+    refresh: async (forceRefresh = true, preserveSelection = false) => {
       const { currentPath, searchQuery } = get();
       if (searchQuery) {
         await get().search(searchQuery);
       } else if (currentPath) {
-        await get().loadDirectory(currentPath, forceRefresh);
+        await get().loadDirectory(currentPath, forceRefresh, preserveSelection);
       }
       await get().loadTree(forceRefresh);
     },
 
     closeProject: () => {
       clearFileDetailsCache();
-      if (typeof window !== 'undefined') {
-        if (directoryResyncTimer !== null) {
-          window.clearTimeout(directoryResyncTimer);
-          directoryResyncTimer = null;
-        }
-        if (treeResyncTimer !== null) {
-          window.clearTimeout(treeResyncTimer);
-          treeResyncTimer = null;
-        }
-      }
       set({
         ...createInitialProjectState(),
       });

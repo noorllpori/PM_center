@@ -596,6 +596,16 @@ async fn get_file_tags(
 }
 
 #[tauri::command]
+async fn get_file_tags_batch(
+    db_state: tauri::State<'_, DbState>,
+    project_path: String,
+    file_paths: Vec<String>,
+) -> Result<HashMap<String, Vec<String>>, String> {
+    let db = get_or_create_db(&db_state, &project_path).await?;
+    db.get_file_tags_batch(&file_paths).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn add_tag_to_file(
     db_state: tauri::State<'_, DbState>,
     project_path: String,
@@ -910,6 +920,7 @@ pub fn run() {
             add_tag,
             delete_tag,
             get_file_tags,
+            get_file_tags_batch,
             add_tag_to_file,
             remove_tag_from_file,
             get_file_metadata,

@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { FileInfo } from '../../types';
+import { ColumnConfig, FileInfo, Tag } from '../../types';
 import { useProjectStoreApi, useProjectStoreShallow } from '../../stores/projectStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useUiStore } from '../../stores/uiStore';
@@ -20,7 +20,6 @@ import {
   shouldExcludeFile,
 } from '../../utils/excludePatterns';
 
-// 格式化文件大小
 function formatSize(bytes: number): string {
   if (bytes === 0) return '-';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -33,7 +32,6 @@ function formatSize(bytes: number): string {
   return `${size.toFixed(1)} ${units[unitIndex]}`;
 }
 
-// 格式化日期
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return '-';
   const date = new Date(dateStr);
@@ -46,34 +44,29 @@ function formatDate(dateStr: string | null): string {
   });
 }
 
-// 获取文件图标
 function getFileIcon(file: FileInfo) {
   if (file.is_dir) {
     return <FolderIcon className="w-5 h-5 text-yellow-500" />;
   }
-  
+
   const ext = file.extension?.toLowerCase();
-  
-  // 图片
+
   if (isImageExtension(ext)) {
     return <Image className="w-5 h-5 text-purple-500" />;
   }
-  
-  // 视频
+
   if (isVideoExtension(ext)) {
     return <Film className="w-5 h-5 text-red-500" />;
   }
-  
-  // Blender
+
   if (ext === 'blend') {
     return <Box className="w-5 h-5 text-orange-500" />;
   }
-  
-  // 文本
+
   if (isTextExtension(ext)) {
     return <FileText className="w-5 h-5 text-blue-500" />;
   }
-  
+
   return <FileIcon className="w-5 h-5 text-gray-400" />;
 }
 
@@ -85,11 +78,163 @@ const MIN_COLUMN_WIDTHS: Record<string, number> = {
   tags: 120,
 };
 
+const LIST_ROW_HEIGHT = 40;
+const LIST_OVERSCAN_COUNT = 12;
+const GRID_CARD_HEIGHT = 176;
+const GRID_GAP = 16;
+const GRID_ROW_HEIGHT = GRID_CARD_HEIGHT + GRID_GAP;
+const GRID_OVERSCAN_ROWS = 2;
+
 function clampColumnWidth(key: string, width: number) {
   return Math.max(MIN_COLUMN_WIDTHS[key] ?? 80, Math.round(width));
 }
 
-// 列表视图
+function getGridColumnCount(width: number): number {
+  if (width >= 1280) return 6;
+  if (width >= 1024) return 5;
+  if (width >= 768) return 4;
+  if (width >= 640) return 3;
+  return 2;
+}
+
+type ResolveFileTags = (filePath: string) => Tag[];
+
+const ListRow = memo(function ListRow({
+  file,
+  visibleColumns,
+  selectedFiles,
+  dropTargetPath,
+  showExcludedFiles,
+  isExcluded,
+  resolveFileTags,
+  suppressInteraction,
+  onSelect,
+  onDoubleClick,
+  onContextMenu,
+  onDragStart,
+  onDragEnd,
+  onDropToDirectory,
+  onHoverDirectory,
+  canDropToDirectory,
+  getDraggedPathsFromDataTransfer,
+}: {
+  file: FileInfo;
+  visibleColumns: ColumnConfig[];
+  selectedFiles: Set<string>;
+  dropTargetPath: string | null;
+  showExcludedFiles: boolean;
+  isExcluded: (file: FileInfo) => boolean;
+  resolveFileTags: ResolveFileTags;
+  suppressInteraction: (event: React.SyntheticEvent<HTMLElement>) => boolean;
+  onSelect: (path: string, multi: boolean) => void;
+  onDoubleClick: (file: FileInfo, openInStandalone: boolean) => void;
+  onContextMenu: (file: FileInfo, x: number, y: number) => void;
+  onDragStart: (file: FileInfo, event: React.DragEvent<HTMLDivElement>) => void;
+  onDragEnd: () => void;
+  onDropToDirectory: (targetDir: string, dragPaths?: string[]) => Promise<void>;
+  onHoverDirectory: (targetDir: string) => void;
+  canDropToDirectory: (targetDir: string, dragPaths?: string[]) => boolean;
+  getDraggedPathsFromDataTransfer: (dataTransfer: DataTransfer | null) => string[];
+}) {
+  const isSelected = selectedFiles.has(file.path);
+  const fileTagList = resolveFileTags(file.path);
+  const isDropTarget = file.is_dir && dropTargetPath === file.path;
+  const excluded = isExcluded(file);
+
+  return (
+    <div
+      draggable
+      style={{ height: LIST_ROW_HEIGHT }}
+      className={`
+        relative flex min-w-max items-center border-b border-gray-100 dark:border-gray-800
+        cursor-pointer select-none transition-colors
+        ${isSelected
+          ? 'bg-blue-100/90 dark:bg-blue-950/45 text-blue-950 dark:text-blue-50 ring-1 ring-inset ring-blue-500/70 shadow-[inset_4px_0_0_0_#2563eb] dark:shadow-[inset_4px_0_0_0_#60a5fa]'
+          : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'
+        }
+        ${isDropTarget ? 'ring-2 ring-inset ring-blue-500 bg-blue-50' : ''}
+        ${showExcludedFiles && excluded ? 'opacity-70' : ''}
+      `}
+      onClick={(e) => {
+        if (suppressInteraction(e)) return;
+        onSelect(file.path, e.ctrlKey || e.metaKey);
+      }}
+      onDoubleClick={(e) => {
+        if (suppressInteraction(e)) return;
+        onDoubleClick(file, e.ctrlKey || e.metaKey);
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        onContextMenu(file, e.clientX, e.clientY);
+      }}
+      onDragStart={(e) => onDragStart(file, e)}
+      onDragEnd={onDragEnd}
+      onDragOver={(e) => {
+        const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
+        if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        onHoverDirectory(file.path);
+      }}
+      onDragEnter={(e) => {
+        const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
+        if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
+        e.preventDefault();
+        onHoverDirectory(file.path);
+      }}
+      onDrop={async (e) => {
+        const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
+        if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        await onDropToDirectory(file.path, internalDragPaths);
+      }}
+    >
+      {isSelected && (
+        <div className="absolute left-0 top-1/2 h-6 w-1 -translate-y-1/2 rounded-r-full bg-blue-600 dark:bg-blue-400" />
+      )}
+
+      {visibleColumns.map((col) => (
+        <div
+          key={col.key}
+          className={`shrink-0 px-3 py-2 text-sm truncate ${
+            isSelected ? 'text-blue-950 dark:text-blue-50' : 'text-gray-700 dark:text-gray-200'
+          }`}
+          style={{ width: col.width, textAlign: col.align || 'left' }}
+        >
+          {col.key === 'name' && (
+            <div className="flex items-center gap-2">
+              {getFileIcon(file)}
+              <span className={`truncate ${isSelected ? 'font-semibold' : ''}`}>{file.name}</span>
+              {showExcludedFiles && excluded && (
+                <span className="shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                  已排除
+                </span>
+              )}
+            </div>
+          )}
+          {col.key === 'size' && formatSize(file.size)}
+          {col.key === 'modified' && formatDate(file.modified)}
+          {col.key === 'type' && (file.is_dir ? '文件夹' : file.extension?.toUpperCase() || '文件')}
+          {col.key === 'tags' && (
+            <div className="flex gap-1 flex-wrap">
+              {fileTagList.map((tag) => (
+                <span
+                  key={tag.id}
+                  className="px-1.5 py-0.5 text-xs rounded"
+                  style={{ backgroundColor: `${tag.color}20`, color: tag.color }}
+                >
+                  {tag.name}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+});
+
 function ListView({
   files,
   selectedFiles,
@@ -109,10 +254,9 @@ function ListView({
   columns,
   resizingColumnKey,
   onStartColumnResize,
-  tags,
-  fileTags,
   isExcluded,
   showExcludedFiles,
+  resolveFileTags,
 }: {
   files: FileInfo[];
   selectedFiles: Set<string>;
@@ -129,38 +273,63 @@ function ListView({
   suppressInteraction: (event: React.SyntheticEvent<HTMLElement>) => boolean;
   dropTargetPath: string | null;
   currentPath: string;
-  columns: any[];
+  columns: ColumnConfig[];
   resizingColumnKey: string | null;
   onStartColumnResize: (key: string, width: number, event: React.MouseEvent<HTMLDivElement>) => void;
-  tags: any[];
-  fileTags: Map<string, string[]>;
   isExcluded: (file: FileInfo) => boolean;
   showExcludedFiles: boolean;
+  resolveFileTags: ResolveFileTags;
 }) {
-  const visibleColumns = columns.filter(c => c.visible);
+  const visibleColumns = columns.filter((col) => col.visible);
+  const tableMinWidth = visibleColumns.reduce((sum, col) => sum + col.width, 0);
   const headerScrollRef = useRef<HTMLDivElement>(null);
   const bodyScrollRef = useRef<HTMLDivElement>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(0);
 
-  const syncHeaderScroll = useCallback(() => {
-    if (!headerScrollRef.current || !bodyScrollRef.current) {
+  useEffect(() => {
+    const bodyElement = bodyScrollRef.current;
+    if (!bodyElement) {
       return;
     }
 
-    headerScrollRef.current.scrollLeft = bodyScrollRef.current.scrollLeft;
+    const updateViewport = () => {
+      setViewportHeight(bodyElement.clientHeight);
+    };
+
+    updateViewport();
+    const observer = new ResizeObserver(updateViewport);
+    observer.observe(bodyElement);
+
+    return () => {
+      observer.disconnect();
+    };
   }, []);
-  
+
+  const handleBodyScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
+    const target = event.currentTarget;
+    setScrollTop(target.scrollTop);
+    if (headerScrollRef.current) {
+      headerScrollRef.current.scrollLeft = target.scrollLeft;
+    }
+  }, []);
+
+  const visibleCount = Math.max(1, Math.ceil(viewportHeight / LIST_ROW_HEIGHT));
+  const startIndex = Math.max(0, Math.floor(scrollTop / LIST_ROW_HEIGHT) - LIST_OVERSCAN_COUNT);
+  const endIndex = Math.min(files.length, startIndex + visibleCount + LIST_OVERSCAN_COUNT * 2);
+  const offsetY = startIndex * LIST_ROW_HEIGHT;
+  const visibleFiles = files.slice(startIndex, endIndex);
+
   return (
     <div className="flex flex-col h-full">
-      {/* 表头 */}
       <div
         ref={headerScrollRef}
         className="overflow-hidden border-b border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800"
       >
-        <div className="flex min-w-max">
+        <div className="flex min-w-max" style={{ minWidth: tableMinWidth }}>
           {visibleColumns.map((col, index) => {
             const isLastVisibleColumn = index === visibleColumns.length - 1;
             const isResizing = resizingColumnKey === col.key;
-
             return (
               <div
                 key={col.key}
@@ -168,7 +337,6 @@ function ListView({
                 style={{ width: col.width, textAlign: col.align || 'left' }}
               >
                 {col.title}
-
                 {!isLastVisibleColumn && (
                   <div
                     onMouseDown={(event) => onStartColumnResize(col.key, col.width, event)}
@@ -189,12 +357,11 @@ function ListView({
           })}
         </div>
       </div>
-      
-      {/* 文件列表 */}
+
       <div
         ref={bodyScrollRef}
         className={`flex-1 overflow-auto ${dropTargetPath === currentPath ? 'bg-blue-50/60' : ''}`}
-        onScroll={syncHeaderScroll}
+        onScroll={handleBodyScroll}
         onContextMenu={(e) => {
           if (e.target !== e.currentTarget) return;
           e.preventDefault();
@@ -214,112 +381,177 @@ function ListView({
           await onDropToDirectory(currentPath, internalDragPaths);
         }}
       >
-        {files.map(file => {
-          const isSelected = selectedFiles.has(file.path);
-          const fileTagIds = fileTags.get(file.path) || [];
-          const fileTagList = tags.filter(t => fileTagIds.includes(t.id));
-          const isDropTarget = file.is_dir && dropTargetPath === file.path;
-          const excluded = isExcluded(file);
-          
-          return (
-            <div
-              key={file.path}
-              draggable
-              className={`
-                relative flex min-w-max items-center border-b border-gray-100 dark:border-gray-800
-                cursor-pointer select-none transition-colors
-                ${isSelected 
-                  ? 'bg-blue-100/90 dark:bg-blue-950/45 text-blue-950 dark:text-blue-50 ring-1 ring-inset ring-blue-500/70 shadow-[inset_4px_0_0_0_#2563eb] dark:shadow-[inset_4px_0_0_0_#60a5fa]' 
-                  : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'
-                }
-                ${isDropTarget ? 'ring-2 ring-inset ring-blue-500 bg-blue-50' : ''}
-                ${showExcludedFiles && excluded ? 'opacity-70' : ''}
-              `}
-              onClick={(e) => {
-                if (suppressInteraction(e)) return;
-                onSelect(file.path, e.ctrlKey || e.metaKey);
-              }}
-              onDoubleClick={(e) => {
-                if (suppressInteraction(e)) return;
-                onDoubleClick(file, e.ctrlKey || e.metaKey);
-              }}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                onContextMenu(file, e.clientX, e.clientY);
-              }}
-              onDragStart={(e) => onDragStart(file, e)}
-              onDragEnd={onDragEnd}
-              onDragOver={(e) => {
-                const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
-                if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
-                e.preventDefault();
-                e.dataTransfer.dropEffect = 'move';
-                onHoverDirectory(file.path);
-              }}
-              onDragEnter={(e) => {
-                const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
-                if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
-                e.preventDefault();
-                onHoverDirectory(file.path);
-              }}
-              onDrop={async (e) => {
-                const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
-                if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
-                e.preventDefault();
-                e.stopPropagation();
-                await onDropToDirectory(file.path, internalDragPaths);
-              }}
-            >
-              {isSelected && (
-                <div className="absolute left-0 top-1/2 h-6 w-1 -translate-y-1/2 rounded-r-full bg-blue-600 dark:bg-blue-400" />
-              )}
-
-              {visibleColumns.map(col => (
-                <div
-                  key={col.key}
-                  className={`shrink-0 px-3 py-2 text-sm truncate ${
-                    isSelected ? 'text-blue-950 dark:text-blue-50' : 'text-gray-700 dark:text-gray-200'
-                  }`}
-                  style={{ width: col.width, textAlign: col.align || 'left' }}
-                >
-                  {col.key === 'name' && (
-                    <div className="flex items-center gap-2">
-                      {getFileIcon(file)}
-                      <span className={`truncate ${isSelected ? 'font-semibold' : ''}`}>{file.name}</span>
-                      {showExcludedFiles && excluded && (
-                        <span className="shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
-                          已排除
-                        </span>
-                      )}
-                    </div>
-                  )}
-                  {col.key === 'size' && formatSize(file.size)}
-                  {col.key === 'modified' && formatDate(file.modified)}
-                  {col.key === 'type' && (file.is_dir ? '文件夹' : file.extension?.toUpperCase() || '文件')}
-                  {col.key === 'tags' && (
-                    <div className="flex gap-1 flex-wrap">
-                      {fileTagList.map(tag => (
-                        <span
-                          key={tag.id}
-                          className="px-1.5 py-0.5 text-xs rounded"
-                          style={{ backgroundColor: tag.color + '20', color: tag.color }}
-                        >
-                          {tag.name}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
+        {files.length === 0 ? (
+          <div className="flex h-full items-center justify-center text-sm text-gray-400">
+            当前目录没有可显示的文件
+          </div>
+        ) : (
+          <div style={{ height: files.length * LIST_ROW_HEIGHT, minWidth: tableMinWidth, position: 'relative' }}>
+            <div style={{ position: 'absolute', left: 0, right: 0, top: offsetY }}>
+              {visibleFiles.map((file) => (
+                <ListRow
+                  key={file.path}
+                  file={file}
+                  visibleColumns={visibleColumns}
+                  selectedFiles={selectedFiles}
+                  dropTargetPath={dropTargetPath}
+                  showExcludedFiles={showExcludedFiles}
+                  isExcluded={isExcluded}
+                  resolveFileTags={resolveFileTags}
+                  suppressInteraction={suppressInteraction}
+                  onSelect={onSelect}
+                  onDoubleClick={onDoubleClick}
+                  onContextMenu={onContextMenu}
+                  onDragStart={onDragStart}
+                  onDragEnd={onDragEnd}
+                  onDropToDirectory={onDropToDirectory}
+                  onHoverDirectory={onHoverDirectory}
+                  canDropToDirectory={canDropToDirectory}
+                  getDraggedPathsFromDataTransfer={getDraggedPathsFromDataTransfer}
+                />
               ))}
             </div>
-          );
-        })}
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-// 网格视图
+const GridCard = memo(function GridCard({
+  file,
+  selectedFiles,
+  dropTargetPath,
+  showExcludedFiles,
+  isExcluded,
+  resolveFileTags,
+  suppressInteraction,
+  onSelect,
+  onDoubleClick,
+  onContextMenu,
+  onDragStart,
+  onDragEnd,
+  onDropToDirectory,
+  onHoverDirectory,
+  canDropToDirectory,
+  getDraggedPathsFromDataTransfer,
+}: {
+  file: FileInfo;
+  selectedFiles: Set<string>;
+  dropTargetPath: string | null;
+  showExcludedFiles: boolean;
+  isExcluded: (file: FileInfo) => boolean;
+  resolveFileTags: ResolveFileTags;
+  suppressInteraction: (event: React.SyntheticEvent<HTMLElement>) => boolean;
+  onSelect: (path: string, multi: boolean) => void;
+  onDoubleClick: (file: FileInfo, openInStandalone: boolean) => void;
+  onContextMenu: (file: FileInfo, x: number, y: number) => void;
+  onDragStart: (file: FileInfo, event: React.DragEvent<HTMLDivElement>) => void;
+  onDragEnd: () => void;
+  onDropToDirectory: (targetDir: string, dragPaths?: string[]) => Promise<void>;
+  onHoverDirectory: (targetDir: string) => void;
+  canDropToDirectory: (targetDir: string, dragPaths?: string[]) => boolean;
+  getDraggedPathsFromDataTransfer: (dataTransfer: DataTransfer | null) => string[];
+}) {
+  const isSelected = selectedFiles.has(file.path);
+  const fileTagList = resolveFileTags(file.path);
+  const isDropTarget = file.is_dir && dropTargetPath === file.path;
+  const excluded = isExcluded(file);
+
+  return (
+    <div
+      draggable
+      className={`
+        group relative h-full p-3 rounded-lg cursor-pointer select-none transition-all
+        ${isSelected
+          ? 'bg-blue-100 dark:bg-blue-950/40 ring-2 ring-blue-500 shadow-lg shadow-blue-500/10 dark:shadow-blue-950/30'
+          : 'hover:bg-gray-50 dark:hover:bg-gray-800'
+        }
+        ${isDropTarget ? 'ring-2 ring-blue-500 bg-blue-50' : ''}
+        ${showExcludedFiles && excluded ? 'opacity-70' : ''}
+      `}
+      onClick={(e) => {
+        if (suppressInteraction(e)) return;
+        onSelect(file.path, e.ctrlKey || e.metaKey);
+      }}
+      onDoubleClick={(e) => {
+        if (suppressInteraction(e)) return;
+        onDoubleClick(file, e.ctrlKey || e.metaKey);
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        onContextMenu(file, e.clientX, e.clientY);
+      }}
+      onDragStart={(e) => onDragStart(file, e)}
+      onDragEnd={onDragEnd}
+      onDragOver={(e) => {
+        const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
+        if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        onHoverDirectory(file.path);
+      }}
+      onDragEnter={(e) => {
+        const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
+        if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
+        e.preventDefault();
+        onHoverDirectory(file.path);
+      }}
+      onDrop={async (e) => {
+        const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
+        if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        await onDropToDirectory(file.path, internalDragPaths);
+      }}
+    >
+      {isSelected && (
+        <div className="absolute right-2 top-2 rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium text-white dark:bg-blue-500">
+          已选中
+        </div>
+      )}
+
+      <div className={`mb-2 aspect-square flex items-center justify-center rounded-xl transition-colors ${
+        isSelected ? 'bg-blue-200/70 dark:bg-blue-900/50' : ''
+      }`}>
+        {getFileIcon(file)}
+      </div>
+
+      <div
+        className={`text-sm text-center truncate ${
+          isSelected ? 'font-semibold text-blue-950 dark:text-blue-50' : ''
+        }`}
+        title={file.name}
+      >
+        {file.name}
+      </div>
+      {showExcludedFiles && excluded && (
+        <div className="mt-1 text-center">
+          <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+            已排除
+          </span>
+        </div>
+      )}
+
+      {fileTagList.length > 0 && (
+        <div className="flex justify-center gap-1 mt-1 flex-wrap">
+          {fileTagList.slice(0, 2).map((tag) => (
+            <span
+              key={tag.id}
+              className="w-2 h-2 rounded-full"
+              style={{ backgroundColor: tag.color }}
+              title={tag.name}
+            />
+          ))}
+          {fileTagList.length > 2 && (
+            <span className="text-xs text-gray-400">+{fileTagList.length - 2}</span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+});
+
 function GridView({
   files,
   selectedFiles,
@@ -336,10 +568,9 @@ function GridView({
   suppressInteraction,
   dropTargetPath,
   currentPath,
-  tags,
-  fileTags,
   isExcluded,
   showExcludedFiles,
+  resolveFileTags,
 }: {
   files: FileInfo[];
   selectedFiles: Set<string>;
@@ -356,14 +587,54 @@ function GridView({
   suppressInteraction: (event: React.SyntheticEvent<HTMLElement>) => boolean;
   dropTargetPath: string | null;
   currentPath: string;
-  tags: any[];
-  fileTags: Map<string, string[]>;
   isExcluded: (file: FileInfo) => boolean;
   showExcludedFiles: boolean;
+  resolveFileTags: ResolveFileTags;
 }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [viewportHeight, setViewportHeight] = useState(0);
+  const [containerWidth, setContainerWidth] = useState(0);
+  const [scrollTop, setScrollTop] = useState(0);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) {
+      return;
+    }
+
+    const updateViewport = () => {
+      setViewportHeight(container.clientHeight);
+      setContainerWidth(container.clientWidth);
+    };
+
+    updateViewport();
+    const observer = new ResizeObserver(updateViewport);
+    observer.observe(container);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
+
+  const columnCount = getGridColumnCount(containerWidth);
+  const rowCount = Math.max(1, Math.ceil(files.length / columnCount));
+  const visibleRowCount = Math.max(1, Math.ceil(viewportHeight / GRID_ROW_HEIGHT));
+  const startRow = Math.max(0, Math.floor(scrollTop / GRID_ROW_HEIGHT) - GRID_OVERSCAN_ROWS);
+  const endRow = Math.min(rowCount, startRow + visibleRowCount + GRID_OVERSCAN_ROWS * 2);
+  const startIndex = startRow * columnCount;
+  const endIndex = Math.min(files.length, endRow * columnCount);
+  const visibleFiles = files.slice(startIndex, endIndex);
+  const renderedRows = Math.ceil(visibleFiles.length / columnCount);
+  const topSpacer = startRow * GRID_ROW_HEIGHT;
+  const bottomSpacer = Math.max(0, (rowCount - startRow - renderedRows) * GRID_ROW_HEIGHT);
+
   return (
     <div
-      className={`p-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 overflow-auto ${dropTargetPath === currentPath ? 'bg-blue-50/60' : ''}`}
+      ref={containerRef}
+      className={`h-full overflow-auto px-4 py-4 ${dropTargetPath === currentPath ? 'bg-blue-50/60' : ''}`}
+      onScroll={(e) => {
+        setScrollTop(e.currentTarget.scrollTop);
+      }}
       onContextMenu={(e) => {
         if (e.target !== e.currentTarget) return;
         e.preventDefault();
@@ -383,110 +654,46 @@ function GridView({
         await onDropToDirectory(currentPath, internalDragPaths);
       }}
     >
-      {files.map(file => {
-        const isSelected = selectedFiles.has(file.path);
-        const fileTagIds = fileTags.get(file.path) || [];
-        const fileTagList = tags.filter(t => fileTagIds.includes(t.id));
-        const isDropTarget = file.is_dir && dropTargetPath === file.path;
-        const excluded = isExcluded(file);
-        
-        return (
+      {files.length === 0 ? (
+        <div className="flex h-full items-center justify-center text-sm text-gray-400">
+          当前目录没有可显示的文件
+        </div>
+      ) : (
+        <>
+          <div style={{ height: topSpacer }} />
           <div
-            key={file.path}
-            draggable
-            className={`
-              group relative p-3 rounded-lg cursor-pointer select-none transition-all
-              ${isSelected 
-                ? 'bg-blue-100 dark:bg-blue-950/40 ring-2 ring-blue-500 shadow-lg shadow-blue-500/10 dark:shadow-blue-950/30' 
-                : 'hover:bg-gray-50 dark:hover:bg-gray-800'
-              }
-              ${isDropTarget ? 'ring-2 ring-blue-500 bg-blue-50' : ''}
-              ${showExcludedFiles && excluded ? 'opacity-70' : ''}
-            `}
-            onClick={(e) => {
-              if (suppressInteraction(e)) return;
-              onSelect(file.path, e.ctrlKey || e.metaKey);
-            }}
-            onDoubleClick={(e) => {
-              if (suppressInteraction(e)) return;
-              onDoubleClick(file, e.ctrlKey || e.metaKey);
-            }}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              onContextMenu(file, e.clientX, e.clientY);
-            }}
-            onDragStart={(e) => onDragStart(file, e)}
-            onDragEnd={onDragEnd}
-            onDragOver={(e) => {
-              const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
-              if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
-              e.preventDefault();
-              e.dataTransfer.dropEffect = 'move';
-              onHoverDirectory(file.path);
-            }}
-            onDragEnter={(e) => {
-              const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
-              if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
-              e.preventDefault();
-              onHoverDirectory(file.path);
-            }}
-            onDrop={async (e) => {
-              const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
-              if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
-              e.preventDefault();
-              e.stopPropagation();
-              await onDropToDirectory(file.path, internalDragPaths);
+            className="grid"
+            style={{
+              gridTemplateColumns: `repeat(${columnCount}, minmax(0, 1fr))`,
+              gap: GRID_GAP,
+              gridAutoRows: GRID_CARD_HEIGHT,
             }}
           >
-            {isSelected && (
-              <div className="absolute right-2 top-2 rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium text-white dark:bg-blue-500">
-                已选中
-              </div>
-            )}
-
-            {/* 图标 */}
-            <div className={`mb-2 aspect-square flex items-center justify-center rounded-xl transition-colors ${
-              isSelected ? 'bg-blue-200/70 dark:bg-blue-900/50' : ''
-            }`}>
-              {getFileIcon(file)}
-            </div>
-            
-            {/* 名称 */}
-            <div
-              className={`text-sm text-center truncate ${
-                isSelected ? 'font-semibold text-blue-950 dark:text-blue-50' : ''
-              }`}
-              title={file.name}
-            >
-              {file.name}
-            </div>
-            {showExcludedFiles && excluded && (
-              <div className="mt-1 text-center">
-                <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
-                  已排除
-                </span>
-              </div>
-            )}
-            
-            {/* 标签 */}
-            {fileTagList.length > 0 && (
-              <div className="flex justify-center gap-1 mt-1 flex-wrap">
-                {fileTagList.slice(0, 2).map(tag => (
-                  <span
-                    key={tag.id}
-                    className="w-2 h-2 rounded-full"
-                    style={{ backgroundColor: tag.color }}
-                    title={tag.name}
-                  />
-                ))}
-                {fileTagList.length > 2 && (
-                  <span className="text-xs text-gray-400">+{fileTagList.length - 2}</span>
-                )}
-              </div>
-            )}
+            {visibleFiles.map((file) => (
+              <GridCard
+                key={file.path}
+                file={file}
+                selectedFiles={selectedFiles}
+                dropTargetPath={dropTargetPath}
+                showExcludedFiles={showExcludedFiles}
+                isExcluded={isExcluded}
+                resolveFileTags={resolveFileTags}
+                suppressInteraction={suppressInteraction}
+                onSelect={onSelect}
+                onDoubleClick={onDoubleClick}
+                onContextMenu={onContextMenu}
+                onDragStart={onDragStart}
+                onDragEnd={onDragEnd}
+                onDropToDirectory={onDropToDirectory}
+                onHoverDirectory={onHoverDirectory}
+                canDropToDirectory={canDropToDirectory}
+                getDraggedPathsFromDataTransfer={getDraggedPathsFromDataTransfer}
+              />
+            ))}
           </div>
-        );
-      })}
+          <div style={{ height: bottomSpacer }} />
+        </>
+      )}
     </div>
   );
 }
@@ -542,11 +749,12 @@ export function FileList() {
     getDraggedPathsFromDataTransfer,
   } = useInternalFileDrag();
   const [dropTargetPath, setDropTargetPath] = useState<string | null>(null);
+  const hoverFrameRef = useRef<number | null>(null);
+  const pendingHoverTargetRef = useRef<string | null>(null);
   const { movePathsToDirectory, conflictDialog } = useFileDropMove(async () => {
     await refresh();
   });
 
-  // 右键菜单状态
   const [contextMenu, setContextMenu] = useState<
     | { kind: 'file'; file: FileInfo; x: number; y: number }
     | { kind: 'directory'; x: number; y: number }
@@ -569,10 +777,43 @@ export function FileList() {
   const isExcluded = useCallback((file: FileInfo) => {
     return excludePatterns.length > 0 && shouldExcludeFile(file.name, excludePatterns);
   }, [excludePatterns]);
-  const detailsDialogTagIds = detailsDialogFile ? (fileTags.get(detailsDialogFile.path) || []) : [];
-  const detailsDialogTagList = detailsDialogFile
-    ? tags.filter((tag) => detailsDialogTagIds.includes(tag.id))
-    : [];
+
+  const tagById = useMemo(() => {
+    return new Map(tags.map((tag) => [tag.id, tag] as const));
+  }, [tags]);
+
+  const resolveFileTags = useCallback((filePath: string): Tag[] => {
+    const tagIds = fileTags.get(filePath);
+    if (!tagIds || tagIds.length === 0) {
+      return [];
+    }
+
+    const resolved: Tag[] = [];
+    for (const tagId of tagIds) {
+      const tag = tagById.get(tagId);
+      if (tag) {
+        resolved.push(tag);
+      }
+    }
+    return resolved;
+  }, [fileTags, tagById]);
+
+  const detailsDialogTagList = detailsDialogFile ? resolveFileTags(detailsDialogFile.path) : [];
+
+  const clearDropHoverState = useCallback(() => {
+    pendingHoverTargetRef.current = null;
+    if (hoverFrameRef.current !== null) {
+      window.cancelAnimationFrame(hoverFrameRef.current);
+      hoverFrameRef.current = null;
+    }
+    setDropTargetPath(null);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      clearDropHoverState();
+    };
+  }, [clearDropHoverState]);
 
   const handleSystemOpenFile = useCallback(async (file: FileInfo) => {
     try {
@@ -655,9 +896,9 @@ export function FileList() {
     setDetailsDialogFile(null);
   }, []);
 
-  const handleRefresh = () => {
-    refresh();
-  };
+  const handleRefresh = useCallback(() => {
+    void refresh();
+  }, [refresh]);
 
   const stopColumnResize = useCallback(() => {
     columnResizeStateRef.current = null;
@@ -857,9 +1098,9 @@ export function FileList() {
       }
 
       showToast({
-        title: deletedCount > 1 ? '已移到回收站' : '文件已移到回收站',
+        title: deletedCount > 1 ? '已移动到回收站' : '文件已移动到回收站',
         message: deletedCount > 1
-          ? `已将 ${deletedCount} 个项目移到回收站。`
+          ? `已将 ${deletedCount} 个项目移动到回收站。`
           : `已将 ${paths[0].split(/[\\/]/).pop() || '该项目'} 移到回收站。`,
         tone: 'success',
       });
@@ -897,8 +1138,8 @@ export function FileList() {
 
   const handleDragEnd = useCallback(() => {
     finishInternalDrag();
-    setDropTargetPath(null);
-  }, [finishInternalDrag]);
+    clearDropHoverState();
+  }, [clearDropHoverState, finishInternalDrag]);
 
   const handleDropToDirectory = useCallback(async (targetDir: string, dragPaths?: string[]) => {
     const currentDraggedPaths = dragPaths && dragPaths.length > 0 ? dragPaths : draggedPaths;
@@ -906,7 +1147,7 @@ export function FileList() {
       return;
     }
 
-    setDropTargetPath(null);
+    clearDropHoverState();
     await movePathsToDirectory(
       currentDraggedPaths,
       targetDir,
@@ -916,10 +1157,24 @@ export function FileList() {
         projectStore.getState().projectName,
       ),
     );
-  }, [draggedPaths, movePathsToDirectory, projectStore]);
+  }, [clearDropHoverState, draggedPaths, movePathsToDirectory, projectStore]);
 
   const handleHoverDirectory = useCallback((targetDir: string) => {
-    setDropTargetPath(targetDir);
+    pendingHoverTargetRef.current = targetDir;
+
+    if (hoverFrameRef.current !== null) {
+      return;
+    }
+
+    hoverFrameRef.current = window.requestAnimationFrame(() => {
+      hoverFrameRef.current = null;
+      const nextTarget = pendingHoverTargetRef.current;
+      pendingHoverTargetRef.current = null;
+      if (!nextTarget) {
+        return;
+      }
+      setDropTargetPath((prev) => (prev === nextTarget ? prev : nextTarget));
+    });
   }, []);
 
   if (isSearching) {
@@ -952,10 +1207,9 @@ export function FileList() {
           columns={columns}
           resizingColumnKey={resizingColumnKey}
           onStartColumnResize={handleStartColumnResize}
-          tags={tags}
-          fileTags={fileTags}
           isExcluded={isExcluded}
           showExcludedFiles={showExcludedFiles}
+          resolveFileTags={resolveFileTags}
         />
       ) : (
         <GridView
@@ -974,14 +1228,12 @@ export function FileList() {
           suppressInteraction={suppressInteraction}
           dropTargetPath={dropTargetPath}
           currentPath={currentPath || ''}
-          tags={tags}
-          fileTags={fileTags}
           isExcluded={isExcluded}
           showExcludedFiles={showExcludedFiles}
+          resolveFileTags={resolveFileTags}
         />
       )}
 
-      {/* 右键菜单 */}
       {contextMenu?.kind === 'file' && (
         <FileContextMenu
           file={contextMenu.file}

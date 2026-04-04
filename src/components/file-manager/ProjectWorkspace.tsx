@@ -6,7 +6,7 @@ import { FileTree } from './FileTree';
 import { FileList } from './FileList';
 import { ColumnSettings } from './ColumnSettings';
 import { FileDetail } from './FileDetail';
-import { getPathLabel, isExternalFileDrag, normalizePath } from './dragDrop';
+import { getParentPath, getPathLabel, isExternalFileDrag, normalizePath } from './dragDrop';
 import { importExternalDrop } from './externalImport';
 import { ChangeLog } from '../ChangeLog';
 import { ImageViewerSurface } from '../image-viewer/ImageViewerSurface';
@@ -37,6 +37,9 @@ const FILE_DETAILS_PANEL_MIN_WIDTH = 260;
 const FILE_DETAILS_PANEL_MAX_WIDTH = 720;
 const FILE_DETAILS_PANEL_DEFAULT_WIDTH = 320;
 const TEXT_DETACH_EVENT_TIMEOUT_MS = 10000;
+const FS_REFRESH_ACTIVE_DELAY_MS = 500;
+const FS_REFRESH_INACTIVE_DELAY_MS = 500;
+const FS_TREE_REFRESH_MIN_INTERVAL_MS = 800;
 
 interface SystemClipboardStatus {
   hasFiles: boolean;
@@ -149,6 +152,17 @@ function waitForAppEvent<T>(eventName: string, timeoutMs = TEXT_DETACH_EVENT_TIM
   });
 }
 
+function isSameOrDirectChildPath(eventPath: string, directoryPath: string): boolean {
+  const normalizedEventPath = normalizePath(eventPath);
+  const normalizedDirectoryPath = normalizePath(directoryPath);
+
+  if (normalizedEventPath === normalizedDirectoryPath) {
+    return true;
+  }
+
+  return normalizePath(getParentPath(eventPath)) === normalizedDirectoryPath;
+}
+
 export function ProjectWorkspace() {
   const projectStore = useProjectStoreApi();
   const workspaceTabStore = useWorkspaceTabStoreApi();
@@ -189,6 +203,13 @@ export function ProjectWorkspace() {
   const fileDetailsResizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const textEditorSnapshotsRef = useRef(new Map<string, TextEditorTransferPayload>());
   const fsChangeRefreshTimerRef = useRef<number | null>(null);
+  const fsRefreshInFlightRef = useRef(false);
+  const lastTreeRefreshAtRef = useRef(0);
+  const pendingFsRefreshRef = useRef({ refreshDirectory: false, refreshTree: false });
+  const isWindowFocusedRef = useRef(
+    typeof document === 'undefined' ? true : document.visibilityState === 'visible' && document.hasFocus(),
+  );
+  const isFilesWorkspaceActiveRef = useRef(false);
   const activeWorkspaceTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
   const isFilesWorkspaceActive = activeWorkspaceTab?.type === 'files';
 
@@ -429,6 +450,104 @@ export function ProjectWorkspace() {
     toggleShowExcludedFiles,
   ]);
 
+  const getFsRefreshDelay = useCallback(() => {
+    const isWindowActive = isWindowFocusedRef.current && isFilesWorkspaceActiveRef.current;
+    return isWindowActive ? FS_REFRESH_ACTIVE_DELAY_MS : FS_REFRESH_INACTIVE_DELAY_MS;
+  }, []);
+
+  const scheduleFsRefresh = useCallback((overrideDelay?: number) => {
+    if (fsChangeRefreshTimerRef.current !== null) {
+      window.clearTimeout(fsChangeRefreshTimerRef.current);
+    }
+
+    const delay = typeof overrideDelay === 'number'
+      ? Math.max(0, overrideDelay)
+      : getFsRefreshDelay();
+
+    fsChangeRefreshTimerRef.current = window.setTimeout(() => {
+      fsChangeRefreshTimerRef.current = null;
+      if (fsRefreshInFlightRef.current) {
+        scheduleFsRefresh();
+        return;
+      }
+
+      const pendingRefresh = pendingFsRefreshRef.current;
+      if (!pendingRefresh.refreshDirectory && !pendingRefresh.refreshTree) {
+        return;
+      }
+
+      pendingFsRefreshRef.current = {
+        refreshDirectory: false,
+        refreshTree: false,
+      };
+      fsRefreshInFlightRef.current = true;
+
+      void (async () => {
+        try {
+          const state = projectStore.getState();
+
+          if (pendingRefresh.refreshDirectory) {
+            if (state.searchQuery) {
+              await state.search(state.searchQuery);
+            } else if (state.currentPath) {
+              await state.loadDirectory(state.currentPath, true, true);
+            }
+          }
+
+          if (pendingRefresh.refreshTree) {
+            const elapsed = Date.now() - lastTreeRefreshAtRef.current;
+            if (elapsed < FS_TREE_REFRESH_MIN_INTERVAL_MS) {
+              pendingFsRefreshRef.current.refreshTree = true;
+              scheduleFsRefresh(FS_TREE_REFRESH_MIN_INTERVAL_MS - elapsed);
+            } else {
+              await state.loadTree(true);
+              lastTreeRefreshAtRef.current = Date.now();
+            }
+          }
+        } catch (error) {
+          console.error('Failed to process batched fs refresh:', error);
+        } finally {
+          fsRefreshInFlightRef.current = false;
+          if (pendingFsRefreshRef.current.refreshDirectory || pendingFsRefreshRef.current.refreshTree) {
+            scheduleFsRefresh();
+          }
+        }
+      })();
+    }, delay);
+  }, [getFsRefreshDelay, projectStore]);
+
+  useEffect(() => {
+    isFilesWorkspaceActiveRef.current = Boolean(isFilesWorkspaceActive);
+    if (pendingFsRefreshRef.current.refreshDirectory || pendingFsRefreshRef.current.refreshTree) {
+      scheduleFsRefresh();
+    }
+  }, [isFilesWorkspaceActive, scheduleFsRefresh]);
+
+  useEffect(() => {
+    const syncWindowFocusState = () => {
+      if (typeof document === 'undefined') {
+        isWindowFocusedRef.current = true;
+      } else {
+        isWindowFocusedRef.current = document.visibilityState === 'visible' && document.hasFocus();
+      }
+
+      if (pendingFsRefreshRef.current.refreshDirectory || pendingFsRefreshRef.current.refreshTree) {
+        scheduleFsRefresh();
+      }
+    };
+
+    syncWindowFocusState();
+    window.addEventListener('focus', syncWindowFocusState);
+    window.addEventListener('blur', syncWindowFocusState);
+    document.addEventListener('visibilitychange', syncWindowFocusState);
+
+    return () => {
+      window.removeEventListener('focus', syncWindowFocusState);
+      window.removeEventListener('blur', syncWindowFocusState);
+      document.removeEventListener('visibilitychange', syncWindowFocusState);
+    };
+  }, [scheduleFsRefresh]);
+
   useEffect(() => {
     if (!projectPath) {
       return;
@@ -441,7 +560,7 @@ export function ProjectWorkspace() {
       try {
         unlisten = await listen<ProjectFsChangeEventPayload>('pm-center:project-fs-change', (event) => {
           const payload = event.payload;
-          if (!payload?.projectPath) {
+          if (!payload?.projectPath || !payload.filePath) {
             return;
           }
 
@@ -449,24 +568,36 @@ export function ProjectWorkspace() {
             return;
           }
 
-          const shouldRefresh =
+          const isStructureChange =
             payload.changeType === 'created'
             || payload.changeType === 'deleted'
-            || payload.changeType === 'renamed'
-            || payload.isDir;
+            || payload.changeType === 'renamed';
 
-          if (!shouldRefresh) {
+          if (!isStructureChange) {
             return;
           }
 
-          if (fsChangeRefreshTimerRef.current !== null) {
-            window.clearTimeout(fsChangeRefreshTimerRef.current);
+          const state = projectStore.getState();
+          const activeDirectory = state.currentPath;
+
+          const shouldRefreshDirectory = activeDirectory
+            ? isSameOrDirectChildPath(payload.filePath, activeDirectory)
+            : false;
+          const shouldRefreshTree = payload.isDir && isStructureChange;
+
+          if (!shouldRefreshDirectory && !shouldRefreshTree) {
+            return;
           }
 
-          fsChangeRefreshTimerRef.current = window.setTimeout(() => {
-            fsChangeRefreshTimerRef.current = null;
-            void refresh(true);
-          }, isFilesWorkspaceActive ? 120 : 450);
+          if (shouldRefreshDirectory) {
+            pendingFsRefreshRef.current.refreshDirectory = true;
+          }
+
+          if (shouldRefreshTree) {
+            pendingFsRefreshRef.current.refreshTree = true;
+          }
+
+          scheduleFsRefresh();
         });
 
         if (cancelled && unlisten) {
@@ -489,8 +620,12 @@ export function ProjectWorkspace() {
         window.clearTimeout(fsChangeRefreshTimerRef.current);
         fsChangeRefreshTimerRef.current = null;
       }
+      pendingFsRefreshRef.current = {
+        refreshDirectory: false,
+        refreshTree: false,
+      };
     };
-  }, [isFilesWorkspaceActive, projectPath, refresh]);
+  }, [projectPath, projectStore, scheduleFsRefresh]);
 
   const resetExternalDragState = useCallback(() => {
     externalDragDepthRef.current = 0;

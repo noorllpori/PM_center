@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, params, params_from_iter};
 use chrono::DateTime;
 
 fn replace_path_prefix(path: &str, old_path: &str, new_path: &str) -> Option<String> {
@@ -209,6 +209,38 @@ impl Database {
             row.get::<_, String>(0)
         })?.collect::<Result<Vec<_>, _>>()?;
         Ok(tags)
+    }
+
+    pub fn get_file_tags_batch(
+        &self,
+        file_paths: &[String],
+    ) -> Result<std::collections::HashMap<String, Vec<String>>, rusqlite::Error> {
+        let mut result = std::collections::HashMap::new();
+        if file_paths.is_empty() {
+            return Ok(result);
+        }
+
+        let conn = self.conn.lock().unwrap();
+        let placeholders = std::iter::repeat("?")
+            .take(file_paths.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT file_path, tag_id FROM file_tags WHERE file_path IN ({})",
+            placeholders
+        );
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(file_paths.iter()), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+
+        for row in rows {
+            let (file_path, tag_id) = row?;
+            result.entry(file_path).or_insert_with(Vec::new).push(tag_id);
+        }
+
+        Ok(result)
     }
     
     pub fn add_tag_to_file(&self, file_path: &str, tag_id: &str) -> Result<(), rusqlite::Error> {
