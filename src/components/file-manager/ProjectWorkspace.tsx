@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { emitTo, once } from '@tauri-apps/api/event';
+import { emitTo, listen, once } from '@tauri-apps/api/event';
 import { Upload } from 'lucide-react';
 import { FileTree } from './FileTree';
 import { FileList } from './FileList';
 import { ColumnSettings } from './ColumnSettings';
 import { FileDetail } from './FileDetail';
-import { getPathLabel, isExternalFileDrag } from './dragDrop';
+import { getPathLabel, isExternalFileDrag, normalizePath } from './dragDrop';
 import { importExternalDrop } from './externalImport';
 import { ChangeLog } from '../ChangeLog';
 import { ImageViewerSurface } from '../image-viewer/ImageViewerSurface';
@@ -41,6 +41,15 @@ const TEXT_DETACH_EVENT_TIMEOUT_MS = 10000;
 interface SystemClipboardStatus {
   hasFiles: boolean;
   hasImage: boolean;
+}
+
+interface ProjectFsChangeEventPayload {
+  projectPath: string;
+  filePath: string;
+  changeType: 'created' | 'modified' | 'deleted' | 'renamed' | string;
+  isDir: boolean;
+  isRename: boolean;
+  timestamp: number;
 }
 
 function isEditableTarget(target: EventTarget | null) {
@@ -179,6 +188,7 @@ export function ProjectWorkspace() {
   const fileTreeResizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const fileDetailsResizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const textEditorSnapshotsRef = useRef(new Map<string, TextEditorTransferPayload>());
+  const fsChangeRefreshTimerRef = useRef<number | null>(null);
   const activeWorkspaceTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
   const isFilesWorkspaceActive = activeWorkspaceTab?.type === 'files';
 
@@ -418,6 +428,69 @@ export function ProjectWorkspace() {
     showToast,
     toggleShowExcludedFiles,
   ]);
+
+  useEffect(() => {
+    if (!projectPath) {
+      return;
+    }
+
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+
+    const registerFsChangeListener = async () => {
+      try {
+        unlisten = await listen<ProjectFsChangeEventPayload>('pm-center:project-fs-change', (event) => {
+          const payload = event.payload;
+          if (!payload?.projectPath) {
+            return;
+          }
+
+          if (normalizePath(payload.projectPath) !== normalizePath(projectPath)) {
+            return;
+          }
+
+          const shouldRefresh =
+            payload.changeType === 'created'
+            || payload.changeType === 'deleted'
+            || payload.changeType === 'renamed'
+            || payload.isDir;
+
+          if (!shouldRefresh) {
+            return;
+          }
+
+          if (fsChangeRefreshTimerRef.current !== null) {
+            window.clearTimeout(fsChangeRefreshTimerRef.current);
+          }
+
+          fsChangeRefreshTimerRef.current = window.setTimeout(() => {
+            fsChangeRefreshTimerRef.current = null;
+            void refresh(true);
+          }, isFilesWorkspaceActive ? 120 : 450);
+        });
+
+        if (cancelled && unlisten) {
+          await unlisten();
+          unlisten = null;
+        }
+      } catch (error) {
+        console.error('Failed to listen project fs change events:', error);
+      }
+    };
+
+    void registerFsChangeListener();
+
+    return () => {
+      cancelled = true;
+      if (unlisten) {
+        void unlisten();
+      }
+      if (fsChangeRefreshTimerRef.current !== null) {
+        window.clearTimeout(fsChangeRefreshTimerRef.current);
+        fsChangeRefreshTimerRef.current = null;
+      }
+    };
+  }, [isFilesWorkspaceActive, projectPath, refresh]);
 
   const resetExternalDragState = useCallback(() => {
     externalDragDepthRef.current = 0;

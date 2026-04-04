@@ -113,9 +113,9 @@ export interface ProjectState {
   // 操作
   setProject: (path: string) => Promise<void>;
   activateProject: () => Promise<void>;
-  loadDirectory: (path: string) => Promise<void>;
-  loadTree: () => Promise<void>;
-  refresh: () => Promise<void>;
+  loadDirectory: (path: string, forceRefresh?: boolean, isResyncPass?: boolean) => Promise<void>;
+  loadTree: (forceRefresh?: boolean, isResyncPass?: boolean) => Promise<void>;
+  refresh: (forceRefresh?: boolean) => Promise<void>;
   closeProject: () => void;
   applyMovedPath: (oldPath: string, newPath: string) => void;
 
@@ -187,6 +187,9 @@ function createInitialProjectState(): Omit<ProjectState, keyof {
 }
 
 export function createProjectStore() {
+  let directoryResyncTimer: number | null = null;
+  let treeResyncTimer: number | null = null;
+
   return createStore<ProjectState>((set, get) => ({
     ...createInitialProjectState(),
 
@@ -227,9 +230,14 @@ export function createProjectStore() {
       }
     },
 
-    loadDirectory: async (path: string) => {
+    loadDirectory: async (path: string, forceRefresh = false, isResyncPass = false) => {
       try {
-        let files = await invoke<FileInfo[]>('read_directory', { path });
+        const activeProjectPath = get().projectPath;
+        let files = await invoke<FileInfo[]>('read_directory', {
+          path,
+          projectPath: activeProjectPath,
+          forceRefresh,
+        });
 
         const { projectPath, showExcludedFiles } = get();
         if (projectPath && !showExcludedFiles) {
@@ -238,7 +246,6 @@ export function createProjectStore() {
         }
 
         const fileTags = new Map<string, string[]>();
-        const activeProjectPath = get().projectPath;
         if (activeProjectPath) {
           for (const file of files) {
             const tags = await invoke<string[]>('get_file_tags', {
@@ -260,35 +267,87 @@ export function createProjectStore() {
             ? new Set([...state.expandedKeys, ...buildExpandedPathChain(projectPath, path)])
             : state.expandedKeys,
         }));
+
+        if (
+          !forceRefresh &&
+          !isResyncPass &&
+          typeof window !== 'undefined' &&
+          activeProjectPath
+        ) {
+          if (directoryResyncTimer !== null) {
+            window.clearTimeout(directoryResyncTimer);
+          }
+          directoryResyncTimer = window.setTimeout(() => {
+            directoryResyncTimer = null;
+            const state = get();
+            if (
+              state.projectPath === activeProjectPath &&
+              state.currentPath === path
+            ) {
+              void state.loadDirectory(path, false, true);
+            }
+          }, 2200);
+        }
       } catch (error) {
         console.error('Failed to load directory:', error);
       }
     },
 
-    loadTree: async () => {
+    loadTree: async (forceRefresh = false, isResyncPass = false) => {
       const { projectPath } = get();
       if (!projectPath) return;
 
       try {
-        const treeData = await invoke<TreeNode>('get_directory_tree', { path: projectPath });
+        const treeData = await invoke<TreeNode>('get_directory_tree', {
+          path: projectPath,
+          projectPath,
+          forceRefresh,
+        });
         set({ treeData });
+
+        if (
+          !forceRefresh &&
+          !isResyncPass &&
+          typeof window !== 'undefined'
+        ) {
+          if (treeResyncTimer !== null) {
+            window.clearTimeout(treeResyncTimer);
+          }
+          treeResyncTimer = window.setTimeout(() => {
+            treeResyncTimer = null;
+            const state = get();
+            if (state.projectPath === projectPath) {
+              void state.loadTree(false, true);
+            }
+          }, 2200);
+        }
       } catch (error) {
         console.error('Failed to load tree:', error);
       }
     },
 
-    refresh: async () => {
+    refresh: async (forceRefresh = true) => {
       const { currentPath, searchQuery } = get();
       if (searchQuery) {
         await get().search(searchQuery);
       } else if (currentPath) {
-        await get().loadDirectory(currentPath);
+        await get().loadDirectory(currentPath, forceRefresh);
       }
-      await get().loadTree();
+      await get().loadTree(forceRefresh);
     },
 
     closeProject: () => {
       clearFileDetailsCache();
+      if (typeof window !== 'undefined') {
+        if (directoryResyncTimer !== null) {
+          window.clearTimeout(directoryResyncTimer);
+          directoryResyncTimer = null;
+        }
+        if (treeResyncTimer !== null) {
+          window.clearTimeout(treeResyncTimer);
+          treeResyncTimer = null;
+        }
+      }
       set({
         ...createInitialProjectState(),
       });

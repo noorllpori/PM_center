@@ -4,8 +4,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
+use tauri::Emitter;
 
 use crate::db::Database;
+use crate::tree_cache::get_or_create_project_cache;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ChangeType {
@@ -65,10 +67,27 @@ pub struct ProjectWatcherState {
     pub file_cache: HashMap<String, (u64, i64)>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFsChangeEvent {
+    pub project_path: String,
+    pub file_path: String,
+    pub change_type: String,
+    pub is_dir: bool,
+    pub is_rename: bool,
+    pub timestamp: i64,
+}
+
 // 全局状态
 lazy_static::lazy_static! {
     static ref PROJECTS: Arc<Mutex<HashMap<String, ProjectWatcherState>>> = Arc::new(Mutex::new(HashMap::new()));
     static ref ACTIVE_WATCHER: Arc<Mutex<Option<RecommendedWatcher>>> = Arc::new(Mutex::new(None));
+    static ref APP_HANDLE: Arc<Mutex<Option<tauri::AppHandle>>> = Arc::new(Mutex::new(None));
+}
+
+pub fn set_app_handle(app_handle: tauri::AppHandle) {
+    let mut handle = APP_HANDLE.lock().unwrap();
+    *handle = Some(app_handle);
 }
 
 // 初始化项目监控
@@ -165,6 +184,10 @@ fn start_notify_watcher(path: &str, db: &Database) -> Result<(), String> {
 // 处理 notify 事件
 fn handle_notify_event(event: Event, db: &Database) {
     let projects_guard = PROJECTS.lock().unwrap();
+    let is_rename_event = matches!(
+        event.kind,
+        notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
+    );
 
     for file_path in &event.paths {
         let project_info = projects_guard.iter().find(|(p, _)| file_path.starts_with(p));
@@ -206,6 +229,26 @@ fn handle_notify_event(event: Event, db: &Database) {
                 None
             };
 
+            if let Ok(cache_db) = get_or_create_project_cache(project_path) {
+                let changed_path = file_path.to_string_lossy().to_string();
+
+                if let Some(parent) = file_path.parent() {
+                    let parent_path = parent.to_string_lossy().to_string();
+                    let _ = cache_db.mark_dir_dirty(&parent_path);
+                }
+
+                if is_dir {
+                    let _ = cache_db.mark_dir_dirty(&changed_path);
+                    let _ = cache_db.invalidate_file_details_by_prefix(&changed_path);
+                } else {
+                    let _ = cache_db.invalidate_file_details(&changed_path);
+                }
+
+                if is_rename_event || matches!(change_type, ChangeType::Created | ChangeType::Deleted) {
+                    let _ = cache_db.mark_tree_dirty();
+                }
+            }
+
             // 直接写入数据库
             let change = crate::db::FileChange {
                 id: 0,
@@ -220,7 +263,35 @@ fn handle_notify_event(event: Event, db: &Database) {
             let _ = db.add_file_change(&change);
             
             println!("[Watcher] {:?} - {} - {:?}", change_type, file_path.display(), file_size);
+
+            emit_project_fs_change(ProjectFsChangeEvent {
+                project_path: project_path.clone(),
+                file_path: file_path.to_string_lossy().to_string(),
+                change_type: if is_rename_event {
+                    "renamed".to_string()
+                } else {
+                    change_type.as_str().to_string()
+                },
+                is_dir,
+                is_rename: is_rename_event,
+                timestamp: current_timestamp(),
+            });
         }
+    }
+}
+
+pub fn get_active_project_path() -> Option<String> {
+    let projects = PROJECTS.lock().ok()?;
+    projects
+        .iter()
+        .find(|(_, watcher)| matches!(watcher.state, ProjectWatchState::Active))
+        .map(|(path, _)| path.clone())
+}
+
+fn emit_project_fs_change(payload: ProjectFsChangeEvent) {
+    let handle = APP_HANDLE.lock().unwrap();
+    if let Some(app_handle) = handle.as_ref() {
+        let _ = app_handle.emit("pm-center:project-fs-change", payload);
     }
 }
 

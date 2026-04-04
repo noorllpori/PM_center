@@ -69,6 +69,7 @@ async function requestFileDetails(
     path: file.path,
     view,
     toolPaths,
+    forceRefresh,
   })
     .then((result) => {
       touchCacheEntry(cacheKey, result);

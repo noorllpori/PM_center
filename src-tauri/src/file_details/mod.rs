@@ -14,7 +14,11 @@ use std::path::{Path, PathBuf};
 
 use crate::process_utils::tokio_command;
 use crate::python::{get_blender_file_info, resolve_blender_path};
+use crate::tree_cache::{self, TreeCacheDb};
 use crate::tools::{resolve_ffprobe_path, ToolPathsInput};
+
+const FILE_DETAILS_CACHE_TTL_SECONDS: i64 = 30 * 24 * 60 * 60;
+const FILE_DETAILS_CACHE_MAX_ENTRIES: usize = 5000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -85,7 +89,9 @@ pub async fn get_file_details(
     path: String,
     _view: Option<String>,
     tool_paths: Option<ToolPathsInput>,
+    force_refresh: Option<bool>,
 ) -> Result<FileDetailsResponse, String> {
+    let force_refresh = force_refresh.unwrap_or(false);
     let path_buf = PathBuf::from(&path);
     let basic = build_basic_details(&path_buf).await?;
     let ffprobe_path = resolve_ffprobe_path(tool_paths.as_ref().and_then(|paths| paths.ffprobe.as_deref()));
@@ -93,6 +99,24 @@ pub async fn get_file_details(
         .as_ref()
         .and_then(|paths| paths.blender.as_deref())
         .and_then(|path| resolve_blender_path(Some(path)));
+    let cache_db = resolve_cache_db_for_file(&path);
+    let signature = build_file_details_signature(&path, &basic, ffprobe_path.as_deref(), blender_path.as_deref());
+
+    if !force_refresh {
+        if let Some(cache) = cache_db.as_ref() {
+            let now = current_timestamp();
+            if let Ok(maybe_payload) = cache.get_file_details_payload(&path, &signature, now) {
+                if let Some(cached_payload) = maybe_payload {
+                    if let Ok(cached_response) =
+                        serde_json::from_str::<FileDetailsResponse>(&cached_payload)
+                    {
+                        return Ok(cached_response);
+                    }
+                    let _ = cache.invalidate_file_details(&path);
+                }
+            }
+        }
+    }
 
     let parser_outcome = match basic.display_type.as_str() {
         "image" => parse_image_details(&path_buf).await,
@@ -107,11 +131,53 @@ pub async fn get_file_details(
     sections.extend(parser_outcome.sections);
     sections.push(build_parser_section(&parser_outcome.parser));
 
-    Ok(FileDetailsResponse {
+    let response = FileDetailsResponse {
         basic,
         parser: parser_outcome.parser,
         sections,
+    };
+
+    if let Some(cache) = cache_db {
+        if let Ok(payload_json) = serde_json::to_string(&response) {
+            let _ = cache.upsert_file_details_payload(
+                &path,
+                &signature,
+                &payload_json,
+                FILE_DETAILS_CACHE_TTL_SECONDS,
+            );
+            let _ = cache.cleanup_file_details_cache(FILE_DETAILS_CACHE_MAX_ENTRIES, current_timestamp());
+        }
+    }
+
+    Ok(response)
+}
+
+fn resolve_cache_db_for_file(path: &str) -> Option<TreeCacheDb> {
+    let project_root = tree_cache::detect_project_root_for_path(path)?;
+    tree_cache::get_or_create_project_cache(&project_root).ok()
+}
+
+fn build_file_details_signature(
+    path: &str,
+    basic: &FileDetailsBasic,
+    ffprobe_path: Option<&str>,
+    blender_path: Option<&str>,
+) -> String {
+    serde_json::json!({
+        "path": path,
+        "modified": basic.modified,
+        "size": basic.size,
+        "ffprobe": ffprobe_path,
+        "blender": blender_path,
     })
+    .to_string()
+}
+
+fn current_timestamp() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
 }
 
 async fn build_basic_details(path: &PathBuf) -> Result<FileDetailsBasic, String> {

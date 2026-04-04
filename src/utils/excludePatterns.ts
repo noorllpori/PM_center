@@ -53,7 +53,12 @@ export function shouldExcludeFile(fileName: string, patterns: string[]) {
 
 function matchesExcludePattern(fileName: string, pattern: string) {
   if (pattern.includes('*') || pattern.includes('?') || pattern.includes('[')) {
-    return globToRegExp(pattern).test(fileName);
+    try {
+      return globToRegExp(pattern).test(fileName);
+    } catch (error) {
+      console.warn('[excludePatterns] Invalid pattern ignored:', pattern, error);
+      return false;
+    }
   }
 
   return fileName === pattern || fileName.startsWith(`${pattern}/`);
@@ -81,7 +86,8 @@ function globToRegExp(pattern: string) {
     if (char === '[') {
       const closingIndex = pattern.indexOf(']', index + 1);
       if (closingIndex > index + 1) {
-        regex += pattern.slice(index, closingIndex + 1);
+        const classContent = pattern.slice(index + 1, closingIndex);
+        regex += `[${normalizeCharClassContent(classContent)}]`;
         index = closingIndex + 1;
         continue;
       }
@@ -97,4 +103,34 @@ function globToRegExp(pattern: string) {
 
 function escapeRegexChar(char: string) {
   return /[\\^$+?.()|{}]/.test(char) ? `\\${char}` : char;
+}
+
+function normalizeCharClassContent(content: string) {
+  let normalized = '';
+
+  for (let index = 0; index < content.length; index += 1) {
+    const char = content[index];
+    const previous = content[index - 1];
+    const next = content[index + 1];
+    const isRangeHyphen =
+      char === '-' &&
+      index > 0 &&
+      index < content.length - 1 &&
+      previous !== '\\' &&
+      next !== undefined;
+
+    if (isRangeHyphen && previous.charCodeAt(0) > next.charCodeAt(0)) {
+      normalized += '\\-';
+      continue;
+    }
+
+    if (char === '\\' || char === ']') {
+      normalized += `\\${char}`;
+      continue;
+    }
+
+    normalized += char;
+  }
+
+  return normalized;
 }

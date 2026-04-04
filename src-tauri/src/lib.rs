@@ -12,6 +12,7 @@ mod fs;
 mod db;
 mod python;
 mod watcher;
+mod tree_cache;
 mod icon_extractor;
 mod task;
 mod p2p;
@@ -72,6 +73,7 @@ async fn init_project(
 ) -> Result<(), String> {
     ensure_project_support_files(&project_path)?;
     let db = get_or_create_db(&db_state, &project_path).await?;
+    let _ = tree_cache::get_or_create_project_cache(&project_path)?;
 
     let _ = watcher::init_project(project_path.clone(), true);
     let _ = watcher::set_active_project(&project_path, &db);
@@ -749,6 +751,7 @@ pub fn run() {
         }))
         .manage(db_state_for_single)
         .setup(move |app| {
+            watcher::set_app_handle(app.handle().clone());
             let window = app.get_webview_window("main").unwrap();
             
             // 创建托盘菜单
@@ -845,6 +848,28 @@ pub fn run() {
 
                     for db in databases {
                         let _ = db.archive_old_changes();
+                    }
+                }
+            });
+
+            // 启动后台任务：高频增量修复缓存脏目录
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(2));
+
+                loop {
+                    interval.tick().await;
+                    let _ = tree_cache::process_dirty_dirs(50);
+                }
+            });
+
+            // 启动后台任务：低频全量树校验（活动项目）
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(600));
+
+                loop {
+                    interval.tick().await;
+                    if let Some(active_project_path) = watcher::get_active_project_path() {
+                        let _ = tree_cache::rebuild_project_tree_cache(&active_project_path);
                     }
                 }
             });

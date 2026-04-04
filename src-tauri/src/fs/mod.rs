@@ -11,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::future::Future;
 
 use crate::process_utils::std_command;
+use crate::tree_cache::{self, FsEntrySnapshot, TreeCacheDb};
 
 #[cfg(windows)]
 use windows::core::PCWSTR;
@@ -236,24 +237,124 @@ fn format_time(time: std::io::Result<SystemTime>) -> Option<String> {
 
 // 读取目录内容
 #[tauri::command]
-pub async fn read_directory(path: String) -> Result<Vec<FileInfo>, String> {
+pub async fn read_directory(
+    path: String,
+    project_path: Option<String>,
+    force_refresh: Option<bool>,
+) -> Result<Vec<FileInfo>, String> {
+    let force_refresh = force_refresh.unwrap_or(false);
+
+    if let Some(project_path_value) = project_path.clone() {
+        if let Ok(cache_db) = tree_cache::get_or_create_project_cache(&project_path_value) {
+            if force_refresh {
+                let fresh_entries =
+                    tree_cache::scan_directory_entries_from_disk(&project_path_value, &path)?;
+                let _ = cache_db.replace_directory_entries(&path, &fresh_entries);
+                return Ok(convert_snapshots_to_file_infos(fresh_entries));
+            }
+
+            let has_snapshot = cache_db.has_directory_snapshot(&path).unwrap_or(false);
+            if has_snapshot {
+                if let Ok(cached_entries) = cache_db.get_directory_entries(&path) {
+                    if cache_db.is_dir_dirty(&path).unwrap_or(false) {
+                        let project_for_refresh = project_path_value.clone();
+                        let path_for_refresh = path.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Ok(cache) = tree_cache::get_or_create_project_cache(&project_for_refresh) {
+                                if let Ok(fresh_entries) =
+                                    tree_cache::scan_directory_entries_from_disk(&project_for_refresh, &path_for_refresh)
+                                {
+                                    let _ = cache.replace_directory_entries(&path_for_refresh, &fresh_entries);
+                                }
+                            }
+                        });
+                    }
+                    return Ok(convert_snapshots_to_file_infos(cached_entries));
+                }
+            }
+
+            let fresh_entries = tree_cache::scan_directory_entries_from_disk(&project_path_value, &path)?;
+            let _ = cache_db.replace_directory_entries(&path, &fresh_entries);
+            return Ok(convert_snapshots_to_file_infos(fresh_entries));
+        }
+    }
+
+    read_directory_from_disk(&path, project_path.as_deref()).await
+}
+
+// 获取目录树
+#[tauri::command]
+pub async fn get_directory_tree(
+    path: String,
+    project_path: Option<String>,
+    force_refresh: Option<bool>,
+) -> Result<TreeNode, String> {
+    let force_refresh = force_refresh.unwrap_or(false);
+
+    if let Some(project_path_value) = project_path {
+        if let Ok(cache_db) = tree_cache::get_or_create_project_cache(&project_path_value) {
+            let need_full_refresh = force_refresh || !cache_db.has_full_tree_snapshot().unwrap_or(false);
+            if need_full_refresh {
+                let project_for_refresh = project_path_value.clone();
+                let refresh_result = tokio::task::spawn_blocking(move || {
+                    tree_cache::rebuild_project_tree_cache(&project_for_refresh)
+                })
+                .await
+                .map_err(|error| error.to_string());
+                if !matches!(refresh_result, Ok(Ok(()))) {
+                    return build_tree_node(&PathBuf::from(path)).await;
+                }
+                if let Ok(tree) = build_tree_from_cache(&cache_db, &path) {
+                    return Ok(tree);
+                }
+                return build_tree_node(&PathBuf::from(path)).await;
+            }
+
+            if let Ok(tree) = build_tree_from_cache(&cache_db, &path) {
+                if cache_db.is_tree_dirty().unwrap_or(false) {
+                    let project_for_refresh = project_path_value.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = tokio::task::spawn_blocking(move || {
+                            tree_cache::rebuild_project_tree_cache(&project_for_refresh)
+                        })
+                        .await;
+                    });
+                }
+                return Ok(tree);
+            }
+        }
+    }
+
+    build_tree_node(&PathBuf::from(path)).await
+}
+
+async fn read_directory_from_disk(path: &str, project_path: Option<&str>) -> Result<Vec<FileInfo>, String> {
     let mut entries = Vec::new();
     
-    let mut dir = tokio::fs::read_dir(&path)
+    let mut dir = tokio::fs::read_dir(path)
         .await
         .map_err(|e| e.to_string())?;
+
+    let project_root = project_path.map(PathBuf::from);
     
     while let Some(entry) = dir.next_entry().await.map_err(|e| e.to_string())? {
         let metadata = entry.metadata().await.map_err(|e| e.to_string())?;
-        let path = entry.path();
+        let entry_path = entry.path();
+
+        if let Some(project_root_path) = project_root.as_ref() {
+            if should_skip_pm_center(project_root_path, &entry_path) {
+                continue;
+            }
+        }
+
         let name = entry.file_name().to_string_lossy().to_string();
 
-        let extension = path.extension()
+        let extension = entry_path.extension()
             .map(|e| e.to_string_lossy().to_string().to_lowercase());
         
         entries.push(FileInfo {
             name: name.clone(),
-            path: path.to_string_lossy().to_string(),
+            path: entry_path.to_string_lossy().to_string(),
             is_dir: metadata.is_dir(),
             size: metadata.len(),
             modified: format_time(metadata.modified()),
@@ -273,12 +374,6 @@ pub async fn read_directory(path: String) -> Result<Vec<FileInfo>, String> {
     });
     
     Ok(entries)
-}
-
-// 获取目录树
-#[tauri::command]
-pub async fn get_directory_tree(path: String) -> Result<TreeNode, String> {
-    build_tree_node(&PathBuf::from(path)).await
 }
 
 // Box::pin 递归 async 函数
@@ -315,6 +410,101 @@ fn build_tree_node(
             children,
         })
     })
+}
+
+fn build_tree_from_cache(cache_db: &TreeCacheDb, root_path: &str) -> Result<TreeNode, String> {
+    let mut visited = HashSet::new();
+    build_tree_from_cache_inner(cache_db, root_path, &mut visited)
+}
+
+fn build_tree_from_cache_inner(
+    cache_db: &TreeCacheDb,
+    current_path: &str,
+    visited: &mut HashSet<String>,
+) -> Result<TreeNode, String> {
+    let current_key = tree_cache::normalize_path_key(current_path);
+    if !visited.insert(current_key) {
+        return Ok(TreeNode {
+            name: PathBuf::from(current_path)
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| current_path.to_string()),
+            path: current_path.to_string(),
+            is_dir: true,
+            children: Vec::new(),
+        });
+    }
+
+    let mut children = Vec::new();
+    let child_dirs = cache_db.get_cached_child_dirs(current_path)?;
+    for child_dir in child_dirs {
+        children.push(build_tree_from_cache_inner(cache_db, &child_dir, visited)?);
+    }
+
+    Ok(TreeNode {
+        name: PathBuf::from(current_path)
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| current_path.to_string()),
+        path: current_path.to_string(),
+        is_dir: true,
+        children,
+    })
+}
+
+fn convert_snapshots_to_file_infos(entries: Vec<FsEntrySnapshot>) -> Vec<FileInfo> {
+    entries
+        .into_iter()
+        .map(|entry| FileInfo {
+            name: entry.name,
+            path: entry.path,
+            is_dir: entry.is_dir,
+            size: entry.size,
+            modified: format_cache_timestamp(entry.modified_ts),
+            created: format_cache_timestamp(entry.created_ts),
+            extension: entry.extension,
+            thumbnail: None,
+        })
+        .collect()
+}
+
+fn format_cache_timestamp(timestamp: Option<i64>) -> Option<String> {
+    timestamp.map(|value| {
+        let days = value / 86400;
+        let remaining_secs = value % 86400;
+        let hours = remaining_secs / 3600;
+        let mins = (remaining_secs % 3600) / 60;
+        let secs = remaining_secs % 60;
+
+        let year = 1970 + (days / 365) as i32;
+        let day_of_year = days % 365;
+
+        format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+            year,
+            (day_of_year / 30 + 1).min(12),
+            (day_of_year % 30 + 1).min(31),
+            hours,
+            mins,
+            secs
+        )
+    })
+}
+
+fn should_skip_pm_center(project_root: &PathBuf, entry_path: &PathBuf) -> bool {
+    if !entry_path.starts_with(project_root) {
+        return false;
+    }
+
+    match entry_path.strip_prefix(project_root) {
+        Ok(relative) => relative.components().any(|component| {
+            component
+                .as_os_str()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(".pm_center")
+        }),
+        Err(_) => false,
+    }
 }
 
 // 搜索文件
