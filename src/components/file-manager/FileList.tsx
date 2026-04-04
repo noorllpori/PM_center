@@ -2,9 +2,13 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { ColumnConfig, FileInfo, Tag } from '../../types';
 import { useProjectStoreApi, useProjectStoreShallow } from '../../stores/projectStore';
+import { usePluginStore } from '../../stores/pluginStore';
 import { useSettingsStore } from '../../stores/settingsStore';
+import { useTaskStore } from '../../stores/taskStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceTabStore } from '../../stores/workspaceTabStore';
+import { APP_VERSION } from '../../config/appMeta';
+import type { PluginAction } from '../../types/plugin';
 import { FileIcon, FolderIcon, Image, Film, FileText, Box } from 'lucide-react';
 import { CurrentDirectoryContextMenu, FileContextMenu } from './FileContextMenu';
 import { FileDetailsDialog } from './FileDetailsView';
@@ -14,6 +18,7 @@ import { useFileDropMove } from './useFileDropMove';
 import { useInternalFileDrag } from './useInternalFileDrag';
 import { getWorkspaceOpenTarget, isTextExtension, isVideoExtension } from '../workspace/fileOpeners';
 import { isImageExtension } from '../image-viewer/imageViewerUtils';
+import { buildPluginContextItems, getVisiblePluginActions } from '../../utils/pluginActions';
 import {
   mergeExcludePatterns,
   readProjectExcludePatterns,
@@ -738,9 +743,13 @@ export function FileList() {
     showExcludedFiles: state.showExcludedFiles,
   }));
   const showToast = useUiStore((state) => state.showToast);
+  const addTask = useTaskStore((state) => state.addTask);
   const globalExcludePatterns = useSettingsStore((state) => state.globalExcludePatterns);
   const openFileInTab = useWorkspaceTabStore((state) => state.openFileInTab);
   const openFileInStandaloneWindow = useWorkspaceTabStore((state) => state.openFileInStandaloneWindow);
+  const pluginProjectKey = projectPath || '__global__';
+  const pluginState = usePluginStore((state) => state.byProject[pluginProjectKey]);
+  const loadPlugins = usePluginStore((state) => state.loadPlugins);
   const {
     draggedPaths,
     startInternalDrag,
@@ -799,6 +808,26 @@ export function FileList() {
   }, [fileTags, tagById]);
 
   const detailsDialogTagList = detailsDialogFile ? resolveFileTags(detailsDialogFile.path) : [];
+  const allKnownFiles = useMemo(() => {
+    const fileMap = new Map<string, FileInfo>();
+    for (const file of [...files, ...searchResults]) {
+      fileMap.set(file.path, file);
+    }
+    return fileMap;
+  }, [files, searchResults]);
+  const selectedFileInfos = useMemo(() => {
+    return Array.from(selectedFiles)
+      .map((path) => allKnownFiles.get(path))
+      .filter((file): file is FileInfo => Boolean(file));
+  }, [allKnownFiles, selectedFiles]);
+
+  useEffect(() => {
+    if (!projectPath) {
+      return;
+    }
+
+    void loadPlugins(projectPath);
+  }, [loadPlugins, projectPath]);
 
   const clearDropHoverState = useCallback(() => {
     pendingHoverTargetRef.current = null;
@@ -887,6 +916,51 @@ export function FileList() {
   const handleCloseContextMenu = () => {
     setContextMenu(null);
   };
+
+  const buildFileContext = useCallback((selectedItems: FileInfo[]) => ({
+    projectPath: projectPath || '',
+    currentPath: currentPath || null,
+    selectedItems: buildPluginContextItems(selectedItems),
+    trigger: 'file-context',
+    pluginScope: '',
+    appVersion: APP_VERSION,
+  }), [currentPath, projectPath]);
+
+  const runPluginAction = useCallback((action: PluginAction, selectedItems: FileInfo[]) => {
+    if (!projectPath) {
+      return;
+    }
+
+    const context = buildFileContext(selectedItems);
+    addTask({
+      projectPath,
+      name: action.title,
+      subName: `${action.pluginName} · 右键插件`,
+      script: {
+        kind: 'plugin-action',
+        pluginKey: action.pluginKey,
+        pluginId: action.pluginId,
+        pluginName: action.pluginName,
+        commandId: action.commandId,
+        commandTitle: action.title,
+        location: action.location,
+        context: {
+          ...context,
+          pluginScope: action.scope,
+        },
+      },
+      priority: 'medium',
+      maxRetries: 0,
+      timeout: 0,
+      dependencies: [],
+    });
+
+    showToast({
+      title: '插件任务已加入',
+      message: `${action.pluginName} · ${action.title}`,
+      tone: 'success',
+    });
+  }, [addTask, buildFileContext, projectPath, showToast]);
 
   const handleShowDetails = useCallback((file: FileInfo) => {
     setDetailsDialogFile(file);
@@ -1177,6 +1251,43 @@ export function FileList() {
     });
   }, []);
 
+  const fileContextSelectedItems = useMemo(() => {
+    if (contextMenu?.kind !== 'file') {
+      return selectedFileInfos;
+    }
+
+    const selectedIncludesTarget = selectedFileInfos.some((file) => file.path === contextMenu.file.path);
+    if (selectedIncludesTarget && selectedFileInfos.length > 0) {
+      return selectedFileInfos;
+    }
+
+    return [contextMenu.file];
+  }, [contextMenu, selectedFileInfos]);
+
+  const fileContextPluginActions = useMemo(() => {
+    if (!projectPath || contextMenu?.kind !== 'file') {
+      return [];
+    }
+
+    return getVisiblePluginActions(
+      pluginState?.descriptors || [],
+      'file-context',
+      buildFileContext(fileContextSelectedItems),
+    );
+  }, [buildFileContext, contextMenu, fileContextSelectedItems, pluginState?.descriptors, projectPath]);
+
+  const currentDirectoryPluginActions = useMemo(() => {
+    if (!projectPath || contextMenu?.kind !== 'directory') {
+      return [];
+    }
+
+    return getVisiblePluginActions(
+      pluginState?.descriptors || [],
+      'file-context',
+      buildFileContext([]),
+    );
+  }, [buildFileContext, contextMenu, pluginState?.descriptors, projectPath]);
+
   if (isSearching) {
     return (
       <div className="h-full flex items-center justify-center text-gray-400">
@@ -1241,12 +1352,14 @@ export function FileList() {
           y={contextMenu.y}
           currentPath={currentPath || ''}
           projectPath={projectPath || ''}
+          pluginActions={fileContextPluginActions}
           onClose={handleCloseContextMenu}
           onRefresh={handleRefresh}
           onShowDetails={handleShowDetails}
           onDelete={handleDeleteFromContextMenu}
           onCreateFolder={handleCreateFolder}
           onOpenFile={handleSystemOpenFile}
+          onRunPluginAction={(action) => runPluginAction(action, fileContextSelectedItems)}
         />
       )}
 
@@ -1256,9 +1369,11 @@ export function FileList() {
           y={contextMenu.y}
           currentPath={currentPath || ''}
           projectPath={projectPath || ''}
+          pluginActions={currentDirectoryPluginActions}
           onClose={handleCloseContextMenu}
           onRefresh={handleRefresh}
           onCreateFolder={handleCreateFolder}
+          onRunPluginAction={(action) => runPluginAction(action, [])}
         />
       )}
 

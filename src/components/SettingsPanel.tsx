@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { usePluginStore } from '../stores/pluginStore';
 import {
   AlertTriangle,
   Box,
@@ -17,6 +18,7 @@ import {
   SlidersHorizontal,
   Trash2,
   Wrench,
+  Puzzle,
 } from 'lucide-react';
 import { AlertDialog, Dialog } from './Dialog';
 import { useOptionalProjectStoreShallow } from '../stores/projectStore';
@@ -28,6 +30,7 @@ import {
   readProjectExcludePatterns,
 } from '../utils/excludePatterns';
 import { APP_VERSION_TEXT } from '../config/appMeta';
+import type { PluginDescriptor, PluginDirectories } from '../types/plugin';
 
 type SettingsScope = 'global' | 'project';
 
@@ -97,11 +100,17 @@ export function SettingsPanel({
   const [toolStatuses, setToolStatuses] = useState<ToolStatus[]>([]);
   const [isLoadingTools, setIsLoadingTools] = useState(false);
   const [globalTaskScriptsPath, setGlobalTaskScriptsPath] = useState<string | null>(null);
+  const [pluginDescriptors, setPluginDescriptors] = useState<PluginDescriptor[]>([]);
+  const [pluginDirectories, setPluginDirectories] = useState<PluginDirectories | null>(null);
+  const [isLoadingPlugins, setIsLoadingPlugins] = useState(false);
   const [alertDialog, setAlertDialog] = useState({
     isOpen: false,
     title: '提示',
     message: '',
   });
+  const refreshProjectPlugins = usePluginStore((state) => state.refreshProjectPlugins);
+  const loadPluginDirsFromStore = usePluginStore((state) => state.loadPluginDirs);
+  const togglePlugin = usePluginStore((state) => state.togglePlugin);
 
   const hasProjectScope = isInitialized && !!projectPath;
   const resolvedDefaultScope = hasProjectScope && defaultScope === 'project' ? 'project' : 'global';
@@ -182,6 +191,38 @@ export function SettingsPanel({
 
     void loadToolStatuses();
   }, [isOpen, loadToolStatuses]);
+
+  const loadPluginSection = useCallback(async () => {
+    setIsLoadingPlugins(true);
+    try {
+      const [descriptors, directories] = await Promise.all([
+        refreshProjectPlugins(projectPath),
+        loadPluginDirsFromStore(projectPath),
+      ]);
+      setPluginDescriptors(descriptors);
+      setPluginDirectories(directories);
+    } catch (error) {
+      console.error('Failed to load plugins:', error);
+      setAlertDialog({
+        isOpen: true,
+        title: '读取插件失败',
+        message: String(error),
+      });
+    } finally {
+      setIsLoadingPlugins(false);
+    }
+  }, [loadPluginDirsFromStore, projectPath, refreshProjectPlugins]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      setPluginDescriptors([]);
+      setPluginDirectories(null);
+      setIsLoadingPlugins(false);
+      return;
+    }
+
+    void loadPluginSection();
+  }, [isOpen, loadPluginSection]);
 
   const sortedRecentProjects = useMemo(
     () => [...recentProjects].sort((left, right) => right.openedAt - left.openedAt),
@@ -302,6 +343,44 @@ export function SettingsPanel({
       });
     }
   };
+
+  const handleOpenPluginDirectory = async (targetPath?: string | null) => {
+    if (!targetPath) {
+      return;
+    }
+
+    try {
+      await invoke('open_path', { path: targetPath });
+    } catch (error) {
+      setAlertDialog({
+        isOpen: true,
+        title: '打开插件目录失败',
+        message: String(error),
+      });
+    }
+  };
+
+  const handleTogglePlugin = async (plugin: PluginDescriptor, enabled: boolean) => {
+    try {
+      await togglePlugin(projectPath, plugin.key, enabled);
+      await loadPluginSection();
+    } catch (error) {
+      setAlertDialog({
+        isOpen: true,
+        title: enabled ? '启用插件失败' : '禁用插件失败',
+        message: String(error),
+      });
+    }
+  };
+
+  const globalPlugins = useMemo(
+    () => pluginDescriptors.filter((plugin) => plugin.scope === 'global'),
+    [pluginDescriptors],
+  );
+  const projectPlugins = useMemo(
+    () => pluginDescriptors.filter((plugin) => plugin.scope === 'project'),
+    [pluginDescriptors],
+  );
 
   const renderExcludeRulesSection = ({
     title,
@@ -430,6 +509,133 @@ export function SettingsPanel({
     </section>
   );
 
+  const renderPluginSection = ({
+    title,
+    description,
+    directoryPath,
+    plugins,
+  }: {
+    title: string;
+    description: string;
+    directoryPath?: string | null;
+    plugins: PluginDescriptor[];
+  }) => (
+    <section className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <Puzzle className="w-4 h-4 text-blue-500" />
+        <div className="flex-1">
+          <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{title}</h4>
+          <p className="text-xs text-gray-500 mt-1">{description}</p>
+        </div>
+        <button
+          onClick={() => void loadPluginSection()}
+          className="p-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+          title="刷新插件"
+        >
+          <RefreshCw className={`w-4 h-4 ${isLoadingPlugins ? 'animate-spin' : ''}`} />
+        </button>
+      </div>
+
+      <div className="rounded-lg bg-gray-50 dark:bg-gray-800 px-3 py-3 mb-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-xs text-gray-500 mb-1">目录位置</p>
+            <p className="text-sm text-gray-900 dark:text-gray-100 break-all">
+              {directoryPath || '当前范围没有插件目录'}
+            </p>
+          </div>
+          <button
+            onClick={() => void handleOpenPluginDirectory(directoryPath)}
+            disabled={!directoryPath}
+            className="px-3 py-2 text-sm rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white transition-colors flex items-center gap-1.5"
+          >
+            <ExternalLink className="w-4 h-4" />
+            打开
+          </button>
+        </div>
+      </div>
+
+      {activeScope === 'global' && pluginDirectories?.runtime && (
+        <div className="mb-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 px-3 py-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-gray-900 dark:text-gray-100">插件 Python 运行时</p>
+              <p className="mt-1 text-xs text-gray-500">
+                状态: {pluginDirectories.runtime.status} · 来源: {pluginDirectories.runtime.source}
+                {pluginDirectories.runtime.version ? ` · ${pluginDirectories.runtime.version}` : ''}
+              </p>
+              <p className="mt-2 text-xs text-gray-700 dark:text-gray-300 break-all">
+                {pluginDirectories.runtime.resolvedPath || pluginDirectories.runtime.message || '未找到运行时'}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {plugins.length === 0 ? (
+        <div className="rounded-lg bg-gray-50 dark:bg-gray-800 px-3 py-6 text-sm text-gray-500 dark:text-gray-400">
+          当前范围还没有检测到插件。
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {plugins.map((plugin) => (
+            <div
+              key={plugin.key}
+              className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/80 dark:bg-gray-800/60 p-4"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-sm text-gray-900 dark:text-gray-100">{plugin.name}</span>
+                    <span className="px-2 py-0.5 text-xs rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/20 dark:text-blue-300">
+                      {plugin.scope === 'project' ? '项目' : '全局'}
+                    </span>
+                    {plugin.shadowedBy ? (
+                      <span className="px-2 py-0.5 text-xs rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300">
+                        被 {plugin.shadowedBy} 覆盖
+                      </span>
+                    ) : null}
+                  </div>
+                  <p className="mt-1 text-xs text-gray-500">
+                    {plugin.id} · v{plugin.version} · {plugin.runtime}
+                  </p>
+                  <p className="mt-2 text-sm text-gray-800 dark:text-gray-200 break-all">
+                    {plugin.path}
+                  </p>
+                  {plugin.description ? (
+                    <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">{plugin.description}</p>
+                  ) : null}
+                  {plugin.validationIssues.length > 0 ? (
+                    <div className="mt-2 space-y-1 text-xs text-red-600 dark:text-red-400">
+                      {plugin.validationIssues.map((issue) => (
+                        <div key={`${plugin.key}-${issue.code}`}>{issue.message}</div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-xs text-green-600 dark:text-green-400">
+                      动作数: {plugin.actions.length}
+                    </p>
+                  )}
+                </div>
+
+                <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+                  <input
+                    type="checkbox"
+                    checked={plugin.enabled}
+                    disabled={plugin.validationIssues.length > 0 || Boolean(plugin.shadowedBy)}
+                    onChange={(event) => void handleTogglePlugin(plugin, event.target.checked)}
+                    className="rounded"
+                  />
+                  启用
+                </label>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+
   const renderGlobalSettings = () => (
     <div className="space-y-4">
       <section className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
@@ -489,6 +695,13 @@ export function SettingsPanel({
           </p>
         </div>
       </section>
+
+      {renderPluginSection({
+        title: '全局插件',
+        description: '扫描应用级插件目录，供所有项目使用。项目内同 id 插件会覆盖这里的全局插件。',
+        directoryPath: pluginDirectories?.globalPath,
+        plugins: globalPlugins,
+      })}
 
       <section className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
         <div className="flex items-center gap-2 mb-3">
@@ -708,6 +921,13 @@ export function SettingsPanel({
           </p>
         </div>
       )}
+
+      {renderPluginSection({
+        title: '项目插件',
+        description: `当前项目：${projectName || '未打开项目'}。这里的插件只对当前项目生效，并且会覆盖同 id 的全局插件。`,
+        directoryPath: pluginDirectories?.projectPath,
+        plugins: projectPlugins,
+      })}
 
       {needsProjectRefresh && (
         <div className="flex items-start gap-2 rounded-lg border border-yellow-200 bg-yellow-50 px-3 py-2 text-sm text-yellow-700">

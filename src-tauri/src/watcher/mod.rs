@@ -1,9 +1,9 @@
+use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use tauri::Emitter;
 
 use crate::db::Database;
@@ -190,7 +190,9 @@ fn handle_notify_event(event: Event, db: &Database) {
     );
 
     for file_path in &event.paths {
-        let project_info = projects_guard.iter().find(|(p, _)| file_path.starts_with(p));
+        let project_info = projects_guard
+            .iter()
+            .find(|(p, _)| file_path.starts_with(p));
 
         if let Some((project_path, watcher)) = project_info {
             if should_exclude(file_path, &watcher.config.exclude_patterns) {
@@ -215,7 +217,10 @@ fn handle_notify_event(event: Event, db: &Database) {
                 // 已删除的路径，通过缓存判断（如果无法确定，保守起见假设是文件）
                 false
             } else {
-                std::fs::metadata(file_path).ok().map(|m| m.is_dir()).unwrap_or(false)
+                std::fs::metadata(file_path)
+                    .ok()
+                    .map(|m| m.is_dir())
+                    .unwrap_or(false)
             };
 
             if is_dir && change_type == ChangeType::Modified {
@@ -244,7 +249,9 @@ fn handle_notify_event(event: Event, db: &Database) {
                     let _ = cache_db.invalidate_file_details(&changed_path);
                 }
 
-                if is_rename_event || matches!(change_type, ChangeType::Created | ChangeType::Deleted) {
+                if is_rename_event
+                    || matches!(change_type, ChangeType::Created | ChangeType::Deleted)
+                {
                     let _ = cache_db.mark_tree_dirty();
                 }
             }
@@ -259,10 +266,15 @@ fn handle_notify_event(event: Event, db: &Database) {
                 timestamp: current_timestamp(),
                 depth,
             };
-            
+
             let _ = db.add_file_change(&change);
-            
-            println!("[Watcher] {:?} - {} - {:?}", change_type, file_path.display(), file_size);
+
+            println!(
+                "[Watcher] {:?} - {} - {:?}",
+                change_type,
+                file_path.display(),
+                file_size
+            );
 
             emit_project_fs_change(ProjectFsChangeEvent {
                 project_path: project_path.clone(),
@@ -311,7 +323,7 @@ pub async fn run_dormant_scan(databases: HashMap<String, Database>) {
     // 逐个处理，不持有锁
     for (path, config) in dormant_projects {
         tokio::task::yield_now().await;
-        
+
         if let Ok(changes) = scan_dormant_project(&path, &config) {
             if !changes.is_empty() {
                 let Some(db) = databases.get(&path) else {
@@ -332,7 +344,7 @@ pub async fn run_dormant_scan(databases: HashMap<String, Database>) {
                 let _ = db.add_file_changes_batch(&db_changes);
             }
         }
-        
+
         // 每个项目之间等待一下，避免阻塞
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -349,10 +361,7 @@ struct PendingChange {
 }
 
 // 扫描休眠项目 - 限制处理数量
-fn scan_dormant_project(
-    path: &str,
-    config: &WatchConfig,
-) -> Result<Vec<PendingChange>, String> {
+fn scan_dormant_project(path: &str, config: &WatchConfig) -> Result<Vec<PendingChange>, String> {
     let mut projects = PROJECTS.lock().unwrap();
     let watcher = projects.get_mut(path).ok_or("Project not found")?;
 
@@ -450,7 +459,7 @@ fn scan_directory_limited(
             if cache.len() >= max_files {
                 break;
             }
-            
+
             let path = entry.path();
 
             if should_exclude(&path, exclude_patterns) {
@@ -465,13 +474,17 @@ fn scan_directory_limited(
                     .map(|d| d.as_secs() as i64)
                     .unwrap_or(0);
 
-                cache.insert(
-                    path.to_string_lossy().to_string(),
-                    (meta.len(), modified),
-                );
+                cache.insert(path.to_string_lossy().to_string(), (meta.len(), modified));
 
                 if meta.is_dir() {
-                    scan_directory_limited(&path, depth + 1, max_depth, exclude_patterns, cache, max_files);
+                    scan_directory_limited(
+                        &path,
+                        depth + 1,
+                        max_depth,
+                        exclude_patterns,
+                        cache,
+                        max_files,
+                    );
                 }
             }
         }

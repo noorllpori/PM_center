@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { FileInfo } from '../../types';
+import type { PluginAction } from '../../types/plugin';
 import { FolderOpen, Trash2, Copy, FileEdit, Scissors, ClipboardCopy, ExternalLink, Info, FileInput, FolderPlus } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useClipboardStore } from '../../stores/clipboardStore';
@@ -16,12 +17,14 @@ interface ContextMenuProps {
   y: number;
   currentPath: string;
   projectPath: string;
+  pluginActions?: PluginAction[];
   onClose: () => void;
   onRefresh?: () => void;
   onShowDetails?: (file: FileInfo) => void;
   onDelete?: (file: FileInfo) => Promise<void> | void;
   onCreateFolder?: () => Promise<void> | void;
   onOpenFile?: (file: FileInfo) => Promise<void> | void;
+  onRunPluginAction?: (action: PluginAction) => void;
 }
 
 function useContextMenuDismiss(menuRef: React.RefObject<HTMLDivElement | null>, onClose: () => void) {
@@ -63,12 +66,14 @@ export function FileContextMenu({
   y,
   currentPath,
   projectPath,
+  pluginActions = [],
   onClose,
   onRefresh,
   onShowDetails,
   onDelete,
   onCreateFolder,
   onOpenFile,
+  onRunPluginAction,
 }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const { items: clipboardItems, cut, copy, paste, hasItem } = useClipboardStore();
@@ -236,6 +241,11 @@ export function FileContextMenu({
     onClose();
   };
 
+  const handleRunPluginAction = (action: PluginAction) => {
+    onRunPluginAction?.(action);
+    onClose();
+  };
+
   const hasSystemPasteSource = systemClipboardStatus.hasFiles || systemClipboardStatus.hasImage;
   const canPaste = hasItem() || hasSystemPasteSource;
   const isCutItem = clipboardItems.some((item) => item.action === 'cut' && item.path === file.path);
@@ -323,6 +333,22 @@ export function FileContextMenu({
         <MenuItem onClick={handleShowDetails} icon={<Info className="w-4 h-4" />}>
           详细信息
         </MenuItem>
+
+        {pluginActions.length > 0 && (
+          <>
+            <MenuDivider />
+            <MenuSectionLabel>插件</MenuSectionLabel>
+            {pluginActions.map((action) => (
+              <MenuItem
+                key={action.id}
+                onClick={() => handleRunPluginAction(action)}
+                icon={<FolderOpen className="w-4 h-4" />}
+              >
+                {action.title}
+              </MenuItem>
+            ))}
+          </>
+        )}
       </div>
     </>
   );
@@ -333,9 +359,11 @@ interface CurrentDirectoryContextMenuProps {
   y: number;
   currentPath: string;
   projectPath: string;
+  pluginActions?: PluginAction[];
   onClose: () => void;
   onRefresh?: () => void;
   onCreateFolder: () => Promise<void> | void;
+  onRunPluginAction?: (action: PluginAction) => void;
 }
 
 export function CurrentDirectoryContextMenu({
@@ -343,9 +371,11 @@ export function CurrentDirectoryContextMenu({
   y,
   currentPath,
   projectPath,
+  pluginActions = [],
   onClose,
   onRefresh,
   onCreateFolder,
+  onRunPluginAction,
 }: CurrentDirectoryContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const { items: clipboardItems, paste, hasItem } = useClipboardStore();
@@ -412,6 +442,11 @@ export function CurrentDirectoryContextMenu({
     onClose();
   };
 
+  const handleRunPluginAction = (action: PluginAction) => {
+    onRunPluginAction?.(action);
+    onClose();
+  };
+
   const hasSystemPasteSource = systemClipboardStatus.hasFiles || systemClipboardStatus.hasImage;
   const canPaste = hasItem() || hasSystemPasteSource;
 
@@ -434,6 +469,22 @@ export function CurrentDirectoryContextMenu({
       <MenuItem onClick={handleCreateFolder} icon={<FolderPlus className="w-4 h-4" />}>
         新建文件夹
       </MenuItem>
+
+      {pluginActions.length > 0 && (
+        <>
+          <MenuDivider />
+          <MenuSectionLabel>插件</MenuSectionLabel>
+          {pluginActions.map((action) => (
+            <MenuItem
+              key={action.id}
+              onClick={() => handleRunPluginAction(action)}
+              icon={<FolderOpen className="w-4 h-4" />}
+            >
+              {action.title}
+            </MenuItem>
+          ))}
+        </>
+      )}
     </div>
   );
 }
@@ -483,5 +534,13 @@ function MenuItem({
 function MenuDivider() {
   return (
     <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
+  );
+}
+
+function MenuSectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="px-3 py-1 text-[11px] font-medium uppercase tracking-wider text-gray-400">
+      {children}
+    </div>
   );
 }

@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { load } from '@tauri-apps/plugin-store';
 import type { Task, TaskStatus, TaskStats, TaskScript, TaskPriority } from '../types/task';
+import type { PluginControlMessage } from '../types/plugin';
 import { usePythonEnvStore } from './pythonEnvStore';
 
 interface TaskState {
@@ -98,12 +99,21 @@ function getTaskPersistenceStore() {
 }
 
 function normalizeTask(task: Task): Task {
+  const script = task.script as TaskScript & { kind?: TaskScript['kind'] };
+  const normalizedScript: TaskScript = !script.kind || script.kind === 'python-inline'
+    ? {
+        kind: 'python-inline',
+        code: script.kind === 'python-inline' ? script.code : (script as any).code,
+        type: 'python',
+        interpreter: 'interpreter' in script ? script.interpreter : undefined,
+        workingDir: 'workingDir' in script ? script.workingDir ?? task.projectPath : task.projectPath,
+        envVars: 'envVars' in script ? script.envVars : undefined,
+      }
+    : script;
+
   return {
     ...task,
-    script: {
-      ...task.script,
-      workingDir: task.script.workingDir ?? task.projectPath,
-    },
+    script: normalizedScript,
   };
 }
 
@@ -246,12 +256,15 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   // 添加任务（需要传入 projectPath）
   addTask: (taskData) => {
     const id = generateTaskId();
+    const normalizedScript = taskData.script.kind === 'python-inline'
+      ? {
+          ...taskData.script,
+          workingDir: taskData.script.workingDir ?? taskData.projectPath,
+        }
+      : taskData.script;
     const newTask: Task = {
       ...taskData,
-      script: {
-        ...taskData.script,
-        workingDir: taskData.script.workingDir ?? taskData.projectPath,
-      },
+      script: normalizedScript,
       id,
       status: 'pending',
       progress: 0,
@@ -441,17 +454,19 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
       get().updateTaskStatus(task.id, 'running');
 
-      try {
-        await invoke('run_task', {
-          taskId: task.id,
-          script: task.script,
-          timeoutSeconds: task.timeout,
-          pythonPath,
-        });
-      } catch (error) {
+      void invoke('run_task', {
+        taskId: task.id,
+        script: task.script,
+        timeoutSeconds: task.timeout,
+        pythonPath: task.script.kind === 'python-inline' ? pythonPath : null,
+      }).catch((error) => {
         console.error('Failed to start task:', error);
-        get().updateTaskStatus(task.id, 'failed', undefined, String(error));
-      }
+
+        const currentTask = useTaskStore.getState().tasks.find((item) => item.id === task.id);
+        if (currentTask?.status === 'running') {
+          useTaskStore.getState().updateTaskStatus(task.id, 'failed', undefined, String(error));
+        }
+      });
     }
   },
 }));
@@ -500,6 +515,21 @@ export function initTaskEventListeners() {
     const { taskId, error } = event.payload;
     console.log(`[TaskStore] 任务错误: ${taskId}, error: ${error}`);
     useTaskStore.getState().updateTaskStatus(taskId, 'failed', undefined, error);
+  });
+
+  listen('task-control', (event: { payload: { taskId: string; message: PluginControlMessage } }) => {
+    const { taskId, message } = event.payload;
+    if (message.type === 'progress' && typeof message.value === 'number') {
+      useTaskStore.getState().updateTaskProgress(taskId, message.value);
+    }
+
+    if (message.type === 'error' && message.message) {
+      useTaskStore.getState().updateTaskOutput(taskId, `[plugin-error] ${message.message}`);
+    }
+
+    if (message.type === 'result' && message.data !== undefined) {
+      useTaskStore.getState().updateTaskOutput(taskId, `[plugin-result] ${JSON.stringify(message.data)}`);
+    }
   });
   
   console.log('[TaskStore] 事件监听初始化完成');

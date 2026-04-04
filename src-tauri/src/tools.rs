@@ -31,8 +31,16 @@ pub async fn inspect_tool_paths(
     tool_paths: Option<ToolPathsInput>,
 ) -> Result<Vec<ToolStatus>, String> {
     Ok(vec![
-        build_ffprobe_status(tool_paths.as_ref().and_then(|paths| paths.ffprobe.as_deref())),
-        build_blender_status(tool_paths.as_ref().and_then(|paths| paths.blender.as_deref())),
+        build_ffprobe_status(
+            tool_paths
+                .as_ref()
+                .and_then(|paths| paths.ffprobe.as_deref()),
+        ),
+        build_blender_status(
+            tool_paths
+                .as_ref()
+                .and_then(|paths| paths.blender.as_deref()),
+        ),
     ])
 }
 
@@ -158,10 +166,7 @@ fn detect_ffprobe_on_path_uncached() -> Option<String> {
     #[cfg(not(target_os = "windows"))]
     let lookup_cmd = "which";
 
-    let output = std_command(lookup_cmd)
-        .arg("ffprobe")
-        .output()
-        .ok()?;
+    let output = std_command(lookup_cmd).arg("ffprobe").output().ok()?;
 
     if !output.status.success() {
         return None;
@@ -175,10 +180,7 @@ fn detect_ffprobe_on_path_uncached() -> Option<String> {
 }
 
 fn read_tool_version(path: &str, version_arg: &str) -> Option<String> {
-    let output = std_command(path)
-        .arg(version_arg)
-        .output()
-        .ok()?;
+    let output = std_command(path).arg(version_arg).output().ok()?;
 
     if !output.status.success() {
         return None;

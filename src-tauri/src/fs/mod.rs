@@ -1,14 +1,14 @@
+#[cfg(windows)]
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::ffi::OsStr;
-#[cfg(windows)]
-use base64::Engine;
+use std::future::Future;
 #[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::future::Future;
 
 use crate::process_utils::std_command;
 use crate::tree_cache::{self, FsEntrySnapshot, TreeCacheDb};
@@ -19,14 +19,8 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::{BOOL, HWND};
 #[cfg(windows)]
 use windows::Win32::UI::Shell::{
-    SHFILEOPSTRUCTW,
-    SHFileOperationW,
-    FILEOPERATION_FLAGS,
-    FO_DELETE,
-    FOF_ALLOWUNDO,
-    FOF_NOCONFIRMATION,
-    FOF_NOERRORUI,
-    FOF_SILENT,
+    SHFileOperationW, FILEOPERATION_FLAGS, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI,
+    FOF_SILENT, FO_DELETE, SHFILEOPSTRUCTW,
 };
 
 pub const FILE_CONFLICT_ERROR_PREFIX: &str = "PM_CONFLICT:";
@@ -162,7 +156,10 @@ fn read_system_clipboard_file_list() -> Result<Vec<PathBuf>, String> {
 #[cfg(windows)]
 fn save_system_clipboard_image(target_path: &PathBuf) -> Result<(), String> {
     let output = std_command("powershell")
-        .env("PM_CENTER_CLIPBOARD_IMAGE_PATH", target_path.to_string_lossy().to_string())
+        .env(
+            "PM_CENTER_CLIPBOARD_IMAGE_PATH",
+            target_path.to_string_lossy().to_string(),
+        )
         .args([
             "-NoProfile",
             "-STA",
@@ -214,23 +211,26 @@ fn format_time(time: std::io::Result<SystemTime>) -> Option<String> {
         let duration = t.duration_since(UNIX_EPOCH).unwrap_or_default();
         let secs = duration.as_secs() as i64;
         let _nanos = duration.subsec_nanos();
-        
+
         // Convert to date components (simplified, not accounting for leap seconds)
         let days = secs / 86400;
         let remaining_secs = secs % 86400;
         let hours = remaining_secs / 3600;
         let mins = (remaining_secs % 3600) / 60;
         let secs = remaining_secs % 60;
-        
+
         // Approximate date calculation (days since 1970-01-01)
         let year = 1970 + (days / 365) as i32;
         let day_of_year = days % 365;
-        
-        format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", 
-            year, 
+
+        format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+            year,
             (day_of_year / 30 + 1).min(12),
             (day_of_year % 30 + 1).min(31),
-            hours, mins, secs
+            hours,
+            mins,
+            secs
         )
     })
 }
@@ -260,11 +260,19 @@ pub async fn read_directory(
                         let project_for_refresh = project_path_value.clone();
                         let path_for_refresh = path.clone();
                         tauri::async_runtime::spawn(async move {
-                            if let Ok(cache) = tree_cache::get_or_create_project_cache(&project_for_refresh) {
+                            if let Ok(cache) =
+                                tree_cache::get_or_create_project_cache(&project_for_refresh)
+                            {
                                 if let Ok(fresh_entries) =
-                                    tree_cache::scan_directory_entries_from_disk(&project_for_refresh, &path_for_refresh)
+                                    tree_cache::scan_directory_entries_from_disk(
+                                        &project_for_refresh,
+                                        &path_for_refresh,
+                                    )
                                 {
-                                    let _ = cache.replace_directory_entries(&path_for_refresh, &fresh_entries);
+                                    let _ = cache.replace_directory_entries(
+                                        &path_for_refresh,
+                                        &fresh_entries,
+                                    );
                                 }
                             }
                         });
@@ -273,7 +281,8 @@ pub async fn read_directory(
                 }
             }
 
-            let fresh_entries = tree_cache::scan_directory_entries_from_disk(&project_path_value, &path)?;
+            let fresh_entries =
+                tree_cache::scan_directory_entries_from_disk(&project_path_value, &path)?;
             let _ = cache_db.replace_directory_entries(&path, &fresh_entries);
             return Ok(convert_snapshots_to_file_infos(fresh_entries));
         }
@@ -293,7 +302,8 @@ pub async fn get_directory_tree(
 
     if let Some(project_path_value) = project_path {
         if let Ok(cache_db) = tree_cache::get_or_create_project_cache(&project_path_value) {
-            let need_full_refresh = force_refresh || !cache_db.has_full_tree_snapshot().unwrap_or(false);
+            let need_full_refresh =
+                force_refresh || !cache_db.has_full_tree_snapshot().unwrap_or(false);
             if need_full_refresh {
                 let project_for_refresh = project_path_value.clone();
                 let refresh_result = tokio::task::spawn_blocking(move || {
@@ -328,15 +338,16 @@ pub async fn get_directory_tree(
     build_tree_node(&PathBuf::from(path)).await
 }
 
-async fn read_directory_from_disk(path: &str, project_path: Option<&str>) -> Result<Vec<FileInfo>, String> {
+async fn read_directory_from_disk(
+    path: &str,
+    project_path: Option<&str>,
+) -> Result<Vec<FileInfo>, String> {
     let mut entries = Vec::new();
-    
-    let mut dir = tokio::fs::read_dir(path)
-        .await
-        .map_err(|e| e.to_string())?;
+
+    let mut dir = tokio::fs::read_dir(path).await.map_err(|e| e.to_string())?;
 
     let project_root = project_path.map(PathBuf::from);
-    
+
     while let Some(entry) = dir.next_entry().await.map_err(|e| e.to_string())? {
         let metadata = entry.metadata().await.map_err(|e| e.to_string())?;
         let entry_path = entry.path();
@@ -349,9 +360,10 @@ async fn read_directory_from_disk(path: &str, project_path: Option<&str>) -> Res
 
         let name = entry.file_name().to_string_lossy().to_string();
 
-        let extension = entry_path.extension()
+        let extension = entry_path
+            .extension()
             .map(|e| e.to_string_lossy().to_string().to_lowercase());
-        
+
         entries.push(FileInfo {
             name: name.clone(),
             path: entry_path.to_string_lossy().to_string(),
@@ -363,16 +375,14 @@ async fn read_directory_from_disk(path: &str, project_path: Option<&str>) -> Res
             thumbnail: None,
         });
     }
-    
+
     // 目录在前，文件在后，按名称排序
-    entries.sort_by(|a, b| {
-        match (a.is_dir, b.is_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-        }
+    entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
     });
-    
+
     Ok(entries)
 }
 
@@ -381,13 +391,14 @@ fn build_tree_node(
     path: &PathBuf,
 ) -> Pin<Box<dyn Future<Output = Result<TreeNode, String>> + Send + '_>> {
     Box::pin(async move {
-        let name = path.file_name()
+        let name = path
+            .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| path.to_string_lossy().to_string());
-        
+
         let is_dir = path.is_dir();
         let mut children = Vec::new();
-        
+
         if is_dir {
             if let Ok(mut dir) = tokio::fs::read_dir(path).await {
                 while let Ok(Some(entry)) = dir.next_entry().await {
@@ -402,7 +413,7 @@ fn build_tree_node(
                 }
             }
         }
-        
+
         Ok(TreeNode {
             name,
             path: path.to_string_lossy().to_string(),
@@ -512,7 +523,7 @@ fn should_skip_pm_center(project_root: &PathBuf, entry_path: &PathBuf) -> bool {
 pub async fn search_files(root_path: String, query: String) -> Result<Vec<FileInfo>, String> {
     let mut results = Vec::new();
     let query_lower = query.to_lowercase();
-    
+
     for entry in walkdir::WalkDir::new(&root_path)
         .follow_links(false)
         .into_iter()
@@ -523,9 +534,10 @@ pub async fn search_files(root_path: String, query: String) -> Result<Vec<FileIn
         if name.to_lowercase().contains(&query_lower) {
             if let Ok(metadata) = entry.metadata() {
                 let path = entry.path();
-                let extension = path.extension()
+                let extension = path
+                    .extension()
                     .map(|e| e.to_string_lossy().to_string().to_lowercase());
-                
+
                 results.push(FileInfo {
                     name,
                     path: path.to_string_lossy().to_string(),
@@ -539,7 +551,7 @@ pub async fn search_files(root_path: String, query: String) -> Result<Vec<FileIn
             }
         }
     }
-    
+
     Ok(results)
 }
 
@@ -549,15 +561,17 @@ pub async fn get_file_info(path: String) -> Result<FileInfo, String> {
     let metadata = tokio::fs::metadata(&path)
         .await
         .map_err(|e| e.to_string())?;
-    
+
     let path_buf = PathBuf::from(&path);
-    let name = path_buf.file_name()
+    let name = path_buf
+        .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    
-    let extension = path_buf.extension()
+
+    let extension = path_buf
+        .extension()
         .map(|e| e.to_string_lossy().to_string().to_lowercase());
-    
+
     Ok(FileInfo {
         name,
         path,
@@ -607,7 +621,7 @@ pub async fn reveal_in_explorer(path: String) -> Result<(), String> {
             .spawn()
             .map_err(|e| e.to_string())?;
     }
-    
+
     #[cfg(target_os = "macos")]
     {
         std_command("open")
@@ -615,7 +629,7 @@ pub async fn reveal_in_explorer(path: String) -> Result<(), String> {
             .spawn()
             .map_err(|e| e.to_string())?;
     }
-    
+
     #[cfg(target_os = "linux")]
     {
         if let Some(parent) = std::path::Path::new(&path).parent() {
@@ -625,7 +639,7 @@ pub async fn reveal_in_explorer(path: String) -> Result<(), String> {
                 .map_err(|e| e.to_string())?;
         }
     }
-    
+
     Ok(())
 }
 
@@ -639,7 +653,7 @@ pub async fn open_file(path: String) -> Result<(), String> {
             .spawn()
             .map_err(|e| e.to_string())?;
     }
-    
+
     #[cfg(target_os = "macos")]
     {
         std_command("open")
@@ -647,7 +661,7 @@ pub async fn open_file(path: String) -> Result<(), String> {
             .spawn()
             .map_err(|e| e.to_string())?;
     }
-    
+
     #[cfg(target_os = "linux")]
     {
         std_command("xdg-open")
@@ -655,7 +669,7 @@ pub async fn open_file(path: String) -> Result<(), String> {
             .spawn()
             .map_err(|e| e.to_string())?;
     }
-    
+
     Ok(())
 }
 
@@ -669,7 +683,7 @@ pub async fn open_path(path: String) -> Result<(), String> {
             .spawn()
             .map_err(|e| e.to_string())?;
     }
-    
+
     #[cfg(target_os = "macos")]
     {
         std_command("open")
@@ -677,7 +691,7 @@ pub async fn open_path(path: String) -> Result<(), String> {
             .spawn()
             .map_err(|e| e.to_string())?;
     }
-    
+
     #[cfg(target_os = "linux")]
     {
         std_command("xdg-open")
@@ -685,7 +699,7 @@ pub async fn open_path(path: String) -> Result<(), String> {
             .spawn()
             .map_err(|e| e.to_string())?;
     }
-    
+
     Ok(())
 }
 
@@ -729,7 +743,7 @@ async fn delete_file_permanently(path: &str) -> Result<(), String> {
     let metadata = tokio::fs::metadata(&path)
         .await
         .map_err(|e| e.to_string())?;
-    
+
     if metadata.is_dir() {
         tokio::fs::remove_dir_all(&path)
             .await
@@ -739,7 +753,7 @@ async fn delete_file_permanently(path: &str) -> Result<(), String> {
             .await
             .map_err(|e| e.to_string())?;
     }
-    
+
     Ok(())
 }
 
@@ -759,7 +773,8 @@ fn build_double_null_terminated_paths(paths: &[String]) -> Vec<u16> {
 #[cfg(windows)]
 fn move_paths_to_recycle_bin(paths: &[String]) -> Result<(), String> {
     let encoded_paths = build_double_null_terminated_paths(paths);
-    let flags: FILEOPERATION_FLAGS = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
+    let flags: FILEOPERATION_FLAGS =
+        FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
 
     let mut file_op = SHFILEOPSTRUCTW {
         hwnd: HWND(0),
@@ -812,9 +827,7 @@ pub async fn delete_paths(paths: Vec<String>) -> Result<usize, String> {
 
 // 移动文件或目录
 async fn remove_path(path: &PathBuf) -> Result<(), String> {
-    let metadata = tokio::fs::metadata(path)
-        .await
-        .map_err(|e| e.to_string())?;
+    let metadata = tokio::fs::metadata(path).await.map_err(|e| e.to_string())?;
 
     if metadata.is_dir() {
         tokio::fs::remove_dir_all(path)
@@ -852,7 +865,8 @@ async fn move_path_fallback(source: &PathBuf, target_path: &PathBuf) -> Result<(
 }
 
 fn build_target_path(source_path: &PathBuf, target_dir: &PathBuf) -> Result<PathBuf, String> {
-    let file_name = source_path.file_name()
+    let file_name = source_path
+        .file_name()
         .ok_or("Invalid source path")?
         .to_string_lossy()
         .to_string();
@@ -862,14 +876,17 @@ fn build_target_path(source_path: &PathBuf, target_dir: &PathBuf) -> Result<Path
 
 fn build_renamed_path(path: &PathBuf) -> PathBuf {
     let parent = path.parent().map(PathBuf::from).unwrap_or_default();
-    let file_name = path.file_name()
+    let file_name = path
+        .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_else(|| "untitled".to_string());
 
-    let stem = path.file_stem()
+    let stem = path
+        .file_stem()
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or(file_name.clone());
-    let extension = path.extension()
+    let extension = path
+        .extension()
         .map(|ext| ext.to_string_lossy().to_string());
 
     for index in 1.. {
@@ -887,7 +904,11 @@ fn build_renamed_path(path: &PathBuf) -> PathBuf {
     path.clone()
 }
 
-pub async fn move_path_with_strategy(source: PathBuf, target_dir: PathBuf, conflict_strategy: &str) -> Result<PathBuf, String> {
+pub async fn move_path_with_strategy(
+    source: PathBuf,
+    target_dir: PathBuf,
+    conflict_strategy: &str,
+) -> Result<PathBuf, String> {
     let mut target_path = build_target_path(&source, &target_dir)?;
 
     if source == target_path {
@@ -903,7 +924,11 @@ pub async fn move_path_with_strategy(source: PathBuf, target_dir: PathBuf, confl
                 target_path = build_renamed_path(&target_path);
             }
             _ => {
-                return Err(format!("{}{}", FILE_CONFLICT_ERROR_PREFIX, target_path.to_string_lossy()));
+                return Err(format!(
+                    "{}{}",
+                    FILE_CONFLICT_ERROR_PREFIX,
+                    target_path.to_string_lossy()
+                ));
             }
         }
     }
@@ -918,14 +943,16 @@ pub async fn move_path_with_strategy(source: PathBuf, target_dir: PathBuf, confl
 }
 
 pub async fn rename_path(path: PathBuf, new_name: String) -> Result<PathBuf, String> {
-    let parent = path.parent()
-        .ok_or("Invalid path")?
-        .to_path_buf();
+    let parent = path.parent().ok_or("Invalid path")?.to_path_buf();
 
     let target_path = parent.join(&new_name);
 
     if target_path.exists() {
-        return Err(format!("{}{}", FILE_CONFLICT_ERROR_PREFIX, target_path.to_string_lossy()));
+        return Err(format!(
+            "{}{}",
+            FILE_CONFLICT_ERROR_PREFIX,
+            target_path.to_string_lossy()
+        ));
     }
 
     tokio::fs::rename(&path, &target_path)
@@ -947,7 +974,8 @@ async fn copy_path_to_directory(
     target_dir: PathBuf,
     rename_on_conflict: bool,
 ) -> Result<PathBuf, String> {
-    let file_name = source_path.file_name()
+    let file_name = source_path
+        .file_name()
         .ok_or("Invalid source path")?
         .to_string_lossy()
         .to_string();
@@ -980,8 +1008,7 @@ async fn copy_path_to_directory(
 // 复制文件或目录
 #[tauri::command]
 pub async fn copy_file(source: String, target: String) -> Result<(), String> {
-    copy_path_to_directory(PathBuf::from(source), PathBuf::from(target), false)
-        .await?;
+    copy_path_to_directory(PathBuf::from(source), PathBuf::from(target), false).await?;
 
     Ok(())
 }
@@ -1007,7 +1034,8 @@ pub async fn paste_system_clipboard(target_dir: String) -> Result<Vec<String>, S
 
     if status.has_files {
         for source_path in read_system_clipboard_file_list()? {
-            let pasted_path = copy_path_to_directory(source_path, target_dir_path.clone(), true).await?;
+            let pasted_path =
+                copy_path_to_directory(source_path, target_dir_path.clone(), true).await?;
             pasted_paths.push(pasted_path.to_string_lossy().to_string());
         }
         return Ok(pasted_paths);
@@ -1035,18 +1063,18 @@ fn copy_dir_recursive(
         tokio::fs::create_dir_all(&target)
             .await
             .map_err(|e| e.to_string())?;
-        
+
         let mut entries = tokio::fs::read_dir(&source)
             .await
             .map_err(|e| e.to_string())?;
-        
+
         while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
             let source_path = entry.path();
             let file_name = entry.file_name();
             let target_path = target.join(&file_name);
-            
+
             let metadata = entry.metadata().await.map_err(|e| e.to_string())?;
-            
+
             if metadata.is_dir() {
                 copy_dir_recursive(source_path, target_path).await?;
             } else {
@@ -1055,7 +1083,7 @@ fn copy_dir_recursive(
                     .map_err(|e| e.to_string())?;
             }
         }
-        
+
         Ok(())
     })
 }
@@ -1063,9 +1091,7 @@ fn copy_dir_recursive(
 // 重命名文件或目录
 #[tauri::command]
 pub async fn rename_file(path: String, new_name: String) -> Result<(), String> {
-    rename_path(PathBuf::from(path), new_name)
-        .await
-        .map(|_| ())
+    rename_path(PathBuf::from(path), new_name).await.map(|_| ())
 }
 
 // 文件属性
@@ -1108,14 +1134,17 @@ fn format_datetime(time: std::io::Result<SystemTime>) -> String {
             let hours = remaining_secs / 3600;
             let mins = (remaining_secs % 3600) / 60;
             let secs = remaining_secs % 60;
-            
+
             // 简单的日期格式化 (1970 + 天数/365 近似年份)
             let year = 1970 + (days / 365);
             let day_of_year = days % 365;
             let month = (day_of_year / 30 + 1).min(12);
             let day = (day_of_year % 30 + 1).min(31);
-            
-            format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", year, month, day, hours, mins, secs)
+
+            format!(
+                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                year, month, day, hours, mins, secs
+            )
         })
         .unwrap_or_else(|| "-".to_string())
 }
@@ -1126,15 +1155,17 @@ pub async fn get_file_property(path: String) -> Result<FileProperty, String> {
     let metadata = tokio::fs::metadata(&path)
         .await
         .map_err(|e| e.to_string())?;
-    
+
     let path_buf = PathBuf::from(&path);
-    let name = path_buf.file_name()
+    let name = path_buf
+        .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    
-    let extension = path_buf.extension()
+
+    let extension = path_buf
+        .extension()
         .map(|e| e.to_string_lossy().to_string().to_lowercase());
-    
+
     // 检查是否隐藏文件（Windows）
     let hidden = {
         #[cfg(windows)]
@@ -1147,10 +1178,10 @@ pub async fn get_file_property(path: String) -> Result<FileProperty, String> {
             name.starts_with('.')
         }
     };
-    
+
     // 检查是否只读
     let readonly = metadata.permissions().readonly();
-    
+
     Ok(FileProperty {
         name,
         path: path.clone(),

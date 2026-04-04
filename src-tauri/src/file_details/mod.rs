@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 
 use crate::process_utils::tokio_command;
 use crate::python::{get_blender_file_info, resolve_blender_path};
-use crate::tree_cache::{self, TreeCacheDb};
 use crate::tools::{resolve_ffprobe_path, ToolPathsInput};
+use crate::tree_cache::{self, TreeCacheDb};
 
 const FILE_DETAILS_CACHE_TTL_SECONDS: i64 = 30 * 24 * 60 * 60;
 const FILE_DETAILS_CACHE_MAX_ENTRIES: usize = 5000;
@@ -94,13 +94,22 @@ pub async fn get_file_details(
     let force_refresh = force_refresh.unwrap_or(false);
     let path_buf = PathBuf::from(&path);
     let basic = build_basic_details(&path_buf).await?;
-    let ffprobe_path = resolve_ffprobe_path(tool_paths.as_ref().and_then(|paths| paths.ffprobe.as_deref()));
+    let ffprobe_path = resolve_ffprobe_path(
+        tool_paths
+            .as_ref()
+            .and_then(|paths| paths.ffprobe.as_deref()),
+    );
     let blender_path = tool_paths
         .as_ref()
         .and_then(|paths| paths.blender.as_deref())
         .and_then(|path| resolve_blender_path(Some(path)));
     let cache_db = resolve_cache_db_for_file(&path);
-    let signature = build_file_details_signature(&path, &basic, ffprobe_path.as_deref(), blender_path.as_deref());
+    let signature = build_file_details_signature(
+        &path,
+        &basic,
+        ffprobe_path.as_deref(),
+        blender_path.as_deref(),
+    );
 
     if !force_refresh {
         if let Some(cache) = cache_db.as_ref() {
@@ -145,7 +154,8 @@ pub async fn get_file_details(
                 &payload_json,
                 FILE_DETAILS_CACHE_TTL_SECONDS,
             );
-            let _ = cache.cleanup_file_details_cache(FILE_DETAILS_CACHE_MAX_ENTRIES, current_timestamp());
+            let _ = cache
+                .cleanup_file_details_cache(FILE_DETAILS_CACHE_MAX_ENTRIES, current_timestamp());
         }
     }
 
@@ -185,16 +195,16 @@ async fn build_basic_details(path: &PathBuf) -> Result<FileDetailsBasic, String>
         .await
         .map_err(|error| error.to_string())?;
 
-    let name = path.file_name()
+    let name = path
+        .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_else(|| path.to_string_lossy().to_string());
 
-    let extension = path.extension()
+    let extension = path
+        .extension()
         .map(|ext| ext.to_string_lossy().to_string().to_lowercase());
 
-    let inferred_type = infer::get_from_path(path)
-        .ok()
-        .flatten();
+    let inferred_type = infer::get_from_path(path).ok().flatten();
     let mime = inferred_type
         .as_ref()
         .map(|file_type| file_type.mime_type().to_string())
@@ -206,7 +216,8 @@ async fn build_basic_details(path: &PathBuf) -> Result<FileDetailsBasic, String>
         .unwrap_or("unknown")
         .to_string();
 
-    let display_type = determine_display_type(metadata.is_dir(), extension.as_deref(), mime.as_deref());
+    let display_type =
+        determine_display_type(metadata.is_dir(), extension.as_deref(), mime.as_deref());
 
     let hidden = {
         #[cfg(windows)]
@@ -249,11 +260,17 @@ fn determine_display_type(is_dir: bool, extension: Option<&str>, mime: Option<&s
         return "blender".to_string();
     }
 
-    if matches!(extension, "jpg" | "jpeg" | "png" | "webp" | "gif" | "bmp" | "tif" | "tiff") {
+    if matches!(
+        extension,
+        "jpg" | "jpeg" | "png" | "webp" | "gif" | "bmp" | "tif" | "tiff"
+    ) {
         return "image".to_string();
     }
 
-    if matches!(extension, "mp3" | "flac" | "wav" | "ogg" | "opus" | "m4a" | "aac") {
+    if matches!(
+        extension,
+        "mp3" | "flac" | "wav" | "ogg" | "opus" | "m4a" | "aac"
+    ) {
         return "audio".to_string();
     }
 
@@ -338,14 +355,12 @@ fn build_parser_section(parser: &FileDetailsParser) -> FileDetailsSection {
 async fn parse_image_details(path: &Path) -> ParserOutcome {
     let image_info = match read_image_metadata(path) {
         Ok(info) => info,
-        Err(error) => return warning_outcome("image", "native", format!("图片信息解析失败：{}", error)),
+        Err(error) => {
+            return warning_outcome("image", "native", format!("图片信息解析失败：{}", error))
+        }
     };
 
-    let mut sections = vec![section(
-        "media",
-        "媒体信息",
-        build_image_items(&image_info),
-    )];
+    let mut sections = vec![section("media", "媒体信息", build_image_items(&image_info))];
 
     let exif_items = read_exif_items(path);
     if !exif_items.is_empty() {
@@ -369,7 +384,8 @@ fn read_image_metadata(path: &Path) -> Result<ImageMetadata, String> {
         .with_guessed_format()
         .map_err(|error| error.to_string())?;
     let format_name = reader.format().map(|format| format!("{:?}", format));
-    let (width, height) = reader.into_dimensions()
+    let (width, height) = reader
+        .into_dimensions()
         .map_err(|error| error.to_string())?;
 
     let decoded = ImageReader::open(path)
@@ -379,9 +395,11 @@ fn read_image_metadata(path: &Path) -> Result<ImageMetadata, String> {
         .decode()
         .map_err(|error| error.to_string())?;
 
-    let frame_count = if path.extension()
+    let frame_count = if path
+        .extension()
         .map(|ext| ext.to_string_lossy().to_ascii_lowercase())
-        .as_deref() == Some("gif")
+        .as_deref()
+        == Some("gif")
     {
         count_gif_frames(path).ok()
     } else {
@@ -399,9 +417,9 @@ fn read_image_metadata(path: &Path) -> Result<ImageMetadata, String> {
 
 fn count_gif_frames(path: &Path) -> Result<usize, String> {
     let file = File::open(path).map_err(|error| error.to_string())?;
-    let decoder = GifDecoder::new(BufReader::new(file))
-        .map_err(|error| error.to_string())?;
-    let frames = decoder.into_frames()
+    let decoder = GifDecoder::new(BufReader::new(file)).map_err(|error| error.to_string())?;
+    let frames = decoder
+        .into_frames()
         .collect_frames()
         .map_err(|error| error.to_string())?;
     Ok(frames.len())
@@ -460,7 +478,9 @@ fn push_exif_field(items: &mut Vec<FileDetailsItem>, exif: &exif::Exif, tag: Exi
 async fn parse_audio_details(path: &Path) -> ParserOutcome {
     let tagged_file = match Probe::open(path).and_then(|probe| probe.read()) {
         Ok(file) => file,
-        Err(error) => return warning_outcome("audio", "native", format!("音频信息解析失败：{}", error)),
+        Err(error) => {
+            return warning_outcome("audio", "native", format!("音频信息解析失败：{}", error))
+        }
     };
 
     let properties = tagged_file.properties();
@@ -492,11 +512,30 @@ async fn parse_audio_details(path: &Path) -> ParserOutcome {
     let mut sections = vec![section("media", "媒体信息", media_items)];
 
     let mut metadata_items = Vec::new();
-    if let Some(tag) = tagged_file.primary_tag().or_else(|| tagged_file.first_tag()) {
-        push_optional(&mut metadata_items, "标题", tag.title().map(|value| value.into_owned()));
-        push_optional(&mut metadata_items, "艺术家", tag.artist().map(|value| value.into_owned()));
-        push_optional(&mut metadata_items, "专辑", tag.album().map(|value| value.into_owned()));
-        push_optional(&mut metadata_items, "流派", tag.genre().map(|value| value.into_owned()));
+    if let Some(tag) = tagged_file
+        .primary_tag()
+        .or_else(|| tagged_file.first_tag())
+    {
+        push_optional(
+            &mut metadata_items,
+            "标题",
+            tag.title().map(|value| value.into_owned()),
+        );
+        push_optional(
+            &mut metadata_items,
+            "艺术家",
+            tag.artist().map(|value| value.into_owned()),
+        );
+        push_optional(
+            &mut metadata_items,
+            "专辑",
+            tag.album().map(|value| value.into_owned()),
+        );
+        push_optional(
+            &mut metadata_items,
+            "流派",
+            tag.genre().map(|value| value.into_owned()),
+        );
     }
 
     if !metadata_items.is_empty() {
@@ -554,7 +593,13 @@ async fn parse_video_details(path: &Path, ffprobe_path: Option<String>) -> Parse
 
     let value: Value = match serde_json::from_slice(&output.stdout) {
         Ok(value) => value,
-        Err(error) => return warning_outcome("video", "external", format!("ffprobe 输出解析失败：{}", error)),
+        Err(error) => {
+            return warning_outcome(
+                "video",
+                "external",
+                format!("ffprobe 输出解析失败：{}", error),
+            )
+        }
     };
 
     ParserOutcome {
@@ -569,33 +614,48 @@ async fn parse_video_details(path: &Path, ffprobe_path: Option<String>) -> Parse
 }
 
 fn build_video_sections(value: &Value) -> Vec<FileDetailsSection> {
-    let streams = value.get("streams")
+    let streams = value
+        .get("streams")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
     let format = value.get("format");
 
-    let video_streams: Vec<&Value> = streams.iter()
+    let video_streams: Vec<&Value> = streams
+        .iter()
         .filter(|stream| stream.get("codec_type").and_then(Value::as_str) == Some("video"))
         .collect();
-    let audio_streams: Vec<&Value> = streams.iter()
+    let audio_streams: Vec<&Value> = streams
+        .iter()
         .filter(|stream| stream.get("codec_type").and_then(Value::as_str) == Some("audio"))
         .collect();
-    let subtitle_streams: Vec<&Value> = streams.iter()
+    let subtitle_streams: Vec<&Value> = streams
+        .iter()
         .filter(|stream| stream.get("codec_type").and_then(Value::as_str) == Some("subtitle"))
         .collect();
 
     let mut media_items = Vec::new();
 
-    if let Some(container) = format.and_then(|entry| entry.get("format_name")).and_then(Value::as_str) {
+    if let Some(container) = format
+        .and_then(|entry| entry.get("format_name"))
+        .and_then(Value::as_str)
+    {
         media_items.push(item("容器", container.to_string()));
     }
 
-    if let Some(duration) = format.and_then(|entry| entry.get("duration")).and_then(Value::as_str).and_then(parse_f64) {
+    if let Some(duration) = format
+        .and_then(|entry| entry.get("duration"))
+        .and_then(Value::as_str)
+        .and_then(parse_f64)
+    {
         media_items.push(item("时长", format_duration_seconds(duration)));
     }
 
-    if let Some(bit_rate) = format.and_then(|entry| entry.get("bit_rate")).and_then(Value::as_str).and_then(parse_u64) {
+    if let Some(bit_rate) = format
+        .and_then(|entry| entry.get("bit_rate"))
+        .and_then(Value::as_str)
+        .and_then(parse_u64)
+    {
         media_items.push(item("总码率", format!("{} kbps", bit_rate / 1000)));
     }
 
@@ -641,12 +701,14 @@ fn build_video_sections(value: &Value) -> Vec<FileDetailsSection> {
 }
 
 fn parse_frame_rate(stream: &Value) -> Option<f64> {
-    stream.get("avg_frame_rate")
+    stream
+        .get("avg_frame_rate")
         .and_then(Value::as_str)
         .and_then(parse_rational)
         .filter(|value| *value > 0.0)
         .or_else(|| {
-            stream.get("r_frame_rate")
+            stream
+                .get("r_frame_rate")
                 .and_then(Value::as_str)
                 .and_then(parse_rational)
                 .filter(|value| *value > 0.0)
@@ -674,10 +736,8 @@ async fn parse_blendio_details(path: &Path) -> Result<ParserOutcome, String> {
     let path_buf = path.to_path_buf();
 
     tokio::task::spawn_blocking(move || {
-        let file = blendio::BlendFile::open(&path_buf)
-            .map_err(|error| error.to_string())?;
-        let summary = blendio::summarize(&file)
-            .map_err(|error| error.to_string())?;
+        let file = blendio::BlendFile::open(&path_buf).map_err(|error| error.to_string())?;
+        let summary = blendio::summarize(&file).map_err(|error| error.to_string())?;
 
         Ok(ParserOutcome {
             parser: FileDetailsParser {
@@ -717,8 +777,7 @@ async fn parse_blender_fallback_details(
                 "python",
                 format!(
                     "内置 BlendIO 解析失败：{}；Blender 回退也失败：{}",
-                    native_error,
-                    error
+                    native_error, error
                 ),
             );
         }
@@ -726,17 +785,29 @@ async fn parse_blender_fallback_details(
 
     build_blender_python_outcome(
         &info,
-        Some(format!("内置 BlendIO 解析失败，已回退到 Blender：{}", native_error)),
+        Some(format!(
+            "内置 BlendIO 解析失败，已回退到 Blender：{}",
+            native_error
+        )),
     )
 }
 
 fn build_blendio_sections(summary: &blendio::FileSummary) -> Vec<FileDetailsSection> {
     let mut media_items = vec![
-        item("Blender 版本", format_blend_file_version(summary.header.file_version)),
-        item("压缩方式", blend_compression_label(summary.header.compression)),
+        item(
+            "Blender 版本",
+            format_blend_file_version(summary.header.file_version),
+        ),
+        item(
+            "压缩方式",
+            blend_compression_label(summary.header.compression),
+        ),
         item("字节序", blend_endian_label(summary.header.endian)),
         item("块头类型", blend_bhead_label(summary.header.bhead_type)),
-        item("指针大小", format!("{} 位", summary.header.pointer_size * 8)),
+        item(
+            "指针大小",
+            format!("{} 位", summary.header.pointer_size * 8),
+        ),
         item("块数量", summary.block_count.to_string()),
         item("ID 数量", summary.id_count.to_string()),
         item("场景数", summary.scenes.len().to_string()),
@@ -752,7 +823,11 @@ fn build_blendio_sections(summary: &blendio::FileSummary) -> Vec<FileDetailsSect
 
     if let Some(scene) = summary.scenes.first() {
         media_items.push(item(
-            if summary.scenes.len() > 1 { "首场景" } else { "场景" },
+            if summary.scenes.len() > 1 {
+                "首场景"
+            } else {
+                "场景"
+            },
             scene.name.clone(),
         ));
 
@@ -784,17 +859,38 @@ fn build_blendio_sections(summary: &blendio::FileSummary) -> Vec<FileDetailsSect
     push_optional(
         &mut metadata_items,
         "场景列表",
-        preview_values(summary.scenes.iter().map(|scene| scene.name.clone()).collect(), 6),
+        preview_values(
+            summary
+                .scenes
+                .iter()
+                .map(|scene| scene.name.clone())
+                .collect(),
+            6,
+        ),
     );
     push_optional(
         &mut metadata_items,
         "相机列表",
-        preview_values(summary.cameras.iter().map(|camera| camera.name.clone()).collect(), 6),
+        preview_values(
+            summary
+                .cameras
+                .iter()
+                .map(|camera| camera.name.clone())
+                .collect(),
+            6,
+        ),
     );
     push_optional(
         &mut metadata_items,
         "灯光列表",
-        preview_values(summary.lights.iter().map(|light| light.name.clone()).collect(), 6),
+        preview_values(
+            summary
+                .lights
+                .iter()
+                .map(|light| light.name.clone())
+                .collect(),
+            6,
+        ),
     );
     push_optional(
         &mut metadata_items,
@@ -823,7 +919,14 @@ fn build_blendio_sections(summary: &blendio::FileSummary) -> Vec<FileDetailsSect
     push_optional(
         &mut metadata_items,
         "动画列表",
-        preview_values(summary.actions.iter().map(|action| action.name.clone()).collect(), 6),
+        preview_values(
+            summary
+                .actions
+                .iter()
+                .map(|action| action.name.clone())
+                .collect(),
+            6,
+        ),
     );
     push_optional(
         &mut metadata_items,
@@ -832,7 +935,12 @@ fn build_blendio_sections(summary: &blendio::FileSummary) -> Vec<FileDetailsSect
             summary
                 .libraries
                 .iter()
-                .map(|library| library.filepath.clone().unwrap_or_else(|| library.name.clone()))
+                .map(|library| {
+                    library
+                        .filepath
+                        .clone()
+                        .unwrap_or_else(|| library.name.clone())
+                })
                 .collect(),
             4,
         ),
@@ -861,15 +969,25 @@ fn build_blender_python_outcome(info: &Value, warning: Option<String>) -> Parser
 fn build_blender_python_sections(info: &Value) -> Vec<FileDetailsSection> {
     let mut media_items = Vec::new();
 
-    let scenes = info.get("scenes").and_then(Value::as_array).map(|items| items.len()).unwrap_or(0);
-    let cameras = info.get("cameras").and_then(Value::as_array).map(|items| items.len()).unwrap_or(0);
-    let object_count = info.get("objects")
+    let scenes = info
+        .get("scenes")
+        .and_then(Value::as_array)
+        .map(|items| items.len())
+        .unwrap_or(0);
+    let cameras = info
+        .get("cameras")
+        .and_then(Value::as_array)
+        .map(|items| items.len())
+        .unwrap_or(0);
+    let object_count = info
+        .get("objects")
         .and_then(Value::as_array)
         .and_then(|items| items.first())
         .and_then(|item| item.get("count"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let material_count = info.get("materials")
+    let material_count = info
+        .get("materials")
         .and_then(Value::as_array)
         .and_then(|items| items.first())
         .and_then(|item| item.get("count"))
@@ -882,8 +1000,14 @@ fn build_blender_python_sections(info: &Value) -> Vec<FileDetailsSection> {
     media_items.push(item("材质数", material_count.to_string()));
 
     if let (Some(width), Some(height)) = (
-        info.get("resolution").and_then(Value::as_array).and_then(|items| items.first()).and_then(Value::as_u64),
-        info.get("resolution").and_then(Value::as_array).and_then(|items| items.get(1)).and_then(Value::as_u64),
+        info.get("resolution")
+            .and_then(Value::as_array)
+            .and_then(|items| items.first())
+            .and_then(Value::as_u64),
+        info.get("resolution")
+            .and_then(Value::as_array)
+            .and_then(|items| items.get(1))
+            .and_then(Value::as_u64),
     ) {
         media_items.push(item("分辨率", format!("{} x {}", width, height)));
     }
@@ -900,7 +1024,8 @@ fn build_blender_python_sections(info: &Value) -> Vec<FileDetailsSection> {
     }
 
     if let Some(version) = info.get("version").and_then(Value::as_array) {
-        let version_text = version.iter()
+        let version_text = version
+            .iter()
             .filter_map(Value::as_u64)
             .map(|value| value.to_string())
             .collect::<Vec<_>>()
@@ -920,7 +1045,9 @@ fn build_blender_python_sections(info: &Value) -> Vec<FileDetailsSection> {
                 .map(|items| {
                     items
                         .iter()
-                        .filter_map(|item| item.get("name").and_then(Value::as_str).map(str::to_string))
+                        .filter_map(|item| {
+                            item.get("name").and_then(Value::as_str).map(str::to_string)
+                        })
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default(),
@@ -936,7 +1063,9 @@ fn build_blender_python_sections(info: &Value) -> Vec<FileDetailsSection> {
                 .map(|items| {
                     items
                         .iter()
-                        .filter_map(|item| item.get("name").and_then(Value::as_str).map(str::to_string))
+                        .filter_map(|item| {
+                            item.get("name").and_then(Value::as_str).map(str::to_string)
+                        })
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default(),
@@ -1007,7 +1136,11 @@ fn item(label: impl Into<String>, value: impl Into<String>) -> FileDetailsItem {
     }
 }
 
-fn section(id: impl Into<String>, title: impl Into<String>, items: Vec<FileDetailsItem>) -> FileDetailsSection {
+fn section(
+    id: impl Into<String>,
+    title: impl Into<String>,
+    items: Vec<FileDetailsItem>,
+) -> FileDetailsSection {
     FileDetailsSection {
         id: id.into(),
         title: title.into(),
@@ -1041,7 +1174,12 @@ fn format_timestamp(value: std::time::SystemTime) -> String {
 
 fn format_display_timestamp(value: &str) -> String {
     DateTime::parse_from_rfc3339(value)
-        .map(|datetime| datetime.with_timezone(&Local).format("%Y/%m/%d %H:%M:%S").to_string())
+        .map(|datetime| {
+            datetime
+                .with_timezone(&Local)
+                .format("%Y/%m/%d %H:%M:%S")
+                .to_string()
+        })
         .unwrap_or_else(|_| value.to_string())
 }
 
@@ -1095,7 +1233,8 @@ fn display_type_label(basic: &FileDetailsBasic) -> String {
         "audio" => "音频".to_string(),
         "video" => "视频".to_string(),
         "blender" => "Blender 文件".to_string(),
-        _ => basic.extension
+        _ => basic
+            .extension
             .as_ref()
             .map(|ext| ext.to_uppercase())
             .unwrap_or_else(|| "文件".to_string()),
@@ -1141,13 +1280,19 @@ mod tests {
         assert_eq!(determine_display_type(false, Some("jpg"), None), "image");
         assert_eq!(determine_display_type(false, Some("mp3"), None), "audio");
         assert_eq!(determine_display_type(false, Some("mp4"), None), "video");
-        assert_eq!(determine_display_type(false, Some("blend"), None), "blender");
+        assert_eq!(
+            determine_display_type(false, Some("blend"), None),
+            "blender"
+        );
         assert_eq!(determine_display_type(true, None, None), "folder");
     }
 
     #[test]
     fn parses_frame_rate_rational() {
-        assert_eq!(parse_rational("30000/1001").map(|value| value.round() as i32), Some(30));
+        assert_eq!(
+            parse_rational("30000/1001").map(|value| value.round() as i32),
+            Some(30)
+        );
         assert_eq!(parse_rational("0/0"), None);
     }
 
@@ -1201,7 +1346,13 @@ mod tests {
 
         let sections = build_video_sections(&value);
         assert_eq!(sections.len(), 1);
-        assert!(sections[0].items.iter().any(|item| item.label == "分辨率" && item.value == "1920 x 1080"));
-        assert!(sections[0].items.iter().any(|item| item.label == "视频编码" && item.value == "h264"));
+        assert!(sections[0]
+            .items
+            .iter()
+            .any(|item| item.label == "分辨率" && item.value == "1920 x 1080"));
+        assert!(sections[0]
+            .items
+            .iter()
+            .any(|item| item.label == "视频编码" && item.value == "h264"));
     }
 }

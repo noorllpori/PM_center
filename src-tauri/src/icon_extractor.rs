@@ -1,9 +1,9 @@
-﻿use base64::Engine;
+use base64::Engine;
+use image::{ImageBuffer, Rgba};
 use std::ffi::OsStr;
 use std::io::Cursor;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
-use image::{ImageBuffer, Rgba};
 
 #[tauri::command]
 pub async fn extract_icon(path: String) -> Result<Option<String>, String> {
@@ -11,7 +11,11 @@ pub async fn extract_icon(path: String) -> Result<Option<String>, String> {
     if !path.exists() {
         return Ok(None);
     }
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
     if ext != "exe" && ext != "dll" {
         return Ok(None);
     }
@@ -28,7 +32,7 @@ pub async fn extract_icon(path: String) -> Result<Option<String>, String> {
 fn extract_windows_icon(path: &Path) -> Option<Vec<u8>> {
     use windows::Win32::Graphics::Gdi::{
         CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC, SelectObject,
-        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, BITMAP,
+        BITMAP, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
     };
     use windows::Win32::UI::Shell::ExtractAssociatedIconW;
     use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, ICONINFO};
@@ -121,7 +125,7 @@ fn extract_windows_icon(path: &Path) -> Option<Vec<u8>> {
                 let idx = ((y * width + x) * 4) as usize;
                 rgba_buffer.push(buffer[idx + 2]); // r
                 rgba_buffer.push(buffer[idx + 1]); // g
-                rgba_buffer.push(buffer[idx]);     // b
+                rgba_buffer.push(buffer[idx]); // b
                 rgba_buffer.push(buffer[idx + 3]); // a
             }
         }

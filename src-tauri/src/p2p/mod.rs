@@ -87,7 +87,10 @@ pub async fn update_p2p_user(user_id: String, user_name: String) -> Result<(), S
     let mut state = P2P_GLOBAL.lock().map_err(|e| e.to_string())?;
     state.user_id = user_id;
     state.user_name = user_name;
-    println!("[P2P] 更新用户信息: {} ({})", state.user_name, state.user_id);
+    println!(
+        "[P2P] 更新用户信息: {} ({})",
+        state.user_name, state.user_id
+    );
     Ok(())
 }
 
@@ -96,29 +99,29 @@ pub async fn update_p2p_user(user_id: String, user_name: String) -> Result<(), S
 pub async fn start_p2p_discovery(app_handle: tauri::AppHandle) -> Result<(), String> {
     {
         let mut state = P2P_GLOBAL.lock().map_err(|e| e.to_string())?;
-        
+
         if state.is_running {
             return Ok(());
         }
-        
+
         state.is_running = true;
         println!("[P2P] 发现服务已启动");
     }
-    
+
     // 启动后台任务
     let state_clone = P2P_GLOBAL.clone();
     let app_handle_clone = app_handle.clone();
-    
+
     tokio::spawn(async move {
         run_discovery_loop(state_clone, app_handle_clone).await;
     });
-    
+
     // 启动 TCP 消息接收服务
     let state_clone = P2P_GLOBAL.clone();
     tokio::spawn(async move {
         run_tcp_server(state_clone, app_handle).await;
     });
-    
+
     Ok(())
 }
 
@@ -138,7 +141,7 @@ pub async fn send_p2p_message(message: P2PMessage) -> Result<(), String> {
     // 复制需要的数据，避免长时间持有锁
     let targets: Vec<(String, String)> = {
         let state = P2P_GLOBAL.lock().map_err(|e| e.to_string())?;
-        
+
         if let Some(ref to_id) = message.to_id {
             // 私聊
             if let Some(user) = state.online_users.get(to_id) {
@@ -148,19 +151,20 @@ pub async fn send_p2p_message(message: P2PMessage) -> Result<(), String> {
             }
         } else {
             // 广播 - 发送给所有在线用户
-            state.online_users
+            state
+                .online_users
                 .iter()
                 .filter(|(id, _)| **id != message.from_id)
                 .map(|(id, user)| (id.clone(), user.ip.clone()))
                 .collect()
         }
     };
-    
+
     // 发送消息（不持有锁）
     for (_, ip) in targets {
         let _ = send_tcp_message(&ip, &message).await;
     }
-    
+
     Ok(())
 }
 
@@ -177,45 +181,45 @@ async fn run_discovery_loop(state: P2PState, app_handle: tauri::AppHandle) {
             return;
         }
     };
-    
+
     if let Err(e) = socket.set_broadcast(true) {
         println!("[P2P] 设置广播失败: {}", e);
         return;
     }
-    
+
     if let Err(e) = socket.set_nonblocking(true) {
         println!("[P2P] 设置非阻塞失败: {}", e);
         return;
     }
-    
+
     let socket = Arc::new(socket);
     let mut last_broadcast = std::time::Instant::now() - BROADCAST_INTERVAL;
-    
+
     loop {
         tokio::time::sleep(Duration::from_millis(100)).await;
-        
+
         // 检查运行状态并获取用户数据
         let (user_id, user_name, is_running, users_changed) = {
             let mut locked = state.lock().unwrap();
-            
+
             if !locked.is_running {
                 break;
             }
-            
+
             // 清理超时的用户
             let now = now_millis();
             let before_count = locked.online_users.len();
-            locked.online_users.retain(|_, user| {
-                now - user.last_seen < USER_TIMEOUT.as_millis() as u64
-            });
+            locked
+                .online_users
+                .retain(|_, user| now - user.last_seen < USER_TIMEOUT.as_millis() as u64);
             let after_count = locked.online_users.len();
-            
+
             // 发送用户列表更新
             let users: Vec<P2PUser> = locked.online_users.values().cloned().collect();
             drop(locked);
-            
+
             let _ = app_handle.emit("p2p-users", serde_json::json!({ "users": users }));
-            
+
             let locked = state.lock().unwrap();
             (
                 locked.user_id.clone(),
@@ -224,57 +228,51 @@ async fn run_discovery_loop(state: P2PState, app_handle: tauri::AppHandle) {
                 before_count != after_count,
             )
         };
-        
+
         if !is_running {
             break;
         }
-        
+
         if users_changed {
             println!("[P2P] 在线用户列表已更新");
         }
-        
+
         // 定期广播自己的存在
         if last_broadcast.elapsed() >= BROADCAST_INTERVAL {
-            let packet = DiscoveryPacket::Announce {
-                user_id,
-                user_name,
-            };
-            
+            let packet = DiscoveryPacket::Announce { user_id, user_name };
+
             let data = serde_json::to_vec(&packet).unwrap_or_default();
             let addr = format!("{}:{}", BROADCAST_ADDR, DISCOVERY_PORT);
-            
+
             if let Err(e) = socket.send_to(&data, &addr) {
                 println!("[P2P] 广播失败: {}", e);
             }
-            
+
             last_broadcast = std::time::Instant::now();
         }
-        
+
         // 接收广播
         receive_discovery_broadcast(&state, &socket);
     }
 }
 
 // 接收发现广播
-fn receive_discovery_broadcast(
-    state: &P2PState,
-    socket: &UdpSocket,
-) {
+fn receive_discovery_broadcast(state: &P2PState, socket: &UdpSocket) {
     let mut buf = [0u8; 1024];
-    
+
     while let Ok((len, addr)) = socket.recv_from(&mut buf) {
         if let Ok(packet) = serde_json::from_slice::<DiscoveryPacket>(&buf[..len]) {
             match packet {
                 DiscoveryPacket::Announce { user_id, user_name } => {
                     let mut locked = state.lock().unwrap();
-                    
+
                     // 不处理自己的广播
                     if user_id == locked.user_id {
                         continue;
                     }
 
                     let previous_user = locked.online_users.get(&user_id).cloned();
-                    
+
                     let user = P2PUser {
                         id: user_id.clone(),
                         name: user_name,
@@ -310,7 +308,7 @@ async fn run_tcp_server(state: P2PState, app_handle: tauri::AppHandle) {
             return;
         }
     };
-    
+
     loop {
         // 检查是否还在运行
         {
@@ -319,13 +317,13 @@ async fn run_tcp_server(state: P2PState, app_handle: tauri::AppHandle) {
                 break;
             }
         }
-        
+
         match tokio::time::timeout(Duration::from_secs(1), listener.accept()).await {
             Ok(Ok((stream, addr))) => {
                 println!("[P2P] 新连接: {}", addr);
                 let state_clone = state.clone();
                 let app_handle_clone = app_handle.clone();
-                
+
                 tokio::spawn(async move {
                     handle_tcp_connection(stream, state_clone, app_handle_clone).await;
                 });
@@ -349,7 +347,7 @@ async fn handle_tcp_connection(
     let (reader, _writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
-    
+
     loop {
         line.clear();
         match reader.read_line(&mut line).await {
@@ -359,7 +357,10 @@ async fn handle_tcp_connection(
             }
             Ok(_) => {
                 if let Ok(message) = serde_json::from_str::<P2PMessage>(&line.trim()) {
-                    println!("[P2P] 收到消息 from {}: {}", message.from_name, message.content);
+                    println!(
+                        "[P2P] 收到消息 from {}: {}",
+                        message.from_name, message.content
+                    );
                     let _ = app_handle.emit("p2p-message", message);
                 }
             }
@@ -374,19 +375,20 @@ async fn handle_tcp_connection(
 // 发送 TCP 消息
 async fn send_tcp_message(ip: &str, message: &P2PMessage) -> Result<(), String> {
     let addr = format!("{}:{}", ip, MESSAGE_PORT);
-    
+
     let stream = tokio::net::TcpStream::connect(&addr)
         .await
         .map_err(|e| format!("连接 {} 失败: {}", addr, e))?;
-    
+
     let (_reader, mut writer) = stream.into_split();
-    
+
     let data = serde_json::to_string(message).map_err(|e| e.to_string())?;
     let data = format!("{}\n", data);
-    
-    writer.write_all(data.as_bytes())
+
+    writer
+        .write_all(data.as_bytes())
         .await
         .map_err(|e| format!("发送失败: {}", e))?;
-    
+
     Ok(())
 }

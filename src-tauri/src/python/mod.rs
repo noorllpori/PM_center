@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Stdio;
 
 use crate::process_utils::tokio_command;
@@ -34,15 +34,9 @@ pub async fn detect_python_envs() -> Vec<PythonEnv> {
     let mut envs = Vec::new();
 
     for cmd in &["python", "python3", "py"] {
-        if let Ok(output) = tokio_command(cmd)
-            .args(&["--version"])
-            .output()
-            .await
-        {
+        if let Ok(output) = tokio_command(cmd).args(&["--version"]).output().await {
             if output.status.success() {
-                let version = String::from_utf8_lossy(&output.stdout)
-                    .trim()
-                    .to_string();
+                let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 envs.push(PythonEnv {
                     python_path: cmd.to_string(),
                     env_type: EnvType::System,
@@ -75,9 +69,7 @@ pub async fn detect_python_envs() -> Vec<PythonEnv> {
                 envs.push(PythonEnv {
                     python_path: embedded_path.to_string_lossy().to_string(),
                     env_type: EnvType::Embedded,
-                    version: String::from_utf8_lossy(&output.stdout)
-                        .trim()
-                        .to_string(),
+                    version: String::from_utf8_lossy(&output.stdout).trim().to_string(),
                 });
             }
         }
@@ -133,10 +125,10 @@ fn get_embedded_python_path() -> PathBuf {
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
         .unwrap_or_default();
-    
+
     #[cfg(target_os = "windows")]
     return exe_dir.join("python").join("python.exe");
-    
+
     #[cfg(not(target_os = "windows"))]
     return exe_dir.join("python").join("bin").join("python3");
 }
@@ -153,7 +145,13 @@ pub async fn run_python_script(
     let mut cmd = match env_type {
         EnvType::Blender => {
             let mut c = tokio_command(&python_path);
-            c.args(&["--background", "--python-exit-code", "1", "--python-expr", &script]);
+            c.args(&[
+                "--background",
+                "--python-exit-code",
+                "1",
+                "--python-expr",
+                &script,
+            ]);
             c
         }
         _ => {
@@ -173,8 +171,7 @@ pub async fn run_python_script(
         }
     }
 
-    cmd.stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let output = cmd
         .output()
@@ -201,7 +198,13 @@ pub async fn run_python_file(
     let mut cmd = match env_type {
         EnvType::Blender => {
             let mut c = tokio_command(&python_path);
-            c.args(&["--background", "--python-exit-code", "1", "--python", &script_path]);
+            c.args(&[
+                "--background",
+                "--python-exit-code",
+                "1",
+                "--python",
+                &script_path,
+            ]);
             if !args.is_empty() {
                 c.arg("--");
                 c.args(&args);
@@ -219,8 +222,7 @@ pub async fn run_python_file(
         cmd.current_dir(dir);
     }
 
-    cmd.stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let output = cmd
         .output()
@@ -244,8 +246,7 @@ pub async fn pip_install(
     let mut cmd = tokio_command(&python_path);
     cmd.args(&["-m", "pip", "install"]);
     cmd.args(&packages);
-    cmd.stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let output = cmd
         .output()

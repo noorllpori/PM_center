@@ -11,10 +11,12 @@ import { ProjectWorkspace } from './ProjectWorkspace';
 import { ProjectSessionProvider } from './ProjectSessionProvider';
 import { ShellTabBar } from '../shell/ShellTabBar';
 import { createProjectStore, type ProjectStoreApi } from '../../stores/projectStore';
+import { useTaskStore } from '../../stores/taskStore';
 import { createWorkspaceTabStore, type WorkspaceTabStoreApi, useWorkspaceTabStore } from '../../stores/workspaceTabStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useShellTabStore, normalizeProjectPath } from '../../stores/shellTabStore';
+import type { PluginControlMessage } from '../../types/plugin';
 import {
   STANDALONE_RETURN_TO_WORKSPACE_EVENT,
   type StandaloneReturnToWorkspacePayload,
@@ -247,6 +249,59 @@ export function FileManager() {
       }
     };
   }, [handleOpenProject, showToast]);
+
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | null = null;
+
+    const registerPluginControlListener = async () => {
+      try {
+        unlisten = await listen<{ taskId: string; message: PluginControlMessage }>('task-control', async (event) => {
+          const { taskId, message } = event.payload;
+          const task = useTaskStore.getState().tasks.find((item) => item.id === taskId);
+
+          if (!task) {
+            return;
+          }
+
+          if (message.type === 'toast' && message.message) {
+            showToast({
+              title: message.title || '插件提示',
+              message: message.message,
+              tone: message.tone || 'info',
+            });
+          }
+
+          if (message.type === 'refresh') {
+            const session = sessionsRef.current.get(normalizeProjectPath(task.projectPath));
+            if (session) {
+              try {
+                await session.projectStore.getState().refresh();
+              } catch (error) {
+                console.error('Failed to refresh project after plugin control event:', error);
+              }
+            }
+          }
+        });
+
+        if (!active && unlisten) {
+          await unlisten();
+          unlisten = null;
+        }
+      } catch (error) {
+        console.error('Failed to register plugin control listener:', error);
+      }
+    };
+
+    void registerPluginControlListener();
+
+    return () => {
+      active = false;
+      if (unlisten) {
+        void unlisten();
+      }
+    };
+  }, [showToast]);
 
   const handleCloseShellTab = (tabId: string) => {
     const closingTab = tabs.find((tab) => tab.id === tabId);

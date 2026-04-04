@@ -323,8 +323,9 @@ impl TreeCacheDb {
         if let Err(error) = conn.execute_batch(schema_sql) {
             let _ = fs::remove_file(&db_path);
             conn = Connection::open(&db_path).map_err(|open_error| open_error.to_string())?;
-            conn.execute_batch(schema_sql)
-                .map_err(|schema_error| format!("tree cache schema init failed: {}", schema_error))?;
+            conn.execute_batch(schema_sql).map_err(|schema_error| {
+                format!("tree cache schema init failed: {}", schema_error)
+            })?;
             eprintln!(
                 "[TreeCache] schema init failed, recreated cache db: {}",
                 error
@@ -403,7 +404,9 @@ impl TreeCacheDb {
             .map_err(|error| error.to_string())?;
 
         let rows = statement
-            .query_map(params![normalize_path_key(parent_path)], |row| row.get::<_, String>(0))
+            .query_map(params![normalize_path_key(parent_path)], |row| {
+                row.get::<_, String>(0)
+            })
             .map_err(|error| error.to_string())?;
 
         rows.collect::<Result<Vec<_>, _>>()
@@ -433,7 +436,9 @@ impl TreeCacheDb {
                 .map_err(|error| error.to_string())?;
 
             let rows = statement
-                .query_map(params![dir_key.clone()], |row| Ok((row.get(0)?, row.get(1)?)))
+                .query_map(params![dir_key.clone()], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })
                 .map_err(|error| error.to_string())?;
             rows.collect::<Result<Vec<_>, _>>()
                 .map_err(|error| error.to_string())?
@@ -499,7 +504,10 @@ impl TreeCacheDb {
                 let state_like_pattern = subtree_like_pattern(&normalize_path_key(&old_dir_path));
                 tx.execute(
                     "DELETE FROM dir_state WHERE dir_path_key = ?1 OR dir_path_key LIKE ?2",
-                    params![normalize_path_key(&old_dir_path), state_like_pattern.clone()],
+                    params![
+                        normalize_path_key(&old_dir_path),
+                        state_like_pattern.clone()
+                    ],
                 )
                 .map_err(|error| error.to_string())?;
                 tx.execute(

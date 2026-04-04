@@ -13,8 +13,8 @@ pub async fn get_blender_file_info(
     blender_path: String,
     blend_file: String,
 ) -> Result<serde_json::Value, String> {
-    let temp_script_path = std::env::temp_dir()
-        .join(format!("pm_center_blender_info_{}.py", Uuid::new_v4()));
+    let temp_script_path =
+        std::env::temp_dir().join(format!("pm_center_blender_info_{}.py", Uuid::new_v4()));
     let script = format!(
         r#"import bpy
 import json
@@ -76,15 +76,20 @@ print("{end}")
         temp_script_path.to_string_lossy().to_string(),
         vec![],
         None,
-    ).await;
+    )
+    .await;
 
     let _ = fs::remove_file(&temp_script_path).await;
     let result = result?;
 
     if result.success {
-        let start = result.stdout.find(JSON_START_MARKER)
+        let start = result
+            .stdout
+            .find(JSON_START_MARKER)
             .ok_or("No JSON start marker")?;
-        let end = result.stdout.find(JSON_END_MARKER)
+        let end = result
+            .stdout
+            .find(JSON_END_MARKER)
             .ok_or("No JSON end marker")?;
 
         if end <= start {
@@ -92,9 +97,8 @@ print("{end}")
         }
 
         let json_str = result.stdout[start + JSON_START_MARKER.len()..end].trim();
-        
-        serde_json::from_str(json_str)
-            .map_err(|e| format!("JSON parse error: {}", e))
+
+        serde_json::from_str(json_str).map_err(|e| format!("JSON parse error: {}", e))
     } else {
         let err = result.stderr.clone();
         Err(format!("Blender error: {}", err))

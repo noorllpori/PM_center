@@ -45,6 +45,14 @@ function getProjectDisplayName(
   return parts[parts.length - 1] || targetProjectPath;
 }
 
+function getTaskScriptLabel(task: Task) {
+  if (task.script.kind === 'plugin-action') {
+    return `插件 · ${task.script.pluginName} / ${task.script.commandTitle}`;
+  }
+
+  return 'Python 内联脚本';
+}
+
 export function TaskPanel({ isOpen, onClose }: TaskPanelProps) {
   const { projectPath, projectName } = useOptionalProjectStoreShallow((state) => ({
     projectPath: state.projectPath,
@@ -407,7 +415,7 @@ export function TaskPanel({ isOpen, onClose }: TaskPanelProps) {
                   <div className="flex items-center gap-4">
                     <span>项目: {getProjectDisplayName(activeTask.projectPath, projectPath, projectName)}</span>
                     <span>ID: {activeTask.id.slice(0, 16)}...</span>
-                    <span>类型: {activeTask.script.type}</span>
+                    <span>类型: {getTaskScriptLabel(activeTask)}</span>
                     <span>优先级: {activeTask.priority}</span>
                     {activeTask.startedAt && (
                       <span>开始: {new Date(activeTask.startedAt).toLocaleTimeString()}</span>
@@ -712,6 +720,7 @@ function NewTaskDialog({
       name,
       subName,
       script: {
+        kind: 'python-inline',
         code,
         type: 'python',
       },

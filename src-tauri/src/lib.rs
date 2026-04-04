@@ -1,35 +1,45 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager, Runtime,
 };
-use std::path::PathBuf;
+use tokio::sync::Mutex;
 
-mod fs;
 mod db;
-mod python;
-mod watcher;
-mod tree_cache;
-mod icon_extractor;
-mod task;
-mod p2p;
-mod python_env;
 mod file_details;
+mod fs;
+mod icon_extractor;
+mod p2p;
+mod plugin;
 mod process_utils;
+mod python;
+mod python_env;
+mod task;
 mod tools;
+mod tree_cache;
+mod watcher;
 
-use db::{Database, Tag, FileMetadata};
-use file_details::get_file_details;
-use process_utils::std_command;
-use python::{detect_python_envs, run_python_script, run_python_file, pip_install, get_blender_file_info};
 use db::FileChange;
-use p2p::{init_p2p, update_p2p_user, start_p2p_discovery, stop_p2p_discovery, send_p2p_message};
-use python_env::{detect_system_python, scan_app_venvs, create_venv, delete_venv, pip_install_package, pip_uninstall_package, pip_list_packages};
-use tools::inspect_tool_paths;
+use db::{Database, FileMetadata, Tag};
+use file_details::get_file_details;
+use p2p::{init_p2p, send_p2p_message, start_p2p_discovery, stop_p2p_discovery, update_p2p_user};
+use plugin::{
+    get_plugin_dirs, list_plugins, refresh_plugins, run_plugin_action, set_plugin_enabled,
+    validate_plugin,
+};
+use process_utils::std_command;
+use python::{
+    detect_python_envs, get_blender_file_info, pip_install, run_python_file, run_python_script,
+};
+use python_env::{
+    create_venv, delete_venv, detect_system_python, pip_install_package, pip_list_packages,
+    pip_uninstall_package, scan_app_venvs,
+};
 use tauri_plugin_global_shortcut::ShortcutState;
+use tools::inspect_tool_paths;
 
 #[derive(Default)]
 struct DbStateInner {
@@ -48,8 +58,7 @@ async fn get_or_create_db(
         return Ok(db.clone());
     }
 
-    let db = Database::new(project_path)
-        .map_err(|e| e.to_string())?;
+    let db = Database::new(project_path).map_err(|e| e.to_string())?;
     guard.databases.insert(project_path.to_string(), db.clone());
 
     Ok(db)
@@ -58,9 +67,11 @@ async fn get_or_create_db(
 fn ensure_project_support_files(project_path: &str) -> Result<(), String> {
     use std::fs;
 
-    let scripts_dir = PathBuf::from(project_path).join(".pm_center").join("scripts");
-    fs::create_dir_all(&scripts_dir)
-        .map_err(|e| format!("创建 scripts 目录失败: {}", e))?;
+    let pm_center_dir = PathBuf::from(project_path).join(".pm_center");
+    let scripts_dir = pm_center_dir.join("scripts");
+    let plugins_dir = pm_center_dir.join("plugins");
+    fs::create_dir_all(&scripts_dir).map_err(|e| format!("创建 scripts 目录失败: {}", e))?;
+    fs::create_dir_all(&plugins_dir).map_err(|e| format!("创建 plugins 目录失败: {}", e))?;
     ensure_project_default_scripts(&scripts_dir)?;
 
     Ok(())
@@ -77,7 +88,7 @@ async fn init_project(
 
     let _ = watcher::init_project(project_path.clone(), true);
     let _ = watcher::set_active_project(&project_path, &db);
-    
+
     Ok(())
 }
 
@@ -302,8 +313,7 @@ async fn get_global_task_scripts_path(app_handle: tauri::AppHandle) -> Result<St
     use std::fs;
 
     let scripts_dir = get_global_task_scripts_dir(&app_handle)?;
-    fs::create_dir_all(&scripts_dir)
-        .map_err(|e| format!("创建全局脚本目录失败: {}", e))?;
+    fs::create_dir_all(&scripts_dir).map_err(|e| format!("创建全局脚本目录失败: {}", e))?;
     ensure_global_task_scripts(&scripts_dir)?;
 
     Ok(scripts_dir.to_string_lossy().to_string())
@@ -323,42 +333,42 @@ struct ScriptInfo {
 }
 
 #[tauri::command]
-async fn get_project_scripts(app_handle: tauri::AppHandle, project_path: String) -> Result<Vec<ScriptInfo>, String> {
+async fn get_project_scripts(
+    app_handle: tauri::AppHandle,
+    project_path: String,
+) -> Result<Vec<ScriptInfo>, String> {
     use std::fs;
     use std::path::PathBuf;
-    
-    let project_scripts_dir = PathBuf::from(&project_path).join(".pm_center").join("scripts");
-    fs::create_dir_all(&project_scripts_dir)
-        .map_err(|e| format!("创建项目脚本目录失败: {}", e))?;
+
+    let project_scripts_dir = PathBuf::from(&project_path)
+        .join(".pm_center")
+        .join("scripts");
+    fs::create_dir_all(&project_scripts_dir).map_err(|e| format!("创建项目脚本目录失败: {}", e))?;
     ensure_project_default_scripts(&project_scripts_dir)?;
 
     let global_scripts_dir = get_global_task_scripts_dir(&app_handle)?;
-    fs::create_dir_all(&global_scripts_dir)
-        .map_err(|e| format!("创建全局脚本目录失败: {}", e))?;
+    fs::create_dir_all(&global_scripts_dir).map_err(|e| format!("创建全局脚本目录失败: {}", e))?;
     ensure_global_task_scripts(&global_scripts_dir)?;
 
     let mut scripts = vec![];
-    
+
     fn scan_dir(
         dir: &std::path::Path,
         base_dir: &std::path::Path,
         scope: &str,
         scripts: &mut Vec<ScriptInfo>,
     ) -> Result<(), String> {
-        let entries = fs::read_dir(dir)
-            .map_err(|e| format!("读取目录失败: {}", e))?;
-        
+        let entries = fs::read_dir(dir).map_err(|e| format!("读取目录失败: {}", e))?;
+
         for entry in entries {
             let entry = entry.map_err(|e| format!("读取条目失败: {}", e))?;
             let path = entry.path();
-            
+
             if path.is_dir() {
                 scan_dir(&path, base_dir, scope, scripts)?;
             } else {
-                let filename = path.file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("");
-                
+                let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
                 if !filename.ends_with(".py") {
                     continue;
                 }
@@ -366,11 +376,12 @@ async fn get_project_scripts(app_handle: tauri::AppHandle, project_path: String)
 
                 let content = fs::read_to_string(&path).unwrap_or_default();
                 let (name, description) = parse_script_metadata(&content, filename);
-                
-                let relative_path = path.strip_prefix(base_dir)
+
+                let relative_path = path
+                    .strip_prefix(base_dir)
                     .map(|p| p.to_string_lossy().replace('\\', "/"))
                     .unwrap_or_else(|_| filename.to_string());
-                
+
                 scripts.push(ScriptInfo {
                     id: format!("{}:{}", scope, relative_path),
                     name,
@@ -382,12 +393,22 @@ async fn get_project_scripts(app_handle: tauri::AppHandle, project_path: String)
                 });
             }
         }
-        
+
         Ok(())
     }
-    
-    scan_dir(&project_scripts_dir, &project_scripts_dir, "project", &mut scripts)?;
-    scan_dir(&global_scripts_dir, &global_scripts_dir, "global", &mut scripts)?;
+
+    scan_dir(
+        &project_scripts_dir,
+        &project_scripts_dir,
+        "project",
+        &mut scripts,
+    )?;
+    scan_dir(
+        &global_scripts_dir,
+        &global_scripts_dir,
+        "global",
+        &mut scripts,
+    )?;
 
     scripts.sort_by(|a, b| {
         let scope_rank = |scope: &str| if scope == "project" { 0 } else { 1 };
@@ -395,7 +416,7 @@ async fn get_project_scripts(app_handle: tauri::AppHandle, project_path: String)
             .cmp(&scope_rank(&b.scope))
             .then(a.name.cmp(&b.name))
     });
-    
+
     Ok(scripts)
 }
 
@@ -403,10 +424,10 @@ async fn get_project_scripts(app_handle: tauri::AppHandle, project_path: String)
 fn parse_script_metadata(content: &str, filename: &str) -> (String, String) {
     let mut name = None;
     let mut description = None;
-    
+
     for line in content.lines().take(20) {
         let line = line.trim();
-        
+
         // Python 注释: # @name: 或 # @desc:
         if line.starts_with("# @name:") {
             name = Some(line[8..].trim().to_string());
@@ -414,17 +435,18 @@ fn parse_script_metadata(content: &str, filename: &str) -> (String, String) {
             description = Some(line[8..].trim().to_string());
         }
     }
-    
+
     // 如果没有找到元数据，使用文件名（去掉扩展名）
     let name = name.unwrap_or_else(|| {
-        filename.rfind('.')
+        filename
+            .rfind('.')
             .map(|i| &filename[..i])
             .unwrap_or(filename)
             .to_string()
     });
-    
+
     let description = description.unwrap_or_else(|| "Python 脚本".to_string());
-    
+
     (name, description)
 }
 
@@ -442,39 +464,36 @@ struct ScannedProject {
 async fn scan_projects_root(root_path: String) -> Result<Vec<ScannedProject>, String> {
     use std::fs;
     use std::path::PathBuf;
-    
+
     let root = PathBuf::from(&root_path);
     if !root.exists() {
         return Err("目录不存在".to_string());
     }
-    
+
     let mut projects = vec![];
-    
+
     // 读取根目录下的子目录（只扫描第1级）
-    let entries = fs::read_dir(&root)
-        .map_err(|e| format!("读取目录失败: {}", e))?;
-    
+    let entries = fs::read_dir(&root).map_err(|e| format!("读取目录失败: {}", e))?;
+
     for entry in entries {
         let entry = entry.map_err(|e| format!("读取条目失败: {}", e))?;
         let path = entry.path();
-        
+
         if !path.is_dir() {
             continue;
         }
-        
-        let dir_name = path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-        
+
+        let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
         // 跳过隐藏目录
         if dir_name.starts_with('.') {
             continue;
         }
-        
+
         // 检查是否有 .pm_center
         let pm_center_path = path.join(".pm_center");
         let has_pm_center = pm_center_path.exists();
-        
+
         // 添加所有文件夹（包括已初始化和未初始化的）
         projects.push(ScannedProject {
             path: path.to_string_lossy().to_string(),
@@ -482,10 +501,10 @@ async fn scan_projects_root(root_path: String) -> Result<Vec<ScannedProject>, St
             has_pm_center,
         });
     }
-    
+
     // 按名称排序
     projects.sort_by(|a, b| a.name.cmp(&b.name));
-    
+
     Ok(projects)
 }
 
@@ -498,21 +517,20 @@ async fn create_project(
 ) -> Result<String, String> {
     use std::fs;
     use std::path::PathBuf;
-    
+
     let project_path = PathBuf::from(&parent_path).join(&project_name);
-    
+
     // 检查是否已存在
     if project_path.exists() {
         return Err("项目目录已存在".to_string());
     }
-    
+
     // 创建目录
-    fs::create_dir_all(&project_path)
-        .map_err(|e| format!("创建项目目录失败: {}", e))?;
-    
+    fs::create_dir_all(&project_path).map_err(|e| format!("创建项目目录失败: {}", e))?;
+
     // 初始化项目
     init_project(db_state, project_path.to_string_lossy().to_string()).await?;
-    
+
     Ok(project_path.to_string_lossy().to_string())
 }
 
@@ -528,7 +546,8 @@ async fn move_project_entry(
         PathBuf::from(&source),
         PathBuf::from(&target),
         &conflict_strategy,
-    ).await?;
+    )
+    .await?;
 
     let final_path_str = final_path.to_string_lossy().to_string();
     let db = get_or_create_db(&db_state, &project_path).await?;
@@ -602,7 +621,8 @@ async fn get_file_tags_batch(
     file_paths: Vec<String>,
 ) -> Result<HashMap<String, Vec<String>>, String> {
     let db = get_or_create_db(&db_state, &project_path).await?;
-    db.get_file_tags_batch(&file_paths).map_err(|e| e.to_string())
+    db.get_file_tags_batch(&file_paths)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -613,7 +633,8 @@ async fn add_tag_to_file(
     tag_id: String,
 ) -> Result<(), String> {
     let db = get_or_create_db(&db_state, &project_path).await?;
-    db.add_tag_to_file(&file_path, &tag_id).map_err(|e| e.to_string())
+    db.add_tag_to_file(&file_path, &tag_id)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -624,7 +645,8 @@ async fn remove_tag_from_file(
     tag_id: String,
 ) -> Result<(), String> {
     let db = get_or_create_db(&db_state, &project_path).await?;
-    db.remove_tag_from_file(&file_path, &tag_id).map_err(|e| e.to_string())
+    db.remove_tag_from_file(&file_path, &tag_id)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -644,7 +666,8 @@ async fn update_file_metadata(
     metadata: FileMetadata,
 ) -> Result<(), String> {
     let db = get_or_create_db(&db_state, &project_path).await?;
-    db.update_file_metadata(&metadata).map_err(|e| e.to_string())
+    db.update_file_metadata(&metadata)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -677,8 +700,7 @@ async fn archive_old_changes(
     project_path: String,
 ) -> Result<usize, String> {
     let db = get_or_create_db(&db_state, &project_path).await?;
-    db.archive_old_changes()
-        .map_err(|e| e.to_string())
+    db.archive_old_changes().map_err(|e| e.to_string())
 }
 
 // 启动外部程序
@@ -691,7 +713,7 @@ async fn launch_program(path: String) -> Result<(), String> {
             .spawn()
             .map_err(|e| format!("Failed to launch: {}", e))?;
     }
-    
+
     #[cfg(target_os = "macos")]
     {
         std_command("open")
@@ -699,14 +721,14 @@ async fn launch_program(path: String) -> Result<(), String> {
             .spawn()
             .map_err(|e| format!("Failed to launch: {}", e))?;
     }
-    
+
     #[cfg(target_os = "linux")]
     {
         std_command(&path)
             .spawn()
             .map_err(|e| format!("Failed to launch: {}", e))?;
     }
-    
+
     Ok(())
 }
 
@@ -748,30 +770,32 @@ pub fn run() {
             let _ = show_window(app);
         })
         .build();
-    
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(global_shortcut_plugin)
-        .plugin(tauri_plugin_single_instance::init(move |app, _args, _cwd| {
-            // 当检测到重复实例时，显示已存在的窗口
-            let _ = show_window(app);
-        }))
+        .plugin(tauri_plugin_single_instance::init(
+            move |app, _args, _cwd| {
+                // 当检测到重复实例时，显示已存在的窗口
+                let _ = show_window(app);
+            },
+        ))
         .manage(db_state_for_single)
         .setup(move |app| {
             watcher::set_app_handle(app.handle().clone());
             let window = app.get_webview_window("main").unwrap();
-            
+
             // 创建托盘菜单
             let show_i = MenuItem::with_id(app, "show", "显示", true, None::<&str>)?;
             let hide_i = MenuItem::with_id(app, "hide", "隐藏", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_i, &hide_i, &quit_i])?;
-            
+
             let app_handle = app.handle().clone();
-            
+
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
@@ -804,7 +828,7 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
-            
+
             // 窗口关闭时隐藏
             window.on_window_event(move |event| {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -814,21 +838,21 @@ pub fn run() {
                     }
                 }
             });
-            
+
             // 初始显示窗口
             let _ = window.show();
             let _ = window.set_focus();
-            
+
             // 关闭开发者工具（开发模式下默认打开）
             #[cfg(debug_assertions)]
             window.close_devtools();
-            
+
             // 启动后台任务：休眠项目扫描（低频率）
             let db_state_for_scan = db_state.clone();
             tauri::async_runtime::spawn(async move {
                 // 等待数据库初始化
                 tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-                
+
                 loop {
                     tokio::time::sleep(tokio::time::Duration::from_secs(300)).await; // 5分钟
 
@@ -842,12 +866,13 @@ pub fn run() {
                     }
                 }
             });
-            
+
             // 启动后台任务：每天归档一次
             let db_state_for_archive = db_state.clone();
             tauri::async_runtime::spawn(async move {
-                let mut archive_interval = tokio::time::interval(tokio::time::Duration::from_secs(86400)); // 24小时
-                
+                let mut archive_interval =
+                    tokio::time::interval(tokio::time::Duration::from_secs(86400)); // 24小时
+
                 loop {
                     archive_interval.tick().await;
 
@@ -883,7 +908,7 @@ pub fn run() {
                     }
                 }
             });
-            
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -942,6 +967,12 @@ pub fn run() {
             start_p2p_discovery,
             stop_p2p_discovery,
             send_p2p_message,
+            list_plugins,
+            refresh_plugins,
+            set_plugin_enabled,
+            get_plugin_dirs,
+            run_plugin_action,
+            validate_plugin,
             detect_system_python,
             scan_app_venvs,
             create_venv,
