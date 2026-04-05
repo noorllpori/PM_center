@@ -543,6 +543,7 @@ export function WelcomeScreen({ onOpenProject, settingsLoaded }: WelcomeScreenPr
         isOpen={showSettings}
         onClose={() => setShowSettings(false)}
         defaultScope="global"
+        onOpenProject={onOpenProject}
       />
 
       {/* 已忽略项目列表对话框 */}

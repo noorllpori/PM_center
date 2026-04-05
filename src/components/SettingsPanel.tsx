@@ -38,6 +38,7 @@ interface SettingsPanelProps {
   isOpen: boolean;
   onClose: () => void;
   defaultScope?: SettingsScope;
+  onOpenProject?: (path: string) => Promise<void> | void;
 }
 
 interface ToolStatus {
@@ -69,6 +70,7 @@ export function SettingsPanel({
   isOpen,
   onClose,
   defaultScope = 'global',
+  onOpenProject,
 }: SettingsPanelProps) {
   const {
     autoOpenLastProject,
@@ -360,6 +362,23 @@ export function SettingsPanel({
     }
   };
 
+  const handleOpenDirectoryAsProject = async (targetPath?: string | null) => {
+    if (!targetPath || !onOpenProject) {
+      return;
+    }
+
+    try {
+      await Promise.resolve(onOpenProject(targetPath));
+      onClose();
+    } catch (error) {
+      setAlertDialog({
+        isOpen: true,
+        title: '作为项目打开失败',
+        message: String(error),
+      });
+    }
+  };
+
   const handleTogglePlugin = async (plugin: PluginDescriptor, enabled: boolean) => {
     try {
       await togglePlugin(projectPath, plugin.key, enabled);
@@ -380,6 +399,35 @@ export function SettingsPanel({
   const projectPlugins = useMemo(
     () => pluginDescriptors.filter((plugin) => plugin.scope === 'project'),
     [pluginDescriptors],
+  );
+
+  const renderDirectoryActionButtons = ({
+    targetPath,
+    explorerAction,
+    projectAction,
+  }: {
+    targetPath?: string | null;
+    explorerAction: () => void;
+    projectAction: () => void;
+  }) => (
+    <div className="flex flex-wrap items-center justify-end gap-2">
+      <button
+        onClick={explorerAction}
+        disabled={!targetPath}
+        className="px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:bg-gray-100 disabled:text-gray-400 disabled:border-gray-200 text-gray-700 dark:text-gray-200 transition-colors flex items-center gap-1.5"
+      >
+        <ExternalLink className="w-4 h-4" />
+        系统文件夹
+      </button>
+      <button
+        onClick={projectAction}
+        disabled={!targetPath || !onOpenProject}
+        className="px-3 py-2 text-sm rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white transition-colors flex items-center gap-1.5"
+      >
+        <FolderOpen className="w-4 h-4" />
+        作为项目打开
+      </button>
+    </div>
   );
 
   const renderExcludeRulesSection = ({
@@ -544,14 +592,11 @@ export function SettingsPanel({
               {directoryPath || '当前范围没有插件目录'}
             </p>
           </div>
-          <button
-            onClick={() => void handleOpenPluginDirectory(directoryPath)}
-            disabled={!directoryPath}
-            className="px-3 py-2 text-sm rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white transition-colors flex items-center gap-1.5"
-          >
-            <ExternalLink className="w-4 h-4" />
-            打开
-          </button>
+          {renderDirectoryActionButtons({
+            targetPath: directoryPath,
+            explorerAction: () => void handleOpenPluginDirectory(directoryPath),
+            projectAction: () => void handleOpenDirectoryAsProject(directoryPath),
+          })}
         </div>
       </div>
 
@@ -678,14 +723,11 @@ export function SettingsPanel({
             <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">全局任务脚本目录</h4>
             <p className="text-xs text-gray-500 mt-1">这里存放所有项目共用的通用任务脚本。</p>
           </div>
-          <button
-            onClick={() => void handleOpenGlobalTaskScriptsDir()}
-            disabled={!globalTaskScriptsPath}
-            className="px-3 py-2 text-sm rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white transition-colors flex items-center gap-1.5"
-          >
-            <ExternalLink className="w-4 h-4" />
-            在资源管理器中打开
-          </button>
+          {renderDirectoryActionButtons({
+            targetPath: globalTaskScriptsPath,
+            explorerAction: () => void handleOpenGlobalTaskScriptsDir(),
+            projectAction: () => void handleOpenDirectoryAsProject(globalTaskScriptsPath),
+          })}
         </div>
 
         <div className="rounded-lg bg-gray-50 dark:bg-gray-800 px-3 py-3">

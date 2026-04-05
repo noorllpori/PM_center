@@ -342,7 +342,7 @@ export function FileManager() {
               projectStore={activeProjectSession.projectStore}
               workspaceTabStore={activeProjectSession.workspaceTabStore}
             >
-              <Toolbar />
+              <Toolbar onOpenProject={handleOpenProject} />
             </ProjectSessionProvider>
           ) : (
             <div className="h-full px-3 py-2" />

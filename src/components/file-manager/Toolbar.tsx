@@ -19,7 +19,11 @@ import {
 
 export const TOOLBAR_SEARCH_FOCUS_EVENT = 'pm-center:focus-toolbar-search';
 
-export function Toolbar() {
+interface ToolbarProps {
+  onOpenProject: (path: string) => Promise<void> | void;
+}
+
+export function Toolbar({ onOpenProject }: ToolbarProps) {
   const {
     viewMode,
     setViewMode,
@@ -386,6 +390,7 @@ export function Toolbar() {
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         defaultScope="project"
+        onOpenProject={onOpenProject}
       />
     </div>
   );
