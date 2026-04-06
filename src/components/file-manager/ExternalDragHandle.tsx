@@ -1,4 +1,4 @@
-import type { MouseEvent, PointerEvent } from "react";
+import type { MouseEvent, PointerEvent, ReactNode } from "react";
 import { ExternalLink } from "lucide-react";
 import { useExternalFileDrag } from "./useExternalFileDrag";
 
@@ -7,6 +7,7 @@ interface ExternalDragHandleProps {
   className?: string;
   iconClassName?: string;
   title?: string;
+  children?: ReactNode;
 }
 
 function stopInteraction(
@@ -21,6 +22,7 @@ export function ExternalDragHandle({
   className = "",
   iconClassName = "h-3.5 w-3.5",
   title = "拖到系统文件夹或外部程序",
+  children,
 }: ExternalDragHandleProps) {
   const { supported, handlePointerDown } = useExternalFileDrag(resolvePaths);
 
@@ -40,9 +42,11 @@ export function ExternalDragHandle({
       onClick={stopInteraction}
       onDoubleClick={stopInteraction}
     >
-      <span className="pointer-events-none" draggable={false}>
-        <ExternalLink className={iconClassName} />
-      </span>
+      {children ?? (
+        <span className="pointer-events-none" draggable={false}>
+          <ExternalLink className={iconClassName} />
+        </span>
+      )}
     </button>
   );
 }

@@ -169,9 +169,9 @@ const ListRow = memo(function ListRow({
   const fileTagList = resolveFileTags(file.path);
   const isDropTarget = file.is_dir && dropTargetPath === file.path;
   const excluded = isExcluded(file);
-  const externalDragHandleVisibilityClass = isSelected
-    ? "opacity-100"
-    : "opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto";
+  const externalDragZoneToneClass = isSelected
+    ? "border-blue-500/25 bg-blue-950/18 text-blue-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.24)] dark:border-blue-300/20 dark:bg-blue-950/35 dark:text-blue-100"
+    : "border-slate-950/10 bg-slate-950/10 text-slate-600 shadow-[inset_0_1px_0_rgba(255,255,255,0.18)] dark:border-white/10 dark:bg-black/25 dark:text-slate-300";
 
   return (
     <div
@@ -249,22 +249,60 @@ const ListRow = memo(function ListRow({
           {col.key === "name" && (
             <div className="flex min-w-0 items-center gap-2">
               {getFileIcon(file)}
-              <span
-                className={`min-w-0 flex-1 truncate ${isSelected ? "font-semibold" : ""}`}
-              >
-                {file.name}
-              </span>
-              {showExcludedFiles && excluded && (
-                <span className="shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
-                  已排除
-                </span>
-              )}
-              <ExternalDragHandle
-                resolvePaths={() => getExternalDragPaths(file)}
-                className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-gray-400 transition hover:bg-gray-200 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-100 ${externalDragHandleVisibilityClass} ${
-                  isSelected ? "text-blue-700 dark:text-blue-200" : ""
-                }`}
-              />
+              <div className="relative min-w-0 flex-1">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span
+                    className={`min-w-0 flex-1 truncate ${isSelected ? "font-semibold" : ""}`}
+                  >
+                    {file.name}
+                  </span>
+                  {showExcludedFiles && excluded && (
+                    <span className="shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                      已排除
+                    </span>
+                  )}
+                </div>
+                <ExternalDragHandle
+                  resolvePaths={() => getExternalDragPaths(file)}
+                  className={`absolute inset-y-0 right-0 flex w-[35%] translate-x-2 items-center justify-center overflow-hidden rounded-md border px-3 opacity-0 pointer-events-none transition-all duration-200 group-hover:pointer-events-auto group-hover:translate-x-0 group-hover:opacity-100 ${externalDragZoneToneClass}`}
+                >
+                  <span
+                    className="pointer-events-none absolute inset-0 bg-gradient-to-r from-transparent via-slate-950/8 to-slate-950/22 dark:via-black/10 dark:to-black/35"
+                    draggable={false}
+                  />
+                  <span
+                    className="pointer-events-none absolute inset-y-1 left-0 w-px bg-white/20 dark:bg-white/10"
+                    draggable={false}
+                  />
+                  <span
+                    className="pointer-events-none relative flex items-center gap-1.5 whitespace-nowrap text-[11px] font-semibold"
+                    draggable={false}
+                  >
+                    <span
+                      className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-white/16 text-current dark:bg-white/10"
+                      draggable={false}
+                    >
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        width="24"
+                        height="24"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="h-3.5 w-3.5"
+                      >
+                        <path d="M15 3h6v6" />
+                        <path d="M10 14 21 3" />
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                      </svg>
+                    </span>
+                    <span>拖出</span>
+                  </span>
+                </ExternalDragHandle>
+              </div>
             </div>
           )}
           {col.key === "size" && formatSize(file.size)}
