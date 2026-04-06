@@ -12,6 +12,7 @@ use crate::process_utils::{std_command, tokio_command};
 
 const PLUGIN_STATE_FILE: &str = "plugin-state.json";
 const PLUGIN_API_VERSION: &str = "1";
+const DEFAULT_PLUGIN_ACTION_MENU_PLACEMENT: &str = "section";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,9 +25,13 @@ pub struct PluginValidationIssue {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginActionWhen {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub project_open: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub selection_count: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub target_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub extensions: Option<Vec<String>>,
 }
 
@@ -43,6 +48,8 @@ pub struct PluginAction {
     pub location: String,
     pub scope: String,
     pub when: PluginActionWhen,
+    pub menu_placement: String,
+    pub submenu: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,6 +192,14 @@ struct PluginActionContribution {
     command: String,
     title: Option<String>,
     when: Option<PluginActionWhen>,
+    menu: Option<PluginActionMenuContribution>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginActionMenuContribution {
+    placement: Option<String>,
+    submenu: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -286,6 +301,59 @@ fn validate_when(
             }
         }
     }
+}
+
+fn normalize_action_menu(
+    location: &str,
+    menu: Option<PluginActionMenuContribution>,
+    issues: &mut Vec<PluginValidationIssue>,
+    action_label: &str,
+) -> (String, Option<String>) {
+    if location != "file-context" {
+        return (DEFAULT_PLUGIN_ACTION_MENU_PLACEMENT.to_string(), None);
+    }
+
+    let Some(menu) = menu else {
+        return (DEFAULT_PLUGIN_ACTION_MENU_PLACEMENT.to_string(), None);
+    };
+
+    let placement = menu
+        .placement
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_PLUGIN_ACTION_MENU_PLACEMENT)
+        .to_ascii_lowercase();
+
+    let menu_placement = if matches!(placement.as_str(), "section" | "inline") {
+        placement
+    } else {
+        push_issue(
+            issues,
+            "invalid_menu_placement",
+            format!("{action_label}: menu.placement 只支持 section/inline"),
+        );
+        DEFAULT_PLUGIN_ACTION_MENU_PLACEMENT.to_string()
+    };
+
+    let submenu = match menu.submenu {
+        Some(submenu) => {
+            let trimmed = submenu.trim();
+            if trimmed.is_empty() {
+                push_issue(
+                    issues,
+                    "invalid_submenu",
+                    format!("{action_label}: menu.submenu 不能为空字符串"),
+                );
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        None => None,
+    };
+
+    (menu_placement, submenu)
 }
 
 fn plugin_state_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
@@ -644,36 +712,51 @@ fn scan_plugin_dir(
         }
 
         let mut build_action = |location: &str, contribution: PluginActionContribution| {
-            let Some(command) = command_map.get(&contribution.command) else {
+            let command = contribution.command.clone();
+            let title = contribution.title.clone();
+            let when = contribution.when;
+            let menu = contribution.menu;
+
+            let Some(command_definition) = command_map.get(&command) else {
                 push_issue(
                     &mut issues,
                     "missing_command_reference",
                     format!(
                         "插件 {} 的 {} 引用了不存在的 command: {}",
-                        descriptor.id, location, contribution.command
+                        descriptor.id, location, command
                     ),
                 );
                 return;
             };
 
-            let when = contribution.when.unwrap_or_default();
+            let when = when.unwrap_or_default();
             validate_when(
                 &when,
                 &mut issues,
                 &format!("插件 {} 的 {}", descriptor.id, contribution.command),
             );
 
+            let (menu_placement, submenu) = normalize_action_menu(
+                location,
+                menu,
+                &mut issues,
+                &format!("插件 {} 的 {}", descriptor.id, command),
+            );
+            let action_index = descriptor.actions.len();
+
             descriptor.actions.push(PluginAction {
-                id: format!("{}:{}:{}", descriptor.id, contribution.command, location),
+                id: format!("{}:{}:{}:{}", descriptor.id, command, location, action_index),
                 plugin_key: descriptor.key.clone(),
                 plugin_id: descriptor.id.clone(),
                 plugin_name: descriptor.name.clone(),
-                command_id: contribution.command.clone(),
-                title: contribution.title.unwrap_or_else(|| command.title.clone()),
-                description: command.description.clone(),
+                command_id: command.clone(),
+                title: title.unwrap_or_else(|| command_definition.title.clone()),
+                description: command_definition.description.clone(),
                 location: location.to_string(),
                 scope: descriptor.scope.clone(),
                 when,
+                menu_placement,
+                submenu,
             });
         };
 
@@ -1091,8 +1174,8 @@ pub async fn run_plugin_action(
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_extension, parse_plugin_control_message, validate_when, version_greater_than,
-        PluginActionWhen,
+        normalize_action_menu, normalize_extension, parse_plugin_control_message, validate_when,
+        version_greater_than, PluginActionMenuContribution, PluginActionWhen,
     };
 
     #[test]
@@ -1145,5 +1228,54 @@ mod tests {
         assert!(codes.contains(&"invalid_selection_count"));
         assert!(codes.contains(&"invalid_target_kind"));
         assert!(codes.contains(&"invalid_extension"));
+    }
+
+    #[test]
+    fn normalizes_file_context_menu_defaults() {
+        let mut issues = Vec::new();
+        let (placement, submenu) =
+            normalize_action_menu("file-context", None, &mut issues, "test-action");
+
+        assert_eq!(placement, "section");
+        assert_eq!(submenu, None);
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn normalizes_valid_file_context_submenu() {
+        let mut issues = Vec::new();
+        let (placement, submenu) = normalize_action_menu(
+            "file-context",
+            Some(PluginActionMenuContribution {
+                placement: Some("INLINE".to_string()),
+                submenu: Some(" Batch Tools ".to_string()),
+            }),
+            &mut issues,
+            "test-action",
+        );
+
+        assert_eq!(placement, "inline");
+        assert_eq!(submenu.as_deref(), Some("Batch Tools"));
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn reports_invalid_file_context_menu_values() {
+        let mut issues = Vec::new();
+        let (placement, submenu) = normalize_action_menu(
+            "file-context",
+            Some(PluginActionMenuContribution {
+                placement: Some("floating".to_string()),
+                submenu: Some("   ".to_string()),
+            }),
+            &mut issues,
+            "test-action",
+        );
+
+        let codes = issues.iter().map(|issue| issue.code.as_str()).collect::<Vec<_>>();
+        assert_eq!(placement, "section");
+        assert_eq!(submenu, None);
+        assert!(codes.contains(&"invalid_menu_placement"));
+        assert!(codes.contains(&"invalid_submenu"));
     }
 }

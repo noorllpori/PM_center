@@ -18,7 +18,11 @@ import { useFileDropMove } from './useFileDropMove';
 import { useInternalFileDrag } from './useInternalFileDrag';
 import { getWorkspaceOpenTarget, isTextExtension, isVideoExtension } from '../workspace/fileOpeners';
 import { isImageExtension } from '../image-viewer/imageViewerUtils';
-import { buildPluginContextItems, getVisiblePluginActions } from '../../utils/pluginActions';
+import {
+  buildPluginContextItems,
+  buildPluginVisibilityDiagnostics,
+  getVisiblePluginActions,
+} from '../../utils/pluginActions';
 import {
   mergeExcludePatterns,
   readProjectExcludePatterns,
@@ -1264,29 +1268,93 @@ export function FileList() {
     return [contextMenu.file];
   }, [contextMenu, selectedFileInfos]);
 
+  const fileContextPluginContext = useMemo(() => {
+    if (contextMenu?.kind !== 'file') {
+      return null;
+    }
+
+    return buildFileContext(fileContextSelectedItems);
+  }, [buildFileContext, contextMenu, fileContextSelectedItems]);
+
   const fileContextPluginActions = useMemo(() => {
-    if (!projectPath || contextMenu?.kind !== 'file') {
+    if (!projectPath || contextMenu?.kind !== 'file' || !fileContextPluginContext) {
       return [];
     }
 
     return getVisiblePluginActions(
       pluginState?.descriptors || [],
       'file-context',
-      buildFileContext(fileContextSelectedItems),
+      fileContextPluginContext,
     );
-  }, [buildFileContext, contextMenu, fileContextSelectedItems, pluginState?.descriptors, projectPath]);
+  }, [contextMenu, fileContextPluginContext, pluginState?.descriptors, projectPath]);
+
+  const fileContextPluginDebugInfo = useMemo(() => {
+    if (!projectPath || contextMenu?.kind !== 'file' || !fileContextPluginContext) {
+      return '';
+    }
+
+    return JSON.stringify(
+      buildPluginVisibilityDiagnostics(
+        pluginState?.descriptors || [],
+        'file-context',
+        fileContextPluginContext,
+      ),
+      null,
+      2,
+    );
+  }, [contextMenu, fileContextPluginContext, pluginState?.descriptors, projectPath]);
+
+  const currentDirectoryPluginContext = useMemo(() => {
+    if (contextMenu?.kind !== 'directory') {
+      return null;
+    }
+
+    return buildFileContext([]);
+  }, [buildFileContext, contextMenu]);
 
   const currentDirectoryPluginActions = useMemo(() => {
-    if (!projectPath || contextMenu?.kind !== 'directory') {
+    if (!projectPath || contextMenu?.kind !== 'directory' || !currentDirectoryPluginContext) {
       return [];
     }
 
     return getVisiblePluginActions(
       pluginState?.descriptors || [],
       'file-context',
-      buildFileContext([]),
+      currentDirectoryPluginContext,
     );
-  }, [buildFileContext, contextMenu, pluginState?.descriptors, projectPath]);
+  }, [contextMenu, currentDirectoryPluginContext, pluginState?.descriptors, projectPath]);
+
+  const currentDirectoryPluginDebugInfo = useMemo(() => {
+    if (!projectPath || contextMenu?.kind !== 'directory' || !currentDirectoryPluginContext) {
+      return '';
+    }
+
+    return JSON.stringify(
+      buildPluginVisibilityDiagnostics(
+        pluginState?.descriptors || [],
+        'file-context',
+        currentDirectoryPluginContext,
+      ),
+      null,
+      2,
+    );
+  }, [contextMenu, currentDirectoryPluginContext, pluginState?.descriptors, projectPath]);
+
+  useEffect(() => {
+    if (contextMenu?.kind !== 'file' || !fileContextPluginDebugInfo) {
+      return;
+    }
+
+    console.info('[plugin-debug:file-context]', JSON.parse(fileContextPluginDebugInfo));
+  }, [contextMenu, fileContextPluginDebugInfo]);
+
+  useEffect(() => {
+    if (contextMenu?.kind !== 'directory' || !currentDirectoryPluginDebugInfo) {
+      return;
+    }
+
+    console.info('[plugin-debug:directory-context]', JSON.parse(currentDirectoryPluginDebugInfo));
+  }, [contextMenu, currentDirectoryPluginDebugInfo]);
 
   if (isSearching) {
     return (
@@ -1353,6 +1421,7 @@ export function FileList() {
           currentPath={currentPath || ''}
           projectPath={projectPath || ''}
           pluginActions={fileContextPluginActions}
+          pluginDebugInfo={fileContextPluginDebugInfo}
           onClose={handleCloseContextMenu}
           onRefresh={handleRefresh}
           onShowDetails={handleShowDetails}
@@ -1370,6 +1439,7 @@ export function FileList() {
           currentPath={currentPath || ''}
           projectPath={projectPath || ''}
           pluginActions={currentDirectoryPluginActions}
+          pluginDebugInfo={currentDirectoryPluginDebugInfo}
           onClose={handleCloseContextMenu}
           onRefresh={handleRefresh}
           onCreateFolder={handleCreateFolder}

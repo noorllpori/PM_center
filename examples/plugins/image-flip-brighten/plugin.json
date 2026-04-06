@@ -1,0 +1,41 @@
+{
+  "id": "image-flip-brighten",
+  "name": "Image Flip Brighten",
+  "version": "0.1.0",
+  "apiVersion": "1",
+  "runtime": "python",
+  "entry": "main.py",
+  "description": "Right-click image files to mirror them horizontally and brighten them slightly.",
+  "enabledByDefault": true,
+  "contributes": {
+    "commands": [
+      {
+        "id": "flip-brighten-images",
+        "title": "翻转并提亮图片",
+        "description": "对选中的图片执行水平翻转，并在旁边生成提亮后的新文件。"
+      }
+    ],
+    "fileContextActions": [
+      {
+        "command": "flip-brighten-images",
+        "when": {
+          "selectionCount": "any",
+          "targetKind": "file",
+          "extensions": [
+            "png",
+            "jpg",
+            "jpeg",
+            "webp",
+            "bmp",
+            "tif",
+            "tiff"
+          ]
+        },
+        "menu": {
+          "placement": "inline"
+        }
+      }
+    ]
+  },
+  "permissions": []
+}

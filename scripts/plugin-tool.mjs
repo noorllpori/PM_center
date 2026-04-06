@@ -121,6 +121,21 @@ function validateManifest(manifest) {
       if (!action.command || !commands.has(action.command)) {
         issues.push(`${groupName} references missing command: ${action.command || '(empty)'}`);
       }
+
+      if (groupName !== 'fileContextActions' || !action.menu) {
+        continue;
+      }
+
+      const placement = (action.menu.placement || 'section').trim().toLowerCase();
+      if (placement !== 'section' && placement !== 'inline') {
+        issues.push(`fileContextActions menu.placement must be "section" or "inline": ${action.command}`);
+      }
+
+      if (action.menu.submenu !== undefined) {
+        if (typeof action.menu.submenu !== 'string' || action.menu.submenu.trim() === '') {
+          issues.push(`fileContextActions menu.submenu must be a non-empty string: ${action.command}`);
+        }
+      }
     }
   }
 

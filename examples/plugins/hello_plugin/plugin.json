@@ -13,6 +13,21 @@
         "id": "hello",
         "title": "Hello Plugin",
         "description": "Show a toast and print a small result payload."
+      },
+      {
+        "id": "hello-inline",
+        "title": "直接执行示例",
+        "description": "Insert a direct plugin button into the main context menu."
+      },
+      {
+        "id": "hello-batch-report",
+        "title": "生成批量报告",
+        "description": "Show a submenu action under a plugin flyout."
+      },
+      {
+        "id": "hello-batch-refresh",
+        "title": "刷新当前目录",
+        "description": "Demonstrate a second submenu action."
       }
     ],
     "toolbarActions": [
@@ -29,6 +44,38 @@
         "when": {
           "selectionCount": "single",
           "targetKind": "file"
+        }
+      },
+      {
+        "command": "hello-inline",
+        "when": {
+          "selectionCount": "single",
+          "targetKind": "file"
+        },
+        "menu": {
+          "placement": "inline"
+        }
+      },
+      {
+        "command": "hello-batch-report",
+        "when": {
+          "selectionCount": "multiple",
+          "targetKind": "file"
+        },
+        "menu": {
+          "placement": "inline",
+          "submenu": "批量工具"
+        }
+      },
+      {
+        "command": "hello-batch-refresh",
+        "when": {
+          "selectionCount": "multiple",
+          "targetKind": "file"
+        },
+        "menu": {
+          "placement": "inline",
+          "submenu": "批量工具"
         }
       }
     ]

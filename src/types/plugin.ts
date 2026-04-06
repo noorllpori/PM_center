@@ -1,5 +1,6 @@
 export type PluginScope = 'global' | 'project';
 export type PluginActionLocation = 'toolbar' | 'file-context';
+export type PluginActionMenuPlacement = 'section' | 'inline';
 export type PluginSelectionCount = 'any' | 'none' | 'single' | 'multiple';
 export type PluginTargetKind = 'any' | 'file' | 'directory' | 'mixed';
 
@@ -10,10 +11,10 @@ export interface PluginValidationIssue {
 }
 
 export interface PluginActionWhen {
-  projectOpen?: boolean;
-  selectionCount?: PluginSelectionCount;
-  targetKind?: PluginTargetKind;
-  extensions?: string[];
+  projectOpen?: boolean | null;
+  selectionCount?: PluginSelectionCount | null;
+  targetKind?: PluginTargetKind | null;
+  extensions?: string[] | null;
 }
 
 export interface PluginAction {
@@ -27,6 +28,8 @@ export interface PluginAction {
   location: PluginActionLocation;
   scope: PluginScope;
   when: PluginActionWhen;
+  menuPlacement: PluginActionMenuPlacement;
+  submenu?: string | null;
 }
 
 export interface PluginDescriptor {
