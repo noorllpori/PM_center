@@ -1,37 +1,53 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { ColumnConfig, FileInfo, Tag } from '../../types';
-import { useProjectStoreApi, useProjectStoreShallow } from '../../stores/projectStore';
-import { usePluginStore } from '../../stores/pluginStore';
-import { useSettingsStore } from '../../stores/settingsStore';
-import { useTaskStore } from '../../stores/taskStore';
-import { useUiStore } from '../../stores/uiStore';
-import { useWorkspaceTabStore } from '../../stores/workspaceTabStore';
-import { APP_VERSION } from '../../config/appMeta';
-import type { PluginAction } from '../../types/plugin';
-import { FileIcon, FolderIcon, Image, Film, FileText, Box } from 'lucide-react';
-import { CurrentDirectoryContextMenu, FileContextMenu } from './FileContextMenu';
-import { FileDetailsDialog } from './FileDetailsView';
-import { InputDialog } from '../Dialog';
-import { canMovePathsToDirectory, compactDraggedPaths, getPathLabel, joinPath } from './dragDrop';
-import { useFileDropMove } from './useFileDropMove';
-import { useInternalFileDrag } from './useInternalFileDrag';
-import { getWorkspaceOpenTarget, isTextExtension, isVideoExtension } from '../workspace/fileOpeners';
-import { isImageExtension } from '../image-viewer/imageViewerUtils';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { ColumnConfig, FileInfo, Tag } from "../../types";
+import {
+  useProjectStoreApi,
+  useProjectStoreShallow,
+} from "../../stores/projectStore";
+import { usePluginStore } from "../../stores/pluginStore";
+import { useSettingsStore } from "../../stores/settingsStore";
+import { useTaskStore } from "../../stores/taskStore";
+import { useUiStore } from "../../stores/uiStore";
+import { useWorkspaceTabStore } from "../../stores/workspaceTabStore";
+import { APP_VERSION } from "../../config/appMeta";
+import type { PluginAction } from "../../types/plugin";
+import { FileIcon, FolderIcon, Image, Film, FileText, Box } from "lucide-react";
+import {
+  CurrentDirectoryContextMenu,
+  FileContextMenu,
+} from "./FileContextMenu";
+import { FileDetailsDialog } from "./FileDetailsView";
+import { InputDialog } from "../Dialog";
+import {
+  canMovePathsToDirectory,
+  compactDraggedPaths,
+  getPathLabel,
+  joinPath,
+} from "./dragDrop";
+import { ExternalDragHandle } from "./ExternalDragHandle";
+import { useFileDropMove } from "./useFileDropMove";
+import { useInternalFileDrag } from "./useInternalFileDrag";
+import {
+  getWorkspaceOpenTarget,
+  isTextExtension,
+  isVideoExtension,
+} from "../workspace/fileOpeners";
+import { isImageExtension } from "../image-viewer/imageViewerUtils";
 import {
   buildPluginContextItems,
   buildPluginVisibilityDiagnostics,
   getVisiblePluginActions,
-} from '../../utils/pluginActions';
+} from "../../utils/pluginActions";
 import {
   mergeExcludePatterns,
   readProjectExcludePatterns,
   shouldExcludeFile,
-} from '../../utils/excludePatterns';
+} from "../../utils/excludePatterns";
 
 function formatSize(bytes: number): string {
-  if (bytes === 0) return '-';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  if (bytes === 0) return "-";
+  const units = ["B", "KB", "MB", "GB", "TB"];
   let size = bytes;
   let unitIndex = 0;
   while (size >= 1024 && unitIndex < units.length - 1) {
@@ -42,14 +58,14 @@ function formatSize(bytes: number): string {
 }
 
 function formatDate(dateStr: string | null): string {
-  if (!dateStr) return '-';
+  if (!dateStr) return "-";
   const date = new Date(dateStr);
-  return date.toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
+  return date.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
   });
 }
 
@@ -68,7 +84,7 @@ function getFileIcon(file: FileInfo) {
     return <Film className="w-5 h-5 text-red-500" />;
   }
 
-  if (ext === 'blend') {
+  if (ext === "blend") {
     return <Box className="w-5 h-5 text-orange-500" />;
   }
 
@@ -122,6 +138,7 @@ const ListRow = memo(function ListRow({
   onContextMenu,
   onDragStart,
   onDragEnd,
+  getExternalDragPaths,
   onDropToDirectory,
   onHoverDirectory,
   canDropToDirectory,
@@ -140,29 +157,36 @@ const ListRow = memo(function ListRow({
   onContextMenu: (file: FileInfo, x: number, y: number) => void;
   onDragStart: (file: FileInfo, event: React.DragEvent<HTMLDivElement>) => void;
   onDragEnd: () => void;
+  getExternalDragPaths: (file: FileInfo) => string[];
   onDropToDirectory: (targetDir: string, dragPaths?: string[]) => Promise<void>;
   onHoverDirectory: (targetDir: string) => void;
   canDropToDirectory: (targetDir: string, dragPaths?: string[]) => boolean;
-  getDraggedPathsFromDataTransfer: (dataTransfer: DataTransfer | null) => string[];
+  getDraggedPathsFromDataTransfer: (
+    dataTransfer: DataTransfer | null,
+  ) => string[];
 }) {
   const isSelected = selectedFiles.has(file.path);
   const fileTagList = resolveFileTags(file.path);
   const isDropTarget = file.is_dir && dropTargetPath === file.path;
   const excluded = isExcluded(file);
+  const externalDragHandleVisibilityClass = isSelected
+    ? "opacity-100"
+    : "opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto";
 
   return (
     <div
       draggable
       style={{ height: LIST_ROW_HEIGHT }}
       className={`
-        relative flex min-w-max items-center border-b border-gray-100 dark:border-gray-800
+        group relative flex min-w-max items-center border-b border-gray-100 dark:border-gray-800
         cursor-pointer select-none transition-colors
-        ${isSelected
-          ? 'bg-blue-100/90 dark:bg-blue-950/45 text-blue-950 dark:text-blue-50 ring-1 ring-inset ring-blue-500/70 shadow-[inset_4px_0_0_0_#2563eb] dark:shadow-[inset_4px_0_0_0_#60a5fa]'
-          : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'
+        ${
+          isSelected
+            ? "bg-blue-100/90 dark:bg-blue-950/45 text-blue-950 dark:text-blue-50 ring-1 ring-inset ring-blue-500/70 shadow-[inset_4px_0_0_0_#2563eb] dark:shadow-[inset_4px_0_0_0_#60a5fa]"
+            : "hover:bg-gray-50 dark:hover:bg-gray-800/50"
         }
-        ${isDropTarget ? 'ring-2 ring-inset ring-blue-500 bg-blue-50' : ''}
-        ${showExcludedFiles && excluded ? 'opacity-70' : ''}
+        ${isDropTarget ? "ring-2 ring-inset ring-blue-500 bg-blue-50" : ""}
+        ${showExcludedFiles && excluded ? "opacity-70" : ""}
       `}
       onClick={(e) => {
         if (suppressInteraction(e)) return;
@@ -179,21 +203,30 @@ const ListRow = memo(function ListRow({
       onDragStart={(e) => onDragStart(file, e)}
       onDragEnd={onDragEnd}
       onDragOver={(e) => {
-        const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
-        if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
+        const internalDragPaths = getDraggedPathsFromDataTransfer(
+          e.dataTransfer,
+        );
+        if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths))
+          return;
         e.preventDefault();
-        e.dataTransfer.dropEffect = 'move';
+        e.dataTransfer.dropEffect = "move";
         onHoverDirectory(file.path);
       }}
       onDragEnter={(e) => {
-        const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
-        if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
+        const internalDragPaths = getDraggedPathsFromDataTransfer(
+          e.dataTransfer,
+        );
+        if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths))
+          return;
         e.preventDefault();
         onHoverDirectory(file.path);
       }}
       onDrop={async (e) => {
-        const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
-        if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
+        const internalDragPaths = getDraggedPathsFromDataTransfer(
+          e.dataTransfer,
+        );
+        if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths))
+          return;
         e.preventDefault();
         e.stopPropagation();
         await onDropToDirectory(file.path, internalDragPaths);
@@ -207,31 +240,47 @@ const ListRow = memo(function ListRow({
         <div
           key={col.key}
           className={`shrink-0 px-3 py-2 text-sm truncate ${
-            isSelected ? 'text-blue-950 dark:text-blue-50' : 'text-gray-700 dark:text-gray-200'
+            isSelected
+              ? "text-blue-950 dark:text-blue-50"
+              : "text-gray-700 dark:text-gray-200"
           }`}
-          style={{ width: col.width, textAlign: col.align || 'left' }}
+          style={{ width: col.width, textAlign: col.align || "left" }}
         >
-          {col.key === 'name' && (
-            <div className="flex items-center gap-2">
+          {col.key === "name" && (
+            <div className="flex min-w-0 items-center gap-2">
               {getFileIcon(file)}
-              <span className={`truncate ${isSelected ? 'font-semibold' : ''}`}>{file.name}</span>
+              <span
+                className={`min-w-0 flex-1 truncate ${isSelected ? "font-semibold" : ""}`}
+              >
+                {file.name}
+              </span>
               {showExcludedFiles && excluded && (
                 <span className="shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
                   已排除
                 </span>
               )}
+              <ExternalDragHandle
+                resolvePaths={() => getExternalDragPaths(file)}
+                className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-gray-400 transition hover:bg-gray-200 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-100 ${externalDragHandleVisibilityClass} ${
+                  isSelected ? "text-blue-700 dark:text-blue-200" : ""
+                }`}
+              />
             </div>
           )}
-          {col.key === 'size' && formatSize(file.size)}
-          {col.key === 'modified' && formatDate(file.modified)}
-          {col.key === 'type' && (file.is_dir ? '文件夹' : file.extension?.toUpperCase() || '文件')}
-          {col.key === 'tags' && (
+          {col.key === "size" && formatSize(file.size)}
+          {col.key === "modified" && formatDate(file.modified)}
+          {col.key === "type" &&
+            (file.is_dir ? "文件夹" : file.extension?.toUpperCase() || "文件")}
+          {col.key === "tags" && (
             <div className="flex gap-1 flex-wrap">
               {fileTagList.map((tag) => (
                 <span
                   key={tag.id}
                   className="px-1.5 py-0.5 text-xs rounded"
-                  style={{ backgroundColor: `${tag.color}20`, color: tag.color }}
+                  style={{
+                    backgroundColor: `${tag.color}20`,
+                    color: tag.color,
+                  }}
                 >
                   {tag.name}
                 </span>
@@ -253,6 +302,7 @@ function ListView({
   onBackgroundContextMenu,
   onDragStart,
   onDragEnd,
+  getExternalDragPaths,
   onDropToDirectory,
   onHoverDirectory,
   canDropToDirectory,
@@ -275,16 +325,23 @@ function ListView({
   onBackgroundContextMenu: (x: number, y: number) => void;
   onDragStart: (file: FileInfo, event: React.DragEvent<HTMLDivElement>) => void;
   onDragEnd: () => void;
+  getExternalDragPaths: (file: FileInfo) => string[];
   onDropToDirectory: (targetDir: string, dragPaths?: string[]) => Promise<void>;
   onHoverDirectory: (targetDir: string) => void;
   canDropToDirectory: (targetDir: string, dragPaths?: string[]) => boolean;
-  getDraggedPathsFromDataTransfer: (dataTransfer: DataTransfer | null) => string[];
+  getDraggedPathsFromDataTransfer: (
+    dataTransfer: DataTransfer | null,
+  ) => string[];
   suppressInteraction: (event: React.SyntheticEvent<HTMLElement>) => boolean;
   dropTargetPath: string | null;
   currentPath: string;
   columns: ColumnConfig[];
   resizingColumnKey: string | null;
-  onStartColumnResize: (key: string, width: number, event: React.MouseEvent<HTMLDivElement>) => void;
+  onStartColumnResize: (
+    key: string,
+    width: number,
+    event: React.MouseEvent<HTMLDivElement>,
+  ) => void;
   isExcluded: (file: FileInfo) => boolean;
   showExcludedFiles: boolean;
   resolveFileTags: ResolveFileTags;
@@ -315,17 +372,26 @@ function ListView({
     };
   }, []);
 
-  const handleBodyScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
-    const target = event.currentTarget;
-    setScrollTop(target.scrollTop);
-    if (headerScrollRef.current) {
-      headerScrollRef.current.scrollLeft = target.scrollLeft;
-    }
-  }, []);
+  const handleBodyScroll = useCallback(
+    (event: React.UIEvent<HTMLDivElement>) => {
+      const target = event.currentTarget;
+      setScrollTop(target.scrollTop);
+      if (headerScrollRef.current) {
+        headerScrollRef.current.scrollLeft = target.scrollLeft;
+      }
+    },
+    [],
+  );
 
   const visibleCount = Math.max(1, Math.ceil(viewportHeight / LIST_ROW_HEIGHT));
-  const startIndex = Math.max(0, Math.floor(scrollTop / LIST_ROW_HEIGHT) - LIST_OVERSCAN_COUNT);
-  const endIndex = Math.min(files.length, startIndex + visibleCount + LIST_OVERSCAN_COUNT * 2);
+  const startIndex = Math.max(
+    0,
+    Math.floor(scrollTop / LIST_ROW_HEIGHT) - LIST_OVERSCAN_COUNT,
+  );
+  const endIndex = Math.min(
+    files.length,
+    startIndex + visibleCount + LIST_OVERSCAN_COUNT * 2,
+  );
   const offsetY = startIndex * LIST_ROW_HEIGHT;
   const visibleFiles = files.slice(startIndex, endIndex);
 
@@ -343,20 +409,22 @@ function ListView({
               <div
                 key={col.key}
                 className="relative shrink-0 px-3 py-2 text-xs font-medium uppercase tracking-wider text-gray-500"
-                style={{ width: col.width, textAlign: col.align || 'left' }}
+                style={{ width: col.width, textAlign: col.align || "left" }}
               >
                 {col.title}
                 {!isLastVisibleColumn && (
                   <div
-                    onMouseDown={(event) => onStartColumnResize(col.key, col.width, event)}
+                    onMouseDown={(event) =>
+                      onStartColumnResize(col.key, col.width, event)
+                    }
                     className="absolute inset-y-0 -right-1 z-10 flex w-2 cursor-col-resize items-center justify-center"
                     title="拖动调整列宽"
                   >
                     <div
                       className={`h-5 w-px transition-colors ${
                         isResizing
-                          ? 'bg-blue-500'
-                          : 'bg-gray-200 dark:bg-gray-700 hover:bg-blue-400 dark:hover:bg-blue-500'
+                          ? "bg-blue-500"
+                          : "bg-gray-200 dark:bg-gray-700 hover:bg-blue-400 dark:hover:bg-blue-500"
                       }`}
                     />
                   </div>
@@ -369,7 +437,7 @@ function ListView({
 
       <div
         ref={bodyScrollRef}
-        className={`flex-1 overflow-auto ${dropTargetPath === currentPath ? 'bg-blue-50/60' : ''}`}
+        className={`flex-1 overflow-auto ${dropTargetPath === currentPath ? "bg-blue-50/60" : ""}`}
         onScroll={handleBodyScroll}
         onContextMenu={(e) => {
           if (e.target !== e.currentTarget) return;
@@ -377,14 +445,18 @@ function ListView({
           onBackgroundContextMenu(e.clientX, e.clientY);
         }}
         onDragOver={(e) => {
-          const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
+          const internalDragPaths = getDraggedPathsFromDataTransfer(
+            e.dataTransfer,
+          );
           if (!canDropToDirectory(currentPath, internalDragPaths)) return;
           e.preventDefault();
-          e.dataTransfer.dropEffect = 'move';
+          e.dataTransfer.dropEffect = "move";
           onHoverDirectory(currentPath);
         }}
         onDrop={async (e) => {
-          const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
+          const internalDragPaths = getDraggedPathsFromDataTransfer(
+            e.dataTransfer,
+          );
           if (!canDropToDirectory(currentPath, internalDragPaths)) return;
           e.preventDefault();
           await onDropToDirectory(currentPath, internalDragPaths);
@@ -395,8 +467,16 @@ function ListView({
             当前目录没有可显示的文件
           </div>
         ) : (
-          <div style={{ height: files.length * LIST_ROW_HEIGHT, minWidth: tableMinWidth, position: 'relative' }}>
-            <div style={{ position: 'absolute', left: 0, right: 0, top: offsetY }}>
+          <div
+            style={{
+              height: files.length * LIST_ROW_HEIGHT,
+              minWidth: tableMinWidth,
+              position: "relative",
+            }}
+          >
+            <div
+              style={{ position: "absolute", left: 0, right: 0, top: offsetY }}
+            >
               {visibleFiles.map((file) => (
                 <ListRow
                   key={file.path}
@@ -413,10 +493,13 @@ function ListView({
                   onContextMenu={onContextMenu}
                   onDragStart={onDragStart}
                   onDragEnd={onDragEnd}
+                  getExternalDragPaths={getExternalDragPaths}
                   onDropToDirectory={onDropToDirectory}
                   onHoverDirectory={onHoverDirectory}
                   canDropToDirectory={canDropToDirectory}
-                  getDraggedPathsFromDataTransfer={getDraggedPathsFromDataTransfer}
+                  getDraggedPathsFromDataTransfer={
+                    getDraggedPathsFromDataTransfer
+                  }
                 />
               ))}
             </div>
@@ -440,6 +523,7 @@ const GridCard = memo(function GridCard({
   onContextMenu,
   onDragStart,
   onDragEnd,
+  getExternalDragPaths,
   onDropToDirectory,
   onHoverDirectory,
   canDropToDirectory,
@@ -457,27 +541,34 @@ const GridCard = memo(function GridCard({
   onContextMenu: (file: FileInfo, x: number, y: number) => void;
   onDragStart: (file: FileInfo, event: React.DragEvent<HTMLDivElement>) => void;
   onDragEnd: () => void;
+  getExternalDragPaths: (file: FileInfo) => string[];
   onDropToDirectory: (targetDir: string, dragPaths?: string[]) => Promise<void>;
   onHoverDirectory: (targetDir: string) => void;
   canDropToDirectory: (targetDir: string, dragPaths?: string[]) => boolean;
-  getDraggedPathsFromDataTransfer: (dataTransfer: DataTransfer | null) => string[];
+  getDraggedPathsFromDataTransfer: (
+    dataTransfer: DataTransfer | null,
+  ) => string[];
 }) {
   const isSelected = selectedFiles.has(file.path);
   const fileTagList = resolveFileTags(file.path);
   const isDropTarget = file.is_dir && dropTargetPath === file.path;
   const excluded = isExcluded(file);
+  const externalDragHandleVisibilityClass = isSelected
+    ? "opacity-100"
+    : "opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto";
 
   return (
     <div
       draggable
       className={`
         group relative h-full p-3 rounded-lg cursor-pointer select-none transition-all
-        ${isSelected
-          ? 'bg-blue-100 dark:bg-blue-950/40 ring-2 ring-blue-500 shadow-lg shadow-blue-500/10 dark:shadow-blue-950/30'
-          : 'hover:bg-gray-50 dark:hover:bg-gray-800'
+        ${
+          isSelected
+            ? "bg-blue-100 dark:bg-blue-950/40 ring-2 ring-blue-500 shadow-lg shadow-blue-500/10 dark:shadow-blue-950/30"
+            : "hover:bg-gray-50 dark:hover:bg-gray-800"
         }
-        ${isDropTarget ? 'ring-2 ring-blue-500 bg-blue-50' : ''}
-        ${showExcludedFiles && excluded ? 'opacity-70' : ''}
+        ${isDropTarget ? "ring-2 ring-blue-500 bg-blue-50" : ""}
+        ${showExcludedFiles && excluded ? "opacity-70" : ""}
       `}
       onClick={(e) => {
         if (suppressInteraction(e)) return;
@@ -494,41 +585,59 @@ const GridCard = memo(function GridCard({
       onDragStart={(e) => onDragStart(file, e)}
       onDragEnd={onDragEnd}
       onDragOver={(e) => {
-        const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
-        if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
+        const internalDragPaths = getDraggedPathsFromDataTransfer(
+          e.dataTransfer,
+        );
+        if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths))
+          return;
         e.preventDefault();
-        e.dataTransfer.dropEffect = 'move';
+        e.dataTransfer.dropEffect = "move";
         onHoverDirectory(file.path);
       }}
       onDragEnter={(e) => {
-        const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
-        if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
+        const internalDragPaths = getDraggedPathsFromDataTransfer(
+          e.dataTransfer,
+        );
+        if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths))
+          return;
         e.preventDefault();
         onHoverDirectory(file.path);
       }}
       onDrop={async (e) => {
-        const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
-        if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths)) return;
+        const internalDragPaths = getDraggedPathsFromDataTransfer(
+          e.dataTransfer,
+        );
+        if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths))
+          return;
         e.preventDefault();
         e.stopPropagation();
         await onDropToDirectory(file.path, internalDragPaths);
       }}
     >
-      {isSelected && (
-        <div className="absolute right-2 top-2 rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium text-white dark:bg-blue-500">
-          已选中
-        </div>
-      )}
+      <div className="absolute right-2 top-2 flex items-center gap-1">
+        {isSelected && (
+          <div className="rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium text-white dark:bg-blue-500">
+            已选中
+          </div>
+        )}
+        <ExternalDragHandle
+          resolvePaths={() => getExternalDragPaths(file)}
+          className={`inline-flex h-7 w-7 items-center justify-center rounded-full bg-white/90 text-gray-500 shadow-sm ring-1 ring-black/5 transition hover:bg-white hover:text-gray-800 dark:bg-gray-900/85 dark:text-gray-300 dark:ring-white/10 dark:hover:bg-gray-800 dark:hover:text-gray-100 ${externalDragHandleVisibilityClass}`}
+          iconClassName="h-4 w-4"
+        />
+      </div>
 
-      <div className={`mb-2 aspect-square flex items-center justify-center rounded-xl transition-colors ${
-        isSelected ? 'bg-blue-200/70 dark:bg-blue-900/50' : ''
-      }`}>
+      <div
+        className={`mb-2 aspect-square flex items-center justify-center rounded-xl transition-colors ${
+          isSelected ? "bg-blue-200/70 dark:bg-blue-900/50" : ""
+        }`}
+      >
         {getFileIcon(file)}
       </div>
 
       <div
         className={`text-sm text-center truncate ${
-          isSelected ? 'font-semibold text-blue-950 dark:text-blue-50' : ''
+          isSelected ? "font-semibold text-blue-950 dark:text-blue-50" : ""
         }`}
         title={file.name}
       >
@@ -553,7 +662,9 @@ const GridCard = memo(function GridCard({
             />
           ))}
           {fileTagList.length > 2 && (
-            <span className="text-xs text-gray-400">+{fileTagList.length - 2}</span>
+            <span className="text-xs text-gray-400">
+              +{fileTagList.length - 2}
+            </span>
           )}
         </div>
       )}
@@ -570,6 +681,7 @@ function GridView({
   onBackgroundContextMenu,
   onDragStart,
   onDragEnd,
+  getExternalDragPaths,
   onDropToDirectory,
   onHoverDirectory,
   canDropToDirectory,
@@ -589,10 +701,13 @@ function GridView({
   onBackgroundContextMenu: (x: number, y: number) => void;
   onDragStart: (file: FileInfo, event: React.DragEvent<HTMLDivElement>) => void;
   onDragEnd: () => void;
+  getExternalDragPaths: (file: FileInfo) => string[];
   onDropToDirectory: (targetDir: string, dragPaths?: string[]) => Promise<void>;
   onHoverDirectory: (targetDir: string) => void;
   canDropToDirectory: (targetDir: string, dragPaths?: string[]) => boolean;
-  getDraggedPathsFromDataTransfer: (dataTransfer: DataTransfer | null) => string[];
+  getDraggedPathsFromDataTransfer: (
+    dataTransfer: DataTransfer | null,
+  ) => string[];
   suppressInteraction: (event: React.SyntheticEvent<HTMLElement>) => boolean;
   dropTargetPath: string | null;
   currentPath: string;
@@ -627,20 +742,32 @@ function GridView({
 
   const columnCount = getGridColumnCount(containerWidth);
   const rowCount = Math.max(1, Math.ceil(files.length / columnCount));
-  const visibleRowCount = Math.max(1, Math.ceil(viewportHeight / GRID_ROW_HEIGHT));
-  const startRow = Math.max(0, Math.floor(scrollTop / GRID_ROW_HEIGHT) - GRID_OVERSCAN_ROWS);
-  const endRow = Math.min(rowCount, startRow + visibleRowCount + GRID_OVERSCAN_ROWS * 2);
+  const visibleRowCount = Math.max(
+    1,
+    Math.ceil(viewportHeight / GRID_ROW_HEIGHT),
+  );
+  const startRow = Math.max(
+    0,
+    Math.floor(scrollTop / GRID_ROW_HEIGHT) - GRID_OVERSCAN_ROWS,
+  );
+  const endRow = Math.min(
+    rowCount,
+    startRow + visibleRowCount + GRID_OVERSCAN_ROWS * 2,
+  );
   const startIndex = startRow * columnCount;
   const endIndex = Math.min(files.length, endRow * columnCount);
   const visibleFiles = files.slice(startIndex, endIndex);
   const renderedRows = Math.ceil(visibleFiles.length / columnCount);
   const topSpacer = startRow * GRID_ROW_HEIGHT;
-  const bottomSpacer = Math.max(0, (rowCount - startRow - renderedRows) * GRID_ROW_HEIGHT);
+  const bottomSpacer = Math.max(
+    0,
+    (rowCount - startRow - renderedRows) * GRID_ROW_HEIGHT,
+  );
 
   return (
     <div
       ref={containerRef}
-      className={`h-full overflow-auto px-4 py-4 ${dropTargetPath === currentPath ? 'bg-blue-50/60' : ''}`}
+      className={`h-full overflow-auto px-4 py-4 ${dropTargetPath === currentPath ? "bg-blue-50/60" : ""}`}
       onScroll={(e) => {
         setScrollTop(e.currentTarget.scrollTop);
       }}
@@ -650,14 +777,18 @@ function GridView({
         onBackgroundContextMenu(e.clientX, e.clientY);
       }}
       onDragOver={(e) => {
-        const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
+        const internalDragPaths = getDraggedPathsFromDataTransfer(
+          e.dataTransfer,
+        );
         if (!canDropToDirectory(currentPath, internalDragPaths)) return;
         e.preventDefault();
-        e.dataTransfer.dropEffect = 'move';
+        e.dataTransfer.dropEffect = "move";
         onHoverDirectory(currentPath);
       }}
       onDrop={async (e) => {
-        const internalDragPaths = getDraggedPathsFromDataTransfer(e.dataTransfer);
+        const internalDragPaths = getDraggedPathsFromDataTransfer(
+          e.dataTransfer,
+        );
         if (!canDropToDirectory(currentPath, internalDragPaths)) return;
         e.preventDefault();
         await onDropToDirectory(currentPath, internalDragPaths);
@@ -693,10 +824,13 @@ function GridView({
                 onContextMenu={onContextMenu}
                 onDragStart={onDragStart}
                 onDragEnd={onDragEnd}
+                getExternalDragPaths={getExternalDragPaths}
                 onDropToDirectory={onDropToDirectory}
                 onHoverDirectory={onHoverDirectory}
                 canDropToDirectory={canDropToDirectory}
-                getDraggedPathsFromDataTransfer={getDraggedPathsFromDataTransfer}
+                getDraggedPathsFromDataTransfer={
+                  getDraggedPathsFromDataTransfer
+                }
               />
             ))}
           </div>
@@ -748,11 +882,17 @@ export function FileList() {
   }));
   const showToast = useUiStore((state) => state.showToast);
   const addTask = useTaskStore((state) => state.addTask);
-  const globalExcludePatterns = useSettingsStore((state) => state.globalExcludePatterns);
+  const globalExcludePatterns = useSettingsStore(
+    (state) => state.globalExcludePatterns,
+  );
   const openFileInTab = useWorkspaceTabStore((state) => state.openFileInTab);
-  const openFileInStandaloneWindow = useWorkspaceTabStore((state) => state.openFileInStandaloneWindow);
-  const pluginProjectKey = projectPath || '__global__';
-  const pluginState = usePluginStore((state) => state.byProject[pluginProjectKey]);
+  const openFileInStandaloneWindow = useWorkspaceTabStore(
+    (state) => state.openFileInStandaloneWindow,
+  );
+  const pluginProjectKey = projectPath || "__global__";
+  const pluginState = usePluginStore(
+    (state) => state.byProject[pluginProjectKey],
+  );
   const loadPlugins = usePluginStore((state) => state.loadPlugins);
   const {
     draggedPaths,
@@ -769,49 +909,71 @@ export function FileList() {
   });
 
   const [contextMenu, setContextMenu] = useState<
-    | { kind: 'file'; file: FileInfo; x: number; y: number }
-    | { kind: 'directory'; x: number; y: number }
+    | { kind: "file"; file: FileInfo; x: number; y: number }
+    | { kind: "directory"; x: number; y: number }
     | null
   >(null);
-  const [detailsDialogFile, setDetailsDialogFile] = useState<FileInfo | null>(null);
+  const [detailsDialogFile, setDetailsDialogFile] = useState<FileInfo | null>(
+    null,
+  );
   const [createFolderDialog, setCreateFolderDialog] = useState({
     isOpen: false,
-    suggestedName: '',
-    folderName: '',
+    suggestedName: "",
+    folderName: "",
   });
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
-  const [resizingColumnKey, setResizingColumnKey] = useState<string | null>(null);
-  const columnResizeStateRef = useRef<{ key: string; startX: number; startWidth: number } | null>(null);
+  const [resizingColumnKey, setResizingColumnKey] = useState<string | null>(
+    null,
+  );
+  const columnResizeStateRef = useRef<{
+    key: string;
+    startX: number;
+    startWidth: number;
+  } | null>(null);
 
   const displayFiles = searchQuery ? searchResults : files;
   const excludePatterns = projectPath
-    ? mergeExcludePatterns(globalExcludePatterns, readProjectExcludePatterns(projectPath))
+    ? mergeExcludePatterns(
+        globalExcludePatterns,
+        readProjectExcludePatterns(projectPath),
+      )
     : [];
-  const isExcluded = useCallback((file: FileInfo) => {
-    return excludePatterns.length > 0 && shouldExcludeFile(file.name, excludePatterns);
-  }, [excludePatterns]);
+  const isExcluded = useCallback(
+    (file: FileInfo) => {
+      return (
+        excludePatterns.length > 0 &&
+        shouldExcludeFile(file.name, excludePatterns)
+      );
+    },
+    [excludePatterns],
+  );
 
   const tagById = useMemo(() => {
     return new Map(tags.map((tag) => [tag.id, tag] as const));
   }, [tags]);
 
-  const resolveFileTags = useCallback((filePath: string): Tag[] => {
-    const tagIds = fileTags.get(filePath);
-    if (!tagIds || tagIds.length === 0) {
-      return [];
-    }
-
-    const resolved: Tag[] = [];
-    for (const tagId of tagIds) {
-      const tag = tagById.get(tagId);
-      if (tag) {
-        resolved.push(tag);
+  const resolveFileTags = useCallback(
+    (filePath: string): Tag[] => {
+      const tagIds = fileTags.get(filePath);
+      if (!tagIds || tagIds.length === 0) {
+        return [];
       }
-    }
-    return resolved;
-  }, [fileTags, tagById]);
 
-  const detailsDialogTagList = detailsDialogFile ? resolveFileTags(detailsDialogFile.path) : [];
+      const resolved: Tag[] = [];
+      for (const tagId of tagIds) {
+        const tag = tagById.get(tagId);
+        if (tag) {
+          resolved.push(tag);
+        }
+      }
+      return resolved;
+    },
+    [fileTags, tagById],
+  );
+
+  const detailsDialogTagList = detailsDialogFile
+    ? resolveFileTags(detailsDialogFile.path)
+    : [];
   const allKnownFiles = useMemo(() => {
     const fileMap = new Map<string, FileInfo>();
     for (const file of [...files, ...searchResults]) {
@@ -848,123 +1010,148 @@ export function FileList() {
     };
   }, [clearDropHoverState]);
 
-  const handleSystemOpenFile = useCallback(async (file: FileInfo) => {
-    try {
-      await invoke('open_file', { path: file.path });
-      showToast({
-        title: '已打开',
-        message: file.name,
-        tone: 'success',
-      });
-    } catch (error) {
-      console.error('Failed to open file:', error);
-      showToast({
-        title: '打开失败',
-        message: String(error),
-        tone: 'error',
-      });
-    }
-  }, [showToast]);
-
-  const handleDoubleClick = useCallback(async (file: FileInfo, openInStandalone: boolean) => {
-    if (file.is_dir) {
-      await loadDirectory(file.path);
-      return;
-    }
-
-    const openTarget = getWorkspaceOpenTarget(file.path);
-    if (!openTarget) {
-      await handleSystemOpenFile(file);
-      return;
-    }
-
-    try {
-      if (openInStandalone) {
-        const opened = await openFileInStandaloneWindow(file.path, {
-          projectPath: projectPath || undefined,
+  const handleSystemOpenFile = useCallback(
+    async (file: FileInfo) => {
+      try {
+        await invoke("open_file", { path: file.path });
+        showToast({
+          title: "已打开",
+          message: file.name,
+          tone: "success",
         });
-        if (!opened) {
-          await handleSystemOpenFile(file);
-        }
+      } catch (error) {
+        console.error("Failed to open file:", error);
+        showToast({
+          title: "打开失败",
+          message: String(error),
+          tone: "error",
+        });
+      }
+    },
+    [showToast],
+  );
+
+  const handleDoubleClick = useCallback(
+    async (file: FileInfo, openInStandalone: boolean) => {
+      if (file.is_dir) {
+        await loadDirectory(file.path);
         return;
       }
 
-      const tabId = await openFileInTab(file.path);
-      if (!tabId) {
+      const openTarget = getWorkspaceOpenTarget(file.path);
+      if (!openTarget) {
         await handleSystemOpenFile(file);
+        return;
       }
-    } catch (error) {
-      console.error('Failed to open in workspace:', error);
-      showToast({
-        title: '打开失败',
-        message: String(error),
-        tone: 'error',
-      });
-    }
-  }, [handleSystemOpenFile, loadDirectory, openFileInStandaloneWindow, openFileInTab, projectPath, showToast]);
 
-  const handleContextMenu = useCallback((file: FileInfo, x: number, y: number) => {
-    if (!selectedFiles.has(file.path)) {
-      projectStore.setState({
-        selectedFiles: new Set([file.path]),
-      });
-    }
-    setContextMenu({ kind: 'file', file, x, y });
-  }, [projectStore, selectedFiles]);
+      try {
+        if (openInStandalone) {
+          const opened = await openFileInStandaloneWindow(file.path, {
+            projectPath: projectPath || undefined,
+          });
+          if (!opened) {
+            await handleSystemOpenFile(file);
+          }
+          return;
+        }
 
-  const handleBackgroundContextMenu = useCallback((x: number, y: number) => {
-    clearSelection();
-    setContextMenu({ kind: 'directory', x, y });
-  }, [clearSelection]);
+        const tabId = await openFileInTab(file.path);
+        if (!tabId) {
+          await handleSystemOpenFile(file);
+        }
+      } catch (error) {
+        console.error("Failed to open in workspace:", error);
+        showToast({
+          title: "打开失败",
+          message: String(error),
+          tone: "error",
+        });
+      }
+    },
+    [
+      handleSystemOpenFile,
+      loadDirectory,
+      openFileInStandaloneWindow,
+      openFileInTab,
+      projectPath,
+      showToast,
+    ],
+  );
+
+  const handleContextMenu = useCallback(
+    (file: FileInfo, x: number, y: number) => {
+      if (!selectedFiles.has(file.path)) {
+        projectStore.setState({
+          selectedFiles: new Set([file.path]),
+        });
+      }
+      setContextMenu({ kind: "file", file, x, y });
+    },
+    [projectStore, selectedFiles],
+  );
+
+  const handleBackgroundContextMenu = useCallback(
+    (x: number, y: number) => {
+      clearSelection();
+      setContextMenu({ kind: "directory", x, y });
+    },
+    [clearSelection],
+  );
 
   const handleCloseContextMenu = () => {
     setContextMenu(null);
   };
 
-  const buildFileContext = useCallback((selectedItems: FileInfo[]) => ({
-    projectPath: projectPath || '',
-    currentPath: currentPath || null,
-    selectedItems: buildPluginContextItems(selectedItems),
-    trigger: 'file-context',
-    pluginScope: '',
-    appVersion: APP_VERSION,
-  }), [currentPath, projectPath]);
+  const buildFileContext = useCallback(
+    (selectedItems: FileInfo[]) => ({
+      projectPath: projectPath || "",
+      currentPath: currentPath || null,
+      selectedItems: buildPluginContextItems(selectedItems),
+      trigger: "file-context",
+      pluginScope: "",
+      appVersion: APP_VERSION,
+    }),
+    [currentPath, projectPath],
+  );
 
-  const runPluginAction = useCallback((action: PluginAction, selectedItems: FileInfo[]) => {
-    if (!projectPath) {
-      return;
-    }
+  const runPluginAction = useCallback(
+    (action: PluginAction, selectedItems: FileInfo[]) => {
+      if (!projectPath) {
+        return;
+      }
 
-    const context = buildFileContext(selectedItems);
-    addTask({
-      projectPath,
-      name: action.title,
-      subName: `${action.pluginName} · 右键插件`,
-      script: {
-        kind: 'plugin-action',
-        pluginKey: action.pluginKey,
-        pluginId: action.pluginId,
-        pluginName: action.pluginName,
-        commandId: action.commandId,
-        commandTitle: action.title,
-        location: action.location,
-        context: {
-          ...context,
-          pluginScope: action.scope,
+      const context = buildFileContext(selectedItems);
+      addTask({
+        projectPath,
+        name: action.title,
+        subName: `${action.pluginName} · 右键插件`,
+        script: {
+          kind: "plugin-action",
+          pluginKey: action.pluginKey,
+          pluginId: action.pluginId,
+          pluginName: action.pluginName,
+          commandId: action.commandId,
+          commandTitle: action.title,
+          location: action.location,
+          context: {
+            ...context,
+            pluginScope: action.scope,
+          },
         },
-      },
-      priority: 'medium',
-      maxRetries: 0,
-      timeout: 0,
-      dependencies: [],
-    });
+        priority: "medium",
+        maxRetries: 0,
+        timeout: 0,
+        dependencies: [],
+      });
 
-    showToast({
-      title: '插件任务已加入',
-      message: `${action.pluginName} · ${action.title}`,
-      tone: 'success',
-    });
-  }, [addTask, buildFileContext, projectPath, showToast]);
+      showToast({
+        title: "插件任务已加入",
+        message: `${action.pluginName} · ${action.title}`,
+        tone: "success",
+      });
+    },
+    [addTask, buildFileContext, projectPath, showToast],
+  );
 
   const handleShowDetails = useCallback((file: FileInfo) => {
     setDetailsDialogFile(file);
@@ -981,8 +1168,8 @@ export function FileList() {
   const stopColumnResize = useCallback(() => {
     columnResizeStateRef.current = null;
     setResizingColumnKey(null);
-    document.body.style.cursor = '';
-    document.body.style.userSelect = '';
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
   }, []);
 
   useEffect(() => {
@@ -996,20 +1183,23 @@ export function FileList() {
         return;
       }
 
-      const nextWidth = resizeState.startWidth + (event.clientX - resizeState.startX);
-      updateColumn(resizeState.key, { width: clampColumnWidth(resizeState.key, nextWidth) });
+      const nextWidth =
+        resizeState.startWidth + (event.clientX - resizeState.startX);
+      updateColumn(resizeState.key, {
+        width: clampColumnWidth(resizeState.key, nextWidth),
+      });
     };
 
     const handleMouseUp = () => {
       stopColumnResize();
     };
 
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
 
     return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
     };
   }, [resizingColumnKey, stopColumnResize, updateColumn]);
 
@@ -1019,25 +1209,32 @@ export function FileList() {
     };
   }, [stopColumnResize]);
 
-  const handleStartColumnResize = useCallback((key: string, width: number, event: React.MouseEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
-    columnResizeStateRef.current = {
-      key,
-      startX: event.clientX,
-      startWidth: width,
-    };
-    setResizingColumnKey(key);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-  }, []);
+  const handleStartColumnResize = useCallback(
+    (key: string, width: number, event: React.MouseEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      columnResizeStateRef.current = {
+        key,
+        startX: event.clientX,
+        startWidth: width,
+      };
+      setResizingColumnKey(key);
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+    },
+    [],
+  );
 
   const getSuggestedFolderName = useCallback(async (targetDir: string) => {
-    const baseName = '新建文件夹';
+    const baseName = "新建文件夹";
     let candidate = baseName;
     let index = 2;
 
-    while (await invoke<boolean>('path_exists', { path: joinPath(targetDir, candidate) })) {
+    while (
+      await invoke<boolean>("path_exists", {
+        path: joinPath(targetDir, candidate),
+      })
+    ) {
       candidate = `${baseName} ${index}`;
       index += 1;
     }
@@ -1058,11 +1255,11 @@ export function FileList() {
         folderName: suggestedName,
       });
     } catch (error) {
-      console.error('Failed to open create folder dialog:', error);
+      console.error("Failed to open create folder dialog:", error);
       showToast({
-        title: '创建失败',
+        title: "创建失败",
         message: String(error),
-        tone: 'error',
+        tone: "error",
       });
     }
   }, [currentPath, getSuggestedFolderName, showToast]);
@@ -1085,157 +1282,182 @@ export function FileList() {
     }));
   }, []);
 
-  const handleConfirmCreateFolder = useCallback(async (rawFolderName: string) => {
-    if (!currentPath) {
-      return;
-    }
+  const handleConfirmCreateFolder = useCallback(
+    async (rawFolderName: string) => {
+      if (!currentPath) {
+        return;
+      }
 
-    const folderName = rawFolderName.trim();
+      const folderName = rawFolderName.trim();
 
-    if (!folderName) {
-      showToast({
-        title: '创建失败',
-        message: '请输入文件夹名称。',
-        tone: 'error',
-      });
-      return;
-    }
-
-    if (/[\\/]/.test(folderName)) {
-      showToast({
-        title: '创建失败',
-        message: '文件夹名称不能包含路径分隔符。',
-        tone: 'error',
-      });
-      return;
-    }
-
-    if (folderName === '.' || folderName === '..') {
-      showToast({
-        title: '创建失败',
-        message: '请输入有效的文件夹名称。',
-        tone: 'error',
-      });
-      return;
-    }
-
-    setIsCreatingFolder(true);
-    try {
-      const targetPath = joinPath(currentPath, folderName);
-      const exists = await invoke<boolean>('path_exists', { path: targetPath });
-
-      if (exists) {
+      if (!folderName) {
         showToast({
-          title: '创建失败',
-          message: '当前目录已存在同名文件夹。',
-          tone: 'error',
+          title: "创建失败",
+          message: "请输入文件夹名称。",
+          tone: "error",
         });
         return;
       }
 
-      await invoke('create_directory', { path: targetPath });
-      await refresh();
-      setCreateFolderDialog((state) => ({
-        ...state,
-        isOpen: false,
-      }));
-      showToast({
-        title: '文件夹已创建',
-        message: folderName,
-        tone: 'success',
-      });
-    } catch (error) {
-      console.error('Failed to create folder:', error);
-      showToast({
-        title: '创建失败',
-        message: String(error),
-        tone: 'error',
-      });
-    } finally {
-      setIsCreatingFolder(false);
-    }
-  }, [currentPath, refresh, showToast]);
-
-  const handleDelete = useCallback(async (targetPaths: string[]) => {
-    const paths = compactDraggedPaths(targetPaths);
-    if (paths.length === 0) {
-      return;
-    }
-
-    try {
-      const deletedCount = await invoke<number>('delete_paths', { paths });
-      await refresh();
-
-      if (deletedCount === 0) {
+      if (/[\\/]/.test(folderName)) {
         showToast({
-          title: '未删除任何项目',
-          message: '选中的文件可能已经不存在，列表已刷新。',
-          tone: 'warning',
+          title: "创建失败",
+          message: "文件夹名称不能包含路径分隔符。",
+          tone: "error",
         });
         return;
       }
 
-      showToast({
-        title: deletedCount > 1 ? '已移动到回收站' : '文件已移动到回收站',
-        message: deletedCount > 1
-          ? `已将 ${deletedCount} 个项目移动到回收站。`
-          : `已将 ${paths[0].split(/[\\/]/).pop() || '该项目'} 移到回收站。`,
-        tone: 'success',
-      });
-    } catch (error) {
-      console.error('Failed to delete:', error);
-      showToast({
-        title: '删除失败',
-        message: String(error),
-        tone: 'error',
-      });
-    }
-  }, [refresh, showToast]);
+      if (folderName === "." || folderName === "..") {
+        showToast({
+          title: "创建失败",
+          message: "请输入有效的文件夹名称。",
+          tone: "error",
+        });
+        return;
+      }
 
-  const handleDeleteFromContextMenu = useCallback(async (file: FileInfo) => {
-    const targetPaths = selectedFiles.has(file.path)
-      ? Array.from(selectedFiles)
-      : [file.path];
-    await handleDelete(targetPaths);
-  }, [handleDelete, selectedFiles]);
+      setIsCreatingFolder(true);
+      try {
+        const targetPath = joinPath(currentPath, folderName);
+        const exists = await invoke<boolean>("path_exists", {
+          path: targetPath,
+        });
 
-  const getDraggedItems = useCallback((file: FileInfo) => {
-    if (selectedFiles.has(file.path) && selectedFiles.size > 1) {
-      return Array.from(selectedFiles);
-    }
-    return [file.path];
-  }, [selectedFiles]);
+        if (exists) {
+          showToast({
+            title: "创建失败",
+            message: "当前目录已存在同名文件夹。",
+            tone: "error",
+          });
+          return;
+        }
 
-  const canDropToDirectory = useCallback((targetDir: string, dragPaths = draggedPaths) => {
-    return canMovePathsToDirectory(targetDir, dragPaths);
-  }, [draggedPaths]);
+        await invoke("create_directory", { path: targetPath });
+        await refresh();
+        setCreateFolderDialog((state) => ({
+          ...state,
+          isOpen: false,
+        }));
+        showToast({
+          title: "文件夹已创建",
+          message: folderName,
+          tone: "success",
+        });
+      } catch (error) {
+        console.error("Failed to create folder:", error);
+        showToast({
+          title: "创建失败",
+          message: String(error),
+          tone: "error",
+        });
+      } finally {
+        setIsCreatingFolder(false);
+      }
+    },
+    [currentPath, refresh, showToast],
+  );
 
-  const handleDragStart = useCallback((file: FileInfo, event: React.DragEvent<HTMLDivElement>) => {
-    startInternalDrag(event, getDraggedItems(file));
-  }, [getDraggedItems, startInternalDrag]);
+  const handleDelete = useCallback(
+    async (targetPaths: string[]) => {
+      const paths = compactDraggedPaths(targetPaths);
+      if (paths.length === 0) {
+        return;
+      }
+
+      try {
+        const deletedCount = await invoke<number>("delete_paths", { paths });
+        await refresh();
+
+        if (deletedCount === 0) {
+          showToast({
+            title: "未删除任何项目",
+            message: "选中的文件可能已经不存在，列表已刷新。",
+            tone: "warning",
+          });
+          return;
+        }
+
+        showToast({
+          title: deletedCount > 1 ? "已移动到回收站" : "文件已移动到回收站",
+          message:
+            deletedCount > 1
+              ? `已将 ${deletedCount} 个项目移动到回收站。`
+              : `已将 ${paths[0].split(/[\\/]/).pop() || "该项目"} 移到回收站。`,
+          tone: "success",
+        });
+      } catch (error) {
+        console.error("Failed to delete:", error);
+        showToast({
+          title: "删除失败",
+          message: String(error),
+          tone: "error",
+        });
+      }
+    },
+    [refresh, showToast],
+  );
+
+  const handleDeleteFromContextMenu = useCallback(
+    async (file: FileInfo) => {
+      const targetPaths = selectedFiles.has(file.path)
+        ? Array.from(selectedFiles)
+        : [file.path];
+      await handleDelete(targetPaths);
+    },
+    [handleDelete, selectedFiles],
+  );
+
+  const getDraggedItems = useCallback(
+    (file: FileInfo) => {
+      if (selectedFiles.has(file.path) && selectedFiles.size > 1) {
+        return Array.from(selectedFiles);
+      }
+      return [file.path];
+    },
+    [selectedFiles],
+  );
+
+  const canDropToDirectory = useCallback(
+    (targetDir: string, dragPaths = draggedPaths) => {
+      return canMovePathsToDirectory(targetDir, dragPaths);
+    },
+    [draggedPaths],
+  );
+
+  const handleDragStart = useCallback(
+    (file: FileInfo, event: React.DragEvent<HTMLDivElement>) => {
+      startInternalDrag(event, getDraggedItems(file));
+    },
+    [getDraggedItems, startInternalDrag],
+  );
 
   const handleDragEnd = useCallback(() => {
     finishInternalDrag();
     clearDropHoverState();
   }, [clearDropHoverState, finishInternalDrag]);
 
-  const handleDropToDirectory = useCallback(async (targetDir: string, dragPaths?: string[]) => {
-    const currentDraggedPaths = dragPaths && dragPaths.length > 0 ? dragPaths : draggedPaths;
-    if (currentDraggedPaths.length === 0) {
-      return;
-    }
+  const handleDropToDirectory = useCallback(
+    async (targetDir: string, dragPaths?: string[]) => {
+      const currentDraggedPaths =
+        dragPaths && dragPaths.length > 0 ? dragPaths : draggedPaths;
+      if (currentDraggedPaths.length === 0) {
+        return;
+      }
 
-    clearDropHoverState();
-    await movePathsToDirectory(
-      currentDraggedPaths,
-      targetDir,
-      getPathLabel(
+      clearDropHoverState();
+      await movePathsToDirectory(
+        currentDraggedPaths,
         targetDir,
-        projectStore.getState().projectPath,
-        projectStore.getState().projectName,
-      ),
-    );
-  }, [clearDropHoverState, draggedPaths, movePathsToDirectory, projectStore]);
+        getPathLabel(
+          targetDir,
+          projectStore.getState().projectPath,
+          projectStore.getState().projectName,
+        ),
+      );
+    },
+    [clearDropHoverState, draggedPaths, movePathsToDirectory, projectStore],
+  );
 
   const handleHoverDirectory = useCallback((targetDir: string) => {
     pendingHoverTargetRef.current = targetDir;
@@ -1256,11 +1478,13 @@ export function FileList() {
   }, []);
 
   const fileContextSelectedItems = useMemo(() => {
-    if (contextMenu?.kind !== 'file') {
+    if (contextMenu?.kind !== "file") {
       return selectedFileInfos;
     }
 
-    const selectedIncludesTarget = selectedFileInfos.some((file) => file.path === contextMenu.file.path);
+    const selectedIncludesTarget = selectedFileInfos.some(
+      (file) => file.path === contextMenu.file.path,
+    );
     if (selectedIncludesTarget && selectedFileInfos.length > 0) {
       return selectedFileInfos;
     }
@@ -1269,7 +1493,7 @@ export function FileList() {
   }, [contextMenu, selectedFileInfos]);
 
   const fileContextPluginContext = useMemo(() => {
-    if (contextMenu?.kind !== 'file') {
+    if (contextMenu?.kind !== "file") {
       return null;
     }
 
@@ -1277,35 +1501,53 @@ export function FileList() {
   }, [buildFileContext, contextMenu, fileContextSelectedItems]);
 
   const fileContextPluginActions = useMemo(() => {
-    if (!projectPath || contextMenu?.kind !== 'file' || !fileContextPluginContext) {
+    if (
+      !projectPath ||
+      contextMenu?.kind !== "file" ||
+      !fileContextPluginContext
+    ) {
       return [];
     }
 
     return getVisiblePluginActions(
       pluginState?.descriptors || [],
-      'file-context',
+      "file-context",
       fileContextPluginContext,
     );
-  }, [contextMenu, fileContextPluginContext, pluginState?.descriptors, projectPath]);
+  }, [
+    contextMenu,
+    fileContextPluginContext,
+    pluginState?.descriptors,
+    projectPath,
+  ]);
 
   const fileContextPluginDebugInfo = useMemo(() => {
-    if (!projectPath || contextMenu?.kind !== 'file' || !fileContextPluginContext) {
-      return '';
+    if (
+      !projectPath ||
+      contextMenu?.kind !== "file" ||
+      !fileContextPluginContext
+    ) {
+      return "";
     }
 
     return JSON.stringify(
       buildPluginVisibilityDiagnostics(
         pluginState?.descriptors || [],
-        'file-context',
+        "file-context",
         fileContextPluginContext,
       ),
       null,
       2,
     );
-  }, [contextMenu, fileContextPluginContext, pluginState?.descriptors, projectPath]);
+  }, [
+    contextMenu,
+    fileContextPluginContext,
+    pluginState?.descriptors,
+    projectPath,
+  ]);
 
   const currentDirectoryPluginContext = useMemo(() => {
-    if (contextMenu?.kind !== 'directory') {
+    if (contextMenu?.kind !== "directory") {
       return null;
     }
 
@@ -1313,47 +1555,71 @@ export function FileList() {
   }, [buildFileContext, contextMenu]);
 
   const currentDirectoryPluginActions = useMemo(() => {
-    if (!projectPath || contextMenu?.kind !== 'directory' || !currentDirectoryPluginContext) {
+    if (
+      !projectPath ||
+      contextMenu?.kind !== "directory" ||
+      !currentDirectoryPluginContext
+    ) {
       return [];
     }
 
     return getVisiblePluginActions(
       pluginState?.descriptors || [],
-      'file-context',
+      "file-context",
       currentDirectoryPluginContext,
     );
-  }, [contextMenu, currentDirectoryPluginContext, pluginState?.descriptors, projectPath]);
+  }, [
+    contextMenu,
+    currentDirectoryPluginContext,
+    pluginState?.descriptors,
+    projectPath,
+  ]);
 
   const currentDirectoryPluginDebugInfo = useMemo(() => {
-    if (!projectPath || contextMenu?.kind !== 'directory' || !currentDirectoryPluginContext) {
-      return '';
+    if (
+      !projectPath ||
+      contextMenu?.kind !== "directory" ||
+      !currentDirectoryPluginContext
+    ) {
+      return "";
     }
 
     return JSON.stringify(
       buildPluginVisibilityDiagnostics(
         pluginState?.descriptors || [],
-        'file-context',
+        "file-context",
         currentDirectoryPluginContext,
       ),
       null,
       2,
     );
-  }, [contextMenu, currentDirectoryPluginContext, pluginState?.descriptors, projectPath]);
+  }, [
+    contextMenu,
+    currentDirectoryPluginContext,
+    pluginState?.descriptors,
+    projectPath,
+  ]);
 
   useEffect(() => {
-    if (contextMenu?.kind !== 'file' || !fileContextPluginDebugInfo) {
+    if (contextMenu?.kind !== "file" || !fileContextPluginDebugInfo) {
       return;
     }
 
-    console.info('[plugin-debug:file-context]', JSON.parse(fileContextPluginDebugInfo));
+    console.info(
+      "[plugin-debug:file-context]",
+      JSON.parse(fileContextPluginDebugInfo),
+    );
   }, [contextMenu, fileContextPluginDebugInfo]);
 
   useEffect(() => {
-    if (contextMenu?.kind !== 'directory' || !currentDirectoryPluginDebugInfo) {
+    if (contextMenu?.kind !== "directory" || !currentDirectoryPluginDebugInfo) {
       return;
     }
 
-    console.info('[plugin-debug:directory-context]', JSON.parse(currentDirectoryPluginDebugInfo));
+    console.info(
+      "[plugin-debug:directory-context]",
+      JSON.parse(currentDirectoryPluginDebugInfo),
+    );
   }, [contextMenu, currentDirectoryPluginDebugInfo]);
 
   if (isSearching) {
@@ -1366,7 +1632,7 @@ export function FileList() {
 
   return (
     <div className="h-full">
-      {viewMode === 'list' ? (
+      {viewMode === "list" ? (
         <ListView
           files={displayFiles}
           selectedFiles={selectedFiles}
@@ -1376,13 +1642,14 @@ export function FileList() {
           onBackgroundContextMenu={handleBackgroundContextMenu}
           onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
+          getExternalDragPaths={getDraggedItems}
           onDropToDirectory={handleDropToDirectory}
           onHoverDirectory={handleHoverDirectory}
           canDropToDirectory={canDropToDirectory}
           getDraggedPathsFromDataTransfer={getDraggedPathsFromDataTransfer}
           suppressInteraction={suppressInteraction}
           dropTargetPath={dropTargetPath}
-          currentPath={currentPath || ''}
+          currentPath={currentPath || ""}
           columns={columns}
           resizingColumnKey={resizingColumnKey}
           onStartColumnResize={handleStartColumnResize}
@@ -1400,26 +1667,27 @@ export function FileList() {
           onBackgroundContextMenu={handleBackgroundContextMenu}
           onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
+          getExternalDragPaths={getDraggedItems}
           onDropToDirectory={handleDropToDirectory}
           onHoverDirectory={handleHoverDirectory}
           canDropToDirectory={canDropToDirectory}
           getDraggedPathsFromDataTransfer={getDraggedPathsFromDataTransfer}
           suppressInteraction={suppressInteraction}
           dropTargetPath={dropTargetPath}
-          currentPath={currentPath || ''}
+          currentPath={currentPath || ""}
           isExcluded={isExcluded}
           showExcludedFiles={showExcludedFiles}
           resolveFileTags={resolveFileTags}
         />
       )}
 
-      {contextMenu?.kind === 'file' && (
+      {contextMenu?.kind === "file" && (
         <FileContextMenu
           file={contextMenu.file}
           x={contextMenu.x}
           y={contextMenu.y}
-          currentPath={currentPath || ''}
-          projectPath={projectPath || ''}
+          currentPath={currentPath || ""}
+          projectPath={projectPath || ""}
           pluginActions={fileContextPluginActions}
           pluginDebugInfo={fileContextPluginDebugInfo}
           onClose={handleCloseContextMenu}
@@ -1428,16 +1696,18 @@ export function FileList() {
           onDelete={handleDeleteFromContextMenu}
           onCreateFolder={handleCreateFolder}
           onOpenFile={handleSystemOpenFile}
-          onRunPluginAction={(action) => runPluginAction(action, fileContextSelectedItems)}
+          onRunPluginAction={(action) =>
+            runPluginAction(action, fileContextSelectedItems)
+          }
         />
       )}
 
-      {contextMenu?.kind === 'directory' && (
+      {contextMenu?.kind === "directory" && (
         <CurrentDirectoryContextMenu
           x={contextMenu.x}
           y={contextMenu.y}
-          currentPath={currentPath || ''}
-          projectPath={projectPath || ''}
+          currentPath={currentPath || ""}
+          projectPath={projectPath || ""}
           pluginActions={currentDirectoryPluginActions}
           pluginDebugInfo={currentDirectoryPluginDebugInfo}
           onClose={handleCloseContextMenu}
@@ -1462,7 +1732,7 @@ export function FileList() {
         label="文件夹名称"
         value={createFolderDialog.folderName}
         onChange={handleCreateFolderNameChange}
-        confirmText={isCreatingFolder ? '创建中...' : '创建'}
+        confirmText={isCreatingFolder ? "创建中..." : "创建"}
         disabled={isCreatingFolder}
         description={
           createFolderDialog.suggestedName

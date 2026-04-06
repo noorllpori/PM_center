@@ -25,6 +25,7 @@ import { VideoPlayerSurface } from '../video-player/VideoPlayerSurface';
 import { WorkspaceTabBar } from '../workspace/WorkspaceTabBar';
 import { useProjectStoreApi, useProjectStoreShallow } from '../../stores/projectStore';
 import { useClipboardStore } from '../../stores/clipboardStore';
+import { useFileDragStore } from '../../stores/fileDragStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceTabStore, useWorkspaceTabStoreApi } from '../../stores/workspaceTabStore';
 
@@ -184,6 +185,7 @@ export function ProjectWorkspace() {
     showExcludedFiles: state.showExcludedFiles,
   }));
   const showToast = useUiStore((state) => state.showToast);
+  const hasActiveInternalDrag = useFileDragStore((state) => state.draggedPaths.length > 0);
   const tabs = useWorkspaceTabStore((state) => state.tabs);
   const activeTabId = useWorkspaceTabStore((state) => state.activeTabId);
   const activateTab = useWorkspaceTabStore((state) => state.activateTab);
@@ -869,17 +871,17 @@ export function ProjectWorkspace() {
   }, [openFileInStandaloneWindow, projectPath, showToast, workspaceTabStore]);
 
   const handleExternalDragEnter = useCallback((event: React.DragEvent<HTMLDivElement>) => {
-    if (!isInitialized || !isFilesWorkspaceActive || !isExternalFileDrag(event.dataTransfer)) {
+    if (!isInitialized || !isFilesWorkspaceActive || !isExternalFileDrag(event.dataTransfer, hasActiveInternalDrag)) {
       return;
     }
 
     event.preventDefault();
     externalDragDepthRef.current += 1;
     setIsDragImportActive(true);
-  }, [isFilesWorkspaceActive, isInitialized]);
+  }, [hasActiveInternalDrag, isFilesWorkspaceActive, isInitialized]);
 
   const handleExternalDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
-    if (!isInitialized || !isFilesWorkspaceActive || !isExternalFileDrag(event.dataTransfer)) {
+    if (!isInitialized || !isFilesWorkspaceActive || !isExternalFileDrag(event.dataTransfer, hasActiveInternalDrag)) {
       return;
     }
 
@@ -889,10 +891,10 @@ export function ProjectWorkspace() {
     if (!isDragImportActive) {
       setIsDragImportActive(true);
     }
-  }, [isDragImportActive, isFilesWorkspaceActive, isInitialized]);
+  }, [hasActiveInternalDrag, isDragImportActive, isFilesWorkspaceActive, isInitialized]);
 
   const handleExternalDragLeave = useCallback((event: React.DragEvent<HTMLDivElement>) => {
-    if (!isInitialized || !isFilesWorkspaceActive || !isExternalFileDrag(event.dataTransfer)) {
+    if (!isInitialized || !isFilesWorkspaceActive || !isExternalFileDrag(event.dataTransfer, hasActiveInternalDrag)) {
       return;
     }
 
@@ -902,10 +904,10 @@ export function ProjectWorkspace() {
     if (externalDragDepthRef.current === 0 && !isImportingDrop) {
       setIsDragImportActive(false);
     }
-  }, [isFilesWorkspaceActive, isImportingDrop, isInitialized]);
+  }, [hasActiveInternalDrag, isFilesWorkspaceActive, isImportingDrop, isInitialized]);
 
   const handleExternalDrop = useCallback(async (event: React.DragEvent<HTMLDivElement>) => {
-    if (!isInitialized || !isFilesWorkspaceActive || !isExternalFileDrag(event.dataTransfer)) {
+    if (!isInitialized || !isFilesWorkspaceActive || !isExternalFileDrag(event.dataTransfer, hasActiveInternalDrag)) {
       return;
     }
 
@@ -937,7 +939,7 @@ export function ProjectWorkspace() {
     } finally {
       setIsImportingDrop(false);
     }
-  }, [currentPath, isFilesWorkspaceActive, isInitialized, projectPath, refresh, resetExternalDragState]);
+  }, [currentPath, hasActiveInternalDrag, isFilesWorkspaceActive, isInitialized, projectPath, refresh, resetExternalDragState]);
 
   const dropTargetLabel = getPathLabel(currentPath || projectPath, projectPath, projectName);
   const showDropOverlay = isInitialized && isFilesWorkspaceActive && (isDragImportActive || isImportingDrop);

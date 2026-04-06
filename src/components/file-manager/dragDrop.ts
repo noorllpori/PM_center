@@ -118,8 +118,8 @@ export function hasInternalDragData(dataTransfer: DataTransfer | null): boolean 
   return Array.from(dataTransfer.types || []).includes(INTERNAL_FILE_DRAG_MIME);
 }
 
-export function isExternalFileDrag(dataTransfer: DataTransfer | null): boolean {
-  if (!dataTransfer || hasInternalDragData(dataTransfer)) {
+export function isExternalFileDrag(dataTransfer: DataTransfer | null, hasActiveInternalDrag = false): boolean {
+  if (!dataTransfer || hasActiveInternalDrag || hasInternalDragData(dataTransfer)) {
     return false;
   }
 
@@ -141,14 +141,5 @@ export function resolveInternalDragPaths(dataTransfer: DataTransfer | null, fall
     return compactFallbackPaths;
   }
 
-  if (hasInternalDragData(dataTransfer)) {
-    return compactFallbackPaths;
-  }
-
-  const dragTypes = Array.from(dataTransfer.types || []);
-  if (!dragTypes.includes('Files')) {
-    return compactFallbackPaths;
-  }
-
-  return [];
+  return compactFallbackPaths;
 }

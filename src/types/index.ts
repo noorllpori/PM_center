@@ -164,3 +164,4 @@ export interface FileChange {
 // 任务系统类型
 export * from './task';
 export * from './plugin';
+export * from './externalDrag';

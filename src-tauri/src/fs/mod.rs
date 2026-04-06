@@ -14,6 +14,9 @@ use crate::process_utils::std_command;
 use crate::tree_cache::{self, FsEntrySnapshot, TreeCacheDb};
 
 #[cfg(windows)]
+mod external_drag;
+
+#[cfg(windows)]
 use windows::core::PCWSTR;
 #[cfg(windows)]
 use windows::Win32::Foundation::{BOOL, HWND};
@@ -58,6 +61,47 @@ pub struct SystemClipboardStatus {
     pub has_files: bool,
     #[serde(rename = "hasImage")]
     pub has_image: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalFileDragResult {
+    pub status: String,
+}
+
+#[tauri::command]
+pub async fn start_external_file_drag(
+    window: tauri::WebviewWindow,
+    paths: Vec<String>,
+) -> Result<ExternalFileDragResult, String> {
+    #[cfg(windows)]
+    {
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let window_for_drag = window.clone();
+        let paths_for_drag = paths.clone();
+
+        window
+            .run_on_main_thread(move || {
+                let result = window_for_drag
+                    .hwnd()
+                    .map(|hwnd| HWND(hwnd.0 as isize))
+                    .map_err(|e| format!("failed to read window handle: {}", e))
+                    .and_then(|hwnd| external_drag::start_external_file_drag(hwnd, paths_for_drag));
+                let _ = result_tx.send(result);
+            })
+            .map_err(|e| format!("external drag scheduling failed: {}", e))?;
+
+        return result_rx
+            .await
+            .map_err(|_| "external drag task was interrupted".to_string())?;
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+        let _ = paths;
+        Ok(ExternalFileDragResult {
+            status: "unsupported".to_string(),
+        })
+    }
 }
 
 #[cfg(windows)]

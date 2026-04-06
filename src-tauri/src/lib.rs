@@ -925,6 +925,7 @@ pub fn run() {
             fs::delete_paths,
             fs::move_file,
             fs::copy_file,
+            fs::start_external_file_drag,
             fs::rename_file,
             fs::path_exists,
             fs::get_system_clipboard_status,

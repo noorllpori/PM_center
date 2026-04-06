@@ -745,7 +745,10 @@ fn scan_plugin_dir(
             let action_index = descriptor.actions.len();
 
             descriptor.actions.push(PluginAction {
-                id: format!("{}:{}:{}:{}", descriptor.id, command, location, action_index),
+                id: format!(
+                    "{}:{}:{}:{}",
+                    descriptor.id, command, location, action_index
+                ),
                 plugin_key: descriptor.key.clone(),
                 plugin_id: descriptor.id.clone(),
                 plugin_name: descriptor.name.clone(),
@@ -1224,7 +1227,10 @@ mod tests {
             "test-action",
         );
 
-        let codes = issues.iter().map(|issue| issue.code.as_str()).collect::<Vec<_>>();
+        let codes = issues
+            .iter()
+            .map(|issue| issue.code.as_str())
+            .collect::<Vec<_>>();
         assert!(codes.contains(&"invalid_selection_count"));
         assert!(codes.contains(&"invalid_target_kind"));
         assert!(codes.contains(&"invalid_extension"));
@@ -1272,7 +1278,10 @@ mod tests {
             "test-action",
         );
 
-        let codes = issues.iter().map(|issue| issue.code.as_str()).collect::<Vec<_>>();
+        let codes = issues
+            .iter()
+            .map(|issue| issue.code.as_str())
+            .collect::<Vec<_>>();
         assert_eq!(placement, "section");
         assert_eq!(submenu, None);
         assert!(codes.contains(&"invalid_menu_placement"));
