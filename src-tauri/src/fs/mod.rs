@@ -15,6 +15,8 @@ use crate::tree_cache::{self, FsEntrySnapshot, TreeCacheDb};
 
 #[cfg(windows)]
 mod external_drag;
+#[cfg(windows)]
+mod shell_context_menu;
 
 #[cfg(windows)]
 use windows::core::PCWSTR;
@@ -68,6 +70,11 @@ pub struct ExternalFileDragResult {
     pub status: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemContextMenuResult {
+    pub status: String,
+}
+
 #[tauri::command]
 pub async fn start_external_file_drag(
     window: tauri::WebviewWindow,
@@ -99,6 +106,45 @@ pub async fn start_external_file_drag(
         let _ = window;
         let _ = paths;
         Ok(ExternalFileDragResult {
+            status: "unsupported".to_string(),
+        })
+    }
+}
+
+#[tauri::command]
+pub async fn show_system_context_menu(
+    window: tauri::WebviewWindow,
+    paths: Vec<String>,
+) -> Result<SystemContextMenuResult, String> {
+    #[cfg(windows)]
+    {
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let window_for_menu = window.clone();
+        let paths_for_menu = paths.clone();
+
+        window
+            .run_on_main_thread(move || {
+                let result = window_for_menu
+                    .hwnd()
+                    .map(|hwnd| HWND(hwnd.0 as isize))
+                    .map_err(|e| format!("failed to read window handle: {}", e))
+                    .and_then(|hwnd| {
+                        shell_context_menu::show_system_context_menu(hwnd, paths_for_menu)
+                    });
+                let _ = result_tx.send(result);
+            })
+            .map_err(|e| format!("system context menu scheduling failed: {}", e))?;
+
+        return result_rx
+            .await
+            .map_err(|_| "system context menu task was interrupted".to_string())?;
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+        let _ = paths;
+        Ok(SystemContextMenuResult {
             status: "unsupported".to_string(),
         })
     }

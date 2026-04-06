@@ -926,6 +926,7 @@ pub fn run() {
             fs::move_file,
             fs::copy_file,
             fs::start_external_file_drag,
+            fs::show_system_context_menu,
             fs::rename_file,
             fs::path_exists,
             fs::get_system_clipboard_status,

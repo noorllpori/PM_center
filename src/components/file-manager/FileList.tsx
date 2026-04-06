@@ -22,6 +22,7 @@ import { InputDialog } from "../Dialog";
 import {
   canMovePathsToDirectory,
   compactDraggedPaths,
+  getParentPath,
   getPathLabel,
   joinPath,
 } from "./dragDrop";
@@ -154,7 +155,12 @@ const ListRow = memo(function ListRow({
   suppressInteraction: (event: React.SyntheticEvent<HTMLElement>) => boolean;
   onSelect: (path: string, multi: boolean) => void;
   onDoubleClick: (file: FileInfo, openInStandalone: boolean) => void;
-  onContextMenu: (file: FileInfo, x: number, y: number) => void;
+  onContextMenu: (
+    file: FileInfo,
+    x: number,
+    y: number,
+    altPressed: boolean,
+  ) => void;
   onDragStart: (file: FileInfo, event: React.DragEvent<HTMLDivElement>) => void;
   onDragEnd: () => void;
   getExternalDragPaths: (file: FileInfo) => string[];
@@ -198,7 +204,7 @@ const ListRow = memo(function ListRow({
       }}
       onContextMenu={(e) => {
         e.preventDefault();
-        onContextMenu(file, e.clientX, e.clientY);
+        onContextMenu(file, e.clientX, e.clientY, e.altKey);
       }}
       onDragStart={(e) => onDragStart(file, e)}
       onDragEnd={onDragEnd}
@@ -359,7 +365,12 @@ function ListView({
   selectedFiles: Set<string>;
   onSelect: (path: string, multi: boolean) => void;
   onDoubleClick: (file: FileInfo, openInStandalone: boolean) => void;
-  onContextMenu: (file: FileInfo, x: number, y: number) => void;
+  onContextMenu: (
+    file: FileInfo,
+    x: number,
+    y: number,
+    altPressed: boolean,
+  ) => void;
   onBackgroundContextMenu: (x: number, y: number) => void;
   onDragStart: (file: FileInfo, event: React.DragEvent<HTMLDivElement>) => void;
   onDragEnd: () => void;
@@ -576,7 +587,12 @@ const GridCard = memo(function GridCard({
   suppressInteraction: (event: React.SyntheticEvent<HTMLElement>) => boolean;
   onSelect: (path: string, multi: boolean) => void;
   onDoubleClick: (file: FileInfo, openInStandalone: boolean) => void;
-  onContextMenu: (file: FileInfo, x: number, y: number) => void;
+  onContextMenu: (
+    file: FileInfo,
+    x: number,
+    y: number,
+    altPressed: boolean,
+  ) => void;
   onDragStart: (file: FileInfo, event: React.DragEvent<HTMLDivElement>) => void;
   onDragEnd: () => void;
   getExternalDragPaths: (file: FileInfo) => string[];
@@ -618,7 +634,7 @@ const GridCard = memo(function GridCard({
       }}
       onContextMenu={(e) => {
         e.preventDefault();
-        onContextMenu(file, e.clientX, e.clientY);
+        onContextMenu(file, e.clientX, e.clientY, e.altKey);
       }}
       onDragStart={(e) => onDragStart(file, e)}
       onDragEnd={onDragEnd}
@@ -735,7 +751,12 @@ function GridView({
   selectedFiles: Set<string>;
   onSelect: (path: string, multi: boolean) => void;
   onDoubleClick: (file: FileInfo, openInStandalone: boolean) => void;
-  onContextMenu: (file: FileInfo, x: number, y: number) => void;
+  onContextMenu: (
+    file: FileInfo,
+    x: number,
+    y: number,
+    altPressed: boolean,
+  ) => void;
   onBackgroundContextMenu: (x: number, y: number) => void;
   onDragStart: (file: FileInfo, event: React.DragEvent<HTMLDivElement>) => void;
   onDragEnd: () => void;
@@ -1116,16 +1137,69 @@ export function FileList() {
     ],
   );
 
+  const resolveSystemContextMenuPaths = useCallback(
+    (file: FileInfo, selectionIncludesTarget: boolean) => {
+      if (!selectionIncludesTarget) {
+        return [file.path];
+      }
+
+      const candidateFiles =
+        selectedFileInfos.length > 0 ? selectedFileInfos : [file];
+      const targetParentPath = getParentPath(file.path);
+      const canUseSelection = candidateFiles.every(
+        (candidate) => getParentPath(candidate.path) === targetParentPath,
+      );
+
+      return canUseSelection
+        ? candidateFiles.map((candidate) => candidate.path)
+        : [file.path];
+    },
+    [selectedFileInfos],
+  );
+
+  const openSystemContextMenu = useCallback(
+    async (file: FileInfo, selectionIncludesTarget: boolean) => {
+      try {
+        const result = await invoke<{ status: string }>(
+          "show_system_context_menu",
+          {
+            paths: resolveSystemContextMenuPaths(file, selectionIncludesTarget),
+          },
+        );
+
+        if (result.status === "invoked") {
+          await refresh();
+        }
+      } catch (error) {
+        console.error("Failed to show system context menu:", error);
+        showToast({
+          title: "系统右键菜单打开失败",
+          message: String(error),
+          tone: "error",
+        });
+      }
+    },
+    [refresh, resolveSystemContextMenuPaths, showToast],
+  );
+
   const handleContextMenu = useCallback(
-    (file: FileInfo, x: number, y: number) => {
-      if (!selectedFiles.has(file.path)) {
+    (file: FileInfo, x: number, y: number, altPressed: boolean) => {
+      const selectionIncludesTarget = selectedFiles.has(file.path);
+
+      if (!selectionIncludesTarget) {
         projectStore.setState({
           selectedFiles: new Set([file.path]),
         });
       }
+
+      if (altPressed) {
+        void openSystemContextMenu(file, selectionIncludesTarget);
+        return;
+      }
+
       setContextMenu({ kind: "file", file, x, y });
     },
-    [projectStore, selectedFiles],
+    [openSystemContextMenu, projectStore, selectedFiles],
   );
 
   const handleBackgroundContextMenu = useCallback(
