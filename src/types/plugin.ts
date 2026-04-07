@@ -3,6 +3,7 @@ export type PluginActionLocation = 'toolbar' | 'file-context';
 export type PluginActionMenuPlacement = 'section' | 'inline';
 export type PluginSelectionCount = 'any' | 'none' | 'single' | 'multiple';
 export type PluginTargetKind = 'any' | 'file' | 'directory' | 'mixed';
+export type PluginDependencyStatus = 'none' | 'missing' | 'partial' | 'installed';
 
 export interface PluginValidationIssue {
   code: string;
@@ -50,7 +51,24 @@ export interface PluginDescriptor {
   permissions: string[];
   actions: PluginAction[];
   validationIssues: PluginValidationIssue[];
+  dependencies: PluginDependencyInfo;
   shadowedBy?: string | null;
+}
+
+export interface PluginDependencyPackage {
+  name: string;
+  version?: string | null;
+}
+
+export interface PluginDependencyInfo {
+  status: PluginDependencyStatus;
+  requirementsPath?: string | null;
+  vendorPath?: string | null;
+  declaredRequirements: string[];
+  installedPackages: PluginDependencyPackage[];
+  missingPackages: string[];
+  extraPackages: PluginDependencyPackage[];
+  message?: string | null;
 }
 
 export interface PluginRuntimeInfo {

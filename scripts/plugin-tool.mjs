@@ -1,10 +1,12 @@
 import { spawnSync } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 
 const [, , command, ...args] = process.argv;
+const PLUGIN_PYTHON_ROOT = resolve(process.cwd(), 'src-tauri', 'resources', 'plugin-python');
+const EMBEDDED_PYTHON = resolve(PLUGIN_PYTHON_ROOT, 'windows-x64', 'python.exe');
+const GET_PIP_PATH = resolve(PLUGIN_PYTHON_ROOT, 'get-pip.py');
 
 function usage() {
   console.log(`Usage:
@@ -19,6 +21,49 @@ async function ensureDir(targetPath) {
 
 async function writeJson(targetPath, value) {
   await writeFile(targetPath, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function ensureEmbeddedPython() {
+  if (!existsSync(EMBEDDED_PYTHON)) {
+    throw new Error('embedded plugin python is missing. Run `npm run prepare:plugin-python` first.');
+  }
+
+  return EMBEDDED_PYTHON;
+}
+
+function ensurePipAvailable(python) {
+  const pipVersion = spawnSync(python, ['-m', 'pip', '--version'], {
+    stdio: 'ignore',
+    cwd: process.cwd(),
+  });
+  if (pipVersion.status === 0) {
+    return;
+  }
+
+  if (!existsSync(GET_PIP_PATH)) {
+    throw new Error('get-pip.py is missing. Run `npm run prepare:plugin-python` first.');
+  }
+
+  const bootstrap = spawnSync(python, [GET_PIP_PATH, '--no-warn-script-location'], {
+    stdio: 'inherit',
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      PYTHONIOENCODING: 'utf-8',
+      PYTHONUTF8: '1',
+    },
+  });
+  if (bootstrap.status !== 0) {
+    throw new Error(`failed to bootstrap pip for embedded plugin python (exit code ${bootstrap.status ?? 'unknown'})`);
+  }
+
+  const verify = spawnSync(python, ['-m', 'pip', '--version'], {
+    stdio: 'ignore',
+    cwd: process.cwd(),
+  });
+  if (verify.status !== 0) {
+    throw new Error('embedded plugin python pip verification failed');
+  }
 }
 
 async function initPlugin(targetDir, pluginIdArg) {
@@ -202,21 +247,37 @@ async function packPlugin(pluginDirArg, outputDirArg) {
   if (existsSync(requirementsPath)) {
     const requirements = (await readFile(requirementsPath, 'utf8')).trim();
     if (requirements) {
-      const python = process.env.PMC_PACK_PYTHON || 'python';
-      const tempDir = await mkdtemp(join(tmpdir(), 'pmc-plugin-pack-'));
+      const python = ensureEmbeddedPython();
+      ensurePipAvailable(python);
+
       const vendorDir = join(destinationDir, 'vendor');
+      await rm(vendorDir, { recursive: true, force: true });
       await ensureDir(vendorDir);
 
       const result = spawnSync(
         python,
-        ['-m', 'pip', 'install', '--disable-pip-version-check', '-r', requirementsPath, '--target', vendorDir, '--no-compile'],
+        [
+          '-m',
+          'pip',
+          'install',
+          '--disable-pip-version-check',
+          '--upgrade',
+          '-r',
+          requirementsPath,
+          '--target',
+          vendorDir,
+          '--no-compile',
+        ],
         {
           stdio: 'inherit',
           cwd: pluginDir,
+          env: {
+            ...process.env,
+            PYTHONIOENCODING: 'utf-8',
+            PYTHONUTF8: '1',
+          },
         },
       );
-
-      await rm(tempDir, { recursive: true, force: true });
 
       if (result.status !== 0) {
         throw new Error('pip install for plugin vendor failed');

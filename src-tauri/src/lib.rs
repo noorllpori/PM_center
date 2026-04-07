@@ -27,7 +27,8 @@ use db::{Database, FileMetadata, Tag};
 use file_details::get_file_details;
 use p2p::{init_p2p, send_p2p_message, start_p2p_discovery, stop_p2p_discovery, update_p2p_user};
 use plugin::{
-    get_plugin_dirs, list_plugins, refresh_plugins, run_plugin_action, set_plugin_enabled,
+    get_plugin_dirs, inspect_plugin_dependencies, install_plugin_dependencies, list_plugins,
+    refresh_plugins, remove_plugin_dependencies, run_plugin_action, set_plugin_enabled,
     validate_plugin,
 };
 use process_utils::std_command;
@@ -986,6 +987,9 @@ pub fn run() {
             refresh_plugins,
             set_plugin_enabled,
             get_plugin_dirs,
+            inspect_plugin_dependencies,
+            install_plugin_dependencies,
+            remove_plugin_dependencies,
             run_plugin_action,
             validate_plugin,
             detect_system_python,

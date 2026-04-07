@@ -75,7 +75,7 @@ def process_image(source_path):
 
 
 def emit_missing_dependency_error():
-    message = "插件缺少 Pillow 依赖，请使用 plugin-tool pack 打包后再部署。"
+    message = "插件缺少 Pillow 依赖，请在设置 > 插件里安装依赖，或先用 plugin-tool pack 打包后再部署。"
     print(f"Missing dependency: {PIL_IMPORT_ERROR}", flush=True)
     error(message)
     toast(message, title="翻转并提亮图片", tone="error")

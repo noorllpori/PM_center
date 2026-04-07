@@ -13,6 +13,7 @@ use crate::process_utils::{std_command, tokio_command};
 const PLUGIN_STATE_FILE: &str = "plugin-state.json";
 const PLUGIN_API_VERSION: &str = "1";
 const DEFAULT_PLUGIN_ACTION_MENU_PLACEMENT: &str = "section";
+const PLUGIN_GET_PIP_RELATIVE_PATH: &str = "plugin-python/get-pip.py";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,6 +53,26 @@ pub struct PluginAction {
     pub submenu: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginDependencyPackage {
+    pub name: String,
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginDependencyInfo {
+    pub status: String,
+    pub requirements_path: Option<String>,
+    pub vendor_path: Option<String>,
+    pub declared_requirements: Vec<String>,
+    pub installed_packages: Vec<PluginDependencyPackage>,
+    pub missing_packages: Vec<String>,
+    pub extra_packages: Vec<PluginDependencyPackage>,
+    pub message: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginDescriptor {
@@ -72,6 +93,7 @@ pub struct PluginDescriptor {
     pub permissions: Vec<String>,
     pub actions: Vec<PluginAction>,
     pub validation_issues: Vec<PluginValidationIssue>,
+    pub dependencies: PluginDependencyInfo,
     pub shadowed_by: Option<String>,
 }
 
@@ -212,6 +234,188 @@ struct PluginState {
 #[derive(Debug)]
 struct ScannedPlugin {
     descriptor: PluginDescriptor,
+}
+
+fn normalize_package_name(value: &str) -> String {
+    value
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['_', '.'], "-")
+}
+
+fn normalize_requirement_line(line: &str) -> Option<String> {
+    let value = line.split('#').next().unwrap_or("").trim();
+    if value.is_empty() || value.starts_with('-') {
+        return None;
+    }
+
+    Some(value.to_string())
+}
+
+fn parse_requirement_name(requirement: &str) -> Option<String> {
+    let mut name = String::new();
+
+    for ch in requirement.chars() {
+        if matches!(ch, '<' | '>' | '=' | '!' | '~' | '[' | ';' | '@' | ' ' | '\t') {
+            break;
+        }
+        name.push(ch);
+    }
+
+    let normalized = normalize_package_name(&name);
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn parse_metadata_field(content: &str, field: &str) -> Option<String> {
+    let prefix = format!("{field}:");
+    content.lines().find_map(|line| {
+        line.strip_prefix(&prefix)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn read_declared_requirements(plugin_dir: &Path) -> Vec<String> {
+    let requirements_path = plugin_dir.join("requirements.txt");
+    let Ok(content) = fs::read_to_string(&requirements_path) else {
+        return Vec::new();
+    };
+
+    content
+        .lines()
+        .filter_map(normalize_requirement_line)
+        .collect()
+}
+
+fn read_installed_packages(vendor_dir: &Path) -> Vec<PluginDependencyPackage> {
+    let Ok(entries) = fs::read_dir(vendor_dir) else {
+        return Vec::new();
+    };
+
+    let mut packages = HashMap::<String, PluginDependencyPackage>::new();
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let Some(directory_name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+
+        if !(directory_name.ends_with(".dist-info") || directory_name.ends_with(".egg-info")) {
+            continue;
+        }
+
+        let metadata_path = path.join("METADATA");
+        let pkg_info_path = path.join("PKG-INFO");
+        let metadata = fs::read_to_string(&metadata_path)
+            .or_else(|_| fs::read_to_string(&pkg_info_path))
+            .unwrap_or_default();
+
+        let fallback_name = directory_name
+            .split_once('-')
+            .map(|(name, _)| name)
+            .unwrap_or(directory_name)
+            .trim_end_matches(".dist-info")
+            .trim_end_matches(".egg-info");
+        let name = parse_metadata_field(&metadata, "Name").unwrap_or_else(|| fallback_name.to_string());
+        let normalized_name = normalize_package_name(&name);
+        if normalized_name.is_empty() {
+            continue;
+        }
+
+        let version = parse_metadata_field(&metadata, "Version");
+        packages.insert(
+            normalized_name,
+            PluginDependencyPackage {
+                name,
+                version,
+            },
+        );
+    }
+
+    let mut values = packages.into_values().collect::<Vec<_>>();
+    values.sort_by(|left, right| {
+        normalize_package_name(&left.name).cmp(&normalize_package_name(&right.name))
+    });
+    values
+}
+
+fn inspect_plugin_dependencies_in_dir(plugin_dir: &Path) -> PluginDependencyInfo {
+    let requirements_path = plugin_dir.join("requirements.txt");
+    let declared_requirements = read_declared_requirements(plugin_dir);
+    let vendor_dir = plugin_dir.join("vendor");
+    let vendor_exists = vendor_dir.exists();
+    let installed_packages = if vendor_exists {
+        read_installed_packages(&vendor_dir)
+    } else {
+        Vec::new()
+    };
+
+    let required_names = declared_requirements
+        .iter()
+        .filter_map(|requirement| parse_requirement_name(requirement))
+        .collect::<HashSet<_>>();
+    let installed_by_name = installed_packages
+        .iter()
+        .map(|package| (normalize_package_name(&package.name), package.clone()))
+        .collect::<HashMap<_, _>>();
+
+    let mut missing_packages = required_names
+        .iter()
+        .filter(|name| !installed_by_name.contains_key(*name))
+        .cloned()
+        .collect::<Vec<_>>();
+    missing_packages.sort();
+
+    let mut extra_packages = installed_by_name
+        .iter()
+        .filter(|(name, _)| !required_names.contains(*name))
+        .map(|(_, package)| package.clone())
+        .collect::<Vec<_>>();
+    extra_packages.sort_by(|left, right| {
+        normalize_package_name(&left.name).cmp(&normalize_package_name(&right.name))
+    });
+
+    let (status, message) = if declared_requirements.is_empty() {
+        (
+            "none".to_string(),
+            Some("当前插件没有声明额外 Python 依赖。".to_string()),
+        )
+    } else if missing_packages.is_empty() {
+        (
+            "installed".to_string(),
+            Some("插件依赖已安装完成。".to_string()),
+        )
+    } else if installed_packages.is_empty() {
+        (
+            "missing".to_string(),
+            Some("检测到 requirements.txt，但还没有安装依赖。".to_string()),
+        )
+    } else {
+        (
+            "partial".to_string(),
+            Some("插件依赖安装不完整，建议重新安装。".to_string()),
+        )
+    };
+
+    PluginDependencyInfo {
+        status,
+        requirements_path: requirements_path.exists().then(|| requirements_path.to_string_lossy().to_string()),
+        vendor_path: vendor_exists.then(|| vendor_dir.to_string_lossy().to_string()),
+        declared_requirements,
+        installed_packages,
+        missing_packages,
+        extra_packages,
+        message,
+    }
 }
 
 fn push_issue(
@@ -446,6 +650,23 @@ fn resolve_plugin_sdk_dir(app_handle: &AppHandle) -> Option<PathBuf> {
     candidates.into_iter().find(|path| path.exists())
 }
 
+fn resolve_plugin_get_pip_path(app_handle: &AppHandle) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Some(resource_dir) = resolve_resource_dir(app_handle) {
+        candidates.push(resource_dir.join(PLUGIN_GET_PIP_RELATIVE_PATH));
+    }
+
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("plugin-python")
+            .join("get-pip.py"),
+    );
+
+    candidates.into_iter().find(|path| path.exists())
+}
+
 pub fn resolve_plugin_runtime(app_handle: &AppHandle) -> PluginRuntimeInfo {
     let mut candidates = Vec::new();
 
@@ -562,6 +783,7 @@ fn scan_plugin_dir(
         permissions: Vec::new(),
         actions: Vec::new(),
         validation_issues: Vec::new(),
+        dependencies: inspect_plugin_dependencies_in_dir(plugin_dir),
         shadowed_by: None,
     };
 
@@ -787,11 +1009,19 @@ fn collect_plugin_dirs(root: &Path) -> Vec<PathBuf> {
         return Vec::new();
     }
 
+    let should_skip = |path: &Path| {
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            return true;
+        };
+
+        matches!(name, ".pm_center" | ".git" | "__pycache__")
+    };
+
     match fs::read_dir(root) {
         Ok(entries) => entries
             .flatten()
             .map(|entry| entry.path())
-            .filter(|path| path.is_dir())
+            .filter(|path| path.is_dir() && !should_skip(path))
             .collect(),
         Err(_) => Vec::new(),
     }
@@ -891,6 +1121,17 @@ async fn load_plugin_descriptors(
     scan_plugins_internal(&app_handle, project_path.as_deref())
 }
 
+fn find_plugin_descriptor_by_key(
+    app_handle: &AppHandle,
+    project_path: Option<&str>,
+    plugin_key: &str,
+) -> Result<PluginDescriptor, String> {
+    scan_plugins_internal(app_handle, project_path)?
+        .into_iter()
+        .find(|descriptor| descriptor.key == plugin_key)
+        .ok_or_else(|| format!("未找到插件: {plugin_key}"))
+}
+
 #[tauri::command]
 pub async fn refresh_plugins(
     app_handle: AppHandle,
@@ -941,6 +1182,93 @@ pub async fn get_plugin_dirs(
 }
 
 #[tauri::command]
+pub async fn inspect_plugin_dependencies(
+    app_handle: AppHandle,
+    plugin_key: String,
+    project_path: Option<String>,
+) -> Result<PluginDependencyInfo, String> {
+    let descriptor =
+        find_plugin_descriptor_by_key(&app_handle, project_path.as_deref(), &plugin_key)?;
+    Ok(inspect_plugin_dependencies_in_dir(Path::new(&descriptor.path)))
+}
+
+#[tauri::command]
+pub async fn install_plugin_dependencies(
+    app_handle: AppHandle,
+    plugin_key: String,
+    project_path: Option<String>,
+) -> Result<PluginDependencyInfo, String> {
+    let descriptor =
+        find_plugin_descriptor_by_key(&app_handle, project_path.as_deref(), &plugin_key)?;
+    if descriptor.runtime != "python" {
+        return Err("当前只支持 Python 插件依赖管理。".to_string());
+    }
+
+    let plugin_dir = PathBuf::from(&descriptor.path);
+    if !plugin_dir.exists() {
+        return Err(format!("插件目录不存在: {}", descriptor.path));
+    }
+
+    let dependency_info = inspect_plugin_dependencies_in_dir(&plugin_dir);
+    if dependency_info.declared_requirements.is_empty() {
+        return Ok(dependency_info);
+    }
+
+    let python_path = ensure_embedded_plugin_pip(&app_handle)?;
+    let requirements_path = plugin_dir.join("requirements.txt");
+    let vendor_dir = plugin_dir.join("vendor");
+
+    if vendor_dir.exists() {
+        fs::remove_dir_all(&vendor_dir)
+            .map_err(|error| format!("清理旧依赖目录失败: {error}"))?;
+    }
+    fs::create_dir_all(&vendor_dir)
+        .map_err(|error| format!("创建依赖目录失败: {error}"))?;
+
+    let output = std_command(&python_path)
+        .arg("-m")
+        .arg("pip")
+        .arg("install")
+        .arg("--disable-pip-version-check")
+        .arg("--upgrade")
+        .arg("-r")
+        .arg(&requirements_path)
+        .arg("--target")
+        .arg(&vendor_dir)
+        .arg("--no-compile")
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUTF8", "1")
+        .current_dir(&plugin_dir)
+        .output()
+        .map_err(|error| format!("安装插件依赖失败: {error}"))?;
+
+    if !output.status.success() {
+        return Err(format_command_error("安装插件依赖失败。", &output));
+    }
+
+    Ok(inspect_plugin_dependencies_in_dir(&plugin_dir))
+}
+
+#[tauri::command]
+pub async fn remove_plugin_dependencies(
+    app_handle: AppHandle,
+    plugin_key: String,
+    project_path: Option<String>,
+) -> Result<PluginDependencyInfo, String> {
+    let descriptor =
+        find_plugin_descriptor_by_key(&app_handle, project_path.as_deref(), &plugin_key)?;
+    let plugin_dir = PathBuf::from(&descriptor.path);
+    let vendor_dir = plugin_dir.join("vendor");
+
+    if vendor_dir.exists() {
+        fs::remove_dir_all(&vendor_dir)
+            .map_err(|error| format!("删除插件依赖目录失败: {error}"))?;
+    }
+
+    Ok(inspect_plugin_dependencies_in_dir(&plugin_dir))
+}
+
+#[tauri::command]
 pub async fn validate_plugin(
     app_handle: AppHandle,
     plugin_path: String,
@@ -970,6 +1298,74 @@ fn build_python_path(runtime: &PluginRuntimeInfo, plugin_dir: &Path) -> Option<S
             None
         }
     })
+}
+
+fn format_command_error(prefix: &str, output: &std::process::Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let details = [stdout, stderr]
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if details.is_empty() {
+        prefix.to_string()
+    } else {
+        format!("{prefix}\n{details}")
+    }
+}
+
+fn ensure_embedded_plugin_pip(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    let runtime = resolve_plugin_runtime(app_handle);
+    if runtime.status != "ready" {
+        return Err(runtime
+            .message
+            .unwrap_or_else(|| "插件运行时不可用".to_string()));
+    }
+
+    if runtime.source != "embedded" {
+        return Err("插件依赖管理只支持内置 Python 运行时。".to_string());
+    }
+
+    let python_path = runtime
+        .resolved_path
+        .map(PathBuf::from)
+        .ok_or_else(|| "无法解析内置插件 Python 路径".to_string())?;
+
+    let pip_ready = std_command(&python_path)
+        .args(["-m", "pip", "--version"])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+    if pip_ready {
+        return Ok(python_path);
+    }
+
+    let get_pip_path = resolve_plugin_get_pip_path(app_handle).ok_or_else(|| {
+        "未找到 get-pip.py，请重新执行插件运行时准备脚本。".to_string()
+    })?;
+    let bootstrap_output = std_command(&python_path)
+        .arg(&get_pip_path)
+        .arg("--no-warn-script-location")
+        .output()
+        .map_err(|error| format!("启动 get-pip.py 失败: {error}"))?;
+    if !bootstrap_output.status.success() {
+        return Err(format_command_error("初始化插件 pip 失败。", &bootstrap_output));
+    }
+
+    let verify_output = std_command(&python_path)
+        .args(["-m", "pip", "--version"])
+        .output()
+        .map_err(|error| format!("校验插件 pip 失败: {error}"))?;
+    if !verify_output.status.success() {
+        return Err(format_command_error(
+            "插件 pip 初始化后仍不可用。",
+            &verify_output,
+        ));
+    }
+
+    Ok(python_path)
 }
 
 pub fn prepare_plugin_execution(
