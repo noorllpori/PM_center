@@ -735,9 +735,9 @@ export function SettingsPanel({
               className="mt-0.5 rounded"
             />
             <span>
-              启动后自动打开上次项目
+              启动后恢复上次会话
               <span className="block text-xs text-gray-500 mt-1">
-                关闭后将始终先进入主页。
+                会自动恢复上次打开的项目标签、工作区标签和独立窗口。关闭后将始终先进入主页。
               </span>
             </span>
           </label>

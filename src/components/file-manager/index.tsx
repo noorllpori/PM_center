@@ -4,8 +4,11 @@ import { listen } from '@tauri-apps/api/event';
 import { WelcomeScreen } from '../WelcomeScreen';
 import { P2PChat } from '../P2PChat';
 import { PythonEnvManager } from '../PythonEnvManager';
+import { openStandaloneImageViewer } from '../image-viewer/openStandaloneImageViewer';
 import { TaskButton } from '../TaskButton';
 import { LauncherButton } from '../Launcher';
+import { openStandaloneTextEditor } from '../text-editor/openStandaloneTextEditor';
+import { openStandaloneVideoPlayer } from '../video-player/openStandaloneVideoPlayer';
 import { Toolbar, TOOLBAR_SEARCH_FOCUS_EVENT } from './Toolbar';
 import { ProjectWorkspace } from './ProjectWorkspace';
 import { ProjectSessionProvider } from './ProjectSessionProvider';
@@ -16,6 +19,19 @@ import { createWorkspaceTabStore, type WorkspaceTabStoreApi, useWorkspaceTabStor
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useShellTabStore, normalizeProjectPath } from '../../stores/shellTabStore';
+import {
+  createDefaultPersistedAppSession,
+  dedupeStandaloneWindows,
+  getTrackedStandaloneWindows,
+  loadPersistedAppSession,
+  savePersistedAppSession,
+  subscribeTrackedStandaloneWindows,
+  type PersistedAppSession,
+  type PersistedProjectSession,
+  type PersistedStandaloneWindow,
+  type PersistedWorkspaceActiveTab,
+  type PersistedWorkspaceTab,
+} from '../../utils/appSession';
 import type { PluginControlMessage } from '../../types/plugin';
 import {
   STANDALONE_RETURN_TO_WORKSPACE_EVENT,
@@ -27,12 +43,128 @@ interface ProjectSession {
   workspaceTabStore: WorkspaceTabStoreApi;
 }
 
+interface ProjectSessionSubscriptions {
+  unsubscribeProject: () => void;
+  unsubscribeWorkspace: () => void;
+}
+
+const SESSION_PERSIST_DEBOUNCE_MS = 180;
+
 function getProjectNameFromPath(path: string) {
   return path.split(/[\\/]/).pop() || 'Project';
 }
 
 function getFileNameFromPath(path: string) {
   return path.split(/[\\/]/).pop() || path;
+}
+
+function getPersistedWorkspaceTabKey(tab: PersistedWorkspaceTab | PersistedWorkspaceActiveTab) {
+  return tab.type === 'logs' || tab.type === 'files'
+    ? tab.type
+    : `${tab.type}:${tab.filePath || ''}`;
+}
+
+function serializeWorkspaceSession(
+  workspaceTabStore: WorkspaceTabStoreApi,
+): Pick<PersistedProjectSession, 'tabs' | 'activeTab'> {
+  const state = workspaceTabStore.getState();
+  const tabs = state.tabs.flatMap<PersistedWorkspaceTab>((tab) => {
+    if (tab.type === 'files') {
+      return [];
+    }
+
+    if (tab.type === 'logs') {
+      return [{ type: 'logs', title: tab.title }];
+    }
+
+    if (!tab.filePath) {
+      return [];
+    }
+
+    return [{
+      type: tab.type,
+      filePath: tab.filePath,
+      title: tab.title,
+    }];
+  });
+
+  const activeTab = state.tabs.find((tab) => tab.id === state.activeTabId) ?? state.tabs[0];
+  const activePersistedTab: PersistedWorkspaceActiveTab =
+    activeTab?.type === 'logs'
+      ? { type: 'logs' }
+      : activeTab?.type && activeTab.type !== 'files' && activeTab.filePath
+        ? { type: activeTab.type, filePath: activeTab.filePath }
+        : { type: 'files' };
+
+  return {
+    tabs,
+    activeTab: activePersistedTab,
+  };
+}
+
+async function restoreWorkspaceSession(
+  workspaceTabStore: WorkspaceTabStoreApi,
+  session: PersistedProjectSession,
+) {
+  workspaceTabStore.getState().resetTabs();
+
+  const restoredTabIds = new Map<string, string>();
+
+  for (const tab of session.tabs) {
+    if (tab.type === 'logs') {
+      const tabId = workspaceTabStore.getState().openLogsTab();
+      restoredTabIds.set(getPersistedWorkspaceTabKey(tab), tabId);
+      continue;
+    }
+
+    if (!tab.filePath) {
+      continue;
+    }
+
+    const tabId = await workspaceTabStore.getState().openFileInTab(tab.filePath);
+    if (tabId) {
+      restoredTabIds.set(getPersistedWorkspaceTabKey(tab), tabId);
+    }
+  }
+
+  if (session.activeTab.type === 'files') {
+    workspaceTabStore.getState().activateTab('files');
+    return;
+  }
+
+  const activeTabId = restoredTabIds.get(getPersistedWorkspaceTabKey(session.activeTab));
+  if (activeTabId) {
+    workspaceTabStore.getState().activateTab(activeTabId);
+  }
+}
+
+async function restoreStandaloneWindow(window: PersistedStandaloneWindow) {
+  if (window.type === 'image') {
+    await openStandaloneImageViewer({
+      filePath: window.filePath,
+      title: window.title,
+      projectPath: window.projectPath,
+      focus: false,
+    });
+    return;
+  }
+
+  if (window.type === 'video') {
+    await openStandaloneVideoPlayer({
+      filePath: window.filePath,
+      title: window.title,
+      projectPath: window.projectPath,
+      focus: false,
+    });
+    return;
+  }
+
+  await openStandaloneTextEditor({
+    filePath: window.filePath,
+    title: window.title,
+    projectPath: window.projectPath,
+    focus: false,
+  });
 }
 
 function ProjectLogsButton({ onOpen }: { onOpen: () => void }) {
@@ -79,7 +211,11 @@ export function FileManager() {
   const [isPythonEnvOpen, setIsPythonEnvOpen] = useState(false);
   const [isSettingsLoaded, setIsSettingsLoaded] = useState(false);
   const sessionsRef = useRef<Map<string, ProjectSession>>(new Map());
+  const sessionSubscriptionsRef = useRef<Map<string, ProjectSessionSubscriptions>>(new Map());
+  const sessionPersistTimerRef = useRef<number | null>(null);
   const hasHandledStartupProjectRef = useRef(false);
+  const isRestoringSessionRef = useRef(false);
+  const isSessionPersistenceReadyRef = useRef(false);
 
   useEffect(() => {
     let isActive = true;
@@ -114,6 +250,112 @@ export function FileManager() {
     ? sessionsRef.current.get(normalizeProjectPath(activeShellTab.projectPath)) ?? null
     : null;
 
+  const persistAppSession = useCallback(async () => {
+    if (!isSessionPersistenceReadyRef.current || isRestoringSessionRef.current) {
+      return;
+    }
+
+    const shellState = useShellTabStore.getState();
+    const projectTabs = shellState.tabs
+      .filter((tab) => tab.type === 'project' && tab.projectPath)
+      .map((tab) => ({
+        projectPath: tab.projectPath!,
+        title: tab.title,
+      }));
+
+    const projects = projectTabs.flatMap<PersistedProjectSession>((tab) => {
+      const session = sessionsRef.current.get(normalizeProjectPath(tab.projectPath));
+      if (!session) {
+        return [];
+      }
+
+      const projectState = session.projectStore.getState();
+      if (!projectState.projectPath || !projectState.isInitialized) {
+        return [];
+      }
+
+      const workspaceSession = serializeWorkspaceSession(session.workspaceTabStore);
+
+      return [{
+        projectPath: projectState.projectPath,
+        title: tab.title,
+        currentPath: projectState.currentPath,
+        showExcludedFiles: projectState.showExcludedFiles,
+        tabs: workspaceSession.tabs,
+        activeTab: workspaceSession.activeTab,
+      }];
+    });
+
+    const activeTab = shellState.tabs.find((tab) => tab.id === shellState.activeTabId);
+    const persistedSession: PersistedAppSession = {
+      ...createDefaultPersistedAppSession(),
+      projectTabs,
+      activeTab:
+        activeTab?.type === 'project' && activeTab.projectPath
+          ? { type: 'project', projectPath: activeTab.projectPath }
+          : { type: 'home' },
+      projects,
+      standaloneWindows: dedupeStandaloneWindows(getTrackedStandaloneWindows()),
+    };
+
+    await savePersistedAppSession(persistedSession);
+  }, []);
+
+  const schedulePersistAppSession = useCallback(() => {
+    if (!isSessionPersistenceReadyRef.current || isRestoringSessionRef.current) {
+      return;
+    }
+
+    if (sessionPersistTimerRef.current !== null) {
+      window.clearTimeout(sessionPersistTimerRef.current);
+    }
+
+    sessionPersistTimerRef.current = window.setTimeout(() => {
+      sessionPersistTimerRef.current = null;
+      void persistAppSession();
+    }, SESSION_PERSIST_DEBOUNCE_MS);
+  }, [persistAppSession]);
+
+  const registerSessionPersistence = useCallback((projectPath: string, session: ProjectSession) => {
+    const normalizedPath = normalizeProjectPath(projectPath);
+    if (sessionSubscriptionsRef.current.has(normalizedPath)) {
+      return;
+    }
+
+    const unsubscribeProject = session.projectStore.subscribe((state, previous) => {
+      if (
+        state.currentPath !== previous.currentPath ||
+        state.showExcludedFiles !== previous.showExcludedFiles ||
+        state.isInitialized !== previous.isInitialized
+      ) {
+        schedulePersistAppSession();
+      }
+    });
+
+    const unsubscribeWorkspace = session.workspaceTabStore.subscribe((state, previous) => {
+      if (state.activeTabId !== previous.activeTabId || state.tabs !== previous.tabs) {
+        schedulePersistAppSession();
+      }
+    });
+
+    sessionSubscriptionsRef.current.set(normalizedPath, {
+      unsubscribeProject,
+      unsubscribeWorkspace,
+    });
+  }, [schedulePersistAppSession]);
+
+  const unregisterSessionPersistence = useCallback((projectPath: string) => {
+    const normalizedPath = normalizeProjectPath(projectPath);
+    const subscriptions = sessionSubscriptionsRef.current.get(normalizedPath);
+    if (!subscriptions) {
+      return;
+    }
+
+    subscriptions.unsubscribeProject();
+    subscriptions.unsubscribeWorkspace();
+    sessionSubscriptionsRef.current.delete(normalizedPath);
+  }, []);
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       const hasCommandModifier = event.ctrlKey || event.metaKey;
@@ -147,7 +389,7 @@ export function FileManager() {
     void session.projectStore.getState().activateProject();
   }, [activeShellTab]);
 
-  const handleOpenProject = useCallback(async (path: string) => {
+  const ensureProjectSession = useCallback(async (path: string) => {
     const normalizedPath = normalizeProjectPath(path);
     let session = sessionsRef.current.get(normalizedPath);
 
@@ -158,12 +400,96 @@ export function FileManager() {
       };
       await session.projectStore.getState().setProject(path);
       sessionsRef.current.set(normalizedPath, session);
+      registerSessionPersistence(path, session);
     }
 
+    return session;
+  }, [registerSessionPersistence]);
+
+  const openProjectSession = useCallback(async (
+    path: string,
+    options?: {
+      skipRecentTracking?: boolean;
+    },
+  ) => {
+    const session = await ensureProjectSession(path);
     const projectName = session.projectStore.getState().projectName || getProjectNameFromPath(path);
     openProjectTab(path, projectName);
-    await addRecentProject(path, projectName);
-  }, [addRecentProject, openProjectTab]);
+    if (!options?.skipRecentTracking) {
+      await addRecentProject(path, projectName);
+    }
+    return session;
+  }, [addRecentProject, ensureProjectSession, openProjectTab]);
+
+  const handleOpenProject = useCallback(async (path: string) => {
+    await openProjectSession(path);
+  }, [openProjectSession]);
+
+  const restorePersistedSession = useCallback(async (sessionSnapshot: PersistedAppSession) => {
+    let restoredAnything = false;
+    const projectSessionMap = new Map(
+      sessionSnapshot.projects.map((project) => [normalizeProjectPath(project.projectPath), project] as const),
+    );
+
+    for (const projectTab of sessionSnapshot.projectTabs) {
+      try {
+        const session = await openProjectSession(projectTab.projectPath, {
+          skipRecentTracking: true,
+        });
+
+        const persistedProjectSession = projectSessionMap.get(
+          normalizeProjectPath(projectTab.projectPath),
+        );
+
+        if (persistedProjectSession) {
+          const projectState = session.projectStore.getState();
+
+          if (persistedProjectSession.showExcludedFiles !== projectState.showExcludedFiles) {
+            projectState.toggleShowExcludedFiles();
+          }
+
+          if (
+            persistedProjectSession.currentPath &&
+            persistedProjectSession.currentPath !== projectState.projectPath
+          ) {
+            await projectState.loadDirectory(persistedProjectSession.currentPath);
+          }
+
+          await restoreWorkspaceSession(session.workspaceTabStore, persistedProjectSession);
+        }
+
+        restoredAnything = true;
+      } catch (error) {
+        console.error('Failed to restore project session:', projectTab.projectPath, error);
+      }
+    }
+
+    for (const standaloneWindow of sessionSnapshot.standaloneWindows) {
+      try {
+        await restoreStandaloneWindow(standaloneWindow);
+        restoredAnything = true;
+      } catch (error) {
+        console.error('Failed to restore standalone window:', standaloneWindow, error);
+      }
+    }
+
+    if (sessionSnapshot.activeTab.type === 'project') {
+      const activeProjectTab = useShellTabStore
+        .getState()
+        .findProjectTab(sessionSnapshot.activeTab.projectPath);
+
+      if (activeProjectTab) {
+        useShellTabStore.getState().activateTab(activeProjectTab.id);
+      }
+    } else {
+      const homeTab = useShellTabStore.getState().tabs.find((tab) => tab.type === 'home');
+      if (homeTab) {
+        useShellTabStore.getState().activateTab(homeTab.id);
+      }
+    }
+
+    return restoredAnything;
+  }, [openProjectSession]);
 
   useEffect(() => {
     if (!isSettingsLoaded || hasHandledStartupProjectRef.current) {
@@ -172,17 +498,47 @@ export function FileManager() {
 
     hasHandledStartupProjectRef.current = true;
 
-    if (!autoOpenLastProject || recentProjects.length === 0) {
-      return;
-    }
+    const bootstrapStartupSession = async () => {
+      isRestoringSessionRef.current = true;
 
-    const [latestProject] = [...recentProjects].sort((left, right) => right.openedAt - left.openedAt);
-    if (!latestProject?.path) {
-      return;
-    }
+      try {
+        if (!autoOpenLastProject) {
+          return;
+        }
 
-    void handleOpenProject(latestProject.path);
-  }, [autoOpenLastProject, handleOpenProject, isSettingsLoaded, recentProjects]);
+        const persistedSession = await loadPersistedAppSession();
+        const restoredFromSession = persistedSession
+          ? await restorePersistedSession(persistedSession)
+          : false;
+
+        if (restoredFromSession || recentProjects.length === 0) {
+          return;
+        }
+
+        const [latestProject] = [...recentProjects].sort((left, right) => right.openedAt - left.openedAt);
+        if (!latestProject?.path) {
+          return;
+        }
+
+        await openProjectSession(latestProject.path, {
+          skipRecentTracking: true,
+        });
+      } finally {
+        isRestoringSessionRef.current = false;
+        isSessionPersistenceReadyRef.current = true;
+        schedulePersistAppSession();
+      }
+    };
+
+    void bootstrapStartupSession();
+  }, [
+    autoOpenLastProject,
+    isSettingsLoaded,
+    openProjectSession,
+    recentProjects,
+    restorePersistedSession,
+    schedulePersistAppSession,
+  ]);
 
   useEffect(() => {
     let isActive = true;
@@ -303,11 +659,41 @@ export function FileManager() {
     };
   }, [showToast]);
 
+  useEffect(() => {
+    const unsubscribeStandaloneWindows = subscribeTrackedStandaloneWindows(() => {
+      schedulePersistAppSession();
+    });
+
+    return () => {
+      unsubscribeStandaloneWindows();
+    };
+  }, [schedulePersistAppSession]);
+
+  useEffect(() => {
+    schedulePersistAppSession();
+  }, [activeTabId, schedulePersistAppSession, tabs]);
+
+  useEffect(() => {
+    return () => {
+      if (sessionPersistTimerRef.current !== null) {
+        window.clearTimeout(sessionPersistTimerRef.current);
+        sessionPersistTimerRef.current = null;
+      }
+
+      sessionSubscriptionsRef.current.forEach((subscriptions) => {
+        subscriptions.unsubscribeProject();
+        subscriptions.unsubscribeWorkspace();
+      });
+      sessionSubscriptionsRef.current.clear();
+    };
+  }, []);
+
   const handleCloseShellTab = (tabId: string) => {
     const closingTab = tabs.find((tab) => tab.id === tabId);
     closeTab(tabId);
 
     if (closingTab?.type === 'project' && closingTab.projectPath) {
+      unregisterSessionPersistence(closingTab.projectPath);
       sessionsRef.current.delete(normalizeProjectPath(closingTab.projectPath));
     }
   };

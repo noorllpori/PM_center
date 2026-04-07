@@ -1,5 +1,7 @@
+import { TauriEvent } from '@tauri-apps/api/event';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { getFileNameFromPath } from '../workspace/fileOpeners';
+import { trackStandaloneWindow, untrackStandaloneWindow } from '../../utils/appSession';
 
 export interface OpenStandaloneTextEditorOptions {
   filePath: string;
@@ -56,6 +58,16 @@ export async function openStandaloneTextEditor(
 
   return await new Promise<WebviewWindow>((resolve, reject) => {
     void textEditorWindow.once('tauri://created', () => {
+      trackStandaloneWindow({
+        instanceId: label,
+        type: 'text',
+        filePath,
+        projectPath,
+        title,
+      });
+      void textEditorWindow.once(TauriEvent.WINDOW_DESTROYED, () => {
+        untrackStandaloneWindow(label);
+      });
       resolve(textEditorWindow);
     });
 

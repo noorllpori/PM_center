@@ -1,5 +1,7 @@
+import { TauriEvent } from '@tauri-apps/api/event';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { getFileNameFromPath } from '../workspace/fileOpeners';
+import { trackStandaloneWindow, untrackStandaloneWindow } from '../../utils/appSession';
 
 export interface OpenStandaloneVideoPlayerOptions {
   filePath: string;
@@ -50,6 +52,16 @@ export async function openStandaloneVideoPlayer(
 
   return await new Promise<WebviewWindow>((resolve, reject) => {
     void videoWindow.once('tauri://created', () => {
+      trackStandaloneWindow({
+        instanceId: label,
+        type: 'video',
+        filePath,
+        projectPath,
+        title,
+      });
+      void videoWindow.once(TauriEvent.WINDOW_DESTROYED, () => {
+        untrackStandaloneWindow(label);
+      });
       resolve(videoWindow);
     });
 

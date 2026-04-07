@@ -1,4 +1,6 @@
+import { TauriEvent } from '@tauri-apps/api/event';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { trackStandaloneWindow, untrackStandaloneWindow } from '../../utils/appSession';
 
 function getFileNameFromPath(path: string): string {
   return path.split(/[\\/]/).pop() || path;
@@ -53,6 +55,16 @@ export async function openStandaloneImageViewer(
 
   return await new Promise<WebviewWindow>((resolve, reject) => {
     void imageWindow.once('tauri://created', () => {
+      trackStandaloneWindow({
+        instanceId: label,
+        type: 'image',
+        filePath,
+        projectPath,
+        title,
+      });
+      void imageWindow.once(TauriEvent.WINDOW_DESTROYED, () => {
+        untrackStandaloneWindow(label);
+      });
       resolve(imageWindow);
     });
 
