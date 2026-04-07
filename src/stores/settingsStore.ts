@@ -1,4 +1,9 @@
 import { create } from 'zustand';
+import {
+  disable as disableAutostart,
+  enable as enableAutostart,
+  isEnabled as isAutostartEnabled,
+} from '@tauri-apps/plugin-autostart';
 import { load } from '@tauri-apps/plugin-store';
 import { DEFAULT_EXCLUDE_PATTERNS } from '../utils/excludePatterns';
 
@@ -16,6 +21,8 @@ export interface ToolPaths {
 interface SettingsState {
   recentProjects: RecentProject[];
   autoOpenLastProject: boolean;
+  launchOnStartup: boolean;
+  launchOnStartupAvailable: boolean;
   projectsRootDir: string | null; // 项目根目录（扫描用）
   ignoredProjects: string[]; // 被忽略的项目路径列表
   toolPaths: ToolPaths;
@@ -31,6 +38,8 @@ interface SettingsState {
   clearAllRecentProjects: () => Promise<void>;
   // 设置自动打开
   setAutoOpen: (enabled: boolean) => Promise<void>;
+  // 设置开机自启动
+  setLaunchOnStartup: (enabled: boolean) => Promise<void>;
   // 设置项目根目录
   setProjectsRootDir: (path: string | null) => Promise<void>;
   // 忽略项目
@@ -48,10 +57,13 @@ interface SettingsState {
 // Store 文件名
 const STORE_FILE = 'settings.json';
 const MAX_RECENT_PROJECTS = 10;
+const LAUNCH_ON_STARTUP_KEY = 'launchOnStartup';
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   recentProjects: [],
   autoOpenLastProject: true,
+  launchOnStartup: false,
+  launchOnStartupAvailable: true,
   projectsRootDir: null,
   ignoredProjects: [],
   toolPaths: {
@@ -65,6 +77,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       const store = await load(STORE_FILE);
       const recent = await store.get<RecentProject[]>('recentProjects');
       const autoOpen = await store.get<boolean>('autoOpenLastProject');
+      const launchOnStartup = await store.get<boolean>(LAUNCH_ON_STARTUP_KEY);
       const rootDir = await store.get<string | null>('projectsRootDir');
       const ignored = await store.get<string[]>('ignoredProjects');
       const toolPaths = await store.get<ToolPaths>('toolPaths');
@@ -77,6 +90,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       
       if (autoOpen !== undefined) {
         set({ autoOpenLastProject: autoOpen });
+      }
+
+      if (launchOnStartup !== undefined) {
+        set({ launchOnStartup });
       }
       
       if (rootDir !== undefined) {
@@ -98,6 +115,22 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
       if (globalExcludePatterns) {
         set({ globalExcludePatterns });
+      }
+
+      try {
+        const autostartEnabled = await isAutostartEnabled();
+        set({
+          launchOnStartup: autostartEnabled,
+          launchOnStartupAvailable: true,
+        });
+
+        if (launchOnStartup !== autostartEnabled) {
+          await store.set(LAUNCH_ON_STARTUP_KEY, autostartEnabled);
+          await store.save();
+        }
+      } catch (error) {
+        console.error('Failed to read launch on startup state:', error);
+        set({ launchOnStartupAvailable: false });
       }
     } catch (error) {
       console.error('Failed to load settings:', error);
@@ -172,6 +205,28 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       set({ autoOpenLastProject: enabled });
     } catch (error) {
       console.error('Failed to set auto open:', error);
+    }
+  },
+
+  setLaunchOnStartup: async (enabled: boolean) => {
+    try {
+      if (enabled) {
+        await enableAutostart();
+      } else {
+        await disableAutostart();
+      }
+
+      const store = await load(STORE_FILE);
+      await store.set(LAUNCH_ON_STARTUP_KEY, enabled);
+      await store.save();
+
+      set({
+        launchOnStartup: enabled,
+        launchOnStartupAvailable: true,
+      });
+    } catch (error) {
+      console.error('Failed to set launch on startup:', error);
+      throw error;
     }
   },
 

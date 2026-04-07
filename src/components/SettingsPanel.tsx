@@ -74,11 +74,14 @@ export function SettingsPanel({
 }: SettingsPanelProps) {
   const {
     autoOpenLastProject,
+    launchOnStartup,
+    launchOnStartupAvailable,
     ignoredProjects,
     recentProjects,
     toolPaths,
     loadSettings,
     setAutoOpen,
+    setLaunchOnStartup,
     clearAllRecentProjects,
     clearIgnoredProjects,
     unignoreProject,
@@ -101,6 +104,7 @@ export function SettingsPanel({
   const [needsProjectRefresh, setNeedsProjectRefresh] = useState(false);
   const [toolStatuses, setToolStatuses] = useState<ToolStatus[]>([]);
   const [isLoadingTools, setIsLoadingTools] = useState(false);
+  const [isUpdatingLaunchOnStartup, setIsUpdatingLaunchOnStartup] = useState(false);
   const [globalTaskScriptsPath, setGlobalTaskScriptsPath] = useState<string | null>(null);
   const [pluginDescriptors, setPluginDescriptors] = useState<PluginDescriptor[]>([]);
   const [pluginDirectories, setPluginDirectories] = useState<PluginDirectories | null>(null);
@@ -316,6 +320,22 @@ export function SettingsPanel({
   const handleClearToolPath = async (tool: keyof ToolPaths) => {
     await setToolPath(tool, null);
     await loadToolStatuses();
+  };
+
+  const handleToggleLaunchOnStartup = async (enabled: boolean) => {
+    setIsUpdatingLaunchOnStartup(true);
+
+    try {
+      await setLaunchOnStartup(enabled);
+    } catch (error) {
+      setAlertDialog({
+        isOpen: true,
+        title: enabled ? '启用开机自启动失败' : '关闭开机自启动失败',
+        message: String(error),
+      });
+    } finally {
+      setIsUpdatingLaunchOnStartup(false);
+    }
   };
 
   const handleOpenFfprobeDownloadPage = async () => {
@@ -688,20 +708,46 @@ export function SettingsPanel({
           <SlidersHorizontal className="w-4 h-4 text-blue-500" />
           <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">常规</h4>
         </div>
-        <label className="flex items-start gap-3 text-sm text-gray-700 dark:text-gray-300">
-          <input
-            type="checkbox"
-            checked={autoOpenLastProject}
-            onChange={(event) => void setAutoOpen(event.target.checked)}
-            className="mt-0.5 rounded"
-          />
-          <span>
-            启动后自动打开上次项目
-            <span className="block text-xs text-gray-500 mt-1">
-              关闭后将始终先进入主页。
+        <div className="space-y-4">
+          <label className="flex items-start gap-3 text-sm text-gray-700 dark:text-gray-300">
+            <input
+              type="checkbox"
+              checked={autoOpenLastProject}
+              onChange={(event) => void setAutoOpen(event.target.checked)}
+              className="mt-0.5 rounded"
+            />
+            <span>
+              启动后自动打开上次项目
+              <span className="block text-xs text-gray-500 mt-1">
+                关闭后将始终先进入主页。
+              </span>
             </span>
-          </span>
-        </label>
+          </label>
+
+          <label
+            className={`flex items-start gap-3 text-sm text-gray-700 dark:text-gray-300 ${
+              !launchOnStartupAvailable ? 'opacity-60' : ''
+            }`}
+          >
+            <input
+              type="checkbox"
+              checked={launchOnStartup}
+              disabled={!launchOnStartupAvailable || isUpdatingLaunchOnStartup}
+              onChange={(event) => void handleToggleLaunchOnStartup(event.target.checked)}
+              className="mt-0.5 rounded"
+            />
+            <span>
+              开机自动启动
+              <span className="block text-xs text-gray-500 mt-1">
+                {launchOnStartupAvailable
+                  ? isUpdatingLaunchOnStartup
+                    ? '正在更新系统启动项...'
+                    : '在系统登录后自动启动 PM Center。'
+                  : '当前环境暂时无法读取系统自启动状态。'}
+              </span>
+            </span>
+          </label>
+        </div>
       </section>
 
       {renderExcludeRulesSection({
