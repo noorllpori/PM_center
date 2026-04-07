@@ -33,6 +33,11 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "windows": {
+      "wix": {
+        "language": "zh-CN"
+      }
+    },
     "resources": [
       "resources/plugin-sdk/**/*",
       "resources/plugin-python/windows-x64/**/*"
