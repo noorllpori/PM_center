@@ -28,12 +28,6 @@
         "enable": true,
         "scope": ["**"]
       }
-    },
-    "trayIcon": {
-      "id": "main-tray",
-      "iconPath": "icons/icon.png",
-      "iconAsTemplate": true,
-      "showMenuOnLeftClick": true
     }
   },
   "bundle": {
