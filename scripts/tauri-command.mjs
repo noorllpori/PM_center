@@ -6,8 +6,16 @@ import { syncAppVersionFiles, ensureVersionedExeArtifacts } from './app-version.
 
 const args = process.argv.slice(2);
 const isDebugBuild = args.includes('--debug');
+const isDevCommand = args[0] === 'dev';
 
 await syncAppVersionFiles();
+
+if (isDevCommand && !process.env.PMC_ALLOW_PLUGIN_SYSTEM_PYTHON) {
+  process.env.PMC_ALLOW_PLUGIN_SYSTEM_PYTHON = '1';
+  console.log(
+    '[tauri-wrapper] dev mode allows plugin system Python fallback when embedded runtime is unavailable.',
+  );
+}
 
 const tauriCliEntry = resolve(
   process.cwd(),
@@ -29,6 +37,7 @@ try {
 const child = spawn(process.execPath, [tauriCliEntry, ...args], {
   stdio: 'inherit',
   cwd: process.cwd(),
+  env: process.env,
 });
 
 child.on('error', (error) => {

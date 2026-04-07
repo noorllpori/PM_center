@@ -5,7 +5,7 @@
   "license": "GPL-2.0-only",
   "type": "module",
   "scripts": {
-    "predev": "npm run sync:version && npm run prepare:plugin-python",
+    "predev": "npm run sync:version && node scripts/prepare-plugin-python.mjs --optional",
     "prebuild": "npm run sync:version && npm run prepare:plugin-python",
     "sync:version": "node scripts/sync-version.mjs",
     "prepare:plugin-python": "node scripts/prepare-plugin-python.mjs",
