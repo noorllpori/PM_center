@@ -12,6 +12,7 @@ import {
   FolderOpen,
   HelpCircle,
   Plus,
+  Power,
   RefreshCw,
   Search,
   Settings,
@@ -20,7 +21,7 @@ import {
   Wrench,
   Puzzle,
 } from 'lucide-react';
-import { AlertDialog, Dialog } from './Dialog';
+import { AlertDialog, ConfirmDialog, Dialog } from './Dialog';
 import { useOptionalProjectStoreShallow } from '../stores/projectStore';
 import { ToolPaths, useSettingsStore } from '../stores/settingsStore';
 import {
@@ -105,6 +106,7 @@ export function SettingsPanel({
   const [toolStatuses, setToolStatuses] = useState<ToolStatus[]>([]);
   const [isLoadingTools, setIsLoadingTools] = useState(false);
   const [isUpdatingLaunchOnStartup, setIsUpdatingLaunchOnStartup] = useState(false);
+  const [isExitingApp, setIsExitingApp] = useState(false);
   const [globalTaskScriptsPath, setGlobalTaskScriptsPath] = useState<string | null>(null);
   const [pluginDescriptors, setPluginDescriptors] = useState<PluginDescriptor[]>([]);
   const [pluginDirectories, setPluginDirectories] = useState<PluginDirectories | null>(null);
@@ -114,6 +116,7 @@ export function SettingsPanel({
     title: '提示',
     message: '',
   });
+  const [exitConfirmDialogOpen, setExitConfirmDialogOpen] = useState(false);
   const refreshProjectPlugins = usePluginStore((state) => state.refreshProjectPlugins);
   const loadPluginDirsFromStore = usePluginStore((state) => state.loadPluginDirs);
   const togglePlugin = usePluginStore((state) => state.togglePlugin);
@@ -379,6 +382,21 @@ export function SettingsPanel({
         title: '打开插件目录失败',
         message: String(error),
       });
+    }
+  };
+
+  const handleExitApp = async () => {
+    setIsExitingApp(true);
+
+    try {
+      await invoke('exit_app');
+    } catch (error) {
+      setAlertDialog({
+        isOpen: true,
+        title: '结束程序失败',
+        message: String(error),
+      });
+      setIsExitingApp(false);
     }
   };
 
@@ -983,6 +1001,26 @@ export function SettingsPanel({
           </div>
         </div>
       </section>
+
+      <section className="rounded-xl border border-red-200 dark:border-red-900/40 bg-white dark:bg-gray-900 p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <Power className="w-4 h-4 text-red-500" />
+          <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">程序退出</h4>
+        </div>
+        <div className="rounded-lg bg-red-50 dark:bg-red-900/15 px-3 py-3">
+          <p className="text-sm text-red-700 dark:text-red-300">
+            结束程序会关闭窗口，并同时停止后台托盘与后台任务进程。
+          </p>
+          <button
+            onClick={() => setExitConfirmDialogOpen(true)}
+            disabled={isExitingApp}
+            className="mt-3 inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm text-white transition-colors hover:bg-red-700 disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            <Power className="w-4 h-4" />
+            结束程序
+          </button>
+        </div>
+      </section>
     </div>
   );
 
@@ -1076,6 +1114,21 @@ export function SettingsPanel({
         onClose={() => setAlertDialog((state) => ({ ...state, isOpen: false }))}
         title={alertDialog.title}
         message={alertDialog.message}
+      />
+
+      <ConfirmDialog
+        isOpen={exitConfirmDialogOpen}
+        onClose={() => {
+          if (!isExitingApp) {
+            setExitConfirmDialogOpen(false);
+          }
+        }}
+        onConfirm={() => void handleExitApp()}
+        title="结束程序"
+        message="结束程序后，主窗口、托盘和后台进程都会一起退出。确定继续吗？"
+        confirmText={isExitingApp ? '正在结束...' : '结束程序'}
+        cancelText="取消"
+        type="danger"
       />
     </>
   );

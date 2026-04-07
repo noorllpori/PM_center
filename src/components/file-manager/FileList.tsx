@@ -110,6 +110,7 @@ const GRID_CARD_HEIGHT = 176;
 const GRID_GAP = 16;
 const GRID_ROW_HEIGHT = GRID_CARD_HEIGHT + GRID_GAP;
 const GRID_OVERSCAN_ROWS = 2;
+const SYSTEM_CONTEXT_DOUBLE_TRIGGER_MS = 350;
 
 function clampColumnWidth(key: string, width: number) {
   return Math.max(MIN_COLUMN_WIDTHS[key] ?? 80, Math.round(width));
@@ -159,7 +160,6 @@ const ListRow = memo(function ListRow({
     file: FileInfo,
     x: number,
     y: number,
-    altPressed: boolean,
   ) => void;
   onDragStart: (file: FileInfo, event: React.DragEvent<HTMLDivElement>) => void;
   onDragEnd: () => void;
@@ -204,7 +204,7 @@ const ListRow = memo(function ListRow({
       }}
       onContextMenu={(e) => {
         e.preventDefault();
-        onContextMenu(file, e.clientX, e.clientY, e.altKey);
+        onContextMenu(file, e.clientX, e.clientY);
       }}
       onDragStart={(e) => onDragStart(file, e)}
       onDragEnd={onDragEnd}
@@ -369,7 +369,6 @@ function ListView({
     file: FileInfo,
     x: number,
     y: number,
-    altPressed: boolean,
   ) => void;
   onBackgroundContextMenu: (x: number, y: number) => void;
   onDragStart: (file: FileInfo, event: React.DragEvent<HTMLDivElement>) => void;
@@ -591,7 +590,6 @@ const GridCard = memo(function GridCard({
     file: FileInfo,
     x: number,
     y: number,
-    altPressed: boolean,
   ) => void;
   onDragStart: (file: FileInfo, event: React.DragEvent<HTMLDivElement>) => void;
   onDragEnd: () => void;
@@ -634,7 +632,7 @@ const GridCard = memo(function GridCard({
       }}
       onContextMenu={(e) => {
         e.preventDefault();
-        onContextMenu(file, e.clientX, e.clientY, e.altKey);
+        onContextMenu(file, e.clientX, e.clientY);
       }}
       onDragStart={(e) => onDragStart(file, e)}
       onDragEnd={onDragEnd}
@@ -755,7 +753,6 @@ function GridView({
     file: FileInfo,
     x: number,
     y: number,
-    altPressed: boolean,
   ) => void;
   onBackgroundContextMenu: (x: number, y: number) => void;
   onDragStart: (file: FileInfo, event: React.DragEvent<HTMLDivElement>) => void;
@@ -972,6 +969,10 @@ export function FileList() {
     | { kind: "directory"; x: number; y: number }
     | null
   >(null);
+  const lastFileContextMenuTriggerRef = useRef<{
+    path: string;
+    timestamp: number;
+  } | null>(null);
   const [detailsDialogFile, setDetailsDialogFile] = useState<FileInfo | null>(
     null,
   );
@@ -1183,8 +1184,13 @@ export function FileList() {
   );
 
   const handleContextMenu = useCallback(
-    (file: FileInfo, x: number, y: number, altPressed: boolean) => {
+    (file: FileInfo, x: number, y: number) => {
       const selectionIncludesTarget = selectedFiles.has(file.path);
+      const now = Date.now();
+      const lastTrigger = lastFileContextMenuTriggerRef.current;
+      const shouldOpenSystemMenu =
+        lastTrigger?.path === file.path &&
+        now - lastTrigger.timestamp <= SYSTEM_CONTEXT_DOUBLE_TRIGGER_MS;
 
       if (!selectionIncludesTarget) {
         projectStore.setState({
@@ -1192,11 +1198,18 @@ export function FileList() {
         });
       }
 
-      if (altPressed) {
+      if (shouldOpenSystemMenu) {
+        lastFileContextMenuTriggerRef.current = null;
+        setContextMenu(null);
         void openSystemContextMenu(file, selectionIncludesTarget);
         return;
       }
 
+      // Two quick right-clicks on the same item switch from app menu to system menu.
+      lastFileContextMenuTriggerRef.current = {
+        path: file.path,
+        timestamp: now,
+      };
       setContextMenu({ kind: "file", file, x, y });
     },
     [openSystemContextMenu, projectStore, selectedFiles],
@@ -1204,6 +1217,7 @@ export function FileList() {
 
   const handleBackgroundContextMenu = useCallback(
     (x: number, y: number) => {
+      lastFileContextMenuTriggerRef.current = null;
       clearSelection();
       setContextMenu({ kind: "directory", x, y });
     },

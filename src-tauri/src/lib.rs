@@ -732,6 +732,12 @@ async fn launch_program(path: String) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn exit_app(app: tauri::AppHandle) -> Result<(), String> {
+    app.exit(0);
+    Ok(())
+}
+
 fn toggle_window_visibility<R: Runtime>(app: &tauri::AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
         if window.is_visible().unwrap_or(false) {
@@ -796,7 +802,8 @@ pub fn run() {
             // 创建托盘菜单
             let show_i = MenuItem::with_id(app, "show", "显示", true, None::<&str>)?;
             let hide_i = MenuItem::with_id(app, "hide", "隐藏", true, None::<&str>)?;
-            let quit_i = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+            let quit_i =
+                MenuItem::with_id(app, "quit", "退出后台进程", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_i, &hide_i, &quit_i])?;
 
             let app_handle = app.handle().clone();
@@ -945,6 +952,7 @@ pub fn run() {
             task::run_task,
             task::cancel_task,
             launch_program,
+            exit_app,
             icon_extractor::extract_icon,
             init_project,
             activate_project,
