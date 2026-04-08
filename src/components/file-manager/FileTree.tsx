@@ -1,10 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { TreeNode } from "../../types";
+import { invoke } from "@tauri-apps/api/core";
+import { FileInfo, TreeNode } from "../../types";
 import {
   useProjectStoreApi,
   useProjectStoreShallow,
 } from "../../stores/projectStore";
+import { usePluginStore } from "../../stores/pluginStore";
 import { useSettingsStore } from "../../stores/settingsStore";
+import { useTaskStore } from "../../stores/taskStore";
+import { useUiStore } from "../../stores/uiStore";
+import { APP_VERSION } from "../../config/appMeta";
+import type { PluginAction } from "../../types/plugin";
 import {
   ChevronRight,
   ChevronDown,
@@ -17,15 +23,26 @@ import {
   canMovePathsToDirectory,
   getParentPath,
   getPathLabel,
+  joinPath,
 } from "./dragDrop";
 import { ExternalDragHandle } from "./ExternalDragHandle";
+import { InputDialog } from "../Dialog";
+import { FileDetailsDialog } from "./FileDetailsView";
+import { FileContextMenu } from "./FileContextMenu";
 import { useFileDropMove } from "./useFileDropMove";
 import { useInternalFileDrag } from "./useInternalFileDrag";
+import {
+  buildPluginContextItems,
+  buildPluginVisibilityDiagnostics,
+  getVisiblePluginActions,
+} from "../../utils/pluginActions";
 import {
   mergeExcludePatterns,
   readProjectExcludePatterns,
   shouldExcludeFile,
 } from "../../utils/excludePatterns";
+
+const SYSTEM_CONTEXT_DOUBLE_TRIGGER_MS = 350;
 
 interface TreeItemProps {
   node: TreeNode;
@@ -39,6 +56,7 @@ interface TreeItemProps {
   getDraggedPathsFromDataTransfer: (
     dataTransfer: DataTransfer | null,
   ) => string[];
+  onContextMenu: (node: TreeNode, x: number, y: number) => void;
   suppressInteraction: (event: React.SyntheticEvent<HTMLElement>) => boolean;
   isExcluded: (node: TreeNode) => boolean;
   showExcludedFiles: boolean;
@@ -54,6 +72,7 @@ function TreeItem({
   onHoverDirectory,
   canDropToDirectory,
   getDraggedPathsFromDataTransfer,
+  onContextMenu,
   suppressInteraction,
   isExcluded,
   showExcludedFiles,
@@ -141,6 +160,15 @@ function TreeItem({
           e.stopPropagation();
           await onDropToDirectory(node.path, internalDragPaths);
         }}
+        onContextMenu={(event) => {
+          if (suppressInteraction(event)) {
+            return;
+          }
+
+          event.preventDefault();
+          event.stopPropagation();
+          onContextMenu(node, event.clientX, event.clientY);
+        }}
       >
         {node.children.length > 0 ? (
           <button
@@ -193,6 +221,7 @@ function TreeItem({
               onHoverDirectory={onHoverDirectory}
               canDropToDirectory={canDropToDirectory}
               getDraggedPathsFromDataTransfer={getDraggedPathsFromDataTransfer}
+              onContextMenu={onContextMenu}
               suppressInteraction={suppressInteraction}
               isExcluded={isExcluded}
               showExcludedFiles={showExcludedFiles}
@@ -224,6 +253,35 @@ function filterTreeNode(
   };
 }
 
+function toTreeNodeFileInfo(node: TreeNode): FileInfo {
+  return {
+    name: node.name,
+    path: node.path,
+    is_dir: true,
+    size: 0,
+    modified: null,
+    created: null,
+    extension: null,
+    thumbnail: null,
+  };
+}
+
+function getTreeContextDirectory(
+  file: FileInfo | null,
+  projectPath: string | null,
+  fallbackPath: string | null,
+) {
+  if (!file) {
+    return fallbackPath;
+  }
+
+  if (!projectPath || file.path === projectPath) {
+    return file.path;
+  }
+
+  return getParentPath(file.path);
+}
+
 export function FileTree() {
   const projectStore = useProjectStoreApi();
   const {
@@ -246,6 +304,13 @@ export function FileTree() {
   const globalExcludePatterns = useSettingsStore(
     (state) => state.globalExcludePatterns,
   );
+  const addTask = useTaskStore((state) => state.addTask);
+  const showToast = useUiStore((state) => state.showToast);
+  const pluginProjectKey = projectPath || "__global__";
+  const pluginState = usePluginStore(
+    (state) => state.byProject[pluginProjectKey],
+  );
+  const loadPlugins = usePluginStore((state) => state.loadPlugins);
   const {
     draggedPaths,
     startInternalDrag,
@@ -255,6 +320,25 @@ export function FileTree() {
   } = useInternalFileDrag();
   const [searchTerm, setSearchTerm] = useState("");
   const [dropTargetPath, setDropTargetPath] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    file: FileInfo;
+    x: number;
+    y: number;
+  } | null>(null);
+  const lastTreeContextMenuTriggerRef = useRef<{
+    path: string;
+    timestamp: number;
+  } | null>(null);
+  const [detailsDialogFile, setDetailsDialogFile] = useState<FileInfo | null>(
+    null,
+  );
+  const [createFolderDialog, setCreateFolderDialog] = useState({
+    isOpen: false,
+    suggestedName: "",
+    folderName: "",
+    targetDirectory: "",
+  });
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   const { movePathsToDirectory, conflictDialog } = useFileDropMove(async () => {
     await projectStore.getState().refresh();
   });
@@ -326,6 +410,368 @@ export function FileTree() {
     );
   }, [isExcluded, showExcludedFiles, treeData]);
 
+  useEffect(() => {
+    if (!projectPath) {
+      return;
+    }
+
+    void loadPlugins(projectPath);
+  }, [loadPlugins, projectPath]);
+
+  const openSystemContextMenu = useCallback(
+    async (file: FileInfo) => {
+      try {
+        const result = await invoke<{ status: string }>(
+          "show_system_context_menu",
+          {
+            paths: [file.path],
+          },
+        );
+
+        if (result.status === "invoked") {
+          await refresh();
+        }
+      } catch (error) {
+        console.error("Failed to show system context menu:", error);
+        showToast({
+          title: "系统右键菜单打开失败",
+          message: String(error),
+          tone: "error",
+        });
+      }
+    },
+    [refresh, showToast],
+  );
+
+  const handleContextMenu = useCallback(
+    (node: TreeNode, x: number, y: number) => {
+      const file = toTreeNodeFileInfo(node);
+      const now = Date.now();
+      const lastTrigger = lastTreeContextMenuTriggerRef.current;
+      const shouldOpenSystemMenu =
+        lastTrigger?.path === file.path &&
+        now - lastTrigger.timestamp <= SYSTEM_CONTEXT_DOUBLE_TRIGGER_MS;
+
+      if (shouldOpenSystemMenu) {
+        lastTreeContextMenuTriggerRef.current = null;
+        setContextMenu(null);
+        void openSystemContextMenu(file);
+        return;
+      }
+
+      lastTreeContextMenuTriggerRef.current = {
+        path: file.path,
+        timestamp: now,
+      };
+      setContextMenu({ file, x, y });
+    },
+    [openSystemContextMenu],
+  );
+
+  const handleCloseContextMenu = useCallback(() => {
+    setContextMenu(null);
+  }, []);
+
+  const buildFileContext = useCallback(
+    (selectedItems: FileInfo[], contextPath: string | null) => ({
+      projectPath: projectPath || "",
+      currentPath: contextPath,
+      selectedItems: buildPluginContextItems(selectedItems),
+      trigger: "file-context",
+      pluginScope: "",
+      appVersion: APP_VERSION,
+    }),
+    [projectPath],
+  );
+
+  const contextDirectory = useMemo(
+    () =>
+      getTreeContextDirectory(
+        contextMenu?.file ?? null,
+        projectPath,
+        currentPath,
+      ),
+    [contextMenu, currentPath, projectPath],
+  );
+
+  const fileContextPluginContext = useMemo(() => {
+    if (!contextMenu) {
+      return null;
+    }
+
+    return buildFileContext([contextMenu.file], contextDirectory);
+  }, [buildFileContext, contextDirectory, contextMenu]);
+
+  const fileContextPluginActions = useMemo(() => {
+    if (!projectPath || !contextMenu || !fileContextPluginContext) {
+      return [];
+    }
+
+    return getVisiblePluginActions(
+      pluginState?.descriptors || [],
+      "file-context",
+      fileContextPluginContext,
+    );
+  }, [
+    contextMenu,
+    fileContextPluginContext,
+    pluginState?.descriptors,
+    projectPath,
+  ]);
+
+  const fileContextPluginDebugInfo = useMemo(() => {
+    if (!projectPath || !contextMenu || !fileContextPluginContext) {
+      return "";
+    }
+
+    return JSON.stringify(
+      buildPluginVisibilityDiagnostics(
+        pluginState?.descriptors || [],
+        "file-context",
+        fileContextPluginContext,
+      ),
+      null,
+      2,
+    );
+  }, [
+    contextMenu,
+    fileContextPluginContext,
+    pluginState?.descriptors,
+    projectPath,
+  ]);
+
+  useEffect(() => {
+    if (!contextMenu || !fileContextPluginDebugInfo) {
+      return;
+    }
+
+    console.info(
+      "[plugin-debug:file-tree-context]",
+      JSON.parse(fileContextPluginDebugInfo),
+    );
+  }, [contextMenu, fileContextPluginDebugInfo]);
+
+  const runPluginAction = useCallback(
+    (action: PluginAction, selectedItems: FileInfo[]) => {
+      if (!projectPath) {
+        return;
+      }
+
+      const context = buildFileContext(selectedItems, contextDirectory);
+      addTask({
+        projectPath,
+        name: action.title,
+        subName: `${action.pluginName} · 右键插件`,
+        script: {
+          kind: "plugin-action",
+          pluginKey: action.pluginKey,
+          pluginId: action.pluginId,
+          pluginName: action.pluginName,
+          commandId: action.commandId,
+          commandTitle: action.title,
+          location: action.location,
+          context: {
+            ...context,
+            pluginScope: action.scope,
+          },
+        },
+        priority: "medium",
+        maxRetries: 0,
+        timeout: 0,
+        dependencies: [],
+      });
+
+      showToast({
+        title: "插件任务已加入",
+        message: `${action.pluginName} · ${action.title}`,
+        tone: "success",
+      });
+    },
+    [addTask, buildFileContext, contextDirectory, projectPath, showToast],
+  );
+
+  const handleShowDetails = useCallback((file: FileInfo) => {
+    setDetailsDialogFile(file);
+  }, []);
+
+  const handleCloseDetailsDialog = useCallback(() => {
+    setDetailsDialogFile(null);
+  }, []);
+
+  const handleRefresh = useCallback(() => {
+    void refresh();
+  }, [refresh]);
+
+  const getSuggestedFolderName = useCallback(async (targetDir: string) => {
+    const baseName = "新建文件夹";
+    let candidate = baseName;
+    let index = 2;
+
+    while (
+      await invoke<boolean>("path_exists", {
+        path: joinPath(targetDir, candidate),
+      })
+    ) {
+      candidate = `${baseName} ${index}`;
+      index += 1;
+    }
+
+    return candidate;
+  }, []);
+
+  const handleCreateFolder = useCallback(async () => {
+    const targetDirectory = contextDirectory;
+    if (!targetDirectory) {
+      return;
+    }
+
+    try {
+      const suggestedName = await getSuggestedFolderName(targetDirectory);
+      setCreateFolderDialog({
+        isOpen: true,
+        suggestedName,
+        folderName: suggestedName,
+        targetDirectory,
+      });
+    } catch (error) {
+      console.error("Failed to open create folder dialog:", error);
+      showToast({
+        title: "创建失败",
+        message: String(error),
+        tone: "error",
+      });
+    }
+  }, [contextDirectory, getSuggestedFolderName, showToast]);
+
+  const handleCloseCreateFolderDialog = useCallback(() => {
+    if (isCreatingFolder) {
+      return;
+    }
+
+    setCreateFolderDialog((state) => ({
+      ...state,
+      isOpen: false,
+    }));
+  }, [isCreatingFolder]);
+
+  const handleCreateFolderNameChange = useCallback((folderName: string) => {
+    setCreateFolderDialog((state) => ({
+      ...state,
+      folderName,
+    }));
+  }, []);
+
+  const handleConfirmCreateFolder = useCallback(
+    async (rawFolderName: string) => {
+      const targetDirectory = createFolderDialog.targetDirectory;
+      if (!targetDirectory) {
+        return;
+      }
+
+      const folderName = rawFolderName.trim();
+
+      if (!folderName) {
+        showToast({
+          title: "创建失败",
+          message: "请输入文件夹名称。",
+          tone: "error",
+        });
+        return;
+      }
+
+      if (/[\\/]/.test(folderName)) {
+        showToast({
+          title: "创建失败",
+          message: "文件夹名称不能包含路径分隔符。",
+          tone: "error",
+        });
+        return;
+      }
+
+      if (folderName === "." || folderName === "..") {
+        showToast({
+          title: "创建失败",
+          message: "请输入有效的文件夹名称。",
+          tone: "error",
+        });
+        return;
+      }
+
+      setIsCreatingFolder(true);
+      try {
+        const targetPath = joinPath(targetDirectory, folderName);
+        const exists = await invoke<boolean>("path_exists", {
+          path: targetPath,
+        });
+
+        if (exists) {
+          showToast({
+            title: "创建失败",
+            message: "当前目录已存在同名文件夹。",
+            tone: "error",
+          });
+          return;
+        }
+
+        await invoke("create_directory", { path: targetPath });
+        await refresh();
+        setCreateFolderDialog((state) => ({
+          ...state,
+          isOpen: false,
+        }));
+        showToast({
+          title: "文件夹已创建",
+          message: folderName,
+          tone: "success",
+        });
+      } catch (error) {
+        console.error("Failed to create folder:", error);
+        showToast({
+          title: "创建失败",
+          message: String(error),
+          tone: "error",
+        });
+      } finally {
+        setIsCreatingFolder(false);
+      }
+    },
+    [createFolderDialog.targetDirectory, refresh, showToast],
+  );
+
+  const handleDelete = useCallback(
+    async (file: FileInfo) => {
+      try {
+        const deletedCount = await invoke<number>("delete_paths", {
+          paths: [file.path],
+        });
+        await refresh();
+
+        if (deletedCount === 0) {
+          showToast({
+            title: "未删除任何项目",
+            message: "选中的文件夹可能已经不存在，列表已刷新。",
+            tone: "warning",
+          });
+          return;
+        }
+
+        showToast({
+          title: "文件夹已移动到回收站",
+          message: file.name,
+          tone: "success",
+        });
+      } catch (error) {
+        console.error("Failed to delete tree item:", error);
+        showToast({
+          title: "删除失败",
+          message: String(error),
+          tone: "error",
+        });
+      }
+    },
+    [refresh, showToast],
+  );
+
   if (!visibleTreeData) {
     return (
       <div className="h-full flex items-center justify-center text-gray-400 text-sm">
@@ -393,11 +839,57 @@ export function FileTree() {
           onHoverDirectory={setDropTargetPath}
           canDropToDirectory={canDropToDirectory}
           getDraggedPathsFromDataTransfer={getDraggedPathsFromDataTransfer}
+          onContextMenu={handleContextMenu}
           suppressInteraction={suppressInteraction}
           isExcluded={isExcluded}
           showExcludedFiles={showExcludedFiles}
         />
       </div>
+
+      {contextMenu && (
+        <FileContextMenu
+          file={contextMenu.file}
+          x={contextMenu.x}
+          y={contextMenu.y}
+          currentPath={contextDirectory || ""}
+          projectPath={projectPath || ""}
+          pluginActions={fileContextPluginActions}
+          pluginDebugInfo={fileContextPluginDebugInfo}
+          onClose={handleCloseContextMenu}
+          onRefresh={handleRefresh}
+          onShowDetails={handleShowDetails}
+          onDelete={handleDelete}
+          onCreateFolder={handleCreateFolder}
+          onRunPluginAction={(action) =>
+            runPluginAction(action, [contextMenu.file])
+          }
+        />
+      )}
+
+      <FileDetailsDialog
+        file={detailsDialogFile}
+        fileTagList={[]}
+        isOpen={!!detailsDialogFile}
+        onClose={handleCloseDetailsDialog}
+      />
+
+      <InputDialog
+        isOpen={createFolderDialog.isOpen}
+        onClose={handleCloseCreateFolderDialog}
+        onConfirm={handleConfirmCreateFolder}
+        title="新建文件夹"
+        label="文件夹名称"
+        value={createFolderDialog.folderName}
+        onChange={handleCreateFolderNameChange}
+        confirmText={isCreatingFolder ? "创建中..." : "创建"}
+        disabled={isCreatingFolder}
+        description={
+          createFolderDialog.suggestedName
+            ? `默认名称：${createFolderDialog.suggestedName}`
+            : undefined
+        }
+        selectOnOpen
+      />
 
       {conflictDialog}
     </div>

@@ -1,5 +1,6 @@
 #[cfg(windows)]
 use base64::Engine;
+use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::ffi::OsStr;
@@ -297,31 +298,9 @@ fn save_system_clipboard_image(_target_path: &PathBuf) -> Result<(), String> {
 
 // 格式化时间为 ISO 8601 字符串
 fn format_time(time: std::io::Result<SystemTime>) -> Option<String> {
-    time.ok().map(|t| {
-        let duration = t.duration_since(UNIX_EPOCH).unwrap_or_default();
-        let secs = duration.as_secs() as i64;
-        let _nanos = duration.subsec_nanos();
-
-        // Convert to date components (simplified, not accounting for leap seconds)
-        let days = secs / 86400;
-        let remaining_secs = secs % 86400;
-        let hours = remaining_secs / 3600;
-        let mins = (remaining_secs % 3600) / 60;
-        let secs = remaining_secs % 60;
-
-        // Approximate date calculation (days since 1970-01-01)
-        let year = 1970 + (days / 365) as i32;
-        let day_of_year = days % 365;
-
-        format!(
-            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-            year,
-            (day_of_year / 30 + 1).min(12),
-            (day_of_year % 30 + 1).min(31),
-            hours,
-            mins,
-            secs
-        )
+    time.ok().map(|value| {
+        let datetime: DateTime<Local> = value.into();
+        datetime.to_rfc3339()
     })
 }
 
@@ -570,25 +549,9 @@ fn convert_snapshots_to_file_infos(entries: Vec<FsEntrySnapshot>) -> Vec<FileInf
 }
 
 fn format_cache_timestamp(timestamp: Option<i64>) -> Option<String> {
-    timestamp.map(|value| {
-        let days = value / 86400;
-        let remaining_secs = value % 86400;
-        let hours = remaining_secs / 3600;
-        let mins = (remaining_secs % 3600) / 60;
-        let secs = remaining_secs % 60;
-
-        let year = 1970 + (days / 365) as i32;
-        let day_of_year = days % 365;
-
-        format!(
-            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-            year,
-            (day_of_year / 30 + 1).min(12),
-            (day_of_year % 30 + 1).min(31),
-            hours,
-            mins,
-            secs
-        )
+    timestamp.and_then(|value| {
+        DateTime::<Utc>::from_timestamp(value, 0)
+            .map(|datetime| datetime.with_timezone(&Local).to_rfc3339())
     })
 }
 
@@ -1216,25 +1179,9 @@ fn format_size(bytes: u64) -> String {
 
 fn format_datetime(time: std::io::Result<SystemTime>) -> String {
     time.ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| {
-            let secs = d.as_secs();
-            let days = secs / 86400;
-            let remaining_secs = secs % 86400;
-            let hours = remaining_secs / 3600;
-            let mins = (remaining_secs % 3600) / 60;
-            let secs = remaining_secs % 60;
-
-            // 简单的日期格式化 (1970 + 天数/365 近似年份)
-            let year = 1970 + (days / 365);
-            let day_of_year = days % 365;
-            let month = (day_of_year / 30 + 1).min(12);
-            let day = (day_of_year % 30 + 1).min(31);
-
-            format!(
-                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-                year, month, day, hours, mins, secs
-            )
+        .map(|value| {
+            let datetime: DateTime<Local> = value.into();
+            datetime.format("%Y-%m-%d %H:%M:%S").to_string()
         })
         .unwrap_or_else(|| "-".to_string())
 }
