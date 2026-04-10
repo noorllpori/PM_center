@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 
 const [, , command, ...args] = process.argv;
 const PLUGIN_PYTHON_ROOT = resolve(process.cwd(), 'src-tauri', 'resources', 'plugin-python');
@@ -31,10 +31,30 @@ function ensureEmbeddedPython() {
   return EMBEDDED_PYTHON;
 }
 
-function ensurePipAvailable(python) {
+async function ensureEmbeddedPythonLayout(python) {
+  const runtimeDir = dirname(python);
+  await ensureDir(join(runtimeDir, 'Lib', 'site-packages'));
+  return runtimeDir;
+}
+
+function buildEmbeddedPythonEnv(runtimeDir, extraPythonPathEntries = []) {
+  return {
+    ...process.env,
+    PYTHONHOME: runtimeDir,
+    PYTHONPATH: extraPythonPathEntries.join(process.platform === 'win32' ? ';' : ':'),
+    PYTHONNOUSERSITE: '1',
+    PYTHONIOENCODING: 'utf-8',
+    PYTHONUTF8: '1',
+  };
+}
+
+async function ensurePipAvailable(python) {
+  const runtimeDir = await ensureEmbeddedPythonLayout(python);
+  const env = buildEmbeddedPythonEnv(runtimeDir);
   const pipVersion = spawnSync(python, ['-m', 'pip', '--version'], {
     stdio: 'ignore',
     cwd: process.cwd(),
+    env,
   });
   if (pipVersion.status === 0) {
     return;
@@ -47,11 +67,7 @@ function ensurePipAvailable(python) {
   const bootstrap = spawnSync(python, [GET_PIP_PATH, '--no-warn-script-location'], {
     stdio: 'inherit',
     cwd: process.cwd(),
-    env: {
-      ...process.env,
-      PYTHONIOENCODING: 'utf-8',
-      PYTHONUTF8: '1',
-    },
+    env,
   });
   if (bootstrap.status !== 0) {
     throw new Error(`failed to bootstrap pip for embedded plugin python (exit code ${bootstrap.status ?? 'unknown'})`);
@@ -60,6 +76,7 @@ function ensurePipAvailable(python) {
   const verify = spawnSync(python, ['-m', 'pip', '--version'], {
     stdio: 'ignore',
     cwd: process.cwd(),
+    env,
   });
   if (verify.status !== 0) {
     throw new Error('embedded plugin python pip verification failed');
@@ -248,7 +265,8 @@ async function packPlugin(pluginDirArg, outputDirArg) {
     const requirements = (await readFile(requirementsPath, 'utf8')).trim();
     if (requirements) {
       const python = ensureEmbeddedPython();
-      ensurePipAvailable(python);
+      await ensurePipAvailable(python);
+      const runtimeDir = await ensureEmbeddedPythonLayout(python);
 
       const vendorDir = join(destinationDir, 'vendor');
       await rm(vendorDir, { recursive: true, force: true });
@@ -271,11 +289,7 @@ async function packPlugin(pluginDirArg, outputDirArg) {
         {
           stdio: 'inherit',
           cwd: pluginDir,
-          env: {
-            ...process.env,
-            PYTHONIOENCODING: 'utf-8',
-            PYTHONUTF8: '1',
-          },
+          env: buildEmbeddedPythonEnv(runtimeDir),
         },
       );
 

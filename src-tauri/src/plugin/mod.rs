@@ -1926,7 +1926,9 @@ pub async fn install_plugin_dependencies(
     fs::create_dir_all(&vendor_dir)
         .map_err(|error| format!("创建依赖目录失败: {error}"))?;
 
-    let output = std_command(&python_path)
+    let embedded_env = build_embedded_python_env(&python_path, &[])?;
+    let mut install_command = std_command(&python_path);
+    install_command
         .arg("-m")
         .arg("pip")
         .arg("install")
@@ -1939,7 +1941,11 @@ pub async fn install_plugin_dependencies(
         .arg("--no-compile")
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONUTF8", "1")
-        .current_dir(&plugin_dir)
+        .current_dir(&plugin_dir);
+    for (key, value) in &embedded_env {
+        install_command.env(key, value);
+    }
+    let output = install_command
         .output()
         .map_err(|error| format!("安装插件依赖失败: {error}"))?;
 
@@ -2017,6 +2023,38 @@ fn format_command_error(prefix: &str, output: &std::process::Output) -> String {
     }
 }
 
+fn prepare_embedded_python_runtime(python_path: &Path) -> Result<PathBuf, String> {
+    let runtime_dir = python_path
+        .parent()
+        .ok_or_else(|| format!("无法解析插件 Python 运行时目录: {}", python_path.display()))?
+        .to_path_buf();
+
+    fs::create_dir_all(runtime_dir.join("Lib").join("site-packages"))
+        .map_err(|error| format!("准备插件 Python 运行时目录失败: {error}"))?;
+
+    Ok(runtime_dir)
+}
+
+fn build_embedded_python_env(
+    python_path: &Path,
+    extra_python_paths: &[String],
+) -> Result<HashMap<String, String>, String> {
+    let runtime_dir = prepare_embedded_python_runtime(python_path)?;
+    let mut env_vars = HashMap::new();
+
+    env_vars.insert(
+        "PYTHONHOME".to_string(),
+        runtime_dir.to_string_lossy().to_string(),
+    );
+    env_vars.insert("PYTHONNOUSERSITE".to_string(), "1".to_string());
+    env_vars.insert(
+        "PYTHONPATH".to_string(),
+        extra_python_paths.join(if cfg!(windows) { ";" } else { ":" }),
+    );
+
+    Ok(env_vars)
+}
+
 fn ensure_embedded_plugin_pip(app_handle: &AppHandle) -> Result<PathBuf, String> {
     let runtime = resolve_plugin_runtime(app_handle);
     if runtime.status != "ready" {
@@ -2034,8 +2072,14 @@ fn ensure_embedded_plugin_pip(app_handle: &AppHandle) -> Result<PathBuf, String>
         .map(PathBuf::from)
         .ok_or_else(|| "无法解析内置插件 Python 路径".to_string())?;
 
-    let pip_ready = std_command(&python_path)
-        .args(["-m", "pip", "--version"])
+    let embedded_env = build_embedded_python_env(&python_path, &[])?;
+
+    let mut pip_ready_command = std_command(&python_path);
+    pip_ready_command.args(["-m", "pip", "--version"]);
+    for (key, value) in &embedded_env {
+        pip_ready_command.env(key, value);
+    }
+    let pip_ready = pip_ready_command
         .output()
         .map(|output| output.status.success())
         .unwrap_or(false);
@@ -2046,17 +2090,26 @@ fn ensure_embedded_plugin_pip(app_handle: &AppHandle) -> Result<PathBuf, String>
     let get_pip_path = resolve_plugin_get_pip_path(app_handle).ok_or_else(|| {
         "未找到 get-pip.py，请重新执行插件运行时准备脚本。".to_string()
     })?;
-    let bootstrap_output = std_command(&python_path)
+    let mut bootstrap_command = std_command(&python_path);
+    bootstrap_command
         .arg(&get_pip_path)
-        .arg("--no-warn-script-location")
+        .arg("--no-warn-script-location");
+    for (key, value) in &embedded_env {
+        bootstrap_command.env(key, value);
+    }
+    let bootstrap_output = bootstrap_command
         .output()
         .map_err(|error| format!("启动 get-pip.py 失败: {error}"))?;
     if !bootstrap_output.status.success() {
         return Err(format_command_error("初始化插件 pip 失败。", &bootstrap_output));
     }
 
-    let verify_output = std_command(&python_path)
-        .args(["-m", "pip", "--version"])
+    let mut verify_command = std_command(&python_path);
+    verify_command.args(["-m", "pip", "--version"]);
+    for (key, value) in &embedded_env {
+        verify_command.env(key, value);
+    }
+    let verify_output = verify_command
         .output()
         .map_err(|error| format!("校验插件 pip 失败: {error}"))?;
     if !verify_output.status.success() {
@@ -2190,10 +2243,17 @@ pub fn prepare_plugin_execution(
             settings_files_dir,
         );
     }
-    env_vars.insert(
-        "PYTHONPATH".to_string(),
-        python_path_entries.join(if cfg!(windows) { ";" } else { ":" }),
-    );
+    if runtime.source == "embedded" {
+        env_vars.extend(build_embedded_python_env(
+            Path::new(&program),
+            &python_path_entries,
+        )?);
+    } else {
+        env_vars.insert(
+            "PYTHONPATH".to_string(),
+            python_path_entries.join(if cfg!(windows) { ";" } else { ":" }),
+        );
+    }
 
     Ok(PreparedPluginExecution {
         program,
