@@ -23,6 +23,17 @@ export function joinPath(dir: string, name: string): string {
   return `${dir.replace(/[\\/]+$/, '')}${separator}${name}`;
 }
 
+export function buildRenamedFileName(fileName: string, index = 1): string {
+  const lastDotIndex = fileName.lastIndexOf('.');
+  const hasExtension = lastDotIndex > 0;
+  const stem = hasExtension ? fileName.slice(0, lastDotIndex) : fileName;
+  const extension = hasExtension ? fileName.slice(lastDotIndex + 1) : '';
+
+  return extension
+    ? `${stem}_(${index}).${extension}`
+    : `${fileName}_(${index})`;
+}
+
 export function appendRelativePath(basePath: string, relativePath: string): string {
   if (!relativePath) {
     return basePath;

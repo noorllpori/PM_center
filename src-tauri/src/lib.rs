@@ -542,11 +542,13 @@ async fn move_project_entry(
     source: String,
     target: String,
     conflict_strategy: String,
+    target_name: Option<String>,
 ) -> Result<String, String> {
     let final_path = fs::move_path_with_strategy(
         PathBuf::from(&source),
         PathBuf::from(&target),
         &conflict_strategy,
+        target_name,
     )
     .await?;
 

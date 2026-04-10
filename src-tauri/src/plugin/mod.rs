@@ -639,55 +639,44 @@ fn resolve_resource_dir(app_handle: &AppHandle) -> Option<PathBuf> {
         .or_else(|| Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources")))
 }
 
+fn resolve_resource_roots(app_handle: &AppHandle) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let mut seen = HashSet::new();
+
+    if let Some(resource_dir) = resolve_resource_dir(app_handle) {
+        roots.push(resource_dir.clone());
+        roots.push(resource_dir.join("resources"));
+    }
+
+    roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources"));
+
+    roots
+        .into_iter()
+        .filter(|path| seen.insert(path.to_string_lossy().to_string()))
+        .collect()
+}
+
 fn resolve_plugin_sdk_dir(app_handle: &AppHandle) -> Option<PathBuf> {
-    let resource_dir = resolve_resource_dir(app_handle)?;
-    let candidates = [
-        resource_dir.join("plugin-sdk"),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources")
-            .join("plugin-sdk"),
-    ];
-    candidates.into_iter().find(|path| path.exists())
+    resolve_resource_roots(app_handle)
+        .into_iter()
+        .map(|root| root.join("plugin-sdk"))
+        .find(|path| path.exists())
 }
 
 fn resolve_plugin_get_pip_path(app_handle: &AppHandle) -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-
-    if let Some(resource_dir) = resolve_resource_dir(app_handle) {
-        candidates.push(resource_dir.join(PLUGIN_GET_PIP_RELATIVE_PATH));
-    }
-
-    candidates.push(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources")
-            .join("plugin-python")
-            .join("get-pip.py"),
-    );
-
-    candidates.into_iter().find(|path| path.exists())
+    resolve_resource_roots(app_handle)
+        .into_iter()
+        .map(|root| root.join(PLUGIN_GET_PIP_RELATIVE_PATH))
+        .find(|path| path.exists())
 }
 
 pub fn resolve_plugin_runtime(app_handle: &AppHandle) -> PluginRuntimeInfo {
-    let mut candidates = Vec::new();
+    let candidates: Vec<PathBuf> = resolve_resource_roots(app_handle)
+        .into_iter()
+        .map(|root| root.join("plugin-python").join("windows-x64").join("python.exe"))
+        .collect();
 
-    if let Some(resource_dir) = resolve_resource_dir(app_handle) {
-        candidates.push(
-            resource_dir
-                .join("plugin-python")
-                .join("windows-x64")
-                .join("python.exe"),
-        );
-    }
-
-    candidates.push(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources")
-            .join("plugin-python")
-            .join("windows-x64")
-            .join("python.exe"),
-    );
-
-    if let Some(path) = candidates.into_iter().find(|path| path.exists()) {
+    if let Some(path) = candidates.iter().find(|path| path.exists()) {
         return PluginRuntimeInfo {
             status: "ready".to_string(),
             resolved_path: Some(path.to_string_lossy().to_string()),
@@ -732,7 +721,14 @@ pub fn resolve_plugin_runtime(app_handle: &AppHandle) -> PluginRuntimeInfo {
         sdk_path: resolve_plugin_sdk_dir(app_handle).map(|path| path.to_string_lossy().to_string()),
         source: "missing".to_string(),
         version: None,
-        message: Some("未找到内置插件 Python 运行时。请先执行插件运行时准备脚本。".to_string()),
+        message: Some(format!(
+            "未找到内置插件 Python 运行时。请先执行插件运行时准备脚本。已检查路径：{}",
+            candidates
+                .iter()
+                .map(|path| path.to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+                .join("；")
+        )),
     }
 }
 

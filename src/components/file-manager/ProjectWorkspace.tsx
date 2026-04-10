@@ -6,8 +6,16 @@ import { FileTree } from './FileTree';
 import { FileList } from './FileList';
 import { ColumnSettings } from './ColumnSettings';
 import { FileDetail } from './FileDetail';
-import { getParentPath, getPathLabel, isExternalFileDrag, normalizePath } from './dragDrop';
-import { importExternalDrop } from './externalImport';
+import {
+  buildRenamedFileName,
+  getParentPath,
+  getPathLabel,
+  isExternalFileDrag,
+  joinPath,
+  normalizePath,
+} from './dragDrop';
+import { importExternalDrop, type ConflictResolution } from './externalImport';
+import { MoveConflictDialog } from './MoveConflictDialog';
 import { ChangeLog } from '../ChangeLog';
 import { ImageViewerSurface } from '../image-viewer/ImageViewerSurface';
 import { TextEditorSurface } from '../text-editor/TextEditorSurface';
@@ -196,11 +204,23 @@ export function ProjectWorkspace() {
 
   const [isDragImportActive, setIsDragImportActive] = useState(false);
   const [isImportingDrop, setIsImportingDrop] = useState(false);
+  const [externalDropConflictState, setExternalDropConflictState] = useState<{
+    isOpen: boolean;
+    sourceName: string;
+    targetLabel: string;
+    renameName: string;
+  }>({
+    isOpen: false,
+    sourceName: '',
+    targetLabel: '',
+    renameName: '',
+  });
   const [fileTreePanelWidth, setFileTreePanelWidth] = useState(getInitialFileTreePanelWidth);
   const [isResizingFileTree, setIsResizingFileTree] = useState(false);
   const [fileDetailsPanelWidth, setFileDetailsPanelWidth] = useState(getInitialFileDetailsPanelWidth);
   const [isResizingFileDetails, setIsResizingFileDetails] = useState(false);
   const externalDragDepthRef = useRef(0);
+  const externalDropConflictResolverRef = useRef<((choice: ConflictResolution) => void) | null>(null);
   const fileTreeResizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const fileDetailsResizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const textEditorSnapshotsRef = useRef(new Map<string, TextEditorTransferPayload>());
@@ -214,6 +234,13 @@ export function ProjectWorkspace() {
   const isFilesWorkspaceActiveRef = useRef(false);
   const activeWorkspaceTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
   const isFilesWorkspaceActive = activeWorkspaceTab?.type === 'files';
+
+  useEffect(() => {
+    return () => {
+      externalDropConflictResolverRef.current?.({ action: 'cancel' });
+      externalDropConflictResolverRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     const activeTextTabIds = new Set(
@@ -634,6 +661,43 @@ export function ProjectWorkspace() {
     setIsDragImportActive(false);
   }, []);
 
+  const buildExternalDropSuggestedRename = useCallback(async (sourceName: string, targetDir: string) => {
+    for (let index = 1; ; index += 1) {
+      const candidate = buildRenamedFileName(sourceName, index);
+      const exists = await invoke<boolean>('path_exists', {
+        path: joinPath(targetDir, candidate),
+      });
+      if (!exists) {
+        return candidate;
+      }
+    }
+  }, []);
+
+  const requestExternalDropConflictChoice = useCallback(async (sourceName: string, targetLabel: string, targetDir: string) => {
+    const renameName = await buildExternalDropSuggestedRename(sourceName, targetDir);
+
+    return new Promise<ConflictResolution>((resolve) => {
+      externalDropConflictResolverRef.current = resolve;
+      setExternalDropConflictState({
+        isOpen: true,
+        sourceName,
+        targetLabel,
+        renameName,
+      });
+    });
+  }, [buildExternalDropSuggestedRename]);
+
+  const resolveExternalDropConflictChoice = useCallback((choice: ConflictResolution) => {
+    externalDropConflictResolverRef.current?.(choice);
+    externalDropConflictResolverRef.current = null;
+    setExternalDropConflictState({
+      isOpen: false,
+      sourceName: '',
+      targetLabel: '',
+      renameName: '',
+    });
+  }, []);
+
   useEffect(() => {
     if (!isFilesWorkspaceActive || !isInitialized) {
       resetExternalDragState();
@@ -922,12 +986,41 @@ export function ProjectWorkspace() {
     setIsImportingDrop(true);
 
     try {
-      const { failedItems } = await importExternalDrop(event.dataTransfer, targetDir);
+      const {
+        successCount,
+        overwriteCount,
+        renameCount,
+        skippedCount,
+        failedItems,
+      } = await importExternalDrop(event.dataTransfer, targetDir, {
+        targetLabel: getPathLabel(targetDir, projectPath, projectName),
+        requestConflictChoice: (sourceName, targetLabel) =>
+          requestExternalDropConflictChoice(sourceName, targetLabel, targetDir),
+      });
 
       try {
         await refresh();
       } catch (error) {
         console.error('Refresh after drop import failed:', error);
+      }
+
+      if (successCount > 0 || failedItems.length > 0 || (skippedCount > 0 && successCount > 0)) {
+        const summaryParts = [];
+        if (successCount > 0) summaryParts.push(`导入 ${successCount} 个`);
+        if (overwriteCount > 0) summaryParts.push(`覆盖 ${overwriteCount} 个`);
+        if (renameCount > 0) summaryParts.push(`重命名 ${renameCount} 个`);
+        if (skippedCount > 0) summaryParts.push(`跳过 ${skippedCount} 个`);
+        if (failedItems.length > 0) summaryParts.push(`失败 ${failedItems.length} 个`);
+
+        showToast({
+          title: failedItems.length > 0
+            ? (successCount > 0 ? '导入部分完成' : '导入失败')
+            : '导入完成',
+          message: `${summaryParts.join('，')}，目标目录：${getPathLabel(targetDir, projectPath, projectName)}`,
+          tone: failedItems.length > 0
+            ? (successCount > 0 ? 'warning' : 'error')
+            : 'success',
+        });
       }
 
       if (failedItems.length > 0) {
@@ -939,15 +1032,27 @@ export function ProjectWorkspace() {
     } finally {
       setIsImportingDrop(false);
     }
-  }, [currentPath, hasActiveInternalDrag, isFilesWorkspaceActive, isInitialized, projectPath, refresh, resetExternalDragState]);
+  }, [
+    buildExternalDropSuggestedRename,
+    currentPath,
+    hasActiveInternalDrag,
+    isFilesWorkspaceActive,
+    isInitialized,
+    projectName,
+    projectPath,
+    refresh,
+    requestExternalDropConflictChoice,
+    resetExternalDragState,
+    showToast,
+  ]);
 
   const dropTargetLabel = getPathLabel(currentPath || projectPath, projectPath, projectName);
   const showDropOverlay = isInitialized && isFilesWorkspaceActive && (isDragImportActive || isImportingDrop);
 
   if (!isInitialized) {
-    return (
-      <div className="flex h-full min-h-0 items-center justify-center bg-white text-sm text-gray-400 dark:bg-gray-900">
-        正在打开项目...
+      return (
+        <div className="flex h-full min-h-0 items-center justify-center bg-white text-sm text-gray-400 dark:bg-gray-900">
+          正在打开项目...
       </div>
     );
   }
@@ -1073,6 +1178,30 @@ export function ProjectWorkspace() {
             );
           })}
         </div>
+
+        <MoveConflictDialog
+          isOpen={externalDropConflictState.isOpen}
+          sourceName={externalDropConflictState.sourceName}
+          targetLabel={externalDropConflictState.targetLabel}
+          renameValue={externalDropConflictState.renameName}
+          onRenameValueChange={(renameName) =>
+            setExternalDropConflictState((state) => ({
+              ...state,
+              renameName,
+            }))
+          }
+          actionLabel="导入"
+          renameButtonText="重命名导入"
+          overwriteButtonText="覆盖导入"
+          onOverwrite={() => resolveExternalDropConflictChoice({ action: 'overwrite' })}
+          onRename={() =>
+            resolveExternalDropConflictChoice({
+              action: 'rename',
+              renameName: externalDropConflictState.renameName,
+            })
+          }
+          onCancel={() => resolveExternalDropConflictChoice({ action: 'cancel' })}
+        />
 
         {showDropOverlay && (
           <div className="absolute inset-0 z-40 flex items-center justify-center bg-blue-500/10 backdrop-blur-[1px] pointer-events-none">

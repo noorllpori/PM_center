@@ -917,12 +917,24 @@ async fn move_path_fallback(source: &PathBuf, target_path: &PathBuf) -> Result<(
     Ok(())
 }
 
-fn build_target_path(source_path: &PathBuf, target_dir: &PathBuf) -> Result<PathBuf, String> {
-    let file_name = source_path
-        .file_name()
-        .ok_or("Invalid source path")?
-        .to_string_lossy()
-        .to_string();
+fn build_target_path(
+    source_path: &PathBuf,
+    target_dir: &PathBuf,
+    target_name: Option<&str>,
+) -> Result<PathBuf, String> {
+    let file_name = target_name
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            source_path
+                .file_name()
+                .map(|value| value.to_string_lossy().to_string())
+                .unwrap_or_default()
+        });
+
+    if file_name.is_empty() {
+        return Err("Invalid source path".to_string());
+    }
 
     Ok(target_dir.join(file_name))
 }
@@ -961,8 +973,9 @@ pub async fn move_path_with_strategy(
     source: PathBuf,
     target_dir: PathBuf,
     conflict_strategy: &str,
+    target_name: Option<String>,
 ) -> Result<PathBuf, String> {
-    let mut target_path = build_target_path(&source, &target_dir)?;
+    let mut target_path = build_target_path(&source, &target_dir, target_name.as_deref())?;
 
     if source == target_path {
         return Err("不能移动到当前位置".to_string());
@@ -1017,7 +1030,7 @@ pub async fn rename_path(path: PathBuf, new_name: String) -> Result<PathBuf, Str
 
 #[tauri::command]
 pub async fn move_file(source: String, target: String) -> Result<(), String> {
-    move_path_with_strategy(PathBuf::from(source), PathBuf::from(target), "error")
+    move_path_with_strategy(PathBuf::from(source), PathBuf::from(target), "error", None)
         .await
         .map(|_| ())
 }

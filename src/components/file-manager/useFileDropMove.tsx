@@ -1,16 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { MoveConflictDialog } from './MoveConflictDialog';
-import { compactDraggedPaths, getFileNameFromPath, isSameOrDescendantPath } from './dragDrop';
+import {
+  buildRenamedFileName,
+  compactDraggedPaths,
+  getFileNameFromPath,
+  isSameOrDescendantPath,
+  joinPath,
+} from './dragDrop';
 import { useProjectStoreShallow } from '../../stores/projectStore';
 import { useUiStore } from '../../stores/uiStore';
 
-type ConflictChoice = 'overwrite' | 'rename' | 'cancel';
+interface ConflictResolution {
+  action: 'overwrite' | 'rename' | 'cancel';
+  renameName?: string;
+}
 
 interface ConflictState {
   isOpen: boolean;
   sourceName: string;
   targetLabel: string;
+  renameName: string;
 }
 
 const CONFLICT_ERROR_PREFIX = 'PM_CONFLICT:';
@@ -26,35 +36,52 @@ export function useFileDropMove(onAfterMove: () => Promise<void> | void) {
     isOpen: false,
     sourceName: '',
     targetLabel: '',
+    renameName: '',
   });
 
-  const resolverRef = useRef<((choice: ConflictChoice) => void) | null>(null);
+  const resolverRef = useRef<((choice: ConflictResolution) => void) | null>(null);
 
   useEffect(() => {
     return () => {
-      resolverRef.current?.('cancel');
+      resolverRef.current?.({ action: 'cancel' });
       resolverRef.current = null;
     };
   }, []);
 
-  const requestConflictChoice = useCallback((sourceName: string, targetLabel: string) => {
-    return new Promise<ConflictChoice>((resolve) => {
+  const buildSuggestedRename = useCallback(async (sourceName: string, targetDir: string) => {
+    for (let index = 1; ; index += 1) {
+      const candidate = buildRenamedFileName(sourceName, index);
+      const exists = await invoke<boolean>('path_exists', {
+        path: joinPath(targetDir, candidate),
+      });
+      if (!exists) {
+        return candidate;
+      }
+    }
+  }, []);
+
+  const requestConflictChoice = useCallback(async (sourceName: string, targetLabel: string, targetDir: string) => {
+    const renameName = await buildSuggestedRename(sourceName, targetDir);
+
+    return new Promise<ConflictResolution>((resolve) => {
       resolverRef.current = resolve;
       setConflictState({
         isOpen: true,
         sourceName,
         targetLabel,
+        renameName,
       });
     });
-  }, []);
+  }, [buildSuggestedRename]);
 
-  const resolveConflictChoice = useCallback((choice: ConflictChoice) => {
+  const resolveConflictChoice = useCallback((choice: ConflictResolution) => {
     resolverRef.current?.(choice);
     resolverRef.current = null;
     setConflictState({
       isOpen: false,
       sourceName: '',
       targetLabel: '',
+      renameName: '',
     });
   }, []);
 
@@ -76,7 +103,8 @@ export function useFileDropMove(onAfterMove: () => Promise<void> | void) {
         continue;
       }
 
-      let strategy: 'error' | 'overwrite' | 'rename' = 'error';
+      let strategy: 'error' | 'overwrite' = 'error';
+      let targetName: string | undefined;
 
       while (true) {
         try {
@@ -85,6 +113,7 @@ export function useFileDropMove(onAfterMove: () => Promise<void> | void) {
             source: sourcePath,
             target: targetDir,
             conflictStrategy: strategy,
+            targetName,
           });
 
           applyMovedPath(sourcePath, finalPath);
@@ -92,7 +121,7 @@ export function useFileDropMove(onAfterMove: () => Promise<void> | void) {
 
           if (strategy === 'overwrite') {
             overwriteCount += 1;
-          } else if (strategy === 'rename') {
+          } else if (targetName) {
             renameCount += 1;
           }
 
@@ -101,14 +130,24 @@ export function useFileDropMove(onAfterMove: () => Promise<void> | void) {
           const errorMessage = String(error);
 
           if (errorMessage.startsWith(CONFLICT_ERROR_PREFIX)) {
-            const choice = await requestConflictChoice(getFileNameFromPath(sourcePath), targetLabel);
+            const choice = await requestConflictChoice(
+              targetName || getFileNameFromPath(sourcePath),
+              targetLabel,
+              targetDir,
+            );
 
-            if (choice === 'cancel') {
+            if (choice.action === 'cancel') {
               skippedCount += 1;
               break;
             }
 
-            strategy = choice;
+            if (choice.action === 'overwrite') {
+              strategy = 'overwrite';
+              targetName = undefined;
+            } else {
+              strategy = 'error';
+              targetName = choice.renameName?.trim();
+            }
             continue;
           }
 
@@ -144,9 +183,24 @@ export function useFileDropMove(onAfterMove: () => Promise<void> | void) {
       isOpen={conflictState.isOpen}
       sourceName={conflictState.sourceName}
       targetLabel={conflictState.targetLabel}
-      onOverwrite={() => resolveConflictChoice('overwrite')}
-      onRename={() => resolveConflictChoice('rename')}
-      onCancel={() => resolveConflictChoice('cancel')}
+      renameValue={conflictState.renameName}
+      onRenameValueChange={(renameName) =>
+        setConflictState((state) => ({
+          ...state,
+          renameName,
+        }))
+      }
+      actionLabel="移动"
+      renameButtonText="重命名移动"
+      overwriteButtonText="覆盖移动"
+      onOverwrite={() => resolveConflictChoice({ action: 'overwrite' })}
+      onRename={() =>
+        resolveConflictChoice({
+          action: 'rename',
+          renameName: conflictState.renameName,
+        })
+      }
+      onCancel={() => resolveConflictChoice({ action: 'cancel' })}
     />
   );
 
