@@ -130,6 +130,7 @@ examples/plugins/<plugin-id>/
 - `description`
 - `minAppVersion`
 - `enabledByDefault`
+- `settingsPanel`
 - `contributes`
 - `permissions`
 
@@ -244,6 +245,70 @@ examples/plugins/<plugin-id>/
 
 不要使用任意表达式，也不要假设存在别的条件语法。
 
+### 7.5 `settingsPanel`
+
+插件现在可以声明设置面板，用来提供介绍说明、参数表单，以及文件选择类设置。
+
+最小示例：
+
+```json
+"settingsPanel": {
+  "summary": "这段文字会显示在插件介绍里。",
+  "sections": [
+    {
+      "title": "用途",
+      "content": "解释这个插件适合做什么。",
+      "tone": "info"
+    }
+  ],
+  "settings": {
+    "title": "运行参数",
+    "description": "这些参数会保存下来，并在插件执行时传给 request.settingsValues。",
+    "storage": "pluginDir",
+    "fields": [
+      {
+        "key": "brightnessFactor",
+        "label": "亮度倍数",
+        "type": "number",
+        "defaultValue": 1.3,
+        "min": 0.1,
+        "max": 4,
+        "step": 0.05,
+        "unit": "x"
+      },
+      {
+        "key": "sampleImage",
+        "label": "样本图片",
+        "type": "file",
+        "accept": ["png", "jpg", "jpeg"],
+        "fileStoreMode": "copy",
+        "picker": "file"
+      }
+    ]
+  }
+}
+```
+
+当前支持的 `settings.fields[].type`：
+
+- `text`
+- `textarea`
+- `number`
+- `boolean`
+- `select`
+- `file`
+
+文件字段补充规则：
+
+- `picker` 只支持 `file` 或 `directory`
+- `fileStoreMode` 只支持 `path` 或 `copy`
+- `picker = "directory"` 时只能用 `path`
+
+设置存储位置：
+
+- `storage = "appData"`：保存到应用本地数据目录
+- `storage = "pluginDir"`：保存到插件目录下的 `.pmc`
+
 ## 8. Python 编码规范
 
 默认按下面方式写 Python 插件：
@@ -273,12 +338,18 @@ if __name__ == "__main__":
 当前可直接使用的 SDK 方法：
 
 - `load_request(path)`
+- `get_settings(request)`
+- `get_setting(request, key, default=None)`
+- `get_interaction_responses(request)`
+- `get_interaction_response(request, request_id)`
+- `is_confirmed(request, request_id)`
 - `emit(event_type, **payload)`
 - `progress(value)`
 - `toast(message, title=None, tone="info")`
 - `refresh(scope="project", path=None)`
 - `result(data)`
 - `error(message)`
+- `confirm(message, request_id, title=None, confirm_text="确认", cancel_text="取消", data=None)`
 - `run(handler)`
 
 默认编码要求：
@@ -309,6 +380,10 @@ main.py --pmc-request <json-path>
 - `pluginScope`
 - `appVersion`
 - `permissions`
+- `interactionResponses`
+- `settingsValues`
+- `settingsStoragePath`
+- `settingsFilesDir`
 
 `selectedItems` 中每项包含：
 
@@ -328,6 +403,7 @@ main.py --pmc-request <json-path>
 ```text
 @pmc {"type":"progress","value":50}
 @pmc {"type":"toast","title":"Done","message":"Finished","tone":"success"}
+@pmc {"type":"confirm","requestId":"delete-files","title":"确认删除","message":"确认继续吗？","confirmText":"删除","cancelText":"取消","data":{"items":["a.blend1","b.blend2"]}}
 @pmc {"type":"refresh","scope":"project"}
 @pmc {"type":"result","data":{"count":3}}
 @pmc {"type":"error","message":"Something went wrong"}
@@ -337,6 +413,7 @@ main.py --pmc-request <json-path>
 
 - `progress`
 - `toast`
+- `confirm`
 - `refresh`
 - `result`
 - `error`
@@ -433,9 +510,15 @@ node scripts/plugin-tool.mjs pack examples/plugins/<plugin-id> dist/plugin-packa
 
 - [hello_plugin/plugin.json](./hello_plugin/plugin.json)
 - [hello_plugin/main.py](./hello_plugin/main.py)
+- [demo_plugin/plugin.json](./demo_plugin/plugin.json)
+- [demo_plugin/main.py](./demo_plugin/main.py)
+- [blender-backup-cleaner/plugin.json](./blender-backup-cleaner/plugin.json)
+- [blender-backup-cleaner/main.py](./blender-backup-cleaner/main.py)
 
 说明：
 
 - `hello_plugin` 只是最小代码范例。
 - 它现在同时演示了默认插件分组、主菜单直插按钮和二级菜单按钮。
+- `demo_plugin` 演示了介绍面板、参数表单、文件选择和设置持久化。
+- `blender-backup-cleaner` 演示了工具栏动作、项目级递归扫描、确认弹窗和批量删除文件。
 - 不再为它单独维护 README。

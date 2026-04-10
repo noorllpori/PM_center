@@ -5,20 +5,26 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import {
   inspectPluginDependencies,
   installPluginDependencies,
+  resetPluginSettings,
   removePluginDependencies,
+  updatePluginSettings,
 } from '../api/plugins';
 import { usePluginStore } from '../stores/pluginStore';
 import {
   AlertTriangle,
   Box,
+  ChevronDown,
   CheckCircle2,
   Download,
   ExternalLink,
   FolderOpen,
+  ImageIcon,
   HelpCircle,
   Plus,
   Power,
   RefreshCw,
+  RotateCcw,
+  Save,
   Search,
   Settings,
   SlidersHorizontal,
@@ -36,7 +42,12 @@ import {
   readProjectExcludePatterns,
 } from '../utils/excludePatterns';
 import { APP_VERSION_TEXT } from '../config/appMeta';
-import type { PluginDependencyStatus, PluginDescriptor, PluginDirectories } from '../types/plugin';
+import type {
+  PluginDependencyStatus,
+  PluginDescriptor,
+  PluginDirectories,
+  PluginSettingsField,
+} from '../types/plugin';
 
 type SettingsScope = 'global' | 'project';
 
@@ -97,6 +108,63 @@ function pluginDependencyStatusMeta(status: PluginDependencyStatus) {
   }
 }
 
+function buildPluginSettingsDrafts(descriptors: PluginDescriptor[]) {
+  return descriptors.reduce<Record<string, Record<string, unknown>>>((accumulator, plugin) => {
+    const currentValues = plugin.settingsData?.values ?? {};
+    accumulator[plugin.key] = { ...currentValues };
+    return accumulator;
+  }, {});
+}
+
+function getPluginSettingDraftValue(
+  drafts: Record<string, Record<string, unknown>>,
+  plugin: PluginDescriptor,
+  fieldKey: string,
+) {
+  const pluginDraft = drafts[plugin.key] ?? plugin.settingsData?.values ?? {};
+  return pluginDraft[fieldKey];
+}
+
+function pluginSettingsStorageLabel(storage?: string | null) {
+  return storage === 'pluginDir' ? '插件目录' : '应用本地';
+}
+
+function getPluginSettingsFieldStringValue(value: unknown) {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    return String(value);
+  }
+  if (typeof value === 'boolean') {
+    return value ? 'true' : 'false';
+  }
+  return '';
+}
+
+function isPluginSettingsDirty(
+  plugin: PluginDescriptor,
+  drafts: Record<string, Record<string, unknown>>,
+) {
+  const fields = plugin.settingsPanel?.settings?.fields ?? [];
+  const currentValues = plugin.settingsData?.values ?? {};
+  const draftValues = drafts[plugin.key] ?? currentValues;
+  return fields.some((field) => JSON.stringify(draftValues[field.key] ?? null) !== JSON.stringify(currentValues[field.key] ?? null));
+}
+
+function pluginInfoToneClass(tone?: string | null) {
+  switch (tone) {
+    case 'success':
+      return 'border-green-200 bg-green-50 text-green-700 dark:border-green-900/40 dark:bg-green-900/20 dark:text-green-300';
+    case 'warning':
+      return 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-300';
+    case 'error':
+      return 'border-red-200 bg-red-50 text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300';
+    default:
+      return 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900/40 dark:bg-blue-900/20 dark:text-blue-300';
+  }
+}
+
 export function SettingsPanel({
   isOpen,
   onClose,
@@ -145,6 +213,12 @@ export function SettingsPanel({
     pluginKey: string;
     action: 'inspect' | 'install' | 'remove';
   } | null>(null);
+  const [pluginSettingsDrafts, setPluginSettingsDrafts] = useState<Record<string, Record<string, unknown>>>({});
+  const [pluginSettingsPending, setPluginSettingsPending] = useState<{
+    pluginKey: string;
+    action: 'save' | 'reset';
+  } | null>(null);
+  const [expandedPluginKeys, setExpandedPluginKeys] = useState<Record<string, boolean>>({});
   const [expandedPluginDependencyKeys, setExpandedPluginDependencyKeys] = useState<Record<string, boolean>>({});
   const [alertDialog, setAlertDialog] = useState({
     isOpen: false,
@@ -176,6 +250,8 @@ export function SettingsPanel({
       setNeedsProjectRefresh(false);
       setNewPattern('');
       setShowPresets(false);
+      setExpandedPluginKeys({});
+      setExpandedPluginDependencyKeys({});
       return;
     }
 
@@ -244,6 +320,7 @@ export function SettingsPanel({
         loadPluginDirsFromStore(projectPath),
       ]);
       setPluginDescriptors(descriptors);
+      setPluginSettingsDrafts(buildPluginSettingsDrafts(descriptors));
       setPluginDirectories(directories);
     } catch (error) {
       console.error('Failed to load plugins:', error);
@@ -263,6 +340,8 @@ export function SettingsPanel({
       setPluginDirectories(null);
       setIsLoadingPlugins(false);
       setPluginDependencyPending(null);
+      setPluginSettingsDrafts({});
+      setPluginSettingsPending(null);
       setExpandedPluginDependencyKeys({});
       return;
     }
@@ -533,6 +612,105 @@ export function SettingsPanel({
     }));
   };
 
+  const handlePluginSettingsDraftChange = (
+    pluginKey: string,
+    fieldKey: string,
+    value: unknown,
+  ) => {
+    setPluginSettingsDrafts((state) => ({
+      ...state,
+      [pluginKey]: {
+        ...(state[pluginKey] ?? {}),
+        [fieldKey]: value,
+      },
+    }));
+  };
+
+  const handlePickPluginSettingFile = async (
+    plugin: PluginDescriptor,
+    field: PluginSettingsField,
+  ) => {
+    try {
+      const allowedExtensions = (field.accept ?? [])
+        .map((value) => value.trim().replace(/^\./, '').toLowerCase())
+        .filter((value) => /^[a-z0-9]+$/i.test(value));
+      const selected = await open({
+        directory: field.picker === 'directory',
+        multiple: false,
+        filters:
+          field.picker === 'directory' || allowedExtensions.length === 0
+            ? undefined
+            : [
+                {
+                  name: field.label,
+                  extensions: allowedExtensions,
+                },
+              ],
+      });
+
+      if (!selected || Array.isArray(selected)) {
+        return;
+      }
+
+      handlePluginSettingsDraftChange(plugin.key, field.key, selected);
+    } catch (error) {
+      setAlertDialog({
+        isOpen: true,
+        title: '选择插件设置文件失败',
+        message: String(error),
+      });
+    }
+  };
+
+  const handleSavePluginSettings = async (plugin: PluginDescriptor) => {
+    setPluginSettingsPending({ pluginKey: plugin.key, action: 'save' });
+
+    try {
+      await updatePluginSettings(
+        plugin.key,
+        pluginSettingsDrafts[plugin.key] ?? plugin.settingsData?.values ?? {},
+        projectPath,
+      );
+      await loadPluginSection();
+    } catch (error) {
+      setAlertDialog({
+        isOpen: true,
+        title: '保存插件设置失败',
+        message: String(error),
+      });
+    } finally {
+      setPluginSettingsPending(null);
+    }
+  };
+
+  const handleResetPluginSettings = async (plugin: PluginDescriptor) => {
+    if (!confirm(`确定重置插件“${plugin.name}”的参数设置吗？`)) {
+      return;
+    }
+
+    setPluginSettingsPending({ pluginKey: plugin.key, action: 'reset' });
+
+    try {
+      await resetPluginSettings(plugin.key, projectPath);
+      await loadPluginSection();
+    } catch (error) {
+      setAlertDialog({
+        isOpen: true,
+        title: '重置插件设置失败',
+        message: String(error),
+      });
+    } finally {
+      setPluginSettingsPending(null);
+    }
+  };
+
+  const togglePluginCardExpanded = (pluginKey: string) => {
+    setExpandedPluginKeys((state) => ({
+      ...state,
+      [pluginKey]: !state[pluginKey],
+    }));
+  };
+
   const globalPlugins = useMemo(
     () => pluginDescriptors.filter((plugin) => plugin.scope === 'global'),
     [pluginDescriptors],
@@ -698,6 +876,248 @@ export function SettingsPanel({
     </section>
   );
 
+  const renderPluginSettingsField = (plugin: PluginDescriptor, field: PluginSettingsField) => {
+    const value = getPluginSettingDraftValue(pluginSettingsDrafts, plugin, field.key);
+
+    if (field.type === 'boolean') {
+      return (
+        <label
+          key={`${plugin.key}-${field.key}`}
+          className="flex items-start gap-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50/70 dark:bg-gray-800/70 px-3 py-3"
+        >
+          <input
+            type="checkbox"
+            checked={Boolean(value)}
+            onChange={(event) => handlePluginSettingsDraftChange(plugin.key, field.key, event.target.checked)}
+            className="mt-0.5 rounded"
+          />
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{field.label}</p>
+            {field.description ? (
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{field.description}</p>
+            ) : null}
+          </div>
+        </label>
+      );
+    }
+
+    if (field.type === 'select') {
+      return (
+        <div key={`${plugin.key}-${field.key}`} className="space-y-2">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+            {field.label}
+          </label>
+          <select
+            value={getPluginSettingsFieldStringValue(value)}
+            onChange={(event) => handlePluginSettingsDraftChange(plugin.key, field.key, event.target.value)}
+            className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            {!field.required && <option value="">未选择</option>}
+            {field.options.map((option) => (
+              <option key={`${field.key}-${option.value}`} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          {field.description ? (
+            <p className="text-xs text-gray-500 dark:text-gray-400">{field.description}</p>
+          ) : null}
+        </div>
+      );
+    }
+
+    if (field.type === 'file') {
+      const currentPath = getPluginSettingsFieldStringValue(value);
+      return (
+        <div
+          key={`${plugin.key}-${field.key}`}
+          className="space-y-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50/70 dark:bg-gray-800/70 px-3 py-3"
+        >
+          <div className="flex items-center gap-2">
+            <ImageIcon className="h-4 w-4 text-blue-500" />
+            <label className="text-sm font-medium text-gray-700 dark:text-gray-300">{field.label}</label>
+          </div>
+          {field.description ? (
+            <p className="text-xs text-gray-500 dark:text-gray-400">{field.description}</p>
+          ) : null}
+          <div className="rounded-lg border border-dashed border-gray-300 dark:border-gray-600 bg-white/80 dark:bg-gray-900/60 px-3 py-2 text-xs text-gray-600 dark:text-gray-300 break-all">
+            {currentPath || '当前未选择文件'}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => void handlePickPluginSettingFile(plugin, field)}
+              className="px-3 py-1.5 text-xs rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors"
+            >
+              {field.picker === 'directory' ? '选择文件夹' : '选择文件'}
+            </button>
+            <button
+              onClick={() => handlePluginSettingsDraftChange(plugin.key, field.key, '')}
+              disabled={!currentPath}
+              className="px-3 py-1.5 text-xs rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+            >
+              清空
+            </button>
+            {currentPath ? (
+              <button
+                onClick={() => void handleOpenPluginDirectory(currentPath)}
+                className="px-3 py-1.5 text-xs rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+              >
+                打开位置
+              </button>
+            ) : null}
+          </div>
+          <p className="text-[11px] text-gray-500 dark:text-gray-400">
+            保存方式: {field.fileStoreMode === 'copy' ? '复制到插件存储目录' : '记录原始路径'}
+          </p>
+        </div>
+      );
+    }
+
+    const isTextarea = field.type === 'textarea';
+    const isNumber = field.type === 'number';
+    const sharedInputClassName =
+      'w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500';
+
+    return (
+      <div key={`${plugin.key}-${field.key}`} className="space-y-2">
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+          {field.label}
+        </label>
+        <div className="flex items-center gap-2">
+          {isTextarea ? (
+            <textarea
+              rows={3}
+              value={getPluginSettingsFieldStringValue(value)}
+              placeholder={field.placeholder ?? undefined}
+              onChange={(event) => handlePluginSettingsDraftChange(plugin.key, field.key, event.target.value)}
+              className={sharedInputClassName}
+            />
+          ) : (
+            <input
+              type={isNumber ? 'number' : 'text'}
+              min={isNumber ? field.min ?? undefined : undefined}
+              max={isNumber ? field.max ?? undefined : undefined}
+              step={isNumber ? field.step ?? 'any' : undefined}
+              value={getPluginSettingsFieldStringValue(value)}
+              placeholder={field.placeholder ?? undefined}
+              onChange={(event) => handlePluginSettingsDraftChange(plugin.key, field.key, event.target.value)}
+              className={sharedInputClassName}
+            />
+          )}
+          {field.unit ? (
+            <span className="shrink-0 text-xs text-gray-500 dark:text-gray-400">{field.unit}</span>
+          ) : null}
+        </div>
+        {field.description ? (
+          <p className="text-xs text-gray-500 dark:text-gray-400">{field.description}</p>
+        ) : null}
+      </div>
+    );
+  };
+
+  const renderPluginInfoPanel = (plugin: PluginDescriptor) => {
+    const panel = plugin.settingsPanel;
+    if (!panel || (!panel.summary && panel.sections.length === 0)) {
+      return null;
+    }
+
+    return (
+      <div className="mt-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white/80 dark:bg-gray-900/60 px-3 py-3">
+        <div className="mb-3 flex items-center gap-2">
+          <HelpCircle className="h-4 w-4 text-blue-500" />
+          <p className="text-sm font-medium text-gray-900 dark:text-gray-100">插件介绍</p>
+        </div>
+        {panel.summary ? (
+          <p className="text-sm leading-6 text-gray-700 dark:text-gray-300 whitespace-pre-wrap">{panel.summary}</p>
+        ) : null}
+        {panel.sections.length > 0 ? (
+          <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+            {panel.sections.map((section) => (
+              <div
+                key={`${plugin.key}-${section.title}`}
+                className={`rounded-lg border px-3 py-3 ${pluginInfoToneClass(section.tone)}`}
+              >
+                <p className="text-sm font-medium">{section.title}</p>
+                <p className="mt-2 text-xs leading-6 whitespace-pre-wrap">{section.content}</p>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
+  const renderPluginSettingsPanel = (plugin: PluginDescriptor) => {
+    const schema = plugin.settingsPanel?.settings;
+    if (!schema || schema.fields.length === 0) {
+      return null;
+    }
+
+    const pendingAction =
+      pluginSettingsPending?.pluginKey === plugin.key ? pluginSettingsPending.action : null;
+    const isDirty = isPluginSettingsDirty(plugin, pluginSettingsDrafts);
+    const storagePath = plugin.settingsData?.storagePath ?? null;
+    const filesDir = plugin.settingsData?.filesDir ?? null;
+
+    return (
+      <div className="mt-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white/80 dark:bg-gray-900/60 px-3 py-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+              {schema.title || '插件参数'}
+            </p>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              存储位置: {pluginSettingsStorageLabel(schema.storage)}
+            </p>
+            {schema.description ? (
+              <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">{schema.description}</p>
+            ) : null}
+            {storagePath ? (
+              <p className="mt-2 text-xs text-gray-500 dark:text-gray-400 break-all">
+                settings: {storagePath}
+              </p>
+            ) : null}
+            {filesDir ? (
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400 break-all">
+                files: {filesDir}
+              </p>
+            ) : null}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => void handleSavePluginSettings(plugin)}
+              disabled={!isDirty || pluginSettingsPending !== null}
+              className="px-3 py-1.5 text-xs rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white transition-colors flex items-center gap-1.5"
+            >
+              <Save className="h-3.5 w-3.5" />
+              {pendingAction === 'save' ? '保存中...' : '保存参数'}
+            </button>
+            <button
+              onClick={() => void handleResetPluginSettings(plugin)}
+              disabled={pluginSettingsPending !== null}
+              className="px-3 py-1.5 text-xs rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-60 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              {pendingAction === 'reset' ? '重置中...' : '恢复默认'}
+            </button>
+            {filesDir ? (
+              <button
+                onClick={() => void handleOpenPluginDirectory(filesDir)}
+                className="px-3 py-1.5 text-xs rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+              >
+                打开存储目录
+              </button>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {schema.fields.map((field) => renderPluginSettingsField(plugin, field))}
+        </div>
+      </div>
+    );
+  };
+
   const renderPluginSection = ({
     title,
     description,
@@ -773,6 +1193,7 @@ export function SettingsPanel({
           <div className="space-y-2">
             {plugins.map((plugin) => {
               const dependencyMeta = pluginDependencyStatusMeta(plugin.dependencies.status);
+              const isPluginExpanded = Boolean(expandedPluginKeys[plugin.key]);
               const isDependencyExpanded = Boolean(expandedPluginDependencyKeys[plugin.key]);
               const dependencyPendingAction =
                 pluginDependencyPending?.pluginKey === plugin.key
@@ -784,10 +1205,21 @@ export function SettingsPanel({
               return (
                 <div
                   key={plugin.key}
-                  className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/80 dark:bg-gray-800/60 p-4"
+                  className="overflow-hidden rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/80 dark:bg-gray-800/60"
                 >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    className="flex items-center justify-between gap-3 px-4 py-4 transition-colors hover:bg-gray-100/80 dark:hover:bg-gray-800/80"
+                    onClick={() => togglePluginCardExpanded(plugin.key)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        togglePluginCardExpanded(plugin.key);
+                      }
+                    }}
+                  >
+                    <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="font-medium text-sm text-gray-900 dark:text-gray-100">{plugin.name}</span>
                         <span className="px-2 py-0.5 text-xs rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/20 dark:text-blue-300">
@@ -805,7 +1237,38 @@ export function SettingsPanel({
                       <p className="mt-1 text-xs text-gray-500">
                         {plugin.id} · v{plugin.version} · {plugin.runtime}
                       </p>
-                      <p className="mt-2 text-sm text-gray-800 dark:text-gray-200 break-all">
+                    </div>
+
+                    <div
+                      className="flex shrink-0 items-center gap-3"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <label className="flex shrink-0 items-center gap-2 whitespace-nowrap text-sm text-gray-600 dark:text-gray-300">
+                        <input
+                          type="checkbox"
+                          checked={plugin.enabled}
+                          disabled={plugin.validationIssues.length > 0 || Boolean(plugin.shadowedBy)}
+                          onChange={(event) => void handleTogglePlugin(plugin, event.target.checked)}
+                          className="rounded"
+                        />
+                        启用
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => togglePluginCardExpanded(plugin.key)}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800 dark:hover:text-gray-100"
+                        aria-label={isPluginExpanded ? '收起插件详情' : '展开插件详情'}
+                      >
+                        <ChevronDown
+                          className={`h-4 w-4 transition-transform ${isPluginExpanded ? 'rotate-180' : ''}`}
+                        />
+                      </button>
+                    </div>
+                  </div>
+
+                  {isPluginExpanded && (
+                    <div className="border-t border-gray-200/80 bg-white/70 px-4 py-4 dark:border-gray-700/80 dark:bg-gray-900/40">
+                      <p className="text-sm text-gray-800 dark:text-gray-200 break-all">
                         {plugin.path}
                       </p>
                       {plugin.description ? (
@@ -822,161 +1285,153 @@ export function SettingsPanel({
                           动作数: {plugin.actions.length}
                         </p>
                       )}
-                    </div>
 
-                    <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
-                      <input
-                        type="checkbox"
-                        checked={plugin.enabled}
-                        disabled={plugin.validationIssues.length > 0 || Boolean(plugin.shadowedBy)}
-                        onChange={(event) => void handleTogglePlugin(plugin, event.target.checked)}
-                        className="rounded"
-                      />
-                      启用
-                    </label>
-                  </div>
+                      {renderPluginInfoPanel(plugin)}
+                      {renderPluginSettingsPanel(plugin)}
 
-                  <div className="mt-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white/80 dark:bg-gray-900/60 px-3 py-3">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="text-xs text-gray-500">Python 依赖</p>
-                        <p className="mt-1 text-sm text-gray-900 dark:text-gray-100">
-                          {plugin.dependencies.declaredRequirements.length === 0
-                            ? '当前插件没有声明额外依赖。'
-                            : `已声明 ${plugin.dependencies.declaredRequirements.length} 项，已安装 ${plugin.dependencies.installedPackages.length} 项。`}
-                        </p>
-                        {plugin.dependencies.message ? (
-                          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                            {plugin.dependencies.message}
-                          </p>
-                        ) : null}
-                        {plugin.dependencies.vendorPath ? (
-                          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400 break-all">
-                            vendor: {plugin.dependencies.vendorPath}
-                          </p>
-                        ) : null}
-                        {!canManagePluginDependencies && plugin.dependencies.declaredRequirements.length > 0 ? (
-                          <p className="mt-1 text-xs text-amber-600 dark:text-amber-300">
-                            当前没有可用的内置 Python 运行时，暂时无法安装或删除插件依赖。
-                          </p>
-                        ) : null}
-                      </div>
+                      <div className="mt-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white/80 dark:bg-gray-900/60 px-3 py-3">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-xs text-gray-500">Python 依赖</p>
+                            <p className="mt-1 text-sm text-gray-900 dark:text-gray-100">
+                              {plugin.dependencies.declaredRequirements.length === 0
+                                ? '当前插件没有声明额外依赖。'
+                                : `已声明 ${plugin.dependencies.declaredRequirements.length} 项，已安装 ${plugin.dependencies.installedPackages.length} 项。`}
+                            </p>
+                            {plugin.dependencies.message ? (
+                              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                                {plugin.dependencies.message}
+                              </p>
+                            ) : null}
+                            {plugin.dependencies.vendorPath ? (
+                              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400 break-all">
+                                vendor: {plugin.dependencies.vendorPath}
+                              </p>
+                            ) : null}
+                            {!canManagePluginDependencies && plugin.dependencies.declaredRequirements.length > 0 ? (
+                              <p className="mt-1 text-xs text-amber-600 dark:text-amber-300">
+                                当前没有可用的内置 Python 运行时，暂时无法安装或删除插件依赖。
+                              </p>
+                            ) : null}
+                          </div>
 
-                      <div className="flex flex-wrap items-center gap-2">
-                        <button
-                          onClick={() => void handleInspectPluginDependencies(plugin)}
-                          disabled={pluginDependencyPending !== null}
-                          className="px-3 py-1.5 text-xs rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
-                        >
-                          {dependencyPendingAction === 'inspect' ? '检查中...' : '检查依赖'}
-                        </button>
-                        <button
-                          onClick={() => void handleInstallPluginDependencies(plugin)}
-                          disabled={
-                            plugin.dependencies.declaredRequirements.length === 0 ||
-                            !canManagePluginDependencies ||
-                            otherPluginPending ||
-                            dependencyPendingAction === 'inspect' ||
-                            dependencyPendingAction === 'remove'
-                          }
-                          className="px-3 py-1.5 text-xs rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white transition-colors"
-                        >
-                          {dependencyPendingAction === 'install' ? '安装中...' : '安装依赖'}
-                        </button>
-                        <button
-                          onClick={() => void handleRemovePluginDependencies(plugin)}
-                          disabled={
-                            !plugin.dependencies.vendorPath ||
-                            !canManagePluginDependencies ||
-                            otherPluginPending ||
-                            dependencyPendingAction === 'inspect' ||
-                            dependencyPendingAction === 'install'
-                          }
-                          className="px-3 py-1.5 text-xs rounded-lg border border-red-200 text-red-600 hover:bg-red-50 dark:border-red-900/40 dark:text-red-300 dark:hover:bg-red-900/20 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
-                        >
-                          {dependencyPendingAction === 'remove' ? '删除中...' : '删除依赖'}
-                        </button>
-                        <button
-                          onClick={() => togglePluginDependencyDetails(plugin.key)}
-                          className="px-3 py-1.5 text-xs rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-                        >
-                          {isDependencyExpanded ? '收起依赖' : '查看依赖'}
-                        </button>
-                      </div>
-                    </div>
-
-                    {isDependencyExpanded && (
-                      <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-3">
-                        <div className="rounded-lg bg-gray-50 dark:bg-gray-800 px-3 py-3">
-                          <p className="text-xs font-medium text-gray-700 dark:text-gray-200">
-                            requirements.txt
-                          </p>
-                          <div className="mt-2 space-y-1 text-xs text-gray-600 dark:text-gray-300">
-                            {plugin.dependencies.declaredRequirements.length === 0 ? (
-                              <p>未声明额外依赖</p>
-                            ) : (
-                              plugin.dependencies.declaredRequirements.map((requirement) => (
-                                <div key={`${plugin.key}-requirement-${requirement}`}>{requirement}</div>
-                              ))
-                            )}
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              onClick={() => void handleInspectPluginDependencies(plugin)}
+                              disabled={pluginDependencyPending !== null}
+                              className="px-3 py-1.5 text-xs rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+                            >
+                              {dependencyPendingAction === 'inspect' ? '检查中...' : '检查依赖'}
+                            </button>
+                            <button
+                              onClick={() => void handleInstallPluginDependencies(plugin)}
+                              disabled={
+                                plugin.dependencies.declaredRequirements.length === 0 ||
+                                !canManagePluginDependencies ||
+                                otherPluginPending ||
+                                dependencyPendingAction === 'inspect' ||
+                                dependencyPendingAction === 'remove'
+                              }
+                              className="px-3 py-1.5 text-xs rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white transition-colors"
+                            >
+                              {dependencyPendingAction === 'install' ? '安装中...' : '安装依赖'}
+                            </button>
+                            <button
+                              onClick={() => void handleRemovePluginDependencies(plugin)}
+                              disabled={
+                                !plugin.dependencies.vendorPath ||
+                                !canManagePluginDependencies ||
+                                otherPluginPending ||
+                                dependencyPendingAction === 'inspect' ||
+                                dependencyPendingAction === 'install'
+                              }
+                              className="px-3 py-1.5 text-xs rounded-lg border border-red-200 text-red-600 hover:bg-red-50 dark:border-red-900/40 dark:text-red-300 dark:hover:bg-red-900/20 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+                            >
+                              {dependencyPendingAction === 'remove' ? '删除中...' : '删除依赖'}
+                            </button>
+                            <button
+                              onClick={() => togglePluginDependencyDetails(plugin.key)}
+                              className="px-3 py-1.5 text-xs rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                            >
+                              {isDependencyExpanded ? '收起依赖' : '查看依赖'}
+                            </button>
                           </div>
                         </div>
 
-                        <div className="rounded-lg bg-gray-50 dark:bg-gray-800 px-3 py-3">
-                          <p className="text-xs font-medium text-gray-700 dark:text-gray-200">
-                            已安装依赖 ({plugin.dependencies.installedPackages.length})
-                          </p>
-                          <div className="mt-2 space-y-1 text-xs text-gray-600 dark:text-gray-300">
-                            {plugin.dependencies.installedPackages.length === 0 ? (
-                              <p>当前没有检测到已安装依赖</p>
-                            ) : (
-                              plugin.dependencies.installedPackages.map((dependency) => (
-                                <div key={`${plugin.key}-installed-${dependency.name}`}>
-                                  {dependency.name}
-                                  {dependency.version ? ` · ${dependency.version}` : ''}
-                                </div>
-                              ))
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="rounded-lg bg-gray-50 dark:bg-gray-800 px-3 py-3">
-                          <p className="text-xs font-medium text-gray-700 dark:text-gray-200">
-                            缺失 / 额外依赖
-                          </p>
-                          <div className="mt-2 space-y-2 text-xs text-gray-600 dark:text-gray-300">
-                            {plugin.dependencies.missingPackages.length === 0 ? (
-                              <p>缺失依赖：无</p>
-                            ) : (
-                              <div>
-                                <p className="text-red-600 dark:text-red-300">缺失依赖</p>
-                                <div className="mt-1 space-y-1">
-                                  {plugin.dependencies.missingPackages.map((dependency) => (
-                                    <div key={`${plugin.key}-missing-${dependency}`}>{dependency}</div>
-                                  ))}
-                                </div>
+                        {isDependencyExpanded && (
+                          <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-3">
+                            <div className="rounded-lg bg-gray-50 dark:bg-gray-800 px-3 py-3">
+                              <p className="text-xs font-medium text-gray-700 dark:text-gray-200">
+                                requirements.txt
+                              </p>
+                              <div className="mt-2 space-y-1 text-xs text-gray-600 dark:text-gray-300">
+                                {plugin.dependencies.declaredRequirements.length === 0 ? (
+                                  <p>未声明额外依赖</p>
+                                ) : (
+                                  plugin.dependencies.declaredRequirements.map((requirement) => (
+                                    <div key={`${plugin.key}-requirement-${requirement}`}>{requirement}</div>
+                                  ))
+                                )}
                               </div>
-                            )}
-                            {plugin.dependencies.extraPackages.length === 0 ? (
-                              <p>额外依赖：无</p>
-                            ) : (
-                              <div>
-                                <p className="text-amber-600 dark:text-amber-300">额外依赖</p>
-                                <div className="mt-1 space-y-1">
-                                  {plugin.dependencies.extraPackages.map((dependency) => (
-                                    <div key={`${plugin.key}-extra-${dependency.name}`}>
+                            </div>
+
+                            <div className="rounded-lg bg-gray-50 dark:bg-gray-800 px-3 py-3">
+                              <p className="text-xs font-medium text-gray-700 dark:text-gray-200">
+                                已安装依赖 ({plugin.dependencies.installedPackages.length})
+                              </p>
+                              <div className="mt-2 space-y-1 text-xs text-gray-600 dark:text-gray-300">
+                                {plugin.dependencies.installedPackages.length === 0 ? (
+                                  <p>当前没有检测到已安装依赖</p>
+                                ) : (
+                                  plugin.dependencies.installedPackages.map((dependency) => (
+                                    <div key={`${plugin.key}-installed-${dependency.name}`}>
                                       {dependency.name}
                                       {dependency.version ? ` · ${dependency.version}` : ''}
                                     </div>
-                                  ))}
-                                </div>
+                                  ))
+                                )}
                               </div>
-                            )}
+                            </div>
+
+                            <div className="rounded-lg bg-gray-50 dark:bg-gray-800 px-3 py-3">
+                              <p className="text-xs font-medium text-gray-700 dark:text-gray-200">
+                                缺失 / 额外依赖
+                              </p>
+                              <div className="mt-2 space-y-2 text-xs text-gray-600 dark:text-gray-300">
+                                {plugin.dependencies.missingPackages.length === 0 ? (
+                                  <p>缺失依赖：无</p>
+                                ) : (
+                                  <div>
+                                    <p className="text-red-600 dark:text-red-300">缺失依赖</p>
+                                    <div className="mt-1 space-y-1">
+                                      {plugin.dependencies.missingPackages.map((dependency) => (
+                                        <div key={`${plugin.key}-missing-${dependency}`}>{dependency}</div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                                {plugin.dependencies.extraPackages.length === 0 ? (
+                                  <p>额外依赖：无</p>
+                                ) : (
+                                  <div>
+                                    <p className="text-amber-600 dark:text-amber-300">额外依赖</p>
+                                    <div className="mt-1 space-y-1">
+                                      {plugin.dependencies.extraPackages.map((dependency) => (
+                                        <div key={`${plugin.key}-extra-${dependency.name}`}>
+                                          {dependency.name}
+                                          {dependency.version ? ` · ${dependency.version}` : ''}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
                           </div>
-                        </div>
+                        )}
                       </div>
-                    )}
-                  </div>
+                    </div>
+                  )}
                 </div>
               );
             })}

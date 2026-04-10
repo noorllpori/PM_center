@@ -200,6 +200,7 @@ export function Toolbar({ onOpenProject }: ToolbarProps) {
         commandId: action.commandId,
         commandTitle: action.title,
         location: action.location,
+        interactionResponses: [],
         context: {
           ...toolbarActionContext,
           pluginScope: action.scope,

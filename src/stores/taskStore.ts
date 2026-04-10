@@ -109,7 +109,10 @@ function normalizeTask(task: Task): Task {
         workingDir: 'workingDir' in script ? script.workingDir ?? task.projectPath : task.projectPath,
         envVars: 'envVars' in script ? script.envVars : undefined,
       }
-    : script;
+    : {
+        ...script,
+        interactionResponses: 'interactionResponses' in script ? script.interactionResponses ?? [] : [],
+      };
 
   return {
     ...task,
@@ -529,6 +532,10 @@ export function initTaskEventListeners() {
 
     if (message.type === 'result' && message.data !== undefined) {
       useTaskStore.getState().updateTaskOutput(taskId, `[plugin-result] ${JSON.stringify(message.data)}`);
+    }
+
+    if (message.type === 'confirm' && message.message) {
+      useTaskStore.getState().updateTaskOutput(taskId, `[plugin-confirm] ${message.message}`);
     }
   });
   

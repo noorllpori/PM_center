@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { ColumnConfig, FileInfo, Tag } from "../../types";
 import {
   useProjectStoreApi,
@@ -45,6 +45,7 @@ import {
   readProjectExcludePatterns,
   shouldExcludeFile,
 } from "../../utils/excludePatterns";
+import { useResolvedImageSource } from "../image-viewer/useResolvedImageSource";
 
 function formatSize(bytes: number): string {
   if (bytes === 0) return "-";
@@ -96,6 +97,41 @@ function getFileIcon(file: FileInfo) {
   return <FileIcon className="w-5 h-5 text-gray-400" />;
 }
 
+function resolvePreviewSource(path: string | null) {
+  if (!path) {
+    return null;
+  }
+
+  if (/^(asset|https?|data|blob):/i.test(path)) {
+    return path;
+  }
+
+  return convertFileSrc(path);
+}
+
+function getGridPreview(file: FileInfo): { kind: "image" | "video"; src: string } | null {
+  if (file.is_dir) {
+    return null;
+  }
+
+  if (file.thumbnail) {
+    return { kind: "image", src: file.thumbnail };
+  }
+
+  const extension = file.extension?.toLowerCase() || "";
+
+  if (isImageExtension(extension)) {
+    return { kind: "image", src: file.path };
+  }
+
+  if (isVideoExtension(extension)) {
+    const src = resolvePreviewSource(file.path);
+    return src ? { kind: "video", src } : null;
+  }
+
+  return null;
+}
+
 const MIN_COLUMN_WIDTHS: Record<string, number> = {
   name: 220,
   size: 90,
@@ -106,7 +142,8 @@ const MIN_COLUMN_WIDTHS: Record<string, number> = {
 
 const LIST_ROW_HEIGHT = 40;
 const LIST_OVERSCAN_COUNT = 12;
-const GRID_CARD_HEIGHT = 176;
+const GRID_CARD_HEIGHT = 212;
+const GRID_PREVIEW_HEIGHT = "85%";
 const GRID_GAP = 16;
 const GRID_ROW_HEIGHT = GRID_CARD_HEIGHT + GRID_GAP;
 const GRID_OVERSCAN_ROWS = 2;
@@ -613,7 +650,7 @@ const GridCard = memo(function GridCard({
     <div
       draggable
       className={`
-        group relative h-full p-3 rounded-lg cursor-pointer select-none transition-all
+        group relative flex h-full flex-col p-3 rounded-lg cursor-pointer select-none transition-all
         ${
           isSelected
             ? "bg-blue-100 dark:bg-blue-950/40 ring-2 ring-blue-500 shadow-lg shadow-blue-500/10 dark:shadow-blue-950/30"
@@ -680,15 +717,16 @@ const GridCard = memo(function GridCard({
       </div>
 
       <div
-        className={`mb-2 aspect-square flex items-center justify-center rounded-xl transition-colors ${
+        className={`mb-2 flex shrink-0 items-center justify-center overflow-hidden rounded-xl transition-colors ${
           isSelected ? "bg-blue-200/70 dark:bg-blue-900/50" : ""
         }`}
+        style={{ height: GRID_PREVIEW_HEIGHT }}
       >
-        {getFileIcon(file)}
+        <GridCardPreview file={file} />
       </div>
 
       <div
-        className={`text-sm text-center truncate ${
+        className={`shrink-0 text-sm text-center truncate ${
           isSelected ? "font-semibold text-blue-950 dark:text-blue-50" : ""
         }`}
         title={file.name}
@@ -704,7 +742,7 @@ const GridCard = memo(function GridCard({
       )}
 
       {fileTagList.length > 0 && (
-        <div className="flex justify-center gap-1 mt-1 flex-wrap">
+        <div className="mt-1 flex shrink-0 justify-center gap-1 flex-wrap">
           {fileTagList.slice(0, 2).map((tag) => (
             <span
               key={tag.id}
@@ -721,6 +759,69 @@ const GridCard = memo(function GridCard({
         </div>
       )}
     </div>
+  );
+});
+
+const GridCardPreview = memo(function GridCardPreview({
+  file,
+}: {
+  file: FileInfo;
+}) {
+  const preview = useMemo(() => getGridPreview(file), [file]);
+  const {
+    resolvedSource,
+    isLoading: isImageLoading,
+    errorMessage: imageErrorMessage,
+  } = useResolvedImageSource(preview?.kind === "image" ? preview.src : "");
+  const [hasPreviewError, setHasPreviewError] = useState(false);
+
+  useEffect(() => {
+    setHasPreviewError(false);
+  }, [preview?.kind, preview?.src, file.path]);
+
+  useEffect(() => {
+    if (preview?.kind === "image" && imageErrorMessage) {
+      setHasPreviewError(true);
+    }
+  }, [imageErrorMessage, preview?.kind]);
+
+  if (!preview || hasPreviewError) {
+    return <div className="flex h-full w-full items-center justify-center">{getFileIcon(file)}</div>;
+  }
+
+  if (preview.kind === "image") {
+    if (!resolvedSource) {
+      return (
+        <div className="flex h-full w-full items-center justify-center">
+          {isImageLoading ? (
+            <div className="h-12 w-12 animate-pulse rounded-2xl bg-white/50 dark:bg-white/10" />
+          ) : (
+            getFileIcon(file)
+          )}
+        </div>
+      );
+    }
+
+    return (
+      <img
+        src={resolvedSource}
+        alt={file.name}
+        className="h-full w-full object-cover"
+        loading="lazy"
+        onError={() => setHasPreviewError(true)}
+      />
+    );
+  }
+
+  return (
+    <video
+      src={preview.src}
+      className="h-full w-full object-cover"
+      preload="metadata"
+      muted
+      playsInline
+      onError={() => setHasPreviewError(true)}
+    />
   );
 });
 
@@ -1259,6 +1360,7 @@ export function FileList() {
           commandId: action.commandId,
           commandTitle: action.title,
           location: action.location,
+          interactionResponses: [],
           context: {
             ...context,
             pluginScope: action.scope,

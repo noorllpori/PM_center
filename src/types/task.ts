@@ -1,4 +1,4 @@
-import type { PluginActionContext } from './plugin';
+import type { PluginActionContext, PluginInteractionResponse } from './plugin';
 
 export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type TaskPriority = 'high' | 'medium' | 'low';
@@ -22,6 +22,7 @@ export interface PluginActionTaskScript {
   commandTitle: string;
   location: 'toolbar' | 'file-context';
   context: PluginActionContext;
+  interactionResponses?: PluginInteractionResponse[];
 }
 
 export type TaskScript = PythonInlineTaskScript | PluginActionTaskScript;

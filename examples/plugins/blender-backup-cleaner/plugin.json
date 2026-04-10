@@ -1,0 +1,43 @@
+{
+  "id": "blender-backup-cleaner",
+  "name": "Blender Backup Cleaner",
+  "version": "0.1.0",
+  "apiVersion": "1",
+  "runtime": "python",
+  "entry": "main.py",
+  "description": "Clean Blender backup files like .blend1 and .blend2 across the active project after a confirmation dialog.",
+  "enabledByDefault": true,
+  "settingsPanel": {
+    "summary": "这个插件会扫描当前活动项目目录下所有子目录中的 Blender 备份文件，例如 `.blend1`、`.blend2`、`.blend12`。点击工具栏里的插件动作后，会先弹出确认框列出相对项目路径，确认后才会删除。",
+    "sections": [
+      {
+        "title": "扫描范围",
+        "content": "默认扫描当前活动项目目录下的所有子目录，而不是当前正在浏览的文件夹。",
+        "tone": "info"
+      },
+      {
+        "title": "安全策略",
+        "content": "插件会先列出待删除文件，再由宿主弹确认框。只有确认后才会真正删除。",
+        "tone": "warning"
+      }
+    ]
+  },
+  "contributes": {
+    "commands": [
+      {
+        "id": "clean-blender-backups",
+        "title": "清理 Blender 备份文件",
+        "description": "扫描当前活动项目中的 .blend1 / .blend2 等 Blender 备份文件，并在确认后删除。"
+      }
+    ],
+    "toolbarActions": [
+      {
+        "command": "clean-blender-backups",
+        "when": {
+          "projectOpen": true
+        }
+      }
+    ]
+  },
+  "permissions": []
+}

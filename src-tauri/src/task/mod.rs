@@ -10,7 +10,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use crate::plugin::{
     parse_plugin_control_message, prepare_plugin_execution, PluginActionContext,
-    PluginActionRunRequest,
+    PluginActionRunRequest, PluginInteractionResponse,
 };
 use crate::process_utils::tokio_command;
 
@@ -34,6 +34,8 @@ pub struct PluginActionTaskScript {
     pub command_title: String,
     pub location: String,
     pub context: PluginActionContext,
+    #[serde(default)]
+    pub interaction_responses: Vec<PluginInteractionResponse>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,6 +158,7 @@ async fn prepare_task_execution(
                     plugin_key: script.plugin_key.clone(),
                     command_id: script.command_id.clone(),
                     context: script.context.clone(),
+                    interaction_responses: script.interaction_responses.clone(),
                 },
             )?;
 

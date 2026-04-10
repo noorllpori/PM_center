@@ -570,6 +570,7 @@ export function FileTree() {
           commandId: action.commandId,
           commandTitle: action.title,
           location: action.location,
+          interactionResponses: [],
           context: {
             ...context,
             pluginScope: action.scope,

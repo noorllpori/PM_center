@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -11,9 +12,13 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use crate::process_utils::{std_command, tokio_command};
 
 const PLUGIN_STATE_FILE: &str = "plugin-state.json";
+const PLUGIN_SETTINGS_FILE: &str = "settings.json";
 const PLUGIN_API_VERSION: &str = "1";
 const DEFAULT_PLUGIN_ACTION_MENU_PLACEMENT: &str = "section";
 const PLUGIN_GET_PIP_RELATIVE_PATH: &str = "plugin-python/get-pip.py";
+const DEFAULT_PLUGIN_SETTINGS_STORAGE: &str = "appData";
+const DEFAULT_PLUGIN_FILE_STORE_MODE: &str = "path";
+const DEFAULT_PLUGIN_FILE_PICKER: &str = "file";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -73,6 +78,74 @@ pub struct PluginDependencyInfo {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginInfoSection {
+    pub title: String,
+    pub content: String,
+    pub tone: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSettingsOption {
+    pub label: String,
+    pub value: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSettingsField {
+    pub key: String,
+    pub label: String,
+    #[serde(rename = "type")]
+    pub field_type: String,
+    pub description: Option<String>,
+    #[serde(default)]
+    pub required: bool,
+    pub placeholder: Option<String>,
+    pub unit: Option<String>,
+    pub default_value: Option<Value>,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    pub step: Option<f64>,
+    pub accept: Option<Vec<String>>,
+    #[serde(default)]
+    pub options: Vec<PluginSettingsOption>,
+    pub file_store_mode: Option<String>,
+    pub picker: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSettingsSchema {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    #[serde(default = "default_plugin_settings_storage")]
+    pub storage: String,
+    #[serde(default)]
+    pub fields: Vec<PluginSettingsField>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSettingsPanel {
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub sections: Vec<PluginInfoSection>,
+    pub settings: Option<PluginSettingsSchema>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSettingsData {
+    #[serde(default)]
+    pub values: HashMap<String, Value>,
+    pub storage_path: Option<String>,
+    pub files_dir: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginDescriptor {
@@ -94,6 +167,8 @@ pub struct PluginDescriptor {
     pub actions: Vec<PluginAction>,
     pub validation_issues: Vec<PluginValidationIssue>,
     pub dependencies: PluginDependencyInfo,
+    pub settings_panel: Option<PluginSettingsPanel>,
+    pub settings_data: Option<PluginSettingsData>,
     pub shadowed_by: Option<String>,
 }
 
@@ -136,6 +211,14 @@ pub struct PluginActionContext {
     pub app_version: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginInteractionResponse {
+    pub request_id: String,
+    pub approved: bool,
+    pub data: Option<Value>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginControlMessage {
@@ -146,6 +229,9 @@ pub struct PluginControlMessage {
     pub tone: Option<String>,
     pub scope: Option<String>,
     pub path: Option<String>,
+    pub request_id: Option<String>,
+    pub confirm_text: Option<String>,
+    pub cancel_text: Option<String>,
     pub data: Option<Value>,
 }
 
@@ -155,6 +241,8 @@ pub struct PluginActionRunRequest {
     pub plugin_key: String,
     pub command_id: String,
     pub context: PluginActionContext,
+    #[serde(default)]
+    pub interaction_responses: Vec<PluginInteractionResponse>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -190,6 +278,7 @@ struct PluginManifest {
     enabled_by_default: Option<bool>,
     contributes: Option<PluginContributes>,
     permissions: Option<Vec<String>>,
+    settings_panel: Option<PluginSettingsPanel>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -430,6 +519,242 @@ fn push_issue(
     });
 }
 
+fn default_plugin_settings_storage() -> String {
+    DEFAULT_PLUGIN_SETTINGS_STORAGE.to_string()
+}
+
+fn normalize_non_empty_string(value: Option<String>) -> Option<String> {
+    value.and_then(|entry| {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn is_supported_plugin_setting_field_type(value: &str) -> bool {
+    matches!(
+        value,
+        "text" | "textarea" | "number" | "boolean" | "select" | "file"
+    )
+}
+
+fn normalize_plugin_file_store_mode(value: Option<String>) -> String {
+    let normalized = value
+        .as_deref()
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .unwrap_or(DEFAULT_PLUGIN_FILE_STORE_MODE)
+        .to_ascii_lowercase();
+
+    if matches!(normalized.as_str(), "path" | "copy") {
+        normalized
+    } else {
+        DEFAULT_PLUGIN_FILE_STORE_MODE.to_string()
+    }
+}
+
+fn normalize_plugin_file_picker(value: Option<String>) -> String {
+    let normalized = value
+        .as_deref()
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .unwrap_or(DEFAULT_PLUGIN_FILE_PICKER)
+        .to_ascii_lowercase();
+
+    if matches!(normalized.as_str(), "file" | "directory") {
+        normalized
+    } else {
+        DEFAULT_PLUGIN_FILE_PICKER.to_string()
+    }
+}
+
+fn sanitize_plugin_settings_panel(
+    panel: PluginSettingsPanel,
+    issues: &mut Vec<PluginValidationIssue>,
+    plugin_id: &str,
+) -> Option<PluginSettingsPanel> {
+    let summary = normalize_non_empty_string(panel.summary);
+    let sections = panel
+        .sections
+        .into_iter()
+        .filter_map(|section| {
+            let title = section.title.trim().to_string();
+            let content = section.content.trim().to_string();
+            if title.is_empty() || content.is_empty() {
+                return None;
+            }
+
+            Some(PluginInfoSection {
+                title,
+                content,
+                tone: normalize_non_empty_string(section.tone),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let settings = panel.settings.map(|schema| {
+        let storage = {
+            let normalized = schema.storage.trim();
+            if normalized.is_empty() {
+                DEFAULT_PLUGIN_SETTINGS_STORAGE.to_string()
+            } else if matches!(normalized, "appData" | "pluginDir") {
+                normalized.to_string()
+            } else {
+                push_issue(
+                    issues,
+                    "invalid_plugin_settings_storage",
+                    format!(
+                        "插件 {} 的 settingsPanel.settings.storage 只支持 appData/pluginDir",
+                        plugin_id
+                    ),
+                );
+                DEFAULT_PLUGIN_SETTINGS_STORAGE.to_string()
+            }
+        };
+
+        let mut seen_keys = HashSet::new();
+        let fields = schema
+            .fields
+            .into_iter()
+            .filter_map(|field| {
+                let key = field.key.trim().to_string();
+                if key.is_empty() {
+                    push_issue(
+                        issues,
+                        "invalid_plugin_setting_key",
+                        format!("插件 {} 的 settingsPanel.fields 中存在空 key", plugin_id),
+                    );
+                    return None;
+                }
+
+                if !seen_keys.insert(key.clone()) {
+                    push_issue(
+                        issues,
+                        "duplicate_plugin_setting_key",
+                        format!("插件 {} 的 settingsPanel.fields 出现重复 key: {}", plugin_id, key),
+                    );
+                    return None;
+                }
+
+                let field_type = field.field_type.trim().to_ascii_lowercase();
+                if !is_supported_plugin_setting_field_type(&field_type) {
+                    push_issue(
+                        issues,
+                        "invalid_plugin_setting_type",
+                        format!(
+                            "插件 {} 的设置项 {} 使用了不支持的类型: {}",
+                            plugin_id, key, field.field_type
+                        ),
+                    );
+                    return None;
+                }
+
+                let label = if field.label.trim().is_empty() {
+                    key.clone()
+                } else {
+                    field.label.trim().to_string()
+                };
+
+                let options = field
+                    .options
+                    .into_iter()
+                    .filter_map(|option| {
+                        let value = option.value.trim().to_string();
+                        let label = option.label.trim().to_string();
+                        if value.is_empty() || label.is_empty() {
+                            return None;
+                        }
+
+                        Some(PluginSettingsOption {
+                            label,
+                            value,
+                            description: normalize_non_empty_string(option.description),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+
+                if field_type == "select" && options.is_empty() {
+                    push_issue(
+                        issues,
+                        "invalid_plugin_setting_options",
+                        format!("插件 {} 的选择项 {} 没有可用 options", plugin_id, key),
+                    );
+                }
+
+                let file_store_mode = if field_type == "file" {
+                    Some(normalize_plugin_file_store_mode(field.file_store_mode))
+                } else {
+                    None
+                };
+                let picker = if field_type == "file" {
+                    Some(normalize_plugin_file_picker(field.picker))
+                } else {
+                    None
+                };
+                let file_store_mode = if picker.as_deref() == Some("directory")
+                    && file_store_mode.as_deref() == Some("copy")
+                {
+                    push_issue(
+                        issues,
+                        "invalid_plugin_setting_file_mode",
+                        format!(
+                            "插件 {} 的设置项 {} 使用目录选择时不支持 copy 模式，已回退为 path",
+                            plugin_id, key
+                        ),
+                    );
+                    Some(DEFAULT_PLUGIN_FILE_STORE_MODE.to_string())
+                } else {
+                    file_store_mode
+                };
+
+                Some(PluginSettingsField {
+                    key,
+                    label,
+                    field_type,
+                    description: normalize_non_empty_string(field.description),
+                    required: field.required,
+                    placeholder: normalize_non_empty_string(field.placeholder),
+                    unit: normalize_non_empty_string(field.unit),
+                    default_value: field.default_value,
+                    min: field.min,
+                    max: field.max,
+                    step: field.step,
+                    accept: field.accept.map(|entries| {
+                        entries
+                            .into_iter()
+                            .map(|entry| entry.trim().to_string())
+                            .filter(|entry| !entry.is_empty())
+                            .collect::<Vec<_>>()
+                    }),
+                    options,
+                    file_store_mode,
+                    picker,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        PluginSettingsSchema {
+            title: normalize_non_empty_string(schema.title),
+            description: normalize_non_empty_string(schema.description),
+            storage,
+            fields,
+        }
+    });
+
+    if summary.is_none() && sections.is_empty() && settings.is_none() {
+        None
+    } else {
+        Some(PluginSettingsPanel {
+            summary,
+            sections,
+            settings,
+        })
+    }
+}
+
 fn version_greater_than(left: &str, right: &str) -> bool {
     let left_parts = left
         .split('.')
@@ -566,6 +891,103 @@ fn plugin_state_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
         .app_data_dir()
         .map_err(|error| format!("获取插件状态目录失败: {error}"))?;
     Ok(app_data_dir.join(PLUGIN_STATE_FILE))
+}
+
+fn plugin_storage_dir_name(descriptor: &PluginDescriptor) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    descriptor.key.hash(&mut hasher);
+    let hash = hasher.finish();
+    let normalized_id = descriptor
+        .id
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_ascii_lowercase();
+    let prefix = if normalized_id.is_empty() {
+        "plugin".to_string()
+    } else {
+        normalized_id
+    };
+    format!("{prefix}-{hash:016x}")
+}
+
+fn resolve_plugin_settings_paths(
+    app_handle: &AppHandle,
+    descriptor: &PluginDescriptor,
+    settings: &PluginSettingsSchema,
+) -> Result<(PathBuf, PathBuf), String> {
+    let base_dir = if settings.storage == "pluginDir" {
+        PathBuf::from(&descriptor.path).join(".pmc")
+    } else {
+        let app_data_dir = app_handle
+            .path()
+            .app_data_dir()
+            .map_err(|error| format!("获取插件设置目录失败: {error}"))?;
+        app_data_dir
+            .join("plugin-settings")
+            .join(plugin_storage_dir_name(descriptor))
+    };
+
+    Ok((base_dir.join(PLUGIN_SETTINGS_FILE), base_dir.join("files")))
+}
+
+fn default_value_for_plugin_field(field: &PluginSettingsField) -> Option<Value> {
+    if let Some(value) = &field.default_value {
+        return Some(value.clone());
+    }
+
+    match field.field_type.as_str() {
+        "boolean" => Some(Value::Bool(false)),
+        _ => None,
+    }
+}
+
+fn merge_plugin_setting_values(
+    schema: &PluginSettingsSchema,
+    persisted_values: &HashMap<String, Value>,
+) -> HashMap<String, Value> {
+    let mut values = HashMap::new();
+
+    for field in &schema.fields {
+        if let Some(value) = persisted_values.get(&field.key) {
+            values.insert(field.key.clone(), value.clone());
+            continue;
+        }
+
+        if let Some(default_value) = default_value_for_plugin_field(field) {
+            values.insert(field.key.clone(), default_value);
+        }
+    }
+
+    values
+}
+
+fn load_plugin_settings_data(
+    app_handle: &AppHandle,
+    descriptor: &PluginDescriptor,
+) -> Result<Option<PluginSettingsData>, String> {
+    let Some(panel) = descriptor.settings_panel.as_ref() else {
+        return Ok(None);
+    };
+    let Some(schema) = panel.settings.as_ref() else {
+        return Ok(None);
+    };
+
+    let (settings_path, files_dir) = resolve_plugin_settings_paths(app_handle, descriptor, schema)?;
+    let persisted_values = if settings_path.exists() {
+        let content = fs::read_to_string(&settings_path)
+            .map_err(|error| format!("读取插件设置失败: {error}"))?;
+        serde_json::from_str::<HashMap<String, Value>>(&content).unwrap_or_default()
+    } else {
+        HashMap::new()
+    };
+
+    Ok(Some(PluginSettingsData {
+        values: merge_plugin_setting_values(schema, &persisted_values),
+        storage_path: Some(settings_path.to_string_lossy().to_string()),
+        files_dir: Some(files_dir.to_string_lossy().to_string()),
+    }))
 }
 
 fn load_plugin_state(app_handle: &AppHandle) -> Result<PluginState, String> {
@@ -780,6 +1202,8 @@ fn scan_plugin_dir(
         actions: Vec::new(),
         validation_issues: Vec::new(),
         dependencies: inspect_plugin_dependencies_in_dir(plugin_dir),
+        settings_panel: None,
+        settings_data: None,
         shadowed_by: None,
     };
 
@@ -840,6 +1264,9 @@ fn scan_plugin_dir(
             .filter(|value| !value.is_empty());
         descriptor.enabled_by_default = manifest.enabled_by_default.unwrap_or(true);
         descriptor.permissions = manifest.permissions.unwrap_or_default();
+        descriptor.settings_panel = manifest
+            .settings_panel
+            .and_then(|panel| sanitize_plugin_settings_panel(panel, &mut issues, &descriptor.id));
 
         if descriptor.runtime != "python" {
             push_issue(
@@ -987,6 +1414,17 @@ fn scan_plugin_dir(
 
         for contribution in contributes.file_context_actions.unwrap_or_default() {
             build_action("file-context", contribution);
+        }
+    }
+
+    if descriptor.settings_panel.is_some() {
+        match load_plugin_settings_data(app_handle, &descriptor) {
+            Ok(settings_data) => {
+                descriptor.settings_data = settings_data;
+            }
+            Err(error) => {
+                push_issue(&mut issues, "plugin_settings_load_failed", error);
+            }
         }
     }
 
@@ -1175,6 +1613,273 @@ pub async fn get_plugin_dirs(
         project_path,
         runtime: resolve_plugin_runtime(&app_handle),
     })
+}
+
+fn read_persisted_plugin_setting_values(
+    settings_path: &Path,
+) -> Result<HashMap<String, Value>, String> {
+    if !settings_path.exists() {
+        return Ok(HashMap::new());
+    }
+
+    let content =
+        fs::read_to_string(settings_path).map_err(|error| format!("读取插件设置失败: {error}"))?;
+    Ok(serde_json::from_str::<HashMap<String, Value>>(&content).unwrap_or_default())
+}
+
+fn remove_managed_plugin_file(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    if path.is_dir() {
+        fs::remove_dir_all(path).map_err(|error| format!("删除插件设置目录失败: {error}"))
+    } else {
+        fs::remove_file(path).map_err(|error| format!("删除插件设置文件失败: {error}"))
+    }
+}
+
+fn normalize_string_value(value: &Value) -> Option<String> {
+    match value {
+        Value::String(entry) => {
+            let trimmed = entry.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        _ => None,
+    }
+}
+
+fn normalize_bool_value(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::Bool(entry)) => *entry,
+        Some(Value::Number(entry)) => entry.as_i64().unwrap_or(0) != 0,
+        Some(Value::String(entry)) => matches!(entry.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
+        _ => false,
+    }
+}
+
+fn normalize_number_value(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(entry) => entry.as_f64(),
+        Value::String(entry) => entry.trim().parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+fn normalize_plugin_field_value(
+    field: &PluginSettingsField,
+    raw_value: Option<&Value>,
+    files_dir: &Path,
+    previous_value: Option<&Value>,
+) -> Result<Option<Value>, String> {
+    match field.field_type.as_str() {
+        "boolean" => Ok(Some(Value::Bool(normalize_bool_value(raw_value)))),
+        "number" => {
+            let Some(raw_value) = raw_value else {
+                if field.required {
+                    return Err(format!("设置项 {} 不能为空", field.label));
+                }
+                return Ok(None);
+            };
+
+            let Some(number) = normalize_number_value(raw_value) else {
+                return Err(format!("设置项 {} 需要数字", field.label));
+            };
+
+            if let Some(min) = field.min {
+                if number < min {
+                    return Err(format!("设置项 {} 不能小于 {}", field.label, min));
+                }
+            }
+            if let Some(max) = field.max {
+                if number > max {
+                    return Err(format!("设置项 {} 不能大于 {}", field.label, max));
+                }
+            }
+
+            let value = serde_json::Number::from_f64(number)
+                .ok_or_else(|| format!("设置项 {} 的数字无效", field.label))?;
+            Ok(Some(Value::Number(value)))
+        }
+        "select" => {
+            let Some(raw_value) = raw_value else {
+                if field.required {
+                    return Err(format!("设置项 {} 不能为空", field.label));
+                }
+                return Ok(None);
+            };
+            let Some(value) = normalize_string_value(raw_value) else {
+                if field.required {
+                    return Err(format!("设置项 {} 不能为空", field.label));
+                }
+                return Ok(None);
+            };
+            if !field.options.iter().any(|option| option.value == value) {
+                return Err(format!("设置项 {} 的值不在可选范围内", field.label));
+            }
+            Ok(Some(Value::String(value)))
+        }
+        "file" => {
+            let raw_path = raw_value.and_then(normalize_string_value);
+            if raw_path.is_none() {
+                if let Some(previous_path) = previous_value.and_then(normalize_string_value) {
+                    let previous = PathBuf::from(previous_path);
+                    if previous.starts_with(files_dir) {
+                        remove_managed_plugin_file(&previous)?;
+                    }
+                }
+                if field.required {
+                    return Err(format!("设置项 {} 不能为空", field.label));
+                }
+                return Ok(None);
+            }
+
+            let source_path = PathBuf::from(raw_path.unwrap());
+            if field.picker.as_deref() == Some("directory") {
+                if !source_path.is_dir() {
+                    return Err(format!("设置项 {} 需要选择文件夹", field.label));
+                }
+                return Ok(Some(Value::String(source_path.to_string_lossy().to_string())));
+            }
+
+            if !source_path.is_file() {
+                return Err(format!("设置项 {} 需要选择文件", field.label));
+            }
+
+            if field.file_store_mode.as_deref() == Some("copy") {
+                fs::create_dir_all(files_dir)
+                    .map_err(|error| format!("创建插件设置文件目录失败: {error}"))?;
+
+                if let Some(previous_path) = previous_value.and_then(normalize_string_value) {
+                    let previous = PathBuf::from(previous_path);
+                    if previous.starts_with(files_dir) && previous != source_path {
+                        remove_managed_plugin_file(&previous)?;
+                    }
+                }
+
+                let suffix = source_path
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .map(|value| format!(".{value}"))
+                    .unwrap_or_default();
+                let target_path = files_dir.join(format!("{}{}", field.key, suffix));
+                if target_path != source_path {
+                    fs::copy(&source_path, &target_path)
+                        .map_err(|error| format!("复制设置文件失败: {error}"))?;
+                }
+
+                return Ok(Some(Value::String(
+                    target_path.to_string_lossy().to_string(),
+                )));
+            }
+
+            Ok(Some(Value::String(source_path.to_string_lossy().to_string())))
+        }
+        _ => {
+            let Some(raw_value) = raw_value else {
+                if field.required {
+                    return Err(format!("设置项 {} 不能为空", field.label));
+                }
+                return Ok(None);
+            };
+            let Some(value) = normalize_string_value(raw_value) else {
+                if field.required {
+                    return Err(format!("设置项 {} 不能为空", field.label));
+                }
+                return Ok(None);
+            };
+            Ok(Some(Value::String(value)))
+        }
+    }
+}
+
+fn save_plugin_settings_values(
+    app_handle: &AppHandle,
+    descriptor: &PluginDescriptor,
+    values: HashMap<String, Value>,
+) -> Result<(), String> {
+    let panel = descriptor
+        .settings_panel
+        .as_ref()
+        .ok_or_else(|| "当前插件没有设置面板定义".to_string())?;
+    let schema = panel
+        .settings
+        .as_ref()
+        .ok_or_else(|| "当前插件没有可保存的设置项".to_string())?;
+    let (settings_path, files_dir) = resolve_plugin_settings_paths(app_handle, descriptor, schema)?;
+    let previous_values = read_persisted_plugin_setting_values(&settings_path)?;
+
+    let mut normalized_values = HashMap::new();
+    for field in &schema.fields {
+        let raw_value = values.get(&field.key).or_else(|| previous_values.get(&field.key));
+        if let Some(normalized) =
+            normalize_plugin_field_value(field, raw_value, &files_dir, previous_values.get(&field.key))?
+        {
+            normalized_values.insert(field.key.clone(), normalized);
+        }
+    }
+
+    if let Some(parent) = settings_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("创建插件设置目录失败: {error}"))?;
+    }
+
+    let content = serde_json::to_string_pretty(&normalized_values)
+        .map_err(|error| format!("序列化插件设置失败: {error}"))?;
+    fs::write(&settings_path, content).map_err(|error| format!("写入插件设置失败: {error}"))
+}
+
+fn reset_plugin_settings_values(
+    app_handle: &AppHandle,
+    descriptor: &PluginDescriptor,
+) -> Result<(), String> {
+    let panel = descriptor
+        .settings_panel
+        .as_ref()
+        .ok_or_else(|| "当前插件没有设置面板定义".to_string())?;
+    let schema = panel
+        .settings
+        .as_ref()
+        .ok_or_else(|| "当前插件没有可重置的设置项".to_string())?;
+    let (settings_path, files_dir) = resolve_plugin_settings_paths(app_handle, descriptor, schema)?;
+
+    if settings_path.exists() {
+        fs::remove_file(&settings_path).map_err(|error| format!("删除插件设置失败: {error}"))?;
+    }
+    if files_dir.exists() {
+        fs::remove_dir_all(&files_dir)
+            .map_err(|error| format!("删除插件设置文件目录失败: {error}"))?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_plugin_settings(
+    app_handle: AppHandle,
+    plugin_key: String,
+    project_path: Option<String>,
+    values: HashMap<String, Value>,
+) -> Result<PluginDescriptor, String> {
+    let descriptor =
+        find_plugin_descriptor_by_key(&app_handle, project_path.as_deref(), &plugin_key)?;
+    save_plugin_settings_values(&app_handle, &descriptor, values)?;
+    find_plugin_descriptor_by_key(&app_handle, project_path.as_deref(), &plugin_key)
+}
+
+#[tauri::command]
+pub async fn reset_plugin_settings(
+    app_handle: AppHandle,
+    plugin_key: String,
+    project_path: Option<String>,
+) -> Result<PluginDescriptor, String> {
+    let descriptor =
+        find_plugin_descriptor_by_key(&app_handle, project_path.as_deref(), &plugin_key)?;
+    reset_plugin_settings_values(&app_handle, &descriptor)?;
+    find_plugin_descriptor_by_key(&app_handle, project_path.as_deref(), &plugin_key)
 }
 
 #[tauri::command]
@@ -1422,6 +2127,20 @@ pub fn prepare_plugin_execution(
         "pluginScope": descriptor.scope,
         "appVersion": env!("CARGO_PKG_VERSION"),
         "permissions": descriptor.permissions,
+        "interactionResponses": request.interaction_responses,
+        "settingsValues": descriptor
+            .settings_data
+            .as_ref()
+            .map(|data| data.values.clone())
+            .unwrap_or_default(),
+        "settingsStoragePath": descriptor
+            .settings_data
+            .as_ref()
+            .and_then(|data| data.storage_path.clone()),
+        "settingsFilesDir": descriptor
+            .settings_data
+            .as_ref()
+            .and_then(|data| data.files_dir.clone()),
     });
 
     fs::write(
@@ -1454,6 +2173,23 @@ pub fn prepare_plugin_execution(
     );
     env_vars.insert("PMC_PLUGIN_ID".to_string(), descriptor.id.clone());
     env_vars.insert("PMC_PLUGIN_SCOPE".to_string(), descriptor.scope.clone());
+    if let Some(settings_path) = descriptor
+        .settings_data
+        .as_ref()
+        .and_then(|data| data.storage_path.clone())
+    {
+        env_vars.insert("PMC_PLUGIN_SETTINGS_PATH".to_string(), settings_path);
+    }
+    if let Some(settings_files_dir) = descriptor
+        .settings_data
+        .as_ref()
+        .and_then(|data| data.files_dir.clone())
+    {
+        env_vars.insert(
+            "PMC_PLUGIN_SETTINGS_FILES_DIR".to_string(),
+            settings_files_dir,
+        );
+    }
     env_vars.insert(
         "PYTHONPATH".to_string(),
         python_path_entries.join(if cfg!(windows) { ";" } else { ":" }),

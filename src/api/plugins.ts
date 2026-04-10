@@ -52,3 +52,25 @@ export async function removePluginDependencies(
     projectPath: projectPath ?? null,
   });
 }
+
+export async function updatePluginSettings(
+  pluginKey: string,
+  values: Record<string, unknown>,
+  projectPath?: string | null,
+): Promise<PluginDescriptor> {
+  return invoke('update_plugin_settings', {
+    pluginKey,
+    values,
+    projectPath: projectPath ?? null,
+  });
+}
+
+export async function resetPluginSettings(
+  pluginKey: string,
+  projectPath?: string | null,
+): Promise<PluginDescriptor> {
+  return invoke('reset_plugin_settings', {
+    pluginKey,
+    projectPath: projectPath ?? null,
+  });
+}

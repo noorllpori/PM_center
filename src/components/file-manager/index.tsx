@@ -13,6 +13,7 @@ import { Toolbar, TOOLBAR_SEARCH_FOCUS_EVENT } from './Toolbar';
 import { ProjectWorkspace } from './ProjectWorkspace';
 import { ProjectSessionProvider } from './ProjectSessionProvider';
 import { ShellTabBar } from '../shell/ShellTabBar';
+import { Dialog } from '../Dialog';
 import { createProjectStore, type ProjectStoreApi } from '../../stores/projectStore';
 import { useTaskStore } from '../../stores/taskStore';
 import { createWorkspaceTabStore, type WorkspaceTabStoreApi, useWorkspaceTabStore } from '../../stores/workspaceTabStore';
@@ -32,7 +33,8 @@ import {
   type PersistedWorkspaceActiveTab,
   type PersistedWorkspaceTab,
 } from '../../utils/appSession';
-import type { PluginControlMessage } from '../../types/plugin';
+import type { PluginControlMessage, PluginInteractionResponse } from '../../types/plugin';
+import type { Task } from '../../types/task';
 import {
   STANDALONE_RETURN_TO_WORKSPACE_EVENT,
   type StandaloneReturnToWorkspacePayload,
@@ -46,6 +48,18 @@ interface ProjectSession {
 interface ProjectSessionSubscriptions {
   unsubscribeProject: () => void;
   unsubscribeWorkspace: () => void;
+}
+
+interface PluginConfirmDialogState {
+  isOpen: boolean;
+  task: Task | null;
+  requestId: string;
+  title: string;
+  message: string;
+  confirmText: string;
+  cancelText: string;
+  items: string[];
+  data?: unknown;
 }
 
 const SESSION_PERSIST_DEBOUNCE_MS = 180;
@@ -196,6 +210,7 @@ export function FileManager() {
   const showToast = useUiStore((state) => state.showToast);
   const toast = useUiStore((state) => state.toast);
   const hideToast = useUiStore((state) => state.hideToast);
+  const addTask = useTaskStore((state) => state.addTask);
   const tabs = useShellTabStore((state) => state.tabs);
   const activeTabId = useShellTabStore((state) => state.activeTabId);
   const openProjectTab = useShellTabStore((state) => state.openProjectTab);
@@ -210,6 +225,17 @@ export function FileManager() {
   const [isP2PChatOpen, setIsP2PChatOpen] = useState(false);
   const [isPythonEnvOpen, setIsPythonEnvOpen] = useState(false);
   const [isSettingsLoaded, setIsSettingsLoaded] = useState(false);
+  const [pluginConfirmDialog, setPluginConfirmDialog] = useState<PluginConfirmDialogState>({
+    isOpen: false,
+    task: null,
+    requestId: '',
+    title: '插件确认',
+    message: '',
+    confirmText: '确认',
+    cancelText: '取消',
+    items: [],
+    data: undefined,
+  });
   const sessionsRef = useRef<Map<string, ProjectSession>>(new Map());
   const sessionSubscriptionsRef = useRef<Map<string, ProjectSessionSubscriptions>>(new Map());
   const sessionPersistTimerRef = useRef<number | null>(null);
@@ -638,6 +664,32 @@ export function FileManager() {
               }
             }
           }
+
+          if (
+            message.type === 'confirm'
+            && message.requestId
+            && message.message
+            && task.script.kind === 'plugin-action'
+          ) {
+            const payload = message.data && typeof message.data === 'object'
+              ? message.data as Record<string, unknown>
+              : null;
+            const items = Array.isArray(payload?.items)
+              ? payload.items.map((item) => String(item))
+              : [];
+
+            setPluginConfirmDialog({
+              isOpen: true,
+              task,
+              requestId: message.requestId,
+              title: message.title || '插件确认',
+              message: message.message,
+              confirmText: message.confirmText || '确认',
+              cancelText: message.cancelText || '取消',
+              items,
+              data: message.data,
+            });
+          }
         });
 
         if (!active && unlisten) {
@@ -658,6 +710,73 @@ export function FileManager() {
       }
     };
   }, [showToast]);
+
+  const closePluginConfirmDialog = () => {
+    setPluginConfirmDialog((state) => ({
+      ...state,
+      isOpen: false,
+      task: null,
+      requestId: '',
+      message: '',
+      items: [],
+      data: undefined,
+    }));
+  };
+
+  const handleCancelPluginConfirm = () => {
+    if (pluginConfirmDialog.task) {
+      useTaskStore.getState().updateTaskOutput(
+        pluginConfirmDialog.task.id,
+        '[plugin-confirm-cancelled] 用户取消了插件确认操作',
+      );
+    }
+    showToast({
+      title: pluginConfirmDialog.title || '插件确认',
+      message: '已取消本次插件操作。',
+      tone: 'warning',
+    });
+    closePluginConfirmDialog();
+  };
+
+  const handleConfirmPluginAction = () => {
+    const task = pluginConfirmDialog.task;
+    if (!task || task.script.kind !== 'plugin-action') {
+      closePluginConfirmDialog();
+      return;
+    }
+
+    const interactionResponse: PluginInteractionResponse = {
+      requestId: pluginConfirmDialog.requestId,
+      approved: true,
+      data: pluginConfirmDialog.data,
+    };
+    const existingResponses = task.script.interactionResponses ?? [];
+    const nextResponses = [
+      ...existingResponses.filter((response) => response.requestId !== interactionResponse.requestId),
+      interactionResponse,
+    ];
+
+    addTask({
+      projectPath: task.projectPath,
+      name: task.name,
+      subName: task.subName,
+      script: {
+        ...task.script,
+        interactionResponses: nextResponses,
+      },
+      priority: task.priority,
+      maxRetries: task.maxRetries,
+      timeout: task.timeout,
+      dependencies: task.dependencies,
+    });
+
+    showToast({
+      title: pluginConfirmDialog.title || '插件确认',
+      message: '已确认，插件任务开始执行。',
+      tone: 'success',
+    });
+    closePluginConfirmDialog();
+  };
 
   useEffect(() => {
     const unsubscribeStandaloneWindows = subscribeTrackedStandaloneWindows(() => {
@@ -830,6 +949,54 @@ export function FileManager() {
           </div>
         </div>
       )}
+
+      <Dialog
+        isOpen={pluginConfirmDialog.isOpen}
+        onClose={handleCancelPluginConfirm}
+        title={pluginConfirmDialog.title}
+        size="lg"
+        footer={
+          <>
+            <button
+              onClick={handleCancelPluginConfirm}
+              className="px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
+            >
+              {pluginConfirmDialog.cancelText}
+            </button>
+            <button
+              onClick={handleConfirmPluginAction}
+              className="px-4 py-2 text-sm bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
+            >
+              {pluginConfirmDialog.confirmText}
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-line">
+            {pluginConfirmDialog.message}
+          </p>
+          {pluginConfirmDialog.items.length > 0 ? (
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60">
+              <div className="border-b border-gray-200 dark:border-gray-700 px-4 py-3 text-sm font-medium text-gray-900 dark:text-gray-100">
+                待处理文件 ({pluginConfirmDialog.items.length})
+              </div>
+              <div className="max-h-72 overflow-auto px-4 py-3">
+                <div className="space-y-2">
+                  {pluginConfirmDialog.items.map((item) => (
+                    <div
+                      key={item}
+                      className="rounded-lg bg-white dark:bg-gray-900 px-3 py-2 text-sm text-gray-700 dark:text-gray-300 break-all"
+                    >
+                      {item}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </Dialog>
     </div>
   );
 }

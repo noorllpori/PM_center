@@ -28,8 +28,8 @@ use file_details::get_file_details;
 use p2p::{init_p2p, send_p2p_message, start_p2p_discovery, stop_p2p_discovery, update_p2p_user};
 use plugin::{
     get_plugin_dirs, inspect_plugin_dependencies, install_plugin_dependencies, list_plugins,
-    refresh_plugins, remove_plugin_dependencies, run_plugin_action, set_plugin_enabled,
-    validate_plugin,
+    refresh_plugins, remove_plugin_dependencies, reset_plugin_settings, run_plugin_action,
+    set_plugin_enabled, update_plugin_settings, validate_plugin,
 };
 use process_utils::std_command;
 use python::{
@@ -992,6 +992,8 @@ pub fn run() {
             inspect_plugin_dependencies,
             install_plugin_dependencies,
             remove_plugin_dependencies,
+            update_plugin_settings,
+            reset_plugin_settings,
             run_plugin_action,
             validate_plugin,
             detect_system_python,
