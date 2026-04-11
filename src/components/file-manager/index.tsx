@@ -592,7 +592,13 @@ export function FileManager() {
                 throw new Error('未找到目标项目会话');
               }
 
-              const openedTabId = await session.workspaceTabStore.getState().openFileInTab(payload.filePath);
+              const openedTabId = await session.workspaceTabStore.getState().openFileInTab(
+                payload.filePath,
+                {
+                  editorSnapshot:
+                    payload.fileType === 'text' ? payload.textEditorSnapshot : undefined,
+                },
+              );
               if (!openedTabId) {
                 throw new Error('该文件类型暂不支持回归到项目标签页');
               }

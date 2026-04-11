@@ -154,6 +154,7 @@ export function StandaloneTextEditorPage() {
       projectPath,
       filePath: sourcePath,
       fileType: 'text',
+      textEditorSnapshot: latestEditorSnapshot,
     };
 
     try {
@@ -232,6 +233,7 @@ export function StandaloneTextEditorPage() {
         initialContent={transferredState?.content}
         initialOriginalContent={transferredState?.originalContent}
         initialLanguage={transferredState?.language}
+        initialMarkdownViewMode={transferredState?.markdownViewMode}
         onEditorStateChange={setLatestEditorSnapshot}
       />
     </div>

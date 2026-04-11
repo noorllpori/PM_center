@@ -850,7 +850,10 @@ export function ProjectWorkspace() {
       return;
     }
 
-    if (!tab.isDirty) {
+    const snapshot = textEditorSnapshotsRef.current.get(tabId);
+    const canTransferSnapshot = snapshot?.filePath === tab.filePath;
+
+    if (!canTransferSnapshot && !tab.isDirty) {
       try {
         await detachWithToast();
       } catch (error) {
@@ -863,8 +866,7 @@ export function ProjectWorkspace() {
       return;
     }
 
-    const snapshot = textEditorSnapshotsRef.current.get(tabId);
-    if (!snapshot || snapshot.filePath !== tab.filePath) {
+    if (!canTransferSnapshot) {
       showToast({
         title: '请先保存',
         message: '该文本标签的未保存内容当前无法安全迁移，请先保存后再独立打开。',
@@ -1169,6 +1171,11 @@ export function ProjectWorkspace() {
                     <TextEditorSurface
                       title={tab.title}
                       filePath={tab.filePath}
+                      initialContent={tab.editorSnapshot?.content}
+                      initialOriginalContent={tab.editorSnapshot?.originalContent}
+                      initialLanguage={tab.editorSnapshot?.language}
+                      initialMarkdownViewMode={tab.editorSnapshot?.markdownViewMode}
+                      isActive={isActive}
                       onDirtyChange={(isDirty) => updateTabDirty(tab.id, isDirty)}
                       onEditorStateChange={(snapshot) => handleTextEditorStateChange(tab.id, snapshot)}
                     />

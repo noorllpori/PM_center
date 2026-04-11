@@ -1,5 +1,7 @@
 import type { EditorLanguage } from '../../stores/windowStore';
 
+export type MarkdownViewMode = 'rich-text' | 'source';
+
 export interface TextEditorTransferPayload {
   filePath: string;
   title: string;
@@ -7,6 +9,7 @@ export interface TextEditorTransferPayload {
   originalContent: string;
   language: EditorLanguage;
   isDirty: boolean;
+  markdownViewMode?: MarkdownViewMode;
 }
 
 export interface TextEditorDetachReadyPayload {

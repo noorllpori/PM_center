@@ -1,9 +1,24 @@
-import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
-import { AlertCircle, CheckCircle2, FileCode, Loader2, Save, Type } from 'lucide-react';
+import {
+  AlertCircle,
+  CheckCircle2,
+  Code2,
+  Eye,
+  FileCode,
+  Loader2,
+  Save,
+  TriangleAlert,
+  Type,
+} from 'lucide-react';
 import { CodeEditor } from '../CodeEditor/CodeEditor';
 import { detectLanguage, getLanguageName, type EditorLanguage } from '../../stores/windowStore';
-import type { TextEditorTransferPayload } from './textEditorWindowTransfer';
+import type { MarkdownViewMode, TextEditorTransferPayload } from './textEditorWindowTransfer';
+
+const MarkdownEditorSurface = lazy(async () => {
+  const module = await import('./MarkdownEditorSurface');
+  return { default: module.MarkdownEditorSurface };
+});
 
 interface TextEditorSurfaceProps {
   title: string;
@@ -11,10 +26,15 @@ interface TextEditorSurfaceProps {
   initialContent?: string;
   initialOriginalContent?: string;
   initialLanguage?: EditorLanguage;
+  initialMarkdownViewMode?: MarkdownViewMode;
+  isActive?: boolean;
   showTitleInToolbar?: boolean;
   onDirtyChange?: (isDirty: boolean) => void;
   onEditorStateChange?: (snapshot: TextEditorTransferPayload) => void;
 }
+
+const SAVE_SUCCESS_MESSAGE = '已保存';
+const SAVE_FAILURE_MESSAGE = '保存失败';
 
 function resolveLanguage(
   filePath?: string,
@@ -32,42 +52,85 @@ function resolveLanguage(
   return detectLanguage(title || '');
 }
 
+function resolveMarkdownViewMode(initialMarkdownViewMode?: MarkdownViewMode): MarkdownViewMode {
+  return initialMarkdownViewMode ?? 'rich-text';
+}
+
 export function TextEditorSurface({
   title,
   filePath,
   initialContent,
   initialOriginalContent,
   initialLanguage,
+  initialMarkdownViewMode,
+  isActive = true,
   showTitleInToolbar = true,
   onDirtyChange,
   onEditorStateChange,
 }: TextEditorSurfaceProps) {
   const [content, setContent] = useState(initialContent ?? '');
-  const [originalContent, setOriginalContent] = useState(initialOriginalContent ?? initialContent ?? '');
-  const [language, setLanguage] = useState<EditorLanguage>(() => resolveLanguage(filePath, title, initialLanguage));
+  const [originalContent, setOriginalContent] = useState(
+    initialOriginalContent ?? initialContent ?? '',
+  );
+  const [language, setLanguage] = useState<EditorLanguage>(() =>
+    resolveLanguage(filePath, title, initialLanguage),
+  );
+  const [markdownViewMode, setMarkdownViewMode] = useState<MarkdownViewMode>(() =>
+    resolveMarkdownViewMode(initialMarkdownViewMode),
+  );
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [markdownErrorMessage, setMarkdownErrorMessage] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [showLanguageMenu, setShowLanguageMenu] = useState(false);
   const [lineWrapping, setLineWrapping] = useState(true);
-  const [hasResolvedInitialState, setHasResolvedInitialState] = useState(() => initialContent !== undefined || !filePath);
+  const [hasResolvedInitialState, setHasResolvedInitialState] = useState(
+    () => initialContent !== undefined || !filePath,
+  );
   const saveMessageTimerRef = useRef<number | null>(null);
 
+  const isMarkdownDocument = language === 'markdown';
   const isDirty = content !== originalContent;
+
   const emitDirtyChange = useEffectEvent((nextIsDirty: boolean) => {
     onDirtyChange?.(nextIsDirty);
   });
+
   const emitEditorStateChange = useEffectEvent((snapshot: TextEditorTransferPayload) => {
     onEditorStateChange?.(snapshot);
   });
+
+  const handleMarkdownChange = useEffectEvent(
+    (nextContent: string, initialNormalize: boolean) => {
+      setMarkdownErrorMessage(null);
+
+      if (initialNormalize && !isDirty) {
+        setContent(nextContent);
+        setOriginalContent(nextContent);
+        return;
+      }
+
+      setContent(nextContent);
+    },
+  );
 
   useEffect(() => {
     setLanguage(resolveLanguage(filePath, title, initialLanguage));
   }, [filePath, initialLanguage, title]);
 
   useEffect(() => {
+    if (language === 'markdown') {
+      setMarkdownViewMode(resolveMarkdownViewMode(initialMarkdownViewMode));
+      setShowLanguageMenu(false);
+      return;
+    }
+
+    setMarkdownErrorMessage(null);
+  }, [filePath, initialMarkdownViewMode, language]);
+
+  useEffect(() => {
     emitDirtyChange(isDirty);
-  }, [emitDirtyChange, isDirty]);
+  }, [isDirty]);
 
   useEffect(() => {
     if (!filePath || !hasResolvedInitialState) {
@@ -81,14 +144,16 @@ export function TextEditorSurface({
       originalContent,
       language,
       isDirty,
+      markdownViewMode: isMarkdownDocument ? markdownViewMode : undefined,
     });
   }, [
     content,
-    emitEditorStateChange,
     filePath,
     hasResolvedInitialState,
     isDirty,
+    isMarkdownDocument,
     language,
+    markdownViewMode,
     originalContent,
     title,
   ]);
@@ -115,6 +180,7 @@ export function TextEditorSurface({
         setContent(initialContent);
         setOriginalContent(nextOriginalContent);
         setErrorMessage(null);
+        setMarkdownErrorMessage(null);
         setIsLoading(false);
         setHasResolvedInitialState(true);
         return;
@@ -124,6 +190,7 @@ export function TextEditorSurface({
         setContent('');
         setOriginalContent('');
         setErrorMessage('没有可读取的文件路径。');
+        setMarkdownErrorMessage(null);
         setIsLoading(false);
         setHasResolvedInitialState(true);
         return;
@@ -131,6 +198,7 @@ export function TextEditorSurface({
 
       setIsLoading(true);
       setErrorMessage(null);
+      setMarkdownErrorMessage(null);
       setHasResolvedInitialState(false);
 
       try {
@@ -142,6 +210,7 @@ export function TextEditorSurface({
         setContent(nextContent);
         setOriginalContent(nextContent);
         setErrorMessage(null);
+        setMarkdownErrorMessage(null);
         setHasResolvedInitialState(true);
       } catch (error) {
         if (!isActive) {
@@ -151,6 +220,7 @@ export function TextEditorSurface({
         setContent('');
         setOriginalContent('');
         setErrorMessage(`读取文本失败：${String(error)}`);
+        setMarkdownErrorMessage(null);
         setHasResolvedInitialState(true);
       } finally {
         if (isActive) {
@@ -184,6 +254,10 @@ export function TextEditorSurface({
   };
 
   const handleSave = async () => {
+    if (isLoading || !hasResolvedInitialState) {
+      return;
+    }
+
     if (!filePath) {
       flashSaveMessage('未绑定文件路径');
       return;
@@ -193,12 +267,38 @@ export function TextEditorSurface({
       await writeTextFile(filePath, content);
       setOriginalContent(content);
       setErrorMessage(null);
-      flashSaveMessage('已保存');
+      flashSaveMessage(SAVE_SUCCESS_MESSAGE);
     } catch (error) {
       setErrorMessage(`保存失败：${String(error)}`);
-      flashSaveMessage('保存失败');
+      flashSaveMessage(SAVE_FAILURE_MESSAGE);
     }
   };
+
+  useEffect(() => {
+    if (!isActive) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) {
+        return;
+      }
+
+      if (!(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey) {
+        return;
+      }
+
+      if (event.key.toLowerCase() !== 's') {
+        return;
+      }
+
+      event.preventDefault();
+      void handleSave();
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleSave, isActive]);
 
   const statusText = useMemo(() => {
     if (isLoading) {
@@ -225,7 +325,7 @@ export function TextEditorSurface({
       return <AlertCircle className="h-3.5 w-3.5" />;
     }
 
-    if (saveMessage === '已保存') {
+    if (saveMessage === SAVE_SUCCESS_MESSAGE) {
       return <CheckCircle2 className="h-3.5 w-3.5" />;
     }
 
@@ -234,8 +334,8 @@ export function TextEditorSurface({
 
   return (
     <div className="flex h-full w-full min-w-0 flex-col bg-white dark:bg-gray-900">
-      <div className="flex items-center gap-2 border-b border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-800/80">
-        {showTitleInToolbar && (
+      <div className="flex items-center gap-3 border-b border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-800/80">
+        {showTitleInToolbar ? (
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <FileCode className="h-4 w-4 shrink-0 text-sky-500" />
@@ -250,73 +350,140 @@ export function TextEditorSurface({
               </p>
             )}
           </div>
+        ) : (
+          <div className="flex-1" />
         )}
 
-        <button
-          onClick={() => setLineWrapping((value) => !value)}
-          className={`flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors ${
-            lineWrapping
-              ? 'bg-blue-50 text-blue-600 hover:bg-blue-100 dark:bg-blue-900/30 dark:text-blue-300 dark:hover:bg-blue-900/50'
-              : 'text-gray-600 hover:bg-gray-200 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-gray-700 dark:hover:text-gray-100'
-          }`}
-          title={lineWrapping ? '关闭自动换行' : '开启自动换行'}
-        >
-          自动换行
-        </button>
+        <div className="flex items-center gap-2">
+          {isMarkdownDocument ? (
+            <div className="flex items-center rounded-md border border-gray-200 bg-white p-0.5 shadow-sm">
+              <button
+                type="button"
+                onClick={() => setMarkdownViewMode('rich-text')}
+                className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors ${
+                  markdownViewMode === 'rich-text'
+                    ? 'bg-blue-600 text-white'
+                    : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+                }`}
+                title="切换到可视化编辑"
+              >
+                <Eye className="h-3.5 w-3.5" />
+                可视化
+              </button>
+              <button
+                type="button"
+                onClick={() => setMarkdownViewMode('source')}
+                className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors ${
+                  markdownViewMode === 'source'
+                    ? 'bg-blue-600 text-white'
+                    : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+                }`}
+                title="切换到源码编辑"
+              >
+                <Code2 className="h-3.5 w-3.5" />
+                源码
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setLineWrapping((value) => !value)}
+              className={`flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors ${
+                lineWrapping
+                  ? 'bg-blue-50 text-blue-600 hover:bg-blue-100 dark:bg-blue-900/30 dark:text-blue-300 dark:hover:bg-blue-900/50'
+                  : 'text-gray-600 hover:bg-gray-200 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-gray-700 dark:hover:text-gray-100'
+              }`}
+              title={lineWrapping ? '关闭自动换行' : '开启自动换行'}
+            >
+              自动换行
+            </button>
+          )}
 
-        <button
-          onClick={handleSave}
-          disabled={isLoading || !isDirty}
-          className="flex items-center gap-1 rounded bg-blue-600 px-2 py-1 text-xs text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300 dark:disabled:bg-gray-700"
-          title="保存"
-        >
-          <Save className="h-3.5 w-3.5" />
-          保存
-        </button>
-
-        <div className="relative">
           <button
-            onClick={() => setShowLanguageMenu((value) => !value)}
-            className="flex items-center gap-1 rounded px-2 py-1 text-xs text-gray-600 transition-colors hover:bg-gray-200 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-gray-700 dark:hover:text-gray-100"
-            title="语言"
+            onClick={handleSave}
+            disabled={isLoading || !isDirty}
+            className="flex items-center gap-1 rounded bg-blue-600 px-2 py-1 text-xs text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300 dark:disabled:bg-gray-700"
+            title="保存"
           >
-            <Type className="h-3.5 w-3.5" />
-            {getLanguageName(language)}
+            <Save className="h-3.5 w-3.5" />
+            保存
           </button>
 
-          {showLanguageMenu && (
-            <div className="absolute left-0 top-full z-50 mt-1 w-36 rounded border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-700 dark:bg-gray-800">
-              {(['python', 'javascript', 'typescript', 'html', 'css', 'json', 'rust', 'markdown', 'plaintext'] as EditorLanguage[]).map((item) => (
-                <button
-                  key={item}
-                  onClick={() => {
-                    setLanguage(item);
-                    dismissLanguageMenu();
-                  }}
-                  className={`w-full px-3 py-1.5 text-left text-xs transition-colors hover:bg-gray-100 dark:hover:bg-gray-700 ${
-                    language === item ? 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300' : 'text-gray-700 dark:text-gray-200'
-                  }`}
-                >
-                  {getLanguageName(item)}
-                </button>
-              ))}
+          {!isMarkdownDocument && (
+            <div className="relative">
+              <button
+                onClick={() => setShowLanguageMenu((value) => !value)}
+                className="flex items-center gap-1 rounded px-2 py-1 text-xs text-gray-600 transition-colors hover:bg-gray-200 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-gray-700 dark:hover:text-gray-100"
+                title="语言"
+              >
+                <Type className="h-3.5 w-3.5" />
+                {getLanguageName(language)}
+              </button>
+
+              {showLanguageMenu && (
+                <div className="absolute left-0 top-full z-50 mt-1 w-36 rounded border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-700 dark:bg-gray-800">
+                  {(
+                    [
+                      'python',
+                      'javascript',
+                      'typescript',
+                      'html',
+                      'css',
+                      'json',
+                      'rust',
+                      'markdown',
+                      'plaintext',
+                    ] as EditorLanguage[]
+                  ).map((item) => (
+                    <button
+                      key={item}
+                      onClick={() => {
+                        setLanguage(item);
+                        dismissLanguageMenu();
+                      }}
+                      className={`w-full px-3 py-1.5 text-left text-xs transition-colors hover:bg-gray-100 dark:hover:bg-gray-700 ${
+                        language === item
+                          ? 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300'
+                          : 'text-gray-700 dark:text-gray-200'
+                      }`}
+                    >
+                      {getLanguageName(item)}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
 
-        <div className="flex-1" />
+        {isMarkdownDocument && markdownErrorMessage && (
+          <div
+            className="hidden max-w-[320px] items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-700 lg:flex"
+            title={markdownErrorMessage}
+          >
+            <TriangleAlert className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">检测到部分 Markdown/MDX 语法需要在源码模式下编辑</span>
+          </div>
+        )}
 
-        <div className={`flex min-w-[120px] items-center justify-end gap-1.5 text-xs ${
-          errorMessage
-            ? 'text-red-500'
-            : saveMessage === '已保存'
-              ? 'text-green-600'
-              : 'text-gray-500 dark:text-gray-400'
-        }`}>
+        <div
+          className={`flex min-w-[120px] items-center justify-end gap-1.5 text-xs ${
+            errorMessage
+              ? 'text-red-500'
+              : saveMessage === SAVE_SUCCESS_MESSAGE
+                ? 'text-green-600'
+                : 'text-gray-500 dark:text-gray-400'
+          }`}
+        >
           {statusIcon}
           <span>{statusText}</span>
         </div>
       </div>
+
+      {isMarkdownDocument && markdownErrorMessage && (
+        <div className="border-b border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 lg:hidden">
+          检测到部分 Markdown/MDX 语法需要在源码模式下编辑
+        </div>
+      )}
 
       <div className="relative flex-1 min-h-0 overflow-hidden bg-white dark:bg-gray-950">
         {isLoading ? (
@@ -330,10 +497,33 @@ export function TextEditorSurface({
           <div className="flex h-full items-center justify-center p-6 text-center">
             <div className="max-w-lg">
               <AlertCircle className="mx-auto mb-3 h-10 w-10 text-red-400" />
-              <p className="text-sm font-medium text-gray-800 dark:text-gray-100">无法打开这个文本文件</p>
-              <p className="mt-2 break-all text-xs text-gray-500 dark:text-gray-400">{errorMessage}</p>
+              <p className="text-sm font-medium text-gray-800 dark:text-gray-100">
+                无法打开这个文本文件
+              </p>
+              <p className="mt-2 break-all text-xs text-gray-500 dark:text-gray-400">
+                {errorMessage}
+              </p>
             </div>
           </div>
+        ) : isMarkdownDocument ? (
+          <Suspense
+            fallback={
+              <div className="flex h-full items-center justify-center text-sm text-gray-400">
+                <div className="flex items-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  正在加载 Markdown 编辑器...
+                </div>
+              </div>
+            }
+          >
+            <MarkdownEditorSurface
+              markdown={content}
+              viewMode={markdownViewMode}
+              onChange={handleMarkdownChange}
+              onErrorChange={setMarkdownErrorMessage}
+              onSave={handleSave}
+            />
+          </Suspense>
         ) : (
           <CodeEditor
             initialContent={content}
@@ -346,7 +536,7 @@ export function TextEditorSurface({
         )}
       </div>
 
-      {showLanguageMenu && (
+      {showLanguageMenu && !isMarkdownDocument && (
         <button
           type="button"
           className="fixed inset-0 z-40 cursor-default"

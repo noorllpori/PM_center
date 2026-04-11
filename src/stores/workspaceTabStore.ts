@@ -4,6 +4,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { createStore } from 'zustand/vanilla';
 import { openStandaloneImageViewer } from '../components/image-viewer/openStandaloneImageViewer';
 import { openStandaloneTextEditor } from '../components/text-editor/openStandaloneTextEditor';
+import type { TextEditorTransferPayload } from '../components/text-editor/textEditorWindowTransfer';
 import { openStandaloneVideoPlayer } from '../components/video-player/openStandaloneVideoPlayer';
 import { getFileNameFromPath, getWorkspaceOpenTarget } from '../components/workspace/fileOpeners';
 
@@ -16,6 +17,7 @@ export interface WorkspaceTab {
   closable: boolean;
   filePath?: string;
   isDirty?: boolean;
+  editorSnapshot?: TextEditorTransferPayload;
 }
 
 const FILES_TAB_ID = 'files';
@@ -28,7 +30,11 @@ const FILES_TAB: WorkspaceTab = {
   closable: false,
 };
 
-function createFileTab(type: 'image' | 'text' | 'video', filePath: string): WorkspaceTab {
+function createFileTab(
+  type: 'image' | 'text' | 'video',
+  filePath: string,
+  editorSnapshot?: TextEditorTransferPayload,
+): WorkspaceTab {
   return {
     id: `${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     type,
@@ -36,13 +42,19 @@ function createFileTab(type: 'image' | 'text' | 'video', filePath: string): Work
     closable: true,
     filePath,
     isDirty: false,
+    editorSnapshot: type === 'text' ? editorSnapshot : undefined,
   };
 }
 
 export interface WorkspaceTabState {
   tabs: WorkspaceTab[];
   activeTabId: string;
-  openFileInTab: (filePath: string) => Promise<string | null>;
+  openFileInTab: (
+    filePath: string,
+    options?: {
+      editorSnapshot?: TextEditorTransferPayload;
+    },
+  ) => Promise<string | null>;
   openFileInStandaloneWindow: (
     filePath: string,
     options?: {
@@ -63,7 +75,7 @@ export function createWorkspaceTabStore() {
     tabs: [FILES_TAB],
     activeTabId: FILES_TAB_ID,
 
-    openFileInTab: async (filePath) => {
+    openFileInTab: async (filePath, options) => {
       const target = getWorkspaceOpenTarget(filePath);
       if (!target) {
         return null;
@@ -74,11 +86,22 @@ export function createWorkspaceTabStore() {
       );
 
       if (existingTab) {
-        set({ activeTabId: existingTab.id });
+        if (options?.editorSnapshot && existingTab.type === 'text') {
+          set((state) => ({
+            tabs: state.tabs.map((tab) =>
+              tab.id === existingTab.id
+                ? { ...tab, editorSnapshot: options.editorSnapshot }
+                : tab,
+            ),
+            activeTabId: existingTab.id,
+          }));
+        } else {
+          set({ activeTabId: existingTab.id });
+        }
         return existingTab.id;
       }
 
-      const nextTab = createFileTab(target, filePath);
+      const nextTab = createFileTab(target, filePath, options?.editorSnapshot);
       set((state) => ({
         tabs: [...state.tabs, nextTab],
         activeTabId: nextTab.id,

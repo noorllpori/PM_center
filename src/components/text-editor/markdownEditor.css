@@ -1,0 +1,49 @@
+.pm-markdown-editor-shell,
+.pm-markdown-editor-shell .pm-markdown-editor {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.pm-markdown-editor-shell .pm-markdown-editor > div {
+  min-height: 0;
+}
+
+.pm-markdown-editor-shell .mdxeditor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.pm-markdown-editor-shell .mdxeditor > div:last-child {
+  flex: 1;
+  min-height: 0;
+}
+
+.pm-markdown-editor-shell [role='toolbar'] {
+  border-radius: 0;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.pm-markdown-editor-shell [contenteditable='true'],
+.pm-markdown-editor-shell .cm-editor,
+.pm-markdown-editor-shell .cm-sourceView,
+.pm-markdown-editor-shell .cm-scroller {
+  min-height: 0;
+}
+
+.pm-markdown-editor__content {
+  min-height: 100%;
+  padding: 1rem;
+}
+
+.pm-markdown-editor__content ul,
+.pm-markdown-editor__content ol {
+  margin: 0.75rem 0;
+  padding-inline-start: 1rem;
+}
+
+.pm-markdown-editor__content li {
+  margin: 0.35rem 0;
+}
