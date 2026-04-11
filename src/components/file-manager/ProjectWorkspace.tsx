@@ -6,6 +6,7 @@ import { FileTree } from './FileTree';
 import { FileList } from './FileList';
 import { ColumnSettings } from './ColumnSettings';
 import { FileDetail } from './FileDetail';
+import { MdtOverviewPanel } from './MdtOverviewPanel';
 import {
   buildRenamedFileName,
   getParentPath,
@@ -31,6 +32,7 @@ import {
 } from '../text-editor/textEditorWindowTransfer';
 import { VideoPlayerSurface } from '../video-player/VideoPlayerSurface';
 import { WorkspaceTabBar } from '../workspace/WorkspaceTabBar';
+import { getFileExtension } from '../workspace/fileOpeners';
 import { useProjectStoreApi, useProjectStoreShallow } from '../../stores/projectStore';
 import { useClipboardStore } from '../../stores/clipboardStore';
 import { useFileDragStore } from '../../stores/fileDragStore';
@@ -219,6 +221,7 @@ export function ProjectWorkspace() {
   const [isResizingFileTree, setIsResizingFileTree] = useState(false);
   const [fileDetailsPanelWidth, setFileDetailsPanelWidth] = useState(getInitialFileDetailsPanelWidth);
   const [isResizingFileDetails, setIsResizingFileDetails] = useState(false);
+  const [isMdtOverviewOpen, setIsMdtOverviewOpen] = useState(false);
   const externalDragDepthRef = useRef(0);
   const externalDropConflictResolverRef = useRef<((choice: ConflictResolution) => void) | null>(null);
   const fileTreeResizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
@@ -241,6 +244,28 @@ export function ProjectWorkspace() {
       externalDropConflictResolverRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!isInitialized) {
+        return;
+      }
+
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || !event.shiftKey) {
+        return;
+      }
+
+      if (event.key.toLowerCase() !== 'm') {
+        return;
+      }
+
+      event.preventDefault();
+      setIsMdtOverviewOpen(true);
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isInitialized]);
 
   useEffect(() => {
     const activeTextTabIds = new Set(
@@ -601,6 +626,16 @@ export function ProjectWorkspace() {
             payload.changeType === 'created'
             || payload.changeType === 'deleted'
             || payload.changeType === 'renamed';
+          const shouldRefreshMdtIndex =
+            !payload.isDir
+            && (
+              getFileExtension(payload.filePath) === 'mdt'
+              || payload.changeType === 'renamed'
+            );
+
+          if (shouldRefreshMdtIndex) {
+            void projectStore.getState().refreshMdtIndex();
+          }
 
           if (!isStructureChange) {
             return;
@@ -1171,6 +1206,7 @@ export function ProjectWorkspace() {
                     <TextEditorSurface
                       title={tab.title}
                       filePath={tab.filePath}
+                      projectPath={projectPath || undefined}
                       initialContent={tab.editorSnapshot?.content}
                       initialOriginalContent={tab.editorSnapshot?.originalContent}
                       initialLanguage={tab.editorSnapshot?.language}
@@ -1230,6 +1266,10 @@ export function ProjectWorkspace() {
       </div>
 
       {isFilesWorkspaceActive && <ColumnSettings />}
+      <MdtOverviewPanel
+        isOpen={isMdtOverviewOpen}
+        onClose={() => setIsMdtOverviewOpen(false)}
+      />
     </div>
   );
 }

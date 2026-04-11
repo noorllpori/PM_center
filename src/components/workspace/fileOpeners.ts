@@ -7,6 +7,7 @@ const TEXT_FILE_EXTENSIONS = new Set([
   'md',
   'markdown',
   'mdx',
+  'mdt',
   'csv',
   'tsv',
   'json',

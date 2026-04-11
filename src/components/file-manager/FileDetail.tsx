@@ -1,14 +1,16 @@
+import { normalizeMdtReferenceKey } from '../../utils/mdt';
 import { FileDetailsPanel } from './FileDetailsView';
 import { useProjectStoreShallow } from '../../stores/projectStore';
 
 export function FileDetail() {
-  const { selectedFiles, files, searchResults, searchQuery, fileTags, tags } = useProjectStoreShallow((state) => ({
+  const { selectedFiles, files, searchResults, searchQuery, fileTags, tags, mdtReferencesByFile } = useProjectStoreShallow((state) => ({
     selectedFiles: state.selectedFiles,
     files: state.files,
     searchResults: state.searchResults,
     searchQuery: state.searchQuery,
     fileTags: state.fileTags,
     tags: state.tags,
+    mdtReferencesByFile: state.mdtReferencesByFile,
   }));
 
   const selectedPaths = Array.from(selectedFiles);
@@ -19,11 +21,15 @@ export function FileDetail() {
 
   const fileTagIds = selectedFile ? (fileTags.get(selectedFile.path) || []) : [];
   const fileTagList = tags.filter((tag) => fileTagIds.includes(tag.id));
+  const relatedMdtEntries = selectedFile
+    ? (mdtReferencesByFile.get(normalizeMdtReferenceKey(selectedFile.path)) || [])
+    : [];
 
   return (
     <FileDetailsPanel
       file={selectedFile}
       fileTagList={fileTagList}
+      relatedMdtEntries={relatedMdtEntries}
       selectedCount={selectedPaths.length}
     />
   );

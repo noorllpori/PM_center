@@ -41,6 +41,7 @@ import {
   readProjectExcludePatterns,
   shouldExcludeFile,
 } from "../../utils/excludePatterns";
+import { normalizeMdtReferenceKey } from "../../utils/mdt";
 
 const SYSTEM_CONTEXT_DOUBLE_TRIGGER_MS = 350;
 
@@ -292,6 +293,7 @@ export function FileTree() {
     showExcludedFiles,
     refresh,
     loadDirectory,
+    mdtReferencesByFile,
   } = useProjectStoreShallow((state) => ({
     treeData: state.treeData,
     projectName: state.projectName,
@@ -300,6 +302,7 @@ export function FileTree() {
     showExcludedFiles: state.showExcludedFiles,
     refresh: state.refresh,
     loadDirectory: state.loadDirectory,
+    mdtReferencesByFile: state.mdtReferencesByFile,
   }));
   const globalExcludePatterns = useSettingsStore(
     (state) => state.globalExcludePatterns,
@@ -332,6 +335,9 @@ export function FileTree() {
   const [detailsDialogFile, setDetailsDialogFile] = useState<FileInfo | null>(
     null,
   );
+  const detailsDialogRelatedMdtEntries = detailsDialogFile
+    ? (mdtReferencesByFile.get(normalizeMdtReferenceKey(detailsDialogFile.path)) || [])
+    : [];
   const [createFolderDialog, setCreateFolderDialog] = useState({
     isOpen: false,
     suggestedName: "",
@@ -870,6 +876,7 @@ export function FileTree() {
       <FileDetailsDialog
         file={detailsDialogFile}
         fileTagList={[]}
+        relatedMdtEntries={detailsDialogRelatedMdtEntries}
         isOpen={!!detailsDialogFile}
         onClose={handleCloseDetailsDialog}
       />

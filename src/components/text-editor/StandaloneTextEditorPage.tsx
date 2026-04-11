@@ -230,6 +230,7 @@ export function StandaloneTextEditorPage() {
       <TextEditorSurface
         title={effectiveTitle}
         filePath={sourcePath}
+        projectPath={projectPath || undefined}
         initialContent={transferredState?.content}
         initialOriginalContent={transferredState?.originalContent}
         initialLanguage={transferredState?.language}

@@ -1,15 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
-import { Box, ExternalLink, FileIcon, FileText, Film, FolderIcon, Hash, Image, Music4, RefreshCw, Tag as TagIcon } from 'lucide-react';
+import { Box, ExternalLink, FileIcon, FileText, Film, FolderIcon, Hash, Image, Link2, Music4, RefreshCw, Tag as TagIcon } from 'lucide-react';
 import { Dialog } from '../Dialog';
 import { FileDetailsResponse, FileInfo, Tag } from '../../types';
 import { useFileDetails } from './useFileDetails';
 import { isImageExtension } from '../image-viewer/imageViewerUtils';
 import { useResolvedImageSource } from '../image-viewer/useResolvedImageSource';
+import { useOptionalProjectStore } from '../../stores/projectStore';
+import { useWorkspaceTabStore } from '../../stores/workspaceTabStore';
+import { getMdtRelativePath, type MdtReferenceEntry } from '../../utils/mdt';
 
 interface FileDetailsContentProps {
   file: FileInfo | null;
   fileTagList: Tag[];
+  relatedMdtEntries: MdtReferenceEntry[];
   view: 'panel' | 'dialog';
   selectedCount?: number;
 }
@@ -17,6 +21,7 @@ interface FileDetailsContentProps {
 interface FileDetailsDialogProps {
   file: FileInfo | null;
   fileTagList: Tag[];
+  relatedMdtEntries: MdtReferenceEntry[];
   isOpen: boolean;
   onClose: () => void;
 }
@@ -25,7 +30,7 @@ const AUDIO_EXTENSIONS = new Set(['mp3', 'flac', 'wav', 'ogg', 'opus', 'm4a', 'a
 const VIDEO_EXTENSIONS = new Set(['mp4', 'm4v', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'flv', 'mpeg', 'mpg', 'm2ts']);
 const DIRECT_PREVIEW_IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'exr', 'hdr', 'tif', 'tiff', 'svg', 'psd']);
 const TEXT_EXTENSIONS = new Set([
-  'txt', 'md', 'markdown', 'mdx', 'csv', 'tsv', 'json', 'jsonc', 'xml',
+  'txt', 'md', 'markdown', 'mdx', 'mdt', 'csv', 'tsv', 'json', 'jsonc', 'xml',
   'py', 'pyi', 'pyw', 'js', 'mjs', 'cjs', 'ts', 'mts', 'cts', 'tsx', 'jsx',
   'html', 'htm', 'css', 'scss', 'sass', 'less', 'vue', 'svelte', 'astro',
   'rs', 'c', 'h', 'cc', 'cpp', 'cxx', 'hpp', 'hxx', 'cs', 'java', 'kt', 'kts',
@@ -195,8 +200,64 @@ function SectionBlock({ title, items }: { title: string; items: FileDetailsRespo
   );
 }
 
-function FileDetailsContent({ file, fileTagList, view, selectedCount = 0 }: FileDetailsContentProps) {
+function RelatedMdtSection({
+  relatedMdtEntries,
+  projectPath,
+  onOpenMdt,
+}: {
+  relatedMdtEntries: MdtReferenceEntry[];
+  projectPath: string | null;
+  onOpenMdt: (filePath: string) => void;
+}) {
+  if (relatedMdtEntries.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="pt-4 border-t border-gray-200 dark:border-gray-700">
+      <div className="flex items-center gap-2 mb-3">
+        <Link2 className="w-4 h-4 text-gray-400" />
+        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">关联 MDT</span>
+      </div>
+      <div className="space-y-2">
+        {relatedMdtEntries.map((entry) => (
+          <button
+            key={`${entry.mdtPath}-${entry.createdAt || ''}`}
+            type="button"
+            onClick={() => onOpenMdt(entry.mdtPath)}
+            className="w-full rounded-lg border border-sky-200 bg-sky-50/70 px-3 py-2 text-left transition-colors hover:bg-sky-100 dark:border-sky-900/40 dark:bg-sky-900/20 dark:hover:bg-sky-900/30"
+          >
+            <div className="flex items-center justify-between gap-3">
+              <span className="truncate text-sm font-medium text-sky-900 dark:text-sky-100">
+                {entry.mdtTitle}
+              </span>
+              <span className="shrink-0 rounded-full bg-white/70 px-2 py-0.5 text-[11px] text-sky-700 dark:bg-black/20 dark:text-sky-200">
+                {entry.openTaskCount} 待办
+              </span>
+            </div>
+            <div className="mt-1 truncate text-xs text-sky-700/90 dark:text-sky-200/90">
+              {projectPath ? getMdtRelativePath(projectPath, entry.mdtPath) : entry.mdtRelativePath}
+            </div>
+            <div className="mt-1 text-xs text-sky-800 dark:text-sky-100">
+              {entry.summary}
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FileDetailsContent({
+  file,
+  fileTagList,
+  relatedMdtEntries,
+  view,
+  selectedCount = 0,
+}: FileDetailsContentProps) {
   const { details, isLoading, isRefreshing, errorMessage, refresh } = useFileDetails(file, view);
+  const projectPath = useOptionalProjectStore((state) => state.projectPath);
+  const openFileInTab = useWorkspaceTabStore((state) => state.openFileInTab);
 
   const displayPath = details?.basic.path || file?.path || '';
   const displayName = details?.basic.name || file?.name || '';
@@ -304,6 +365,14 @@ function FileDetailsContent({ file, fileTagList, view, selectedCount = 0 }: File
           )}
         </div>
 
+        <RelatedMdtSection
+          relatedMdtEntries={relatedMdtEntries}
+          projectPath={projectPath}
+          onOpenMdt={(filePath) => {
+            void openFileInTab(filePath);
+          }}
+        />
+
         <div className="pt-4 border-t border-gray-200 dark:border-gray-700 space-y-2">
           <button
             className="w-full px-3 py-2 text-sm text-gray-700 bg-gray-100 hover:bg-gray-200
@@ -327,23 +396,32 @@ function FileDetailsContent({ file, fileTagList, view, selectedCount = 0 }: File
 export function FileDetailsPanel({
   file,
   fileTagList,
+  relatedMdtEntries,
   selectedCount = 0,
 }: {
   file: FileInfo | null;
   fileTagList: Tag[];
+  relatedMdtEntries: MdtReferenceEntry[];
   selectedCount?: number;
 }) {
   return (
     <FileDetailsContent
       file={file}
       fileTagList={fileTagList}
+      relatedMdtEntries={relatedMdtEntries}
       view="panel"
       selectedCount={selectedCount}
     />
   );
 }
 
-export function FileDetailsDialog({ file, fileTagList, isOpen, onClose }: FileDetailsDialogProps) {
+export function FileDetailsDialog({
+  file,
+  fileTagList,
+  relatedMdtEntries,
+  isOpen,
+  onClose,
+}: FileDetailsDialogProps) {
   return (
     <Dialog
       isOpen={isOpen && !!file}
@@ -354,6 +432,7 @@ export function FileDetailsDialog({ file, fileTagList, isOpen, onClose }: FileDe
       <FileDetailsContent
         file={file}
         fileTagList={fileTagList}
+        relatedMdtEntries={relatedMdtEntries}
         view="dialog"
       />
     </Dialog>

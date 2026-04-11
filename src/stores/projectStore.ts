@@ -3,10 +3,18 @@ import { useStore } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
 import { createStore } from 'zustand/vanilla';
 import { invoke } from '@tauri-apps/api/core';
+import { readTextFile } from '@tauri-apps/plugin-fs';
 import { FileInfo, TreeNode, Tag, FileMetadata, ColumnConfig, DisplayRule, ViewMode } from '../types';
 import { clearFileDetailsCache } from '../components/file-manager/useFileDetails';
 import { useSettingsStore } from './settingsStore';
 import { getParentPath, normalizePath } from '../components/file-manager/dragDrop';
+import {
+  buildMdtReferenceIndex,
+  parseMdtDocument,
+  sortMdtDocuments,
+  type MdtDocumentSummary,
+  type MdtReferenceEntry,
+} from '../utils/mdt';
 import {
   mergeExcludePatterns,
   readProjectExcludePatterns,
@@ -109,6 +117,10 @@ export interface ProjectState {
   searchResults: FileInfo[];
   isSearching: boolean;
   showExcludedFiles: boolean;
+  mdtDocuments: MdtDocumentSummary[];
+  mdtReferencesByFile: Map<string, MdtReferenceEntry[]>;
+  isLoadingMdtIndex: boolean;
+  mdtIndexError: string | null;
 
   // 操作
   setProject: (path: string) => Promise<void>;
@@ -140,6 +152,7 @@ export interface ProjectState {
   search: (query: string) => Promise<void>;
   clearSearch: () => void;
   toggleShowExcludedFiles: () => void;
+  refreshMdtIndex: () => Promise<void>;
 }
 
 function createInitialProjectState(): Omit<ProjectState, keyof {
@@ -164,6 +177,7 @@ function createInitialProjectState(): Omit<ProjectState, keyof {
   search: unknown;
   clearSearch: unknown;
   toggleShowExcludedFiles: unknown;
+  refreshMdtIndex: unknown;
 }> {
   return {
     projectPath: null,
@@ -183,10 +197,16 @@ function createInitialProjectState(): Omit<ProjectState, keyof {
     searchResults: [],
     isSearching: false,
     showExcludedFiles: false,
+    mdtDocuments: [],
+    mdtReferencesByFile: new Map(),
+    isLoadingMdtIndex: false,
+    mdtIndexError: null,
   };
 }
 
 export function createProjectStore() {
+  let mdtRequestId = 0;
+
   return createStore<ProjectState>((set, get) => ({
     ...createInitialProjectState(),
 
@@ -207,6 +227,7 @@ export function createProjectStore() {
         await get().loadDirectory(path);
         await get().loadTree();
         await get().loadTags();
+        await get().refreshMdtIndex();
       } catch (error) {
         console.error('Failed to initialize project:', error);
         throw error;
@@ -291,6 +312,84 @@ export function createProjectStore() {
         set({ treeData });
       } catch (error) {
         console.error('Failed to load tree:', error);
+      }
+    },
+
+    refreshMdtIndex: async () => {
+      const { projectPath, mdtDocuments } = get();
+      const requestId = ++mdtRequestId;
+
+      if (!projectPath) {
+        set({
+          mdtDocuments: [],
+          mdtReferencesByFile: new Map(),
+          isLoadingMdtIndex: false,
+          mdtIndexError: null,
+        });
+        return;
+      }
+
+      set({
+        isLoadingMdtIndex: true,
+        mdtIndexError: null,
+      });
+
+      try {
+        const matches = await invoke<FileInfo[]>('search_files', {
+          rootPath: projectPath,
+          query: '.mdt',
+        });
+
+        const candidateFiles = matches
+          .filter((file) => !file.is_dir && file.extension?.toLowerCase() === 'mdt')
+          .filter((file) => !normalizePath(file.path).includes('/.pm_center/'))
+          .sort((left, right) => left.path.localeCompare(right.path, 'zh-CN'));
+
+        const parsedDocuments = await Promise.all(candidateFiles.map(async (file) => {
+          try {
+            const content = await readTextFile(file.path);
+            return parseMdtDocument(content, {
+              filePath: file.path,
+              fileName: file.name,
+              projectPath,
+              defaultCreatedAt: file.created,
+            });
+          } catch (error) {
+            console.error('Failed to read MDT file:', file.path, error);
+            return parseMdtDocument('', {
+              filePath: file.path,
+              fileName: file.name,
+              projectPath,
+              defaultCreatedAt: file.created,
+              parseError: String(error),
+            });
+          }
+        }));
+
+        if (requestId !== mdtRequestId) {
+          return;
+        }
+
+        const nextDocuments = sortMdtDocuments(parsedDocuments);
+        set({
+          mdtDocuments: nextDocuments,
+          mdtReferencesByFile: buildMdtReferenceIndex(nextDocuments),
+          isLoadingMdtIndex: false,
+          mdtIndexError: null,
+        });
+      } catch (error) {
+        if (requestId !== mdtRequestId) {
+          return;
+        }
+
+        set({
+          mdtDocuments: mdtDocuments.length > 0 ? mdtDocuments : [],
+          mdtReferencesByFile: mdtDocuments.length > 0
+            ? buildMdtReferenceIndex(mdtDocuments)
+            : new Map(),
+          isLoadingMdtIndex: false,
+          mdtIndexError: String(error),
+        });
       }
     },
 

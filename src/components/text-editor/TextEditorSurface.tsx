@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
 import {
   AlertCircle,
@@ -6,13 +7,22 @@ import {
   Code2,
   Eye,
   FileCode,
+  FolderPlus,
   Loader2,
+  Settings2,
   Save,
   TriangleAlert,
   Type,
 } from 'lucide-react';
 import { CodeEditor } from '../CodeEditor/CodeEditor';
+import type { FileInfo } from '../../types';
 import { detectLanguage, getLanguageName, type EditorLanguage } from '../../stores/windowStore';
+import { buildMdtInlineReference, ensureMdtContent, isMdtPath } from '../../utils/mdt';
+import {
+  MdtRelatedFilePickerDialog,
+  type MdtRelatedFilePickResult,
+} from './MdtRelatedFilePickerDialog';
+import type { MarkdownEditorInsertRequest } from './MarkdownEditorSurface';
 import type { MarkdownViewMode, TextEditorTransferPayload } from './textEditorWindowTransfer';
 
 const MarkdownEditorSurface = lazy(async () => {
@@ -23,6 +33,7 @@ const MarkdownEditorSurface = lazy(async () => {
 interface TextEditorSurfaceProps {
   title: string;
   filePath?: string;
+  projectPath?: string;
   initialContent?: string;
   initialOriginalContent?: string;
   initialLanguage?: EditorLanguage;
@@ -35,6 +46,10 @@ interface TextEditorSurfaceProps {
 
 const SAVE_SUCCESS_MESSAGE = '已保存';
 const SAVE_FAILURE_MESSAGE = '保存失败';
+const MARKDOWN_SOURCE_WARNING =
+  '当前文档包含暂不支持可视化编辑的 Markdown/MDX 结构，已切换到源码模式。';
+const MARKDOWN_RICH_TEXT_WARNING =
+  '检测到部分 Markdown/MDX 语法需要在源码模式下编辑。';
 
 function resolveLanguage(
   filePath?: string,
@@ -59,6 +74,7 @@ function resolveMarkdownViewMode(initialMarkdownViewMode?: MarkdownViewMode): Ma
 export function TextEditorSurface({
   title,
   filePath,
+  projectPath,
   initialContent,
   initialOriginalContent,
   initialLanguage,
@@ -82,15 +98,25 @@ export function TextEditorSurface({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [markdownErrorMessage, setMarkdownErrorMessage] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const [mdtInfoMessage, setMdtInfoMessage] = useState<string | null>(null);
   const [showLanguageMenu, setShowLanguageMenu] = useState(false);
+  const [isMdtFilePickerOpen, setIsMdtFilePickerOpen] = useState(false);
+  const [frontmatterEditRequestKey, setFrontmatterEditRequestKey] = useState(0);
+  const [insertRequest, setInsertRequest] = useState<MarkdownEditorInsertRequest | null>(null);
   const [lineWrapping, setLineWrapping] = useState(true);
   const [hasResolvedInitialState, setHasResolvedInitialState] = useState(
     () => initialContent !== undefined || !filePath,
   );
   const saveMessageTimerRef = useRef<number | null>(null);
+  const insertRequestCounterRef = useRef(0);
 
   const isMarkdownDocument = language === 'markdown';
+  const isMdtDocument = isMdtPath(filePath || title);
   const isDirty = content !== originalContent;
+  const markdownEditorId = useMemo(
+    () => `markdown-editor:${filePath || title}`,
+    [filePath, title],
+  );
 
   const emitDirtyChange = useEffectEvent((nextIsDirty: boolean) => {
     onDirtyChange?.(nextIsDirty);
@@ -114,6 +140,14 @@ export function TextEditorSurface({
     },
   );
 
+  const handleMarkdownErrorChange = useEffectEvent((nextMessage: string | null) => {
+    setMarkdownErrorMessage(nextMessage);
+
+    if (nextMessage && markdownViewMode === 'rich-text') {
+      setMarkdownViewMode('source');
+    }
+  });
+
   useEffect(() => {
     setLanguage(resolveLanguage(filePath, title, initialLanguage));
   }, [filePath, initialLanguage, title]);
@@ -126,6 +160,7 @@ export function TextEditorSurface({
     }
 
     setMarkdownErrorMessage(null);
+    setMdtInfoMessage(null);
   }, [filePath, initialMarkdownViewMode, language]);
 
   useEffect(() => {
@@ -181,6 +216,7 @@ export function TextEditorSurface({
         setOriginalContent(nextOriginalContent);
         setErrorMessage(null);
         setMarkdownErrorMessage(null);
+        setMdtInfoMessage(null);
         setIsLoading(false);
         setHasResolvedInitialState(true);
         return;
@@ -191,6 +227,7 @@ export function TextEditorSurface({
         setOriginalContent('');
         setErrorMessage('没有可读取的文件路径。');
         setMarkdownErrorMessage(null);
+        setMdtInfoMessage(null);
         setIsLoading(false);
         setHasResolvedInitialState(true);
         return;
@@ -199,16 +236,36 @@ export function TextEditorSurface({
       setIsLoading(true);
       setErrorMessage(null);
       setMarkdownErrorMessage(null);
+      setMdtInfoMessage(null);
       setHasResolvedInitialState(false);
 
       try {
-        const nextContent = await readTextFile(filePath);
+        const [rawContent, fileInfo] = await Promise.all([
+          readTextFile(filePath),
+          isMdtDocument
+            ? invoke<FileInfo>('get_file_info', { path: filePath }).catch(() => null)
+            : Promise.resolve(null),
+        ]);
         if (!isActive) {
           return;
         }
 
-        setContent(nextContent);
-        setOriginalContent(nextContent);
+        if (isMdtDocument) {
+          const ensuredContent = ensureMdtContent(rawContent, {
+            filePath,
+            defaultCreatedAt: fileInfo?.created || new Date().toISOString(),
+          });
+          setContent(ensuredContent.content);
+          setOriginalContent(ensuredContent.changed ? rawContent : ensuredContent.content);
+          setMdtInfoMessage(
+            ensuredContent.changed
+              ? 'MDT 元数据已补全，请保存后写入文件。'
+              : null,
+          );
+        } else {
+          setContent(rawContent);
+          setOriginalContent(rawContent);
+        }
         setErrorMessage(null);
         setMarkdownErrorMessage(null);
         setHasResolvedInitialState(true);
@@ -221,6 +278,7 @@ export function TextEditorSurface({
         setOriginalContent('');
         setErrorMessage(`读取文本失败：${String(error)}`);
         setMarkdownErrorMessage(null);
+        setMdtInfoMessage(null);
         setHasResolvedInitialState(true);
       } finally {
         if (isActive) {
@@ -234,7 +292,7 @@ export function TextEditorSurface({
     return () => {
       isActive = false;
     };
-  }, [filePath, initialContent, initialOriginalContent]);
+  }, [filePath, initialContent, initialOriginalContent, isMdtDocument]);
 
   const dismissLanguageMenu = () => {
     setShowLanguageMenu(false);
@@ -267,11 +325,50 @@ export function TextEditorSurface({
       await writeTextFile(filePath, content);
       setOriginalContent(content);
       setErrorMessage(null);
+      setMdtInfoMessage(null);
       flashSaveMessage(SAVE_SUCCESS_MESSAGE);
     } catch (error) {
       setErrorMessage(`保存失败：${String(error)}`);
       flashSaveMessage(SAVE_FAILURE_MESSAGE);
     }
+  };
+
+  const handleOpenMdtFrontmatter = () => {
+    setFrontmatterEditRequestKey((value) => value + 1);
+  };
+
+  const handleAddMdtReference = ({ targetPath, mode }: MdtRelatedFilePickResult) => {
+    if (!filePath || !projectPath) {
+      flashSaveMessage('当前文档缺少项目上下文，暂时无法插入文件引用');
+      return;
+    }
+
+    const nextKey = insertRequestCounterRef.current + 1;
+    insertRequestCounterRef.current = nextKey;
+    const inlineReference = buildMdtInlineReference(
+      filePath,
+      targetPath,
+      mode === 'image' ? 'image' : 'link',
+    );
+
+    setInsertRequest(
+      mode === 'image'
+        ? {
+          key: nextKey,
+          type: 'image',
+          image: {
+            src: inlineReference.reference,
+            altText: inlineReference.label,
+            title: inlineReference.label,
+          },
+        }
+        : {
+          key: nextKey,
+          type: 'markdown',
+          markdown: inlineReference.markdown,
+        },
+    );
+    setIsMdtFilePickerOpen(false);
   };
 
   useEffect(() => {
@@ -313,8 +410,12 @@ export function TextEditorSurface({
       return saveMessage;
     }
 
+    if (mdtInfoMessage) {
+      return mdtInfoMessage;
+    }
+
     return `${content.length} 字符`;
-  }, [content.length, errorMessage, isLoading, saveMessage]);
+  }, [content.length, errorMessage, isLoading, mdtInfoMessage, saveMessage]);
 
   const statusIcon = useMemo(() => {
     if (isLoading) {
@@ -331,6 +432,16 @@ export function TextEditorSurface({
 
     return null;
   }, [errorMessage, isLoading, saveMessage]);
+
+  const markdownWarningText = useMemo(() => {
+    if (!markdownErrorMessage) {
+      return null;
+    }
+
+    return markdownViewMode === 'source'
+      ? MARKDOWN_SOURCE_WARNING
+      : MARKDOWN_RICH_TEXT_WARNING;
+  }, [markdownErrorMessage, markdownViewMode]);
 
   return (
     <div className="flex h-full w-full min-w-0 flex-col bg-white dark:bg-gray-900">
@@ -355,6 +466,32 @@ export function TextEditorSurface({
         )}
 
         <div className="flex items-center gap-2">
+          {isMdtDocument && (
+            <>
+              <button
+                type="button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={handleOpenMdtFrontmatter}
+                className="inline-flex items-center gap-1 rounded border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 shadow-sm transition-colors hover:bg-gray-100"
+                title="编辑当前 MDT 的标题、时间、摘要等元数据"
+              >
+                <Settings2 className="h-3.5 w-3.5" />
+                编辑 MDT 元数据
+              </button>
+              <button
+                type="button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => setIsMdtFilePickerOpen(true)}
+                disabled={!projectPath || !filePath}
+                className="inline-flex items-center gap-1 rounded border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 shadow-sm transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
+                title={projectPath ? '从当前项目中选择文件或文件夹并加入 MDT' : '当前窗口没有可用的项目上下文'}
+              >
+                <FolderPlus className="h-3.5 w-3.5" />
+                添加文件
+              </button>
+            </>
+          )}
+
           {isMarkdownDocument ? (
             <div className="flex items-center rounded-md border border-gray-200 bg-white p-0.5 shadow-sm">
               <button
@@ -455,13 +592,13 @@ export function TextEditorSurface({
           )}
         </div>
 
-        {isMarkdownDocument && markdownErrorMessage && (
+        {isMarkdownDocument && markdownWarningText && (
           <div
             className="hidden max-w-[320px] items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-700 lg:flex"
-            title={markdownErrorMessage}
+            title={markdownErrorMessage ?? undefined}
           >
             <TriangleAlert className="h-3.5 w-3.5 shrink-0" />
-            <span className="truncate">检测到部分 Markdown/MDX 语法需要在源码模式下编辑</span>
+            <span className="truncate">{markdownWarningText}</span>
           </div>
         )}
 
@@ -479,9 +616,9 @@ export function TextEditorSurface({
         </div>
       </div>
 
-      {isMarkdownDocument && markdownErrorMessage && (
+      {isMarkdownDocument && markdownWarningText && (
         <div className="border-b border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 lg:hidden">
-          检测到部分 Markdown/MDX 语法需要在源码模式下编辑
+          {markdownWarningText}
         </div>
       )}
 
@@ -517,10 +654,16 @@ export function TextEditorSurface({
             }
           >
             <MarkdownEditorSurface
+              editorId={markdownEditorId}
+              documentPath={filePath}
+              projectPath={projectPath}
               markdown={content}
               viewMode={markdownViewMode}
+              showFrontmatterControls={isMdtDocument}
+              frontmatterEditRequestKey={frontmatterEditRequestKey}
+              insertRequest={insertRequest ?? undefined}
               onChange={handleMarkdownChange}
-              onErrorChange={setMarkdownErrorMessage}
+              onErrorChange={handleMarkdownErrorChange}
               onSave={handleSave}
             />
           </Suspense>
@@ -542,6 +685,16 @@ export function TextEditorSurface({
           className="fixed inset-0 z-40 cursor-default"
           onClick={dismissLanguageMenu}
           aria-label="关闭语言菜单"
+        />
+      )}
+
+      {isMdtDocument && projectPath && filePath && (
+        <MdtRelatedFilePickerDialog
+          isOpen={isMdtFilePickerOpen}
+          projectPath={projectPath}
+          currentFilePath={filePath}
+          onClose={() => setIsMdtFilePickerOpen(false)}
+          onPick={handleAddMdtReference}
         />
       )}
     </div>

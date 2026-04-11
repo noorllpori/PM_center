@@ -46,6 +46,7 @@ import {
   shouldExcludeFile,
 } from "../../utils/excludePatterns";
 import { useResolvedImageSource } from "../image-viewer/useResolvedImageSource";
+import { normalizeMdtReferenceKey } from "../../utils/mdt";
 
 function formatSize(bytes: number): string {
   if (bytes === 0) return "-";
@@ -162,6 +163,7 @@ function getGridColumnCount(width: number): number {
 }
 
 type ResolveFileTags = (filePath: string) => Tag[];
+type ResolveRelatedMdtCount = (filePath: string) => number;
 
 const ListRow = memo(function ListRow({
   file,
@@ -171,6 +173,7 @@ const ListRow = memo(function ListRow({
   showExcludedFiles,
   isExcluded,
   resolveFileTags,
+  resolveRelatedMdtCount,
   suppressInteraction,
   onSelect,
   onDoubleClick,
@@ -190,6 +193,7 @@ const ListRow = memo(function ListRow({
   showExcludedFiles: boolean;
   isExcluded: (file: FileInfo) => boolean;
   resolveFileTags: ResolveFileTags;
+  resolveRelatedMdtCount: ResolveRelatedMdtCount;
   suppressInteraction: (event: React.SyntheticEvent<HTMLElement>) => boolean;
   onSelect: (path: string, multi: boolean) => void;
   onDoubleClick: (file: FileInfo, openInStandalone: boolean) => void;
@@ -210,6 +214,7 @@ const ListRow = memo(function ListRow({
 }) {
   const isSelected = selectedFiles.has(file.path);
   const fileTagList = resolveFileTags(file.path);
+  const relatedMdtCount = resolveRelatedMdtCount(file.path);
   const isDropTarget = file.is_dir && dropTargetPath === file.path;
   const excluded = isExcluded(file);
   const externalDragZoneToneClass = isSelected
@@ -302,6 +307,11 @@ const ListRow = memo(function ListRow({
                   {showExcludedFiles && excluded && (
                     <span className="shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
                       已排除
+                    </span>
+                  )}
+                  {relatedMdtCount > 0 && (
+                    <span className="shrink-0 rounded-full bg-sky-100 px-1.5 py-0.5 text-[10px] text-sky-700 dark:bg-sky-900/30 dark:text-sky-200">
+                      MDT {relatedMdtCount}
                     </span>
                   )}
                 </div>
@@ -397,6 +407,7 @@ function ListView({
   isExcluded,
   showExcludedFiles,
   resolveFileTags,
+  resolveRelatedMdtCount,
 }: {
   files: FileInfo[];
   selectedFiles: Set<string>;
@@ -430,6 +441,7 @@ function ListView({
   isExcluded: (file: FileInfo) => boolean;
   showExcludedFiles: boolean;
   resolveFileTags: ResolveFileTags;
+  resolveRelatedMdtCount: ResolveRelatedMdtCount;
 }) {
   const visibleColumns = columns.filter((col) => col.visible);
   const tableMinWidth = visibleColumns.reduce((sum, col) => sum + col.width, 0);
@@ -572,6 +584,7 @@ function ListView({
                   showExcludedFiles={showExcludedFiles}
                   isExcluded={isExcluded}
                   resolveFileTags={resolveFileTags}
+                  resolveRelatedMdtCount={resolveRelatedMdtCount}
                   suppressInteraction={suppressInteraction}
                   onSelect={onSelect}
                   onDoubleClick={onDoubleClick}
@@ -602,6 +615,7 @@ const GridCard = memo(function GridCard({
   showExcludedFiles,
   isExcluded,
   resolveFileTags,
+  resolveRelatedMdtCount,
   suppressInteraction,
   onSelect,
   onDoubleClick,
@@ -620,6 +634,7 @@ const GridCard = memo(function GridCard({
   showExcludedFiles: boolean;
   isExcluded: (file: FileInfo) => boolean;
   resolveFileTags: ResolveFileTags;
+  resolveRelatedMdtCount: ResolveRelatedMdtCount;
   suppressInteraction: (event: React.SyntheticEvent<HTMLElement>) => boolean;
   onSelect: (path: string, multi: boolean) => void;
   onDoubleClick: (file: FileInfo, openInStandalone: boolean) => void;
@@ -640,6 +655,7 @@ const GridCard = memo(function GridCard({
 }) {
   const isSelected = selectedFiles.has(file.path);
   const fileTagList = resolveFileTags(file.path);
+  const relatedMdtCount = resolveRelatedMdtCount(file.path);
   const isDropTarget = file.is_dir && dropTargetPath === file.path;
   const excluded = isExcluded(file);
   const externalDragHandleVisibilityClass = isSelected
@@ -707,6 +723,11 @@ const GridCard = memo(function GridCard({
         {isSelected && (
           <div className="rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium text-white dark:bg-blue-500">
             已选中
+          </div>
+        )}
+        {relatedMdtCount > 0 && (
+          <div className="rounded-full bg-sky-600 px-1.5 py-0.5 text-[10px] font-medium text-white dark:bg-sky-500">
+            MDT {relatedMdtCount}
           </div>
         )}
         <ExternalDragHandle
@@ -845,6 +866,7 @@ function GridView({
   isExcluded,
   showExcludedFiles,
   resolveFileTags,
+  resolveRelatedMdtCount,
 }: {
   files: FileInfo[];
   selectedFiles: Set<string>;
@@ -871,6 +893,7 @@ function GridView({
   isExcluded: (file: FileInfo) => boolean;
   showExcludedFiles: boolean;
   resolveFileTags: ResolveFileTags;
+  resolveRelatedMdtCount: ResolveRelatedMdtCount;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [viewportHeight, setViewportHeight] = useState(0);
@@ -975,6 +998,7 @@ function GridView({
                 showExcludedFiles={showExcludedFiles}
                 isExcluded={isExcluded}
                 resolveFileTags={resolveFileTags}
+                resolveRelatedMdtCount={resolveRelatedMdtCount}
                 suppressInteraction={suppressInteraction}
                 onSelect={onSelect}
                 onDoubleClick={onDoubleClick}
@@ -1018,6 +1042,7 @@ export function FileList() {
     searchQuery,
     projectPath,
     showExcludedFiles,
+    mdtReferencesByFile,
   } = useProjectStoreShallow((state) => ({
     files: state.files,
     selectedFiles: state.selectedFiles,
@@ -1036,6 +1061,7 @@ export function FileList() {
     searchQuery: state.searchQuery,
     projectPath: state.projectPath,
     showExcludedFiles: state.showExcludedFiles,
+    mdtReferencesByFile: state.mdtReferencesByFile,
   }));
   const showToast = useUiStore((state) => state.showToast);
   const addTask = useTaskStore((state) => state.addTask);
@@ -1131,9 +1157,18 @@ export function FileList() {
     },
     [fileTags, tagById],
   );
+  const resolveRelatedMdtCount = useCallback(
+    (filePath: string) => {
+      return mdtReferencesByFile.get(normalizeMdtReferenceKey(filePath))?.length || 0;
+    },
+    [mdtReferencesByFile],
+  );
 
   const detailsDialogTagList = detailsDialogFile
     ? resolveFileTags(detailsDialogFile.path)
+    : [];
+  const detailsDialogRelatedMdtEntries = detailsDialogFile
+    ? (mdtReferencesByFile.get(normalizeMdtReferenceKey(detailsDialogFile.path)) || [])
     : [];
   const allKnownFiles = useMemo(() => {
     const fileMap = new Map<string, FileInfo>();
@@ -1881,10 +1916,11 @@ export function FileList() {
           columns={columns}
           resizingColumnKey={resizingColumnKey}
           onStartColumnResize={handleStartColumnResize}
-          isExcluded={isExcluded}
-          showExcludedFiles={showExcludedFiles}
-          resolveFileTags={resolveFileTags}
-        />
+                  isExcluded={isExcluded}
+                  showExcludedFiles={showExcludedFiles}
+                  resolveFileTags={resolveFileTags}
+                  resolveRelatedMdtCount={resolveRelatedMdtCount}
+                />
       ) : (
         <GridView
           files={displayFiles}
@@ -1906,6 +1942,7 @@ export function FileList() {
           isExcluded={isExcluded}
           showExcludedFiles={showExcludedFiles}
           resolveFileTags={resolveFileTags}
+          resolveRelatedMdtCount={resolveRelatedMdtCount}
         />
       )}
 
@@ -1948,6 +1985,7 @@ export function FileList() {
       <FileDetailsDialog
         file={detailsDialogFile}
         fileTagList={detailsDialogTagList}
+        relatedMdtEntries={detailsDialogRelatedMdtEntries}
         isOpen={!!detailsDialogFile}
         onClose={handleCloseDetailsDialog}
       />

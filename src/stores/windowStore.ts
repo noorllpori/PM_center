@@ -57,6 +57,7 @@ export function detectLanguage(filename: string): EditorLanguage {
     case 'md':
     case 'markdown':
     case 'mdx':
+    case 'mdt':
       return 'markdown';
     default:
       return 'plaintext';
