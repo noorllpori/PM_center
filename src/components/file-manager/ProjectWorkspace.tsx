@@ -66,6 +66,12 @@ interface ProjectFsChangeEventPayload {
   timestamp: number;
 }
 
+interface ThumbnailCacheUpdatedEventPayload {
+  projectPath: string;
+  directoryPath: string;
+  updatedCount: number;
+}
+
 function isEditableTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) {
     return false;
@@ -688,6 +694,57 @@ export function ProjectWorkspace() {
         refreshDirectory: false,
         refreshTree: false,
       };
+    };
+  }, [projectPath, projectStore, scheduleFsRefresh]);
+
+  useEffect(() => {
+    if (!projectPath) {
+      return;
+    }
+
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+
+    const registerThumbnailListener = async () => {
+      try {
+        unlisten = await listen<ThumbnailCacheUpdatedEventPayload>(
+          'pm-center:thumbnail-cache-updated',
+          (event) => {
+            const payload = event.payload;
+            if (!payload?.projectPath || !payload.directoryPath) {
+              return;
+            }
+
+            if (normalizePath(payload.projectPath) !== normalizePath(projectPath)) {
+              return;
+            }
+
+            const activeDirectory = projectStore.getState().currentPath;
+            if (!activeDirectory || normalizePath(activeDirectory) !== normalizePath(payload.directoryPath)) {
+              return;
+            }
+
+            pendingFsRefreshRef.current.refreshDirectory = true;
+            scheduleFsRefresh(120);
+          },
+        );
+
+        if (cancelled && unlisten) {
+          await unlisten();
+          unlisten = null;
+        }
+      } catch (error) {
+        console.error('Failed to listen thumbnail cache updates:', error);
+      }
+    };
+
+    void registerThumbnailListener();
+
+    return () => {
+      cancelled = true;
+      if (unlisten) {
+        void unlisten();
+      }
     };
   }, [projectPath, projectStore, scheduleFsRefresh]);
 

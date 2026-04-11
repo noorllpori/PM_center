@@ -255,6 +255,7 @@ export function createProjectStore() {
           path,
           projectPath: activeProjectPath,
           forceRefresh,
+          includePmCenter: get().showExcludedFiles,
         });
 
         const { projectPath, showExcludedFiles } = get();
@@ -308,6 +309,7 @@ export function createProjectStore() {
           path: projectPath,
           projectPath,
           forceRefresh,
+          includePmCenter: get().showExcludedFiles,
         });
         set({ treeData });
       } catch (error) {

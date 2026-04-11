@@ -16,6 +16,17 @@ export const IMAGE_FILE_EXTENSIONS = new Set([
   'exr',
 ]);
 
+const DIRECT_PREVIEW_IMAGE_EXTENSIONS = new Set([
+  'avif',
+  'bmp',
+  'gif',
+  'jpeg',
+  'jpg',
+  'png',
+  'svg',
+  'webp',
+]);
+
 const IMAGE_MIME_TYPES: Record<string, string> = {
   avif: 'image/avif',
   bmp: 'image/bmp',
@@ -39,6 +50,10 @@ export function isImageExtension(extension?: string | null): boolean {
 
 export function isPsdExtension(extension?: string | null): boolean {
   return !!extension && extension.toLowerCase() === 'psd';
+}
+
+export function isDirectPreviewImageExtension(extension?: string | null): boolean {
+  return !!extension && DIRECT_PREVIEW_IMAGE_EXTENSIONS.has(extension.toLowerCase());
 }
 
 export function getImageExtension(pathOrExtension: string): string {

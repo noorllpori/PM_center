@@ -38,7 +38,7 @@ chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
 lazy_static = "1"
 base64 = "0.22"
-image = { version = "0.24", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff"] }
+image = { version = "0.24", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff", "hdr", "openexr"] }
 infer = "0.19"
 kamadak-exif = "0.6"
 lofty = "0.22"

@@ -4,11 +4,15 @@ import { Box, ExternalLink, FileIcon, FileText, Film, FolderIcon, Hash, Image, L
 import { Dialog } from '../Dialog';
 import { FileDetailsResponse, FileInfo, Tag } from '../../types';
 import { useFileDetails } from './useFileDetails';
-import { isImageExtension } from '../image-viewer/imageViewerUtils';
+import {
+  isDirectPreviewImageExtension,
+  isImageExtension,
+} from '../image-viewer/imageViewerUtils';
 import { useResolvedImageSource } from '../image-viewer/useResolvedImageSource';
 import { useOptionalProjectStore } from '../../stores/projectStore';
 import { useWorkspaceTabStore } from '../../stores/workspaceTabStore';
 import { getMdtRelativePath, type MdtReferenceEntry } from '../../utils/mdt';
+import { cacheResolvedPreviewThumbnail } from './thumbnailCache';
 
 interface FileDetailsContentProps {
   file: FileInfo | null;
@@ -28,7 +32,6 @@ interface FileDetailsDialogProps {
 
 const AUDIO_EXTENSIONS = new Set(['mp3', 'flac', 'wav', 'ogg', 'opus', 'm4a', 'aac']);
 const VIDEO_EXTENSIONS = new Set(['mp4', 'm4v', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'flv', 'mpeg', 'mpg', 'm2ts']);
-const DIRECT_PREVIEW_IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'exr', 'hdr', 'tif', 'tiff', 'svg', 'psd']);
 const TEXT_EXTENSIONS = new Set([
   'txt', 'md', 'markdown', 'mdx', 'mdt', 'csv', 'tsv', 'json', 'jsonc', 'xml',
   'py', 'pyi', 'pyw', 'js', 'mjs', 'cjs', 'ts', 'mts', 'cts', 'tsx', 'jsx',
@@ -106,7 +109,11 @@ function getFilePreview(file: FileInfo | null): { kind: 'image' | 'video'; src: 
     return null;
   }
 
-  if (DIRECT_PREVIEW_IMAGE_EXTENSIONS.has(ext)) {
+  if (isImageExtension(ext) && isDirectPreviewImageExtension(ext)) {
+    return { kind: 'image', src };
+  }
+
+  if (ext === 'psd') {
     return { kind: 'image', src: file.path };
   }
 
@@ -117,7 +124,13 @@ function getFilePreview(file: FileInfo | null): { kind: 'image' | 'video'; src: 
   return null;
 }
 
-function FilePreviewHeader({ file }: { file: FileInfo | null }) {
+function FilePreviewHeader({
+  file,
+  projectPath,
+}: {
+  file: FileInfo | null;
+  projectPath: string | null;
+}) {
   const preview = useMemo(() => getFilePreview(file), [file]);
   const {
     resolvedSource,
@@ -135,6 +148,14 @@ function FilePreviewHeader({ file }: { file: FileInfo | null }) {
       setHasPreviewError(true);
     }
   }, [imageErrorMessage, preview?.kind]);
+
+  useEffect(() => {
+    if (preview?.kind !== 'image' || !resolvedSource) {
+      return;
+    }
+
+    void cacheResolvedPreviewThumbnail(projectPath, file, resolvedSource);
+  }, [file, preview?.kind, projectPath, resolvedSource]);
 
   if (!preview || hasPreviewError) {
     return (
@@ -302,7 +323,7 @@ function FileDetailsContent({
 
   return (
     <div className={`h-full flex flex-col bg-white dark:bg-gray-900 ${view === 'panel' ? 'overflow-auto' : ''}`}>
-      <FilePreviewHeader file={file} />
+      <FilePreviewHeader file={file} projectPath={projectPath} />
 
       <div className="p-4 space-y-4">
         <div>

@@ -326,10 +326,7 @@ struct ScannedPlugin {
 }
 
 fn normalize_package_name(value: &str) -> String {
-    value
-        .trim()
-        .to_ascii_lowercase()
-        .replace(['_', '.'], "-")
+    value.trim().to_ascii_lowercase().replace(['_', '.'], "-")
 }
 
 fn normalize_requirement_line(line: &str) -> Option<String> {
@@ -345,7 +342,10 @@ fn parse_requirement_name(requirement: &str) -> Option<String> {
     let mut name = String::new();
 
     for ch in requirement.chars() {
-        if matches!(ch, '<' | '>' | '=' | '!' | '~' | '[' | ';' | '@' | ' ' | '\t') {
+        if matches!(
+            ch,
+            '<' | '>' | '=' | '!' | '~' | '[' | ';' | '@' | ' ' | '\t'
+        ) {
             break;
         }
         name.push(ch);
@@ -414,20 +414,15 @@ fn read_installed_packages(vendor_dir: &Path) -> Vec<PluginDependencyPackage> {
             .unwrap_or(directory_name)
             .trim_end_matches(".dist-info")
             .trim_end_matches(".egg-info");
-        let name = parse_metadata_field(&metadata, "Name").unwrap_or_else(|| fallback_name.to_string());
+        let name =
+            parse_metadata_field(&metadata, "Name").unwrap_or_else(|| fallback_name.to_string());
         let normalized_name = normalize_package_name(&name);
         if normalized_name.is_empty() {
             continue;
         }
 
         let version = parse_metadata_field(&metadata, "Version");
-        packages.insert(
-            normalized_name,
-            PluginDependencyPackage {
-                name,
-                version,
-            },
-        );
+        packages.insert(normalized_name, PluginDependencyPackage { name, version });
     }
 
     let mut values = packages.into_values().collect::<Vec<_>>();
@@ -497,7 +492,9 @@ fn inspect_plugin_dependencies_in_dir(plugin_dir: &Path) -> PluginDependencyInfo
 
     PluginDependencyInfo {
         status,
-        requirements_path: requirements_path.exists().then(|| requirements_path.to_string_lossy().to_string()),
+        requirements_path: requirements_path
+            .exists()
+            .then(|| requirements_path.to_string_lossy().to_string()),
         vendor_path: vendor_exists.then(|| vendor_dir.to_string_lossy().to_string()),
         declared_requirements,
         installed_packages,
@@ -634,7 +631,10 @@ fn sanitize_plugin_settings_panel(
                     push_issue(
                         issues,
                         "duplicate_plugin_setting_key",
-                        format!("插件 {} 的 settingsPanel.fields 出现重复 key: {}", plugin_id, key),
+                        format!(
+                            "插件 {} 的 settingsPanel.fields 出现重复 key: {}",
+                            plugin_id, key
+                        ),
                     );
                     return None;
                 }
@@ -1095,7 +1095,11 @@ fn resolve_plugin_get_pip_path(app_handle: &AppHandle) -> Option<PathBuf> {
 pub fn resolve_plugin_runtime(app_handle: &AppHandle) -> PluginRuntimeInfo {
     let candidates: Vec<PathBuf> = resolve_resource_roots(app_handle)
         .into_iter()
-        .map(|root| root.join("plugin-python").join("windows-x64").join("python.exe"))
+        .map(|root| {
+            root.join("plugin-python")
+                .join("windows-x64")
+                .join("python.exe")
+        })
         .collect();
 
     if let Some(path) = candidates.iter().find(|path| path.exists()) {
@@ -1657,7 +1661,10 @@ fn normalize_bool_value(value: Option<&Value>) -> bool {
     match value {
         Some(Value::Bool(entry)) => *entry,
         Some(Value::Number(entry)) => entry.as_i64().unwrap_or(0) != 0,
-        Some(Value::String(entry)) => matches!(entry.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
+        Some(Value::String(entry)) => matches!(
+            entry.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
         _ => false,
     }
 }
@@ -1743,7 +1750,9 @@ fn normalize_plugin_field_value(
                 if !source_path.is_dir() {
                     return Err(format!("设置项 {} 需要选择文件夹", field.label));
                 }
-                return Ok(Some(Value::String(source_path.to_string_lossy().to_string())));
+                return Ok(Some(Value::String(
+                    source_path.to_string_lossy().to_string(),
+                )));
             }
 
             if !source_path.is_file() {
@@ -1777,7 +1786,9 @@ fn normalize_plugin_field_value(
                 )));
             }
 
-            Ok(Some(Value::String(source_path.to_string_lossy().to_string())))
+            Ok(Some(Value::String(
+                source_path.to_string_lossy().to_string(),
+            )))
         }
         _ => {
             let Some(raw_value) = raw_value else {
@@ -1815,10 +1826,15 @@ fn save_plugin_settings_values(
 
     let mut normalized_values = HashMap::new();
     for field in &schema.fields {
-        let raw_value = values.get(&field.key).or_else(|| previous_values.get(&field.key));
-        if let Some(normalized) =
-            normalize_plugin_field_value(field, raw_value, &files_dir, previous_values.get(&field.key))?
-        {
+        let raw_value = values
+            .get(&field.key)
+            .or_else(|| previous_values.get(&field.key));
+        if let Some(normalized) = normalize_plugin_field_value(
+            field,
+            raw_value,
+            &files_dir,
+            previous_values.get(&field.key),
+        )? {
             normalized_values.insert(field.key.clone(), normalized);
         }
     }
@@ -1890,7 +1906,9 @@ pub async fn inspect_plugin_dependencies(
 ) -> Result<PluginDependencyInfo, String> {
     let descriptor =
         find_plugin_descriptor_by_key(&app_handle, project_path.as_deref(), &plugin_key)?;
-    Ok(inspect_plugin_dependencies_in_dir(Path::new(&descriptor.path)))
+    Ok(inspect_plugin_dependencies_in_dir(Path::new(
+        &descriptor.path,
+    )))
 }
 
 #[tauri::command]
@@ -1920,11 +1938,9 @@ pub async fn install_plugin_dependencies(
     let vendor_dir = plugin_dir.join("vendor");
 
     if vendor_dir.exists() {
-        fs::remove_dir_all(&vendor_dir)
-            .map_err(|error| format!("清理旧依赖目录失败: {error}"))?;
+        fs::remove_dir_all(&vendor_dir).map_err(|error| format!("清理旧依赖目录失败: {error}"))?;
     }
-    fs::create_dir_all(&vendor_dir)
-        .map_err(|error| format!("创建依赖目录失败: {error}"))?;
+    fs::create_dir_all(&vendor_dir).map_err(|error| format!("创建依赖目录失败: {error}"))?;
 
     let embedded_env = build_embedded_python_env(&python_path, &[])?;
     let mut install_command = std_command(&python_path);
@@ -2087,9 +2103,8 @@ fn ensure_embedded_plugin_pip(app_handle: &AppHandle) -> Result<PathBuf, String>
         return Ok(python_path);
     }
 
-    let get_pip_path = resolve_plugin_get_pip_path(app_handle).ok_or_else(|| {
-        "未找到 get-pip.py，请重新执行插件运行时准备脚本。".to_string()
-    })?;
+    let get_pip_path = resolve_plugin_get_pip_path(app_handle)
+        .ok_or_else(|| "未找到 get-pip.py，请重新执行插件运行时准备脚本。".to_string())?;
     let mut bootstrap_command = std_command(&python_path);
     bootstrap_command
         .arg(&get_pip_path)
@@ -2101,7 +2116,10 @@ fn ensure_embedded_plugin_pip(app_handle: &AppHandle) -> Result<PathBuf, String>
         .output()
         .map_err(|error| format!("启动 get-pip.py 失败: {error}"))?;
     if !bootstrap_output.status.success() {
-        return Err(format_command_error("初始化插件 pip 失败。", &bootstrap_output));
+        return Err(format_command_error(
+            "初始化插件 pip 失败。",
+            &bootstrap_output,
+        ));
     }
 
     let mut verify_command = std_command(&python_path);

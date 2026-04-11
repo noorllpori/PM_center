@@ -18,6 +18,7 @@ mod process_utils;
 mod python;
 mod python_env;
 mod task;
+mod thumbnail_cache;
 mod tools;
 mod tree_cache;
 mod watcher;
@@ -71,8 +72,11 @@ fn ensure_project_support_files(project_path: &str) -> Result<(), String> {
     let pm_center_dir = PathBuf::from(project_path).join(".pm_center");
     let scripts_dir = pm_center_dir.join("scripts");
     let plugins_dir = pm_center_dir.join("plugins");
+    let thumbnails_dir = pm_center_dir.join("thumbnails");
     fs::create_dir_all(&scripts_dir).map_err(|e| format!("创建 scripts 目录失败: {}", e))?;
     fs::create_dir_all(&plugins_dir).map_err(|e| format!("创建 plugins 目录失败: {}", e))?;
+    fs::create_dir_all(&thumbnails_dir)
+        .map_err(|e| format!("鍒涘缓 thumbnails 鐩綍澶辫触: {}", e))?;
     ensure_project_default_scripts(&scripts_dir)?;
 
     Ok(())
@@ -805,8 +809,7 @@ pub fn run() {
             // 创建托盘菜单
             let show_i = MenuItem::with_id(app, "show", "显示", true, None::<&str>)?;
             let hide_i = MenuItem::with_id(app, "hide", "隐藏", true, None::<&str>)?;
-            let quit_i =
-                MenuItem::with_id(app, "quit", "退出后台进程", true, None::<&str>)?;
+            let quit_i = MenuItem::with_id(app, "quit", "退出后台进程", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_i, &hide_i, &quit_i])?;
 
             let app_handle = app.handle().clone();
@@ -931,6 +934,7 @@ pub fn run() {
             fs::get_directory_tree,
             fs::search_files,
             fs::get_file_info,
+            fs::store_cached_thumbnail,
             fs::create_directory,
             fs::show_in_folder,
             fs::reveal_in_explorer,

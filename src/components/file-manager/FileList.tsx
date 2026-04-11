@@ -34,7 +34,10 @@ import {
   isTextExtension,
   isVideoExtension,
 } from "../workspace/fileOpeners";
-import { isImageExtension } from "../image-viewer/imageViewerUtils";
+import {
+  isDirectPreviewImageExtension,
+  isImageExtension,
+} from "../image-viewer/imageViewerUtils";
 import {
   buildPluginContextItems,
   buildPluginVisibilityDiagnostics,
@@ -47,6 +50,7 @@ import {
 } from "../../utils/excludePatterns";
 import { useResolvedImageSource } from "../image-viewer/useResolvedImageSource";
 import { normalizeMdtReferenceKey } from "../../utils/mdt";
+import { cacheResolvedPreviewThumbnail } from "./thumbnailCache";
 
 function formatSize(bytes: number): string {
   if (bytes === 0) return "-";
@@ -116,12 +120,18 @@ function getGridPreview(file: FileInfo): { kind: "image" | "video"; src: string 
   }
 
   if (file.thumbnail) {
-    return { kind: "image", src: file.thumbnail };
+    const src = resolvePreviewSource(file.thumbnail);
+    return src ? { kind: "image", src } : null;
   }
 
   const extension = file.extension?.toLowerCase() || "";
 
-  if (isImageExtension(extension)) {
+  if (isImageExtension(extension) && isDirectPreviewImageExtension(extension)) {
+    const src = resolvePreviewSource(file.path);
+    return src ? { kind: "image", src } : null;
+  }
+
+  if (extension === "psd") {
     return { kind: "image", src: file.path };
   }
 
@@ -788,6 +798,7 @@ const GridCardPreview = memo(function GridCardPreview({
 }: {
   file: FileInfo;
 }) {
+  const projectPath = useProjectStoreShallow((state) => state.projectPath);
   const preview = useMemo(() => getGridPreview(file), [file]);
   const {
     resolvedSource,
@@ -805,6 +816,14 @@ const GridCardPreview = memo(function GridCardPreview({
       setHasPreviewError(true);
     }
   }, [imageErrorMessage, preview?.kind]);
+
+  useEffect(() => {
+    if (preview?.kind !== "image" || !resolvedSource) {
+      return;
+    }
+
+    void cacheResolvedPreviewThumbnail(projectPath, file, resolvedSource);
+  }, [file, preview?.kind, projectPath, resolvedSource]);
 
   if (!preview || hasPreviewError) {
     return <div className="flex h-full w-full items-center justify-center">{getFileIcon(file)}</div>;

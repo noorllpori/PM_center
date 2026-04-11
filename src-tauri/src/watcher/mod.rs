@@ -78,6 +78,14 @@ pub struct ProjectFsChangeEvent {
     pub timestamp: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThumbnailCacheUpdatedEvent {
+    pub project_path: String,
+    pub directory_path: String,
+    pub updated_count: usize,
+}
+
 // 全局状态
 lazy_static::lazy_static! {
     static ref PROJECTS: Arc<Mutex<HashMap<String, ProjectWatcherState>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -304,6 +312,13 @@ fn emit_project_fs_change(payload: ProjectFsChangeEvent) {
     let handle = APP_HANDLE.lock().unwrap();
     if let Some(app_handle) = handle.as_ref() {
         let _ = app_handle.emit("pm-center:project-fs-change", payload);
+    }
+}
+
+pub fn emit_thumbnail_cache_updated(payload: ThumbnailCacheUpdatedEvent) {
+    let handle = APP_HANDLE.lock().unwrap();
+    if let Some(app_handle) = handle.as_ref() {
+        let _ = app_handle.emit("pm-center:thumbnail-cache-updated", payload);
     }
 }
 

@@ -12,6 +12,7 @@ use std::pin::Pin;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::process_utils::std_command;
+use crate::thumbnail_cache::{self, ThumbnailSource};
 use crate::tree_cache::{self, FsEntrySnapshot, TreeCacheDb};
 
 #[cfg(windows)]
@@ -310,8 +311,14 @@ pub async fn read_directory(
     path: String,
     project_path: Option<String>,
     force_refresh: Option<bool>,
+    include_pm_center: Option<bool>,
 ) -> Result<Vec<FileInfo>, String> {
     let force_refresh = force_refresh.unwrap_or(false);
+    let include_pm_center = include_pm_center.unwrap_or(false);
+
+    if include_pm_center {
+        return read_directory_from_disk(&path, project_path.as_deref(), true).await;
+    }
 
     if let Some(project_path_value) = project_path.clone() {
         if let Ok(cache_db) = tree_cache::get_or_create_project_cache(&project_path_value) {
@@ -319,7 +326,11 @@ pub async fn read_directory(
                 let fresh_entries =
                     tree_cache::scan_directory_entries_from_disk(&project_path_value, &path)?;
                 let _ = cache_db.replace_directory_entries(&path, &fresh_entries);
-                return Ok(convert_snapshots_to_file_infos(fresh_entries));
+                return Ok(build_directory_file_infos(
+                    Some(&project_path_value),
+                    &path,
+                    fresh_entries,
+                ));
             }
 
             let has_snapshot = cache_db.has_directory_snapshot(&path).unwrap_or(false);
@@ -346,18 +357,26 @@ pub async fn read_directory(
                             }
                         });
                     }
-                    return Ok(convert_snapshots_to_file_infos(cached_entries));
+                    return Ok(build_directory_file_infos(
+                        Some(&project_path_value),
+                        &path,
+                        cached_entries,
+                    ));
                 }
             }
 
             let fresh_entries =
                 tree_cache::scan_directory_entries_from_disk(&project_path_value, &path)?;
             let _ = cache_db.replace_directory_entries(&path, &fresh_entries);
-            return Ok(convert_snapshots_to_file_infos(fresh_entries));
+            return Ok(build_directory_file_infos(
+                Some(&project_path_value),
+                &path,
+                fresh_entries,
+            ));
         }
     }
 
-    read_directory_from_disk(&path, project_path.as_deref()).await
+    read_directory_from_disk(&path, project_path.as_deref(), false).await
 }
 
 // 获取目录树
@@ -366,11 +385,17 @@ pub async fn get_directory_tree(
     path: String,
     project_path: Option<String>,
     force_refresh: Option<bool>,
+    include_pm_center: Option<bool>,
 ) -> Result<TreeNode, String> {
     let force_refresh = force_refresh.unwrap_or(false);
+    let include_pm_center = include_pm_center.unwrap_or(false);
 
-    if let Some(project_path_value) = project_path {
-        if let Ok(cache_db) = tree_cache::get_or_create_project_cache(&project_path_value) {
+    if include_pm_center {
+        return build_tree_node(&PathBuf::from(path), project_path.as_deref(), true).await;
+    }
+
+    if let Some(project_path_value) = project_path.as_ref() {
+        if let Ok(cache_db) = tree_cache::get_or_create_project_cache(project_path_value) {
             let need_full_refresh =
                 force_refresh || !cache_db.has_full_tree_snapshot().unwrap_or(false);
             if need_full_refresh {
@@ -381,12 +406,14 @@ pub async fn get_directory_tree(
                 .await
                 .map_err(|error| error.to_string());
                 if !matches!(refresh_result, Ok(Ok(()))) {
-                    return build_tree_node(&PathBuf::from(path)).await;
+                    return build_tree_node(&PathBuf::from(path), Some(&project_path_value), false)
+                        .await;
                 }
                 if let Ok(tree) = build_tree_from_cache(&cache_db, &path) {
                     return Ok(tree);
                 }
-                return build_tree_node(&PathBuf::from(path)).await;
+                return build_tree_node(&PathBuf::from(path), Some(&project_path_value), false)
+                    .await;
             }
 
             if let Ok(tree) = build_tree_from_cache(&cache_db, &path) {
@@ -404,25 +431,28 @@ pub async fn get_directory_tree(
         }
     }
 
-    build_tree_node(&PathBuf::from(path)).await
+    build_tree_node(&PathBuf::from(path), project_path.as_deref(), false).await
 }
 
 async fn read_directory_from_disk(
     path: &str,
     project_path: Option<&str>,
+    include_pm_center: bool,
 ) -> Result<Vec<FileInfo>, String> {
     let mut entries = Vec::new();
-
     let mut dir = tokio::fs::read_dir(path).await.map_err(|e| e.to_string())?;
-
     let project_root = project_path.map(PathBuf::from);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or_default();
 
     while let Some(entry) = dir.next_entry().await.map_err(|e| e.to_string())? {
         let metadata = entry.metadata().await.map_err(|e| e.to_string())?;
         let entry_path = entry.path();
 
         if let Some(project_root_path) = project_root.as_ref() {
-            if should_skip_pm_center(project_root_path, &entry_path) {
+            if should_skip_pm_center(project_root_path, &entry_path, include_pm_center) {
                 continue;
             }
         }
@@ -433,15 +463,24 @@ async fn read_directory_from_disk(
             .extension()
             .map(|e| e.to_string_lossy().to_string().to_lowercase());
 
-        entries.push(FileInfo {
-            name: name.clone(),
+        entries.push(FsEntrySnapshot {
+            name,
             path: entry_path.to_string_lossy().to_string(),
+            parent_path: path.to_string(),
             is_dir: metadata.is_dir(),
             size: metadata.len(),
-            modified: format_time(metadata.modified()),
-            created: format_time(metadata.created()),
+            modified_ts: metadata
+                .modified()
+                .ok()
+                .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_secs() as i64),
+            created_ts: metadata
+                .created()
+                .ok()
+                .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_secs() as i64),
             extension,
-            thumbnail: None,
+            last_seen_ts: now,
         });
     }
 
@@ -452,13 +491,15 @@ async fn read_directory_from_disk(
         _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
     });
 
-    Ok(entries)
+    Ok(build_directory_file_infos(project_path, path, entries))
 }
 
 // Box::pin 递归 async 函数
-fn build_tree_node(
-    path: &PathBuf,
-) -> Pin<Box<dyn Future<Output = Result<TreeNode, String>> + Send + '_>> {
+fn build_tree_node<'a>(
+    path: &'a PathBuf,
+    project_path: Option<&'a str>,
+    include_pm_center: bool,
+) -> Pin<Box<dyn Future<Output = Result<TreeNode, String>> + Send + 'a>> {
     Box::pin(async move {
         let name = path
             .file_name()
@@ -467,14 +508,22 @@ fn build_tree_node(
 
         let is_dir = path.is_dir();
         let mut children = Vec::new();
+        let project_root = project_path.map(PathBuf::from);
 
         if is_dir {
             if let Ok(mut dir) = tokio::fs::read_dir(path).await {
                 while let Ok(Some(entry)) = dir.next_entry().await {
                     let child_path = entry.path();
 
+                    if let Some(project_root_path) = project_root.as_ref() {
+                        if should_skip_pm_center(project_root_path, &child_path, include_pm_center)
+                        {
+                            continue;
+                        }
+                    }
+
                     if child_path.is_dir() {
-                        match build_tree_node(&child_path).await {
+                        match build_tree_node(&child_path, project_path, include_pm_center).await {
                             Ok(node) => children.push(node),
                             Err(_) => continue,
                         }
@@ -532,20 +581,77 @@ fn build_tree_from_cache_inner(
     })
 }
 
-fn convert_snapshots_to_file_infos(entries: Vec<FsEntrySnapshot>) -> Vec<FileInfo> {
+fn build_directory_file_infos(
+    project_path: Option<&str>,
+    directory_path: &str,
+    entries: Vec<FsEntrySnapshot>,
+) -> Vec<FileInfo> {
+    if let Some(project_path_value) = project_path {
+        let sources = entries
+            .iter()
+            .map(snapshot_to_thumbnail_source)
+            .collect::<Vec<_>>();
+        thumbnail_cache::queue_directory_thumbnail_generation(
+            project_path_value.to_string(),
+            directory_path.to_string(),
+            sources,
+        );
+    }
+
+    convert_snapshots_to_file_infos(project_path, entries)
+}
+
+fn convert_snapshots_to_file_infos(
+    project_path: Option<&str>,
+    entries: Vec<FsEntrySnapshot>,
+) -> Vec<FileInfo> {
     entries
         .into_iter()
-        .map(|entry| FileInfo {
-            name: entry.name,
-            path: entry.path,
-            is_dir: entry.is_dir,
-            size: entry.size,
-            modified: format_cache_timestamp(entry.modified_ts),
-            created: format_cache_timestamp(entry.created_ts),
-            extension: entry.extension,
-            thumbnail: None,
+        .map(|entry| {
+            let thumbnail_source = snapshot_to_thumbnail_source(&entry);
+            FileInfo {
+                name: entry.name,
+                path: entry.path,
+                is_dir: entry.is_dir,
+                size: entry.size,
+                modified: format_cache_timestamp(entry.modified_ts),
+                created: format_cache_timestamp(entry.created_ts),
+                extension: entry.extension,
+                thumbnail: project_path.and_then(|project_path_value| {
+                    thumbnail_cache::resolve_cached_thumbnail_path(
+                        project_path_value,
+                        &thumbnail_source,
+                    )
+                }),
+            }
         })
         .collect()
+}
+
+fn snapshot_to_thumbnail_source(entry: &FsEntrySnapshot) -> ThumbnailSource {
+    ThumbnailSource {
+        path: entry.path.clone(),
+        is_dir: entry.is_dir,
+        size: entry.size,
+        modified_ts: entry.modified_ts,
+        extension: entry.extension.clone(),
+    }
+}
+
+fn thumbnail_source_for_path(
+    path: &str,
+    is_dir: bool,
+    size: u64,
+    modified_ts: Option<i64>,
+    extension: Option<String>,
+) -> ThumbnailSource {
+    ThumbnailSource {
+        path: path.to_string(),
+        is_dir,
+        size,
+        modified_ts,
+        extension,
+    }
 }
 
 fn format_cache_timestamp(timestamp: Option<i64>) -> Option<String> {
@@ -555,7 +661,15 @@ fn format_cache_timestamp(timestamp: Option<i64>) -> Option<String> {
     })
 }
 
-fn should_skip_pm_center(project_root: &PathBuf, entry_path: &PathBuf) -> bool {
+fn should_skip_pm_center(
+    project_root: &PathBuf,
+    entry_path: &PathBuf,
+    include_pm_center: bool,
+) -> bool {
+    if include_pm_center {
+        return false;
+    }
+
     if !entry_path.starts_with(project_root) {
         return false;
     }
@@ -587,19 +701,35 @@ pub async fn search_files(root_path: String, query: String) -> Result<Vec<FileIn
         if name.to_lowercase().contains(&query_lower) {
             if let Ok(metadata) = entry.metadata() {
                 let path = entry.path();
+                let path_string = path.to_string_lossy().to_string();
+                let modified_ts = metadata
+                    .modified()
+                    .ok()
+                    .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+                    .map(|duration| duration.as_secs() as i64);
                 let extension = path
                     .extension()
                     .map(|e| e.to_string_lossy().to_string().to_lowercase());
+                let thumbnail_source = thumbnail_source_for_path(
+                    &path_string,
+                    metadata.is_dir(),
+                    metadata.len(),
+                    modified_ts,
+                    extension.clone(),
+                );
 
                 results.push(FileInfo {
                     name,
-                    path: path.to_string_lossy().to_string(),
+                    path: path_string,
                     is_dir: metadata.is_dir(),
                     size: metadata.len(),
                     modified: format_time(Ok(metadata.modified().unwrap_or(UNIX_EPOCH))),
                     created: format_time(Ok(metadata.created().unwrap_or(UNIX_EPOCH))),
                     extension,
-                    thumbnail: None,
+                    thumbnail: thumbnail_cache::resolve_cached_thumbnail_path(
+                        &root_path,
+                        &thumbnail_source,
+                    ),
                 });
             }
         }
@@ -624,6 +754,19 @@ pub async fn get_file_info(path: String) -> Result<FileInfo, String> {
     let extension = path_buf
         .extension()
         .map(|e| e.to_string_lossy().to_string().to_lowercase());
+    let modified_ts = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs() as i64);
+    let thumbnail_source = thumbnail_source_for_path(
+        &path,
+        metadata.is_dir(),
+        metadata.len(),
+        modified_ts,
+        extension.clone(),
+    );
+    let project_root = tree_cache::detect_project_root_for_path(&path);
 
     Ok(FileInfo {
         name,
@@ -633,11 +776,60 @@ pub async fn get_file_info(path: String) -> Result<FileInfo, String> {
         modified: format_time(metadata.modified()),
         created: format_time(metadata.created()),
         extension,
-        thumbnail: None,
+        thumbnail: project_root.and_then(|project_path| {
+            thumbnail_cache::resolve_cached_thumbnail_path(&project_path, &thumbnail_source)
+        }),
     })
 }
 
 // 创建目录
+#[tauri::command]
+pub async fn store_cached_thumbnail(
+    project_path: String,
+    source_path: String,
+    png_bytes: Vec<u8>,
+) -> Result<Option<String>, String> {
+    let metadata = tokio::fs::metadata(&source_path)
+        .await
+        .map_err(|error| error.to_string())?;
+    if metadata.is_dir() {
+        return Ok(None);
+    }
+
+    let extension = PathBuf::from(&source_path)
+        .extension()
+        .map(|value| value.to_string_lossy().to_string().to_lowercase());
+    let modified_ts = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs() as i64);
+    let thumbnail_source =
+        thumbnail_source_for_path(&source_path, false, metadata.len(), modified_ts, extension);
+    let project_path_for_store = project_path.clone();
+
+    let stored_path = tokio::task::spawn_blocking(move || {
+        thumbnail_cache::store_thumbnail_png(&project_path_for_store, &thumbnail_source, &png_bytes)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+
+    if stored_path.is_some() {
+        let directory_path = PathBuf::from(&source_path)
+            .parent()
+            .map(|value| value.to_string_lossy().to_string())
+            .unwrap_or_default();
+        crate::watcher::emit_thumbnail_cache_updated(crate::watcher::ThumbnailCacheUpdatedEvent {
+            project_path,
+            directory_path,
+            updated_count: 1,
+        });
+    }
+
+    Ok(stored_path)
+}
+
+// 鍒涘缓鐩綍
 #[tauri::command]
 pub async fn create_directory(path: String) -> Result<(), String> {
     tokio::fs::create_dir_all(&path)
