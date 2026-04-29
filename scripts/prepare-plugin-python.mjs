@@ -12,6 +12,7 @@ const PLUGIN_PYTHON_ROOT = resolve(process.cwd(), 'src-tauri', 'resources', 'plu
 const RUNTIME_DIR = join(PLUGIN_PYTHON_ROOT, 'windows-x64');
 const ARCHIVE_PATH = join(PLUGIN_PYTHON_ROOT, `python-${VERSION}-embed-amd64.zip`);
 const GET_PIP_PATH = join(PLUGIN_PYTHON_ROOT, 'get-pip.py');
+const TK_ARCHIVE_PATH = join(PLUGIN_PYTHON_ROOT, 'tk-windows-x64.zip');
 const MARKER_PATH = join(RUNTIME_DIR, '.pmc-runtime-version');
 const DEFAULT_PYTHON_URL = `https://www.python.org/ftp/python/${VERSION}/python-${VERSION}-embed-amd64.zip`;
 const DEFAULT_GET_PIP_URL = 'https://bootstrap.pypa.io/get-pip.py';
@@ -159,6 +160,48 @@ async function patchRuntime() {
   await writeFile(MARKER_PATH, `${VERSION}\n`);
 }
 
+function hasTkSupport() {
+  return [
+    join(RUNTIME_DIR, 'Lib', 'tkinter', '__init__.py'),
+    join(RUNTIME_DIR, 'tcl', 'tcl8.6'),
+    join(RUNTIME_DIR, '_tkinter.pyd'),
+    join(RUNTIME_DIR, 'tcl86t.dll'),
+    join(RUNTIME_DIR, 'tk86t.dll'),
+  ].every((path) => existsSync(path));
+}
+
+async function ensureTkSupport() {
+  if (hasTkSupport()) {
+    console.log('[plugin-python] Tcl/Tk support already prepared');
+    return;
+  }
+
+  if (!existsSync(TK_ARCHIVE_PATH)) {
+    console.warn(`[plugin-python] Tcl/Tk support archive is missing: ${TK_ARCHIVE_PATH}`);
+    console.warn('[plugin-python] tkinter-based plugins will be unavailable until Tcl/Tk files are provided.');
+    return;
+  }
+
+  console.log(`[plugin-python] extracting Tcl/Tk support from ${TK_ARCHIVE_PATH}`);
+  const command = [
+    '-NoProfile',
+    '-Command',
+    `Expand-Archive -LiteralPath ${quoteForPowerShell(TK_ARCHIVE_PATH)} -DestinationPath ${quoteForPowerShell(RUNTIME_DIR)} -Force`,
+  ];
+  const result = spawnSync('powershell', command, {
+    stdio: 'inherit',
+    cwd: process.cwd(),
+  });
+
+  if (result.status !== 0) {
+    throw new Error('failed to extract Tcl/Tk support archive');
+  }
+
+  if (!hasTkSupport()) {
+    throw new Error('Tcl/Tk support archive did not provide the expected files');
+  }
+}
+
 async function ensureGetPipScript() {
   if (existsSync(GET_PIP_PATH)) {
     console.log(`[plugin-python] using cached get-pip bootstrap ${GET_PIP_PATH}`);
@@ -200,6 +243,7 @@ async function main() {
   if (await isPrepared()) {
     console.log(`[plugin-python] runtime already prepared (${VERSION})`);
     await ensureGetPipScript();
+    await ensureTkSupport();
     return;
   }
 
@@ -215,6 +259,7 @@ async function main() {
     await extractArchive();
     await patchRuntime();
     await ensureGetPipScript();
+    await ensureTkSupport();
     console.log(`[plugin-python] ready at ${RUNTIME_DIR}`);
   } catch (error) {
     if (OPTIONAL && hasSystemPython()) {

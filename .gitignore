@@ -57,3 +57,4 @@ Desktop.ini
 src-tauri/temp_icon/
 src-tauri/resources/plugin-python/windows-x64/
 src-tauri/resources/plugin-python/*.zip
+!src-tauri/resources/plugin-python/tk-windows-x64.zip
