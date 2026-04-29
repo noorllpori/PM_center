@@ -1,0 +1,66 @@
+{
+  "id": "image-grid-composer",
+  "name": "图片排序排版工具",
+  "version": "0.1.0",
+  "apiVersion": "1",
+  "runtime": "python",
+  "entry": "main.py",
+  "description": "打开一个本地窗口，把图片按自然排序合成为黑底网格图。",
+  "enabledByDefault": true,
+  "settingsPanel": {
+    "summary": "这个插件会打开一个本地图片排版窗口。可以从工具栏启动后手动添加图片，也可以在文件区右键选中图片后直接带入列表。",
+    "sections": [
+      {
+        "title": "输出规则",
+        "content": "图片会按文件名自然排序，并自动选择接近正方形的行列数。可以设置黑边、单格尺寸和是否显示文件名。",
+        "tone": "info"
+      },
+      {
+        "title": "依赖说明",
+        "content": "生成图片依赖 Pillow。拖拽支持依赖 tkinterdnd2；如果未安装，仍可通过按钮添加图片或文件夹。",
+        "tone": "success"
+      }
+    ]
+  },
+  "contributes": {
+    "commands": [
+      {
+        "id": "open-image-grid-tool",
+        "title": "图片排序排版工具",
+        "description": "打开图片排序排版窗口，并可将当前选中的图片预填到列表中。"
+      }
+    ],
+    "toolbarActions": [
+      {
+        "command": "open-image-grid-tool",
+        "when": {
+          "projectOpen": true
+        }
+      }
+    ],
+    "fileContextActions": [
+      {
+        "command": "open-image-grid-tool",
+        "when": {
+          "selectionCount": "any",
+          "targetKind": "file",
+          "extensions": [
+            "png",
+            "jpg",
+            "jpeg",
+            "bmp",
+            "gif",
+            "tif",
+            "tiff",
+            "webp"
+          ]
+        },
+        "menu": {
+          "placement": "inline",
+          "submenu": "图片工具"
+        }
+      }
+    ]
+  },
+  "permissions": []
+}
