@@ -174,6 +174,11 @@ function getGridColumnCount(width: number): number {
 
 type ResolveFileTags = (filePath: string) => Tag[];
 type ResolveRelatedMdtCount = (filePath: string) => number;
+type SelectFileHandler = (
+  path: string,
+  multi: boolean,
+  range: boolean,
+) => void;
 
 const ListRow = memo(function ListRow({
   file,
@@ -205,7 +210,7 @@ const ListRow = memo(function ListRow({
   resolveFileTags: ResolveFileTags;
   resolveRelatedMdtCount: ResolveRelatedMdtCount;
   suppressInteraction: (event: React.SyntheticEvent<HTMLElement>) => boolean;
-  onSelect: (path: string, multi: boolean) => void;
+  onSelect: SelectFileHandler;
   onDoubleClick: (file: FileInfo, openInStandalone: boolean) => void;
   onContextMenu: (
     file: FileInfo,
@@ -248,7 +253,7 @@ const ListRow = memo(function ListRow({
       `}
       onClick={(e) => {
         if (suppressInteraction(e)) return;
-        onSelect(file.path, e.ctrlKey || e.metaKey);
+        onSelect(file.path, e.ctrlKey || e.metaKey, e.shiftKey);
       }}
       onDoubleClick={(e) => {
         if (suppressInteraction(e)) return;
@@ -421,7 +426,7 @@ function ListView({
 }: {
   files: FileInfo[];
   selectedFiles: Set<string>;
-  onSelect: (path: string, multi: boolean) => void;
+  onSelect: SelectFileHandler;
   onDoubleClick: (file: FileInfo, openInStandalone: boolean) => void;
   onContextMenu: (
     file: FileInfo,
@@ -646,7 +651,7 @@ const GridCard = memo(function GridCard({
   resolveFileTags: ResolveFileTags;
   resolveRelatedMdtCount: ResolveRelatedMdtCount;
   suppressInteraction: (event: React.SyntheticEvent<HTMLElement>) => boolean;
-  onSelect: (path: string, multi: boolean) => void;
+  onSelect: SelectFileHandler;
   onDoubleClick: (file: FileInfo, openInStandalone: boolean) => void;
   onContextMenu: (
     file: FileInfo,
@@ -687,7 +692,7 @@ const GridCard = memo(function GridCard({
       `}
       onClick={(e) => {
         if (suppressInteraction(e)) return;
-        onSelect(file.path, e.ctrlKey || e.metaKey);
+        onSelect(file.path, e.ctrlKey || e.metaKey, e.shiftKey);
       }}
       onDoubleClick={(e) => {
         if (suppressInteraction(e)) return;
@@ -889,7 +894,7 @@ function GridView({
 }: {
   files: FileInfo[];
   selectedFiles: Set<string>;
-  onSelect: (path: string, multi: boolean) => void;
+  onSelect: SelectFileHandler;
   onDoubleClick: (file: FileInfo, openInStandalone: boolean) => void;
   onContextMenu: (
     file: FileInfo,
@@ -1138,6 +1143,11 @@ export function FileList() {
   } | null>(null);
 
   const displayFiles = searchQuery ? searchResults : files;
+  const displayFilePaths = useMemo(
+    () => displayFiles.map((file) => file.path),
+    [displayFiles],
+  );
+  const selectionAnchorPathRef = useRef<string | null>(null);
   const excludePatterns = projectPath
     ? mergeExcludePatterns(
         globalExcludePatterns,
@@ -1201,6 +1211,48 @@ export function FileList() {
       .map((path) => allKnownFiles.get(path))
       .filter((file): file is FileInfo => Boolean(file));
   }, [allKnownFiles, selectedFiles]);
+
+  useEffect(() => {
+    const anchorPath = selectionAnchorPathRef.current;
+    if (anchorPath && !displayFilePaths.includes(anchorPath)) {
+      selectionAnchorPathRef.current = null;
+    }
+  }, [displayFilePaths]);
+
+  const handleSelectFile = useCallback<SelectFileHandler>(
+    (path, multi, range) => {
+      if (range) {
+        const anchorPath = selectionAnchorPathRef.current;
+        const anchorIndex = anchorPath
+          ? displayFilePaths.indexOf(anchorPath)
+          : -1;
+        const targetIndex = displayFilePaths.indexOf(path);
+
+        if (anchorIndex !== -1 && targetIndex !== -1) {
+          const startIndex = Math.min(anchorIndex, targetIndex);
+          const endIndex = Math.max(anchorIndex, targetIndex);
+          const rangePaths = displayFilePaths.slice(startIndex, endIndex + 1);
+
+          projectStore.setState((state) => {
+            const nextSelection = multi
+              ? new Set(state.selectedFiles)
+              : new Set<string>();
+
+            for (const rangePath of rangePaths) {
+              nextSelection.add(rangePath);
+            }
+
+            return { selectedFiles: nextSelection };
+          });
+          return;
+        }
+      }
+
+      selectFile(path, multi);
+      selectionAnchorPathRef.current = path;
+    },
+    [displayFilePaths, projectStore, selectFile],
+  );
 
   useEffect(() => {
     if (!projectPath) {
@@ -1351,6 +1403,7 @@ export function FileList() {
         projectStore.setState({
           selectedFiles: new Set([file.path]),
         });
+        selectionAnchorPathRef.current = file.path;
       }
 
       if (shouldOpenSystemMenu) {
@@ -1918,7 +1971,7 @@ export function FileList() {
         <ListView
           files={displayFiles}
           selectedFiles={selectedFiles}
-          onSelect={selectFile}
+          onSelect={handleSelectFile}
           onDoubleClick={handleDoubleClick}
           onContextMenu={handleContextMenu}
           onBackgroundContextMenu={handleBackgroundContextMenu}
@@ -1944,7 +1997,7 @@ export function FileList() {
         <GridView
           files={displayFiles}
           selectedFiles={selectedFiles}
-          onSelect={selectFile}
+          onSelect={handleSelectFile}
           onDoubleClick={handleDoubleClick}
           onContextMenu={handleContextMenu}
           onBackgroundContextMenu={handleBackgroundContextMenu}
