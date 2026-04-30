@@ -1,16 +1,18 @@
 import { useEffect } from 'react';
 import { FileManager } from './components/file-manager';
 import { WindowManager } from './components/WindowManager';
+import { StandaloneDirectoryPage, isStandaloneDirectoryRoute } from './components/file-manager/StandaloneDirectoryPage';
 import { StandaloneImageViewerPage, isStandaloneImageViewerRoute } from './components/image-viewer/StandaloneImageViewerPage';
 import { StandaloneTextEditorPage, isStandaloneTextEditorRoute } from './components/text-editor/StandaloneTextEditorPage';
 import { StandaloneVideoPlayerPage, isStandaloneVideoPlayerRoute } from './components/video-player/StandaloneVideoPlayerPage';
 import { initTaskEventListeners, loadTaskState } from './stores/taskStore';
 
 function App() {
+  const isDirectoryWindow = isStandaloneDirectoryRoute();
   const isImageViewerWindow = isStandaloneImageViewerRoute();
   const isTextEditorWindow = isStandaloneTextEditorRoute();
   const isVideoPlayerWindow = isStandaloneVideoPlayerRoute();
-  const isStandaloneWindow = isImageViewerWindow || isTextEditorWindow || isVideoPlayerWindow;
+  const isStandaloneWindow = isDirectoryWindow || isImageViewerWindow || isTextEditorWindow || isVideoPlayerWindow;
 
   useEffect(() => {
     if (isStandaloneWindow) {
@@ -24,6 +26,10 @@ function App() {
     document.documentElement.style.colorScheme = 'light';
     document.body.style.colorScheme = 'light';
   }, [isStandaloneWindow]);
+
+  if (isDirectoryWindow) {
+    return <StandaloneDirectoryPage />;
+  }
 
   if (isImageViewerWindow) {
     return <StandaloneImageViewerPage />;

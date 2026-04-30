@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { WelcomeScreen } from '../WelcomeScreen';
 import { P2PChat } from '../P2PChat';
 import { PythonEnvManager } from '../PythonEnvManager';
+import { openStandaloneDirectoryViewer } from './openStandaloneDirectoryViewer';
 import { openStandaloneImageViewer } from '../image-viewer/openStandaloneImageViewer';
 import { TaskButton } from '../TaskButton';
 import { LauncherButton } from '../Launcher';
@@ -163,6 +164,17 @@ async function restoreWorkspaceSession(
 }
 
 async function restoreStandaloneWindow(window: PersistedStandaloneWindow) {
+  if (window.type === 'directory') {
+    await openStandaloneDirectoryViewer({
+      directoryPath: window.filePath,
+      title: window.title,
+      projectPath: window.projectPath,
+      projectName: window.projectPath ? getProjectNameFromPath(window.projectPath) : undefined,
+      focus: false,
+    });
+    return;
+  }
+
   if (window.type === 'image') {
     await openStandaloneImageViewer({
       filePath: window.filePath,
@@ -602,13 +614,15 @@ export function FileManager() {
                 throw new Error('未找到目标项目会话');
               }
 
-              const openedTabId = await session.workspaceTabStore.getState().openFileInTab(
-                payload.filePath,
-                {
-                  editorSnapshot:
-                    payload.fileType === 'text' ? payload.textEditorSnapshot : undefined,
-                },
-              );
+              const openedTabId = payload.fileType === 'directory'
+                ? session.workspaceTabStore.getState().openDirectoryInTab(payload.filePath)
+                : await session.workspaceTabStore.getState().openFileInTab(
+                    payload.filePath,
+                    {
+                      editorSnapshot:
+                        payload.fileType === 'text' ? payload.textEditorSnapshot : undefined,
+                    },
+                  );
               if (!openedTabId) {
                 throw new Error('该文件类型暂不支持回归到项目标签页');
               }

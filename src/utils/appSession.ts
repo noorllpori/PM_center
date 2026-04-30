@@ -38,7 +38,7 @@ export interface PersistedShellProjectTab {
 
 export interface PersistedStandaloneWindow {
   instanceId: string;
-  type: Extract<WorkspaceTabType, 'image' | 'text' | 'video'>;
+  type: Extract<WorkspaceTabType, 'directory' | 'image' | 'text' | 'video'>;
   filePath: string;
   projectPath?: string;
   title?: string;
@@ -160,7 +160,12 @@ function sanitizeStandaloneWindow(window: unknown): PersistedStandaloneWindow | 
   if (
     !candidate.instanceId ||
     !candidate.filePath ||
-    (candidate.type !== 'image' && candidate.type !== 'text' && candidate.type !== 'video')
+    (
+      candidate.type !== 'directory' &&
+      candidate.type !== 'image' &&
+      candidate.type !== 'text' &&
+      candidate.type !== 'video'
+    )
   ) {
     return null;
   }

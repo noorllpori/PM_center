@@ -208,6 +208,7 @@ export function ProjectWorkspace() {
   const activateTab = useWorkspaceTabStore((state) => state.activateTab);
   const closeTab = useWorkspaceTabStore((state) => state.closeTab);
   const openFileInStandaloneWindow = useWorkspaceTabStore((state) => state.openFileInStandaloneWindow);
+  const openDirectoryInStandaloneWindow = useWorkspaceTabStore((state) => state.openDirectoryInStandaloneWindow);
   const openDirectoryInTab = useWorkspaceTabStore((state) => state.openDirectoryInTab);
   const reorderTabs = useWorkspaceTabStore((state) => state.reorderTabs);
   const updateTabDirty = useWorkspaceTabStore((state) => state.updateTabDirty);
@@ -920,10 +921,16 @@ export function ProjectWorkspace() {
     }
 
     const detachWithToast = async () => {
-      const opened = await openFileInStandaloneWindow(tab.filePath!, {
-        projectPath: projectPath || undefined,
-        title: tab.title,
-      });
+      const opened = tab.type === 'directory'
+        ? await openDirectoryInStandaloneWindow(tab.filePath!, {
+            projectPath: projectPath || undefined,
+            projectName: projectName || undefined,
+            title: tab.title,
+          })
+        : await openFileInStandaloneWindow(tab.filePath!, {
+            projectPath: projectPath || undefined,
+            title: tab.title,
+          });
       if (!opened) {
         throw new Error('当前标签类型不支持独立窗口。');
       }
@@ -1028,7 +1035,14 @@ export function ProjectWorkspace() {
         tone: 'error',
       });
     }
-  }, [openFileInStandaloneWindow, projectPath, showToast, workspaceTabStore]);
+  }, [
+    openDirectoryInStandaloneWindow,
+    openFileInStandaloneWindow,
+    projectName,
+    projectPath,
+    showToast,
+    workspaceTabStore,
+  ]);
 
   const handleOpenDirectoryTab = useCallback(
     (path: string) => {

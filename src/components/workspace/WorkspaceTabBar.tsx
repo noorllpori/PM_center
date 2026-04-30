@@ -37,7 +37,7 @@ function getTabIcon(tab: WorkspaceTab) {
 }
 
 function canDetachTab(tab: WorkspaceTab) {
-  return tab.type === 'image' || tab.type === 'text' || tab.type === 'video';
+  return tab.type === 'directory' || tab.type === 'image' || tab.type === 'text' || tab.type === 'video';
 }
 
 function getMenuStyle(x: number, y: number): CSSProperties {

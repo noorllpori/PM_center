@@ -7,6 +7,7 @@ import { openStandaloneTextEditor } from '../components/text-editor/openStandalo
 import type { TextEditorTransferPayload } from '../components/text-editor/textEditorWindowTransfer';
 import { openStandaloneVideoPlayer } from '../components/video-player/openStandaloneVideoPlayer';
 import { getFileNameFromPath, getWorkspaceOpenTarget } from '../components/workspace/fileOpeners';
+import { openStandaloneDirectoryViewer } from '../components/file-manager/openStandaloneDirectoryViewer';
 
 export type WorkspaceTabType = 'files' | 'directory' | 'logs' | 'image' | 'text' | 'video';
 
@@ -73,6 +74,14 @@ export interface WorkspaceTabState {
       title?: string;
     },
   ) => Promise<boolean>;
+  openDirectoryInStandaloneWindow: (
+    directoryPath: string,
+    options?: {
+      projectPath?: string;
+      projectName?: string;
+      title?: string;
+    },
+  ) => Promise<boolean>;
   openDirectoryInTab: (directoryPath: string) => string;
   openLogsTab: () => string;
   activateTab: (tabId: string) => void;
@@ -82,7 +91,13 @@ export interface WorkspaceTabState {
   resetTabs: () => void;
 }
 
-export function createWorkspaceTabStore() {
+interface CreateWorkspaceTabStoreOptions {
+  forceStandaloneFileOpen?: boolean;
+  standaloneProjectPath?: string;
+  standaloneProjectName?: string;
+}
+
+export function createWorkspaceTabStore(storeOptions: CreateWorkspaceTabStoreOptions = {}) {
   return createStore<WorkspaceTabState>((set, get) => ({
     tabs: [FILES_TAB],
     activeTabId: FILES_TAB_ID,
@@ -91,6 +106,13 @@ export function createWorkspaceTabStore() {
       const target = getWorkspaceOpenTarget(filePath);
       if (!target) {
         return null;
+      }
+
+      if (storeOptions.forceStandaloneFileOpen) {
+        const opened = await get().openFileInStandaloneWindow(filePath, {
+          projectPath: storeOptions.standaloneProjectPath,
+        });
+        return opened ? `standalone-${target}:${filePath}` : null;
       }
 
       const existingTab = get().tabs.find(
@@ -154,7 +176,25 @@ export function createWorkspaceTabStore() {
       return true;
     },
 
+    openDirectoryInStandaloneWindow: async (directoryPath, options) => {
+      await openStandaloneDirectoryViewer({
+        directoryPath,
+        title: options?.title,
+        projectPath: options?.projectPath,
+        projectName: options?.projectName,
+      });
+      return true;
+    },
+
     openDirectoryInTab: (directoryPath) => {
+      if (storeOptions.forceStandaloneFileOpen) {
+        void get().openDirectoryInStandaloneWindow(directoryPath, {
+          projectPath: storeOptions.standaloneProjectPath,
+          projectName: storeOptions.standaloneProjectName,
+        });
+        return `standalone-directory:${directoryPath}`;
+      }
+
       const existingTab = get().tabs.find(
         (tab) => tab.type === 'directory' && tab.filePath === directoryPath,
       );

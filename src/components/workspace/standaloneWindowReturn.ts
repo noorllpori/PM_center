@@ -2,7 +2,7 @@ import type { TextEditorTransferPayload } from '../text-editor/textEditorWindowT
 
 export const STANDALONE_RETURN_TO_WORKSPACE_EVENT = 'pm-center:standalone-return-to-workspace';
 
-export type StandaloneReturnFileType = 'image' | 'video' | 'text';
+export type StandaloneReturnFileType = 'directory' | 'image' | 'video' | 'text';
 
 export interface StandaloneReturnToWorkspacePayload {
   projectPath: string;
