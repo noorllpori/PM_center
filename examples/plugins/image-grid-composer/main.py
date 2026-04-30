@@ -54,6 +54,31 @@ IMAGE_EXTENSIONS = {
     ".webp",
 }
 
+SCALE_PRESETS: dict[str, tuple[str, tuple[int, int] | None]] = {
+    "none": ("不缩小", None),
+    "360p": ("360p (640x360)", (640, 360)),
+    "540p": ("540p (960x540)", (960, 540)),
+    "720p": ("720p (1280x720)", (1280, 720)),
+    "1080p": ("1080p (1920x1080)", (1920, 1080)),
+}
+
+SCALE_PRESET_LABEL_TO_KEY = {
+    label: key for key, (label, _) in SCALE_PRESETS.items()
+}
+
+OUTPUT_FORMATS = {
+    "png": {
+        "label": "PNG",
+        "extension": ".png",
+        "pil_format": "PNG",
+    },
+    "jpg": {
+        "label": "JPG",
+        "extension": ".jpg",
+        "pil_format": "JPEG",
+    },
+}
+
 
 def natural_key(path: Path) -> list[object]:
     parts = re.split(r"(\d+)", path.name.casefold())
@@ -100,6 +125,28 @@ def ensure_pillow_available() -> None:
         raise RuntimeError("缺少 Pillow 依赖，请先到设置 > 插件里安装依赖。") from PIL_IMPORT_ERROR
 
 
+def normalize_output_format(value: str) -> str:
+    value = value.strip().lower()
+    if value in {"jpg", "jpeg"}:
+        return "jpg"
+    return "png"
+
+
+def output_format_from_path(path: Path) -> str | None:
+    suffix = path.suffix.casefold()
+    if suffix in {".jpg", ".jpeg"}:
+        return "jpg"
+    if suffix == ".png":
+        return "png"
+    return None
+
+
+def output_path_with_format(path: Path, output_format: str) -> Path:
+    normalized_format = normalize_output_format(output_format)
+    extension = OUTPUT_FORMATS[normalized_format]["extension"]
+    return path.with_suffix(extension)
+
+
 def fit_without_upscale(image: Image.Image, max_size: tuple[int, int]) -> Image.Image:
     width, height = image.size
     max_width, max_height = max_size
@@ -110,8 +157,7 @@ def fit_without_upscale(image: Image.Image, max_size: tuple[int, int]) -> Image.
     return image.resize(new_size, Image.Resampling.LANCZOS)
 
 
-def load_label_font(content_width: int) -> ImageFont.ImageFont:
-    font_size = max(14, min(48, round(content_width / 36)))
+def load_font(font_size: int) -> ImageFont.ImageFont:
     font_candidates = [
         Path("C:/Windows/Fonts/msyh.ttc"),
         Path("C:/Windows/Fonts/simhei.ttf"),
@@ -124,8 +170,26 @@ def load_label_font(content_width: int) -> ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
+def load_label_font(content_width: int) -> ImageFont.ImageFont:
+    font_size = max(14, min(48, round(content_width / 36)))
+    return load_font(font_size)
+
+
+def load_title_font(canvas_width: int) -> ImageFont.ImageFont:
+    font_size = max(28, min(96, round(canvas_width / 22)))
+    return load_font(font_size)
+
+
+def text_bbox(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.ImageFont,
+) -> tuple[int, int, int, int]:
+    return draw.textbbox((0, 0), text, font=font)
+
+
 def text_size(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> tuple[int, int]:
-    left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
+    left, top, right, bottom = text_bbox(draw, text, font)
     return right - left, bottom - top
 
 
@@ -162,7 +226,11 @@ def make_grid_image(
     border_px: int = 3,
     tile_width: int | None = None,
     tile_height: int | None = None,
+    scale_size: tuple[int, int] | None = None,
     show_names: bool = False,
+    show_title: bool = True,
+    title_text: str | None = None,
+    output_format: str = "png",
 ) -> tuple[int, int, int, int]:
     ensure_pillow_available()
     opened: list[tuple[Path, Image.Image]] = []
@@ -176,8 +244,9 @@ def make_grid_image(
         if not opened:
             raise ValueError("没有可用图片")
 
-        content_width = tile_width or max(image.width for _, image in opened)
-        content_height = tile_height or max(image.height for _, image in opened)
+        preset_width, preset_height = scale_size or (None, None)
+        content_width = tile_width or preset_width or max(image.width for _, image in opened)
+        content_height = tile_height or preset_height or max(image.height for _, image in opened)
         rows, columns = choose_grid(len(opened))
         label_font = load_label_font(content_width) if show_names else None
         label_height = 0
@@ -189,14 +258,48 @@ def make_grid_image(
 
         cell_width = content_width + border_px * 2
         cell_height = content_height + label_height + border_px * 2
-        result_image = Image.new("RGB", (columns * cell_width, rows * cell_height), "black")
+        grid_width = columns * cell_width
+        grid_height = rows * cell_height
+        normalized_title = (title_text or "").strip() if show_title else ""
+        title_height = 0
+        title_font = load_title_font(grid_width) if normalized_title else None
+        if title_font is not None:
+            temp = Image.new("RGB", (1, 1), "black")
+            temp_draw = ImageDraw.Draw(temp)
+            _, text_height = text_size(temp_draw, normalized_title, title_font)
+            title_height = text_height + max(40, border_px * 12)
+
+        result_image = Image.new("RGB", (grid_width, title_height + grid_height), "black")
         draw = ImageDraw.Draw(result_image)
+
+        if title_font is not None:
+            title = shorten_text_to_width(
+                draw,
+                normalized_title,
+                title_font,
+                max(1, grid_width - border_px * 8),
+            )
+            title_left, title_box_top, title_right, title_bottom = text_bbox(
+                draw,
+                title,
+                title_font,
+            )
+            title_width = title_right - title_left
+            title_text_height = title_bottom - title_box_top
+            title_x = (grid_width - title_width) // 2 - title_left
+            title_y = (title_height - title_text_height) // 2 - title_box_top
+            draw.text((title_x, title_y), title, font=title_font, fill="white")
 
         for index, (path, image) in enumerate(opened):
             fitted = fit_without_upscale(image, (content_width, content_height))
             row, column = divmod(index, columns)
             left = column * cell_width + border_px + (content_width - fitted.width) // 2
-            top = row * cell_height + border_px + (content_height - fitted.height) // 2
+            top = (
+                title_height
+                + row * cell_height
+                + border_px
+                + (content_height - fitted.height) // 2
+            )
             result_image.paste(fitted, (left, top))
 
             if label_font is not None:
@@ -209,7 +312,8 @@ def make_grid_image(
                 label_width, label_text_height = text_size(draw, label, label_font)
                 label_left = column * cell_width + border_px + (content_width - label_width) // 2
                 label_top = (
-                    row * cell_height
+                    title_height
+                    + row * cell_height
                     + border_px
                     + content_height
                     + (label_height - label_text_height) // 2
@@ -217,7 +321,19 @@ def make_grid_image(
                 draw.text((label_left, label_top), label, font=label_font, fill="white")
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        result_image.save(output_path)
+        normalized_format = normalize_output_format(output_format)
+        if normalized_format == "jpg":
+            result_image.save(
+                output_path,
+                format=OUTPUT_FORMATS[normalized_format]["pil_format"],
+                quality=95,
+                optimize=True,
+            )
+        else:
+            result_image.save(
+                output_path,
+                format=OUTPUT_FORMATS[normalized_format]["pil_format"],
+            )
         return rows, columns, result_image.width, result_image.height
     finally:
         for _, image in opened:
@@ -228,18 +344,23 @@ class ImageGridApp:
     def __init__(self, root: tk.Tk, initial_paths: list[str] | None = None) -> None:
         self.root = root
         self.root.title(PLUGIN_TITLE)
-        self.root.geometry("640x560")
-        self.root.minsize(560, 480)
+        self.root.geometry("720x640")
+        self.root.minsize(640, 560)
 
         self.image_paths: list[Path] = []
         self.output_var = tk.StringVar(value=str(Path.cwd() / "combined_grid.png"))
         self.auto_output_path = True
         self.updating_output_path = False
         self.output_var.trace_add("write", self._on_output_changed)
+        self.updating_output_format = False
+        self.output_format_var = tk.StringVar(value="png")
+        self.output_format_var.trace_add("write", self._on_output_format_changed)
         self.border_var = tk.StringVar(value="3")
         self.tile_width_var = tk.StringVar(value="")
         self.tile_height_var = tk.StringVar(value="")
-        self.show_names_var = tk.BooleanVar(value=False)
+        self.scale_preset_var = tk.StringVar(value=SCALE_PRESETS["none"][0])
+        self.show_title_var = tk.BooleanVar(value=True)
+        self.show_names_var = tk.BooleanVar(value=True)
         self.status_var = tk.StringVar(value="拖入图片，或点击添加图片/文件夹。")
         self.grid_var = tk.StringVar(value="未选择图片")
         self.last_generated: dict[str, object] | None = None
@@ -321,32 +442,55 @@ class ImageGridApp:
         options.grid(row=4, column=0, sticky="ew", pady=(12, 0))
         options.columnconfigure(1, weight=1)
         options.columnconfigure(3, weight=1)
+        options.columnconfigure(5, weight=1)
 
         ttk.Label(options, text="黑边(px)").grid(row=0, column=0, sticky="w")
         ttk.Entry(options, textvariable=self.border_var, width=8).grid(
             row=0, column=1, sticky="w", padx=(8, 16)
         )
-        ttk.Label(options, text="单格宽").grid(row=0, column=2, sticky="w")
-        ttk.Entry(options, textvariable=self.tile_width_var, width=10).grid(
-            row=0, column=3, sticky="w", padx=(8, 16)
-        )
-        ttk.Label(options, text="单格高").grid(row=0, column=4, sticky="w")
-        ttk.Entry(options, textvariable=self.tile_height_var, width=10).grid(
-            row=0, column=5, sticky="w", padx=(8, 0)
-        )
+        ttk.Label(options, text="等比缩小").grid(row=0, column=2, sticky="w")
+        ttk.Combobox(
+            options,
+            textvariable=self.scale_preset_var,
+            values=[label for label, _ in SCALE_PRESETS.values()],
+            state="readonly",
+            width=16,
+        ).grid(row=0, column=3, sticky="w", padx=(8, 16))
+        ttk.Label(options, text="格式").grid(row=0, column=4, sticky="w")
+        ttk.Combobox(
+            options,
+            textvariable=self.output_format_var,
+            values=list(OUTPUT_FORMATS.keys()),
+            state="readonly",
+            width=8,
+        ).grid(row=0, column=5, sticky="w", padx=(8, 0))
 
-        ttk.Label(options, text="保存到").grid(row=1, column=0, sticky="w", pady=(10, 0))
-        ttk.Entry(options, textvariable=self.output_var).grid(
-            row=1, column=1, columnspan=4, sticky="ew", padx=(8, 8), pady=(10, 0)
+        ttk.Label(options, text="单格宽").grid(row=1, column=0, sticky="w", pady=(10, 0))
+        ttk.Entry(options, textvariable=self.tile_width_var, width=10).grid(
+            row=1, column=1, sticky="w", padx=(8, 16), pady=(10, 0)
         )
-        ttk.Button(options, text="浏览", command=self.choose_output).grid(
-            row=1, column=5, sticky="ew", pady=(10, 0)
+        ttk.Label(options, text="单格高").grid(row=1, column=2, sticky="w", pady=(10, 0))
+        ttk.Entry(options, textvariable=self.tile_height_var, width=10).grid(
+            row=1, column=3, sticky="w", padx=(8, 16), pady=(10, 0)
         )
+        ttk.Checkbutton(
+            options,
+            text="显示抬头",
+            variable=self.show_title_var,
+        ).grid(row=2, column=1, sticky="w", padx=(8, 16), pady=(10, 0))
         ttk.Checkbutton(
             options,
             text="在图片下方写入名称",
             variable=self.show_names_var,
-        ).grid(row=2, column=1, columnspan=4, sticky="w", padx=(8, 0), pady=(10, 0))
+        ).grid(row=2, column=2, columnspan=4, sticky="w", pady=(10, 0))
+
+        ttk.Label(options, text="保存到").grid(row=3, column=0, sticky="w", pady=(10, 0))
+        ttk.Entry(options, textvariable=self.output_var).grid(
+            row=3, column=1, columnspan=4, sticky="ew", padx=(8, 8), pady=(10, 0)
+        )
+        ttk.Button(options, text="浏览", command=self.choose_output).grid(
+            row=3, column=5, sticky="ew", pady=(10, 0)
+        )
 
         footer = ttk.Frame(outer)
         footer.grid(row=5, column=0, sticky="ew", pady=(10, 0))
@@ -390,7 +534,13 @@ class ImageGridApp:
                 added_count += 1
 
         if self.auto_output_path:
-            self.set_output_path(new_images[0].parent / "combined_grid.png", auto=True)
+            self.set_output_path(
+                output_path_with_format(
+                    new_images[0].parent / "combined_grid.png",
+                    self.output_format_var.get(),
+                ),
+                auto=True,
+            )
 
         self.sort_and_refresh()
         self.status_var.set(f"已添加 {added_count} 张图片。")
@@ -418,28 +568,37 @@ class ImageGridApp:
 
     def clear(self) -> None:
         self.image_paths.clear()
-        self.set_output_path(Path.cwd() / "combined_grid.png", auto=True)
+        self.set_output_path(
+            output_path_with_format(Path.cwd() / "combined_grid.png", self.output_format_var.get()),
+            auto=True,
+        )
         self.sort_and_refresh()
         self.status_var.set("已清空。")
 
     def choose_output(self) -> None:
-        current_output = Path(self.output_var.get().strip() or "combined_grid.png").expanduser()
+        current_output = output_path_with_format(
+            Path(self.output_var.get().strip() or "combined_grid.png").expanduser(),
+            self.output_format_var.get(),
+        )
         initial_dir = current_output.parent if current_output.parent.exists() else Path.cwd()
         initial_file = current_output.name or "combined_grid.png"
+        selected_format = normalize_output_format(self.output_format_var.get())
         path = filedialog.asksaveasfilename(
             title="保存合成图片",
-            defaultextension=".png",
+            defaultextension=OUTPUT_FORMATS[selected_format]["extension"],
             initialdir=str(initial_dir),
             initialfile=initial_file,
             filetypes=[
                 ("PNG 图片", "*.png"),
                 ("JPEG 图片", "*.jpg"),
-                ("TIFF 图片", "*.tif"),
                 ("所有文件", "*.*"),
             ],
         )
         if path:
-            self.set_output_path(Path(path), auto=False)
+            selected_path = Path(path)
+            detected_format = output_format_from_path(selected_path) or selected_format
+            self.set_output_format(detected_format)
+            self.set_output_path(output_path_with_format(selected_path, detected_format), auto=False)
 
     def set_output_path(self, path: Path, auto: bool) -> None:
         self.updating_output_path = True
@@ -449,9 +608,32 @@ class ImageGridApp:
             self.updating_output_path = False
         self.auto_output_path = auto
 
+    def set_output_format(self, output_format: str) -> None:
+        self.updating_output_format = True
+        try:
+            self.output_format_var.set(normalize_output_format(output_format))
+        finally:
+            self.updating_output_format = False
+
     def _on_output_changed(self, *_: object) -> None:
         if not self.updating_output_path:
             self.auto_output_path = False
+
+    def _on_output_format_changed(self, *_: object) -> None:
+        if self.updating_output_format:
+            return
+
+        current_output = Path(self.output_var.get().strip() or "combined_grid.png").expanduser()
+        self.set_output_path(
+            output_path_with_format(current_output, self.output_format_var.get()),
+            auto=self.auto_output_path,
+        )
+
+    def selected_scale_size(self) -> tuple[str, tuple[int, int] | None]:
+        selected_label = self.scale_preset_var.get()
+        preset_key = SCALE_PRESET_LABEL_TO_KEY.get(selected_label, "none")
+        _, scale_size = SCALE_PRESETS[preset_key]
+        return preset_key, scale_size
 
     def generate(self) -> None:
         if not self.image_paths:
@@ -463,18 +645,32 @@ class ImageGridApp:
             border_px = parse_positive_int(self.border_var.get(), "黑边", allow_zero=True)
             tile_width = parse_positive_int(self.tile_width_var.get(), "单格宽")
             tile_height = parse_positive_int(self.tile_height_var.get(), "单格高")
-            output_path = Path(self.output_var.get().strip()).expanduser()
+            output_format = normalize_output_format(self.output_format_var.get())
+            raw_output_path = self.output_var.get().strip()
+            if not raw_output_path:
+                raise ValueError("请设置保存路径")
+            output_path = output_path_with_format(
+                Path(raw_output_path).expanduser(),
+                output_format,
+            )
             if not output_path.name:
                 raise ValueError("请设置保存路径")
             if border_px is None:
                 border_px = 3
+            scale_preset, scale_size = self.selected_scale_size()
+            show_title = self.show_title_var.get()
+            self.set_output_path(output_path, auto=self.auto_output_path)
             rows, columns, width, height = make_grid_image(
                 self.image_paths,
                 output_path,
                 border_px=border_px,
                 tile_width=tile_width,
                 tile_height=tile_height,
+                scale_size=scale_size,
                 show_names=self.show_names_var.get(),
+                show_title=show_title,
+                title_text=output_path.stem,
+                output_format=output_format,
             )
             progress(100)
         except Exception as exc:
@@ -490,6 +686,10 @@ class ImageGridApp:
             "columns": columns,
             "width": width,
             "height": height,
+            "title": output_path.stem if show_title else "",
+            "showTitle": show_title,
+            "scalePreset": scale_preset,
+            "outputFormat": output_format,
         }
         self.status_var.set(f"已生成：{output_path}")
         self.grid_var.set(f"{rows}x{columns}，输出 {width}x{height}px")
