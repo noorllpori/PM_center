@@ -1046,7 +1046,11 @@ function GridView({
   );
 }
 
-export function FileList() {
+interface FileListProps {
+  onOpenDirectoryTab?: (path: string) => Promise<void> | void;
+}
+
+export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
   const projectStore = useProjectStoreApi();
   const {
     files,
@@ -1296,6 +1300,18 @@ export function FileList() {
       }
     },
     [showToast],
+  );
+
+  const handleOpenDirectoryTab = useCallback(
+    async (file: FileInfo) => {
+      const targetPath = file.is_dir ? file.path : getParentPath(file.path);
+      if (!targetPath) {
+        return;
+      }
+
+      await onOpenDirectoryTab?.(targetPath);
+    },
+    [onOpenDirectoryTab],
   );
 
   const handleDoubleClick = useCallback(
@@ -2033,6 +2049,7 @@ export function FileList() {
           onDelete={handleDeleteFromContextMenu}
           onCreateFolder={handleCreateFolder}
           onOpenFile={handleSystemOpenFile}
+          onOpenDirectoryTab={handleOpenDirectoryTab}
           onRunPluginAction={(action) =>
             runPluginAction(action, fileContextSelectedItems)
           }
@@ -2050,6 +2067,7 @@ export function FileList() {
           onClose={handleCloseContextMenu}
           onRefresh={handleRefresh}
           onCreateFolder={handleCreateFolder}
+          onOpenDirectoryTab={onOpenDirectoryTab}
           onRunPluginAction={(action) => runPluginAction(action, [])}
         />
       )}

@@ -81,6 +81,7 @@ function sanitizeWorkspaceTab(tab: unknown): PersistedWorkspaceTab | null {
   const candidate = tab as Partial<PersistedWorkspaceTab>;
   if (
     candidate.type !== 'logs' &&
+    candidate.type !== 'directory' &&
     candidate.type !== 'image' &&
     candidate.type !== 'text' &&
     candidate.type !== 'video'
@@ -107,6 +108,7 @@ function sanitizeActiveWorkspaceTab(tab: unknown): PersistedWorkspaceActiveTab {
   const candidate = tab as Partial<PersistedWorkspaceActiveTab>;
   if (
     candidate.type !== 'files' &&
+    candidate.type !== 'directory' &&
     candidate.type !== 'logs' &&
     candidate.type !== 'image' &&
     candidate.type !== 'text' &&

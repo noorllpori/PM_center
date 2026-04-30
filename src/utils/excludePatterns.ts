@@ -7,6 +7,7 @@ export const DEFAULT_EXCLUDE_PATTERNS = [
   '*.temp',
   'Thumbs.db',
   '.DS_Store',
+  '*.baiduyun.uploading.cfg',
   BLENDER_BACKUP_EXCLUDE_PATTERN,
 ];
 

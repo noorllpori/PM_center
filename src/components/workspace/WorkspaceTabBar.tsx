@@ -21,6 +21,8 @@ function getTabIcon(tab: WorkspaceTab) {
   switch (tab.type) {
     case 'files':
       return <Folder className="h-4 w-4 text-blue-500" />;
+    case 'directory':
+      return <Folder className="h-4 w-4 text-blue-500" />;
     case 'logs':
       return <History className="h-4 w-4 text-amber-500" />;
     case 'image':

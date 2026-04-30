@@ -6,6 +6,7 @@ import { FileTree } from './FileTree';
 import { FileList } from './FileList';
 import { ColumnSettings } from './ColumnSettings';
 import { FileDetail } from './FileDetail';
+import { DirectoryTabSurface } from './DirectoryTabSurface';
 import { MdtOverviewPanel } from './MdtOverviewPanel';
 import {
   buildRenamedFileName,
@@ -207,6 +208,7 @@ export function ProjectWorkspace() {
   const activateTab = useWorkspaceTabStore((state) => state.activateTab);
   const closeTab = useWorkspaceTabStore((state) => state.closeTab);
   const openFileInStandaloneWindow = useWorkspaceTabStore((state) => state.openFileInStandaloneWindow);
+  const openDirectoryInTab = useWorkspaceTabStore((state) => state.openDirectoryInTab);
   const reorderTabs = useWorkspaceTabStore((state) => state.reorderTabs);
   const updateTabDirty = useWorkspaceTabStore((state) => state.updateTabDirty);
 
@@ -1028,6 +1030,18 @@ export function ProjectWorkspace() {
     }
   }, [openFileInStandaloneWindow, projectPath, showToast, workspaceTabStore]);
 
+  const handleOpenDirectoryTab = useCallback(
+    (path: string) => {
+      const targetPath = path.trim();
+      if (!targetPath) {
+        return;
+      }
+
+      openDirectoryInTab(targetPath);
+    },
+    [openDirectoryInTab],
+  );
+
   const handleExternalDragEnter = useCallback((event: React.DragEvent<HTMLDivElement>) => {
     if (!isInitialized || !isFilesWorkspaceActive || !isExternalFileDrag(event.dataTransfer, hasActiveInternalDrag)) {
       return;
@@ -1190,7 +1204,7 @@ export function ProjectWorkspace() {
                       className="border-r border-gray-200 dark:border-gray-700 flex-shrink-0 min-w-0"
                       style={{ width: `${fileTreePanelWidth}px` }}
                     >
-                      <FileTree />
+                      <FileTree onOpenDirectoryTab={handleOpenDirectoryTab} />
                     </div>
 
                     <div
@@ -1208,7 +1222,7 @@ export function ProjectWorkspace() {
                     </div>
 
                     <div className="flex-1 min-w-0 min-h-0 overflow-hidden">
-                      <FileList />
+                      <FileList onOpenDirectoryTab={handleOpenDirectoryTab} />
                     </div>
 
                     <div
@@ -1237,6 +1251,24 @@ export function ProjectWorkspace() {
                 {tab.type === 'logs' && (
                   <div className="h-full w-full min-w-0 min-h-0">
                     <ChangeLog />
+                  </div>
+                )}
+
+                {tab.type === 'directory' && tab.filePath && (
+                  <div className="h-full w-full min-w-0 min-h-0 overflow-hidden">
+                    <DirectoryTabSurface
+                      initialPath={tab.filePath}
+                      isActive={isActive}
+                      projectPath={projectPath}
+                      projectName={projectName}
+                      onOpenDirectoryTab={handleOpenDirectoryTab}
+                      treePanelWidth={fileTreePanelWidth}
+                      isResizingTreePanel={isResizingFileTree}
+                      onStartTreeResize={handleStartFileTreeResize}
+                      detailsPanelWidth={fileDetailsPanelWidth}
+                      isResizingDetailsPanel={isResizingFileDetails}
+                      onStartDetailsResize={handleStartFileDetailsResize}
+                    />
                   </div>
                 )}
 

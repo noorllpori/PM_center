@@ -7,6 +7,7 @@ import {
   ExternalLink,
   FileEdit,
   FileInput,
+  FolderInput,
   FolderOpen,
   FolderPlus,
   Info,
@@ -43,6 +44,7 @@ interface ContextMenuProps {
   onDelete?: (file: FileInfo) => Promise<void> | void;
   onCreateFolder?: () => Promise<void> | void;
   onOpenFile?: (file: FileInfo) => Promise<void> | void;
+  onOpenDirectoryTab?: (file: FileInfo) => Promise<void> | void;
   onRunPluginAction?: (action: PluginAction) => void;
 }
 
@@ -56,6 +58,7 @@ interface CurrentDirectoryContextMenuProps {
   onClose: () => void;
   onRefresh?: () => void;
   onCreateFolder: () => Promise<void> | void;
+  onOpenDirectoryTab?: (path: string) => Promise<void> | void;
   onRunPluginAction?: (action: PluginAction) => void;
 }
 
@@ -319,6 +322,7 @@ export function FileContextMenu({
   onDelete,
   onCreateFolder,
   onOpenFile,
+  onOpenDirectoryTab,
   onRunPluginAction,
 }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
@@ -388,6 +392,15 @@ export function FileContextMenu({
       await invoke('reveal_in_explorer', { path: file.path });
     } catch (error) {
       console.error('Failed to reveal:', error);
+    }
+    onClose();
+  };
+
+  const handleOpenDirectoryTab = async () => {
+    try {
+      await onOpenDirectoryTab?.(file);
+    } catch (error) {
+      console.error('Failed to open directory tab:', error);
     }
     onClose();
   };
@@ -576,6 +589,10 @@ export function FileContextMenu({
           在资源管理器中显示
         </MenuItem>
 
+        <MenuItem onClick={handleOpenDirectoryTab} icon={<FolderInput className="w-4 h-4" />}>
+          {file.is_dir ? '在项目小标签打开此目录' : '在项目小标签打开所在目录'}
+        </MenuItem>
+
         <MenuDivider />
 
         <MenuItem
@@ -690,6 +707,7 @@ export function CurrentDirectoryContextMenu({
   onClose,
   onRefresh,
   onCreateFolder,
+  onOpenDirectoryTab,
   onRunPluginAction,
 }: CurrentDirectoryContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
@@ -744,6 +762,15 @@ export function CurrentDirectoryContextMenu({
       await onCreateFolder();
     } catch (error) {
       console.error('Failed to create folder:', error);
+    }
+    onClose();
+  };
+
+  const handleOpenDirectoryTab = async () => {
+    try {
+      await onOpenDirectoryTab?.(currentPath);
+    } catch (error) {
+      console.error('Failed to open current directory tab:', error);
     }
     onClose();
   };
@@ -859,6 +886,10 @@ export function CurrentDirectoryContextMenu({
 
         <MenuItem onClick={handleCreateFolder} icon={<FolderPlus className="w-4 h-4" />}>
           新建文件夹
+        </MenuItem>
+
+        <MenuItem onClick={handleOpenDirectoryTab} icon={<FolderInput className="w-4 h-4" />}>
+          在项目小标签打开当前目录
         </MenuItem>
 
         {pluginMenuEntries.inlineEntries.length > 0 && (

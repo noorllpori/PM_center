@@ -24,6 +24,7 @@ import {
   getParentPath,
   getPathLabel,
   joinPath,
+  normalizePath,
 } from "./dragDrop";
 import { ExternalDragHandle } from "./ExternalDragHandle";
 import { InputDialog } from "../Dialog";
@@ -254,6 +255,42 @@ function filterTreeNode(
   };
 }
 
+function findTreeNodeByPath(node: TreeNode, targetPath: string): TreeNode | null {
+  if (normalizePath(node.path) === normalizePath(targetPath)) {
+    return node;
+  }
+
+  for (const child of node.children) {
+    const match = findTreeNodeByPath(child, targetPath);
+    if (match) {
+      return match;
+    }
+  }
+
+  return null;
+}
+
+function filterTreeNodeBySearch(node: TreeNode, searchTerm: string, isRoot = false): TreeNode | null {
+  const query = searchTerm.trim().toLowerCase();
+  if (!query) {
+    return node;
+  }
+
+  const children = node.children
+    .map((child) => filterTreeNodeBySearch(child, searchTerm))
+    .filter((child): child is TreeNode => child !== null);
+  const matchesSelf = node.name.toLowerCase().includes(query);
+
+  if (!isRoot && !matchesSelf && children.length === 0) {
+    return null;
+  }
+
+  return {
+    ...node,
+    children,
+  };
+}
+
 function toTreeNodeFileInfo(node: TreeNode): FileInfo {
   return {
     name: node.name,
@@ -283,7 +320,13 @@ function getTreeContextDirectory(
   return getParentPath(file.path);
 }
 
-export function FileTree() {
+interface FileTreeProps {
+  onOpenDirectoryTab?: (path: string) => Promise<void> | void;
+  rootPath?: string | null;
+  rootTitle?: string | null;
+}
+
+export function FileTree({ onOpenDirectoryTab, rootPath, rootTitle }: FileTreeProps = {}) {
   const projectStore = useProjectStoreApi();
   const {
     treeData,
@@ -411,10 +454,15 @@ export function FileTree() {
     if (!treeData) {
       return null;
     }
-    return (
-      filterTreeNode(treeData, !showExcludedFiles, isExcluded, true) ?? treeData
-    );
-  }, [isExcluded, showExcludedFiles, treeData]);
+
+    const effectiveTreeRoot = rootPath
+      ? findTreeNodeByPath(treeData, rootPath) ?? treeData
+      : treeData;
+    const filteredTree =
+      filterTreeNode(effectiveTreeRoot, !showExcludedFiles, isExcluded, true) ?? effectiveTreeRoot;
+
+    return filterTreeNodeBySearch(filteredTree, searchTerm, true) ?? filteredTree;
+  }, [isExcluded, rootPath, searchTerm, showExcludedFiles, treeData]);
 
   useEffect(() => {
     if (!projectPath) {
@@ -494,10 +542,10 @@ export function FileTree() {
     () =>
       getTreeContextDirectory(
         contextMenu?.file ?? null,
-        projectPath,
+        rootPath || projectPath,
         currentPath,
       ),
-    [contextMenu, currentPath, projectPath],
+    [contextMenu, currentPath, projectPath, rootPath],
   );
 
   const fileContextPluginContext = useMemo(() => {
@@ -608,6 +656,13 @@ export function FileTree() {
   const handleRefresh = useCallback(() => {
     void refresh();
   }, [refresh]);
+
+  const handleOpenDirectoryTab = useCallback(
+    async (file: FileInfo) => {
+      await onOpenDirectoryTab?.(file.path);
+    },
+    [onOpenDirectoryTab],
+  );
 
   const getSuggestedFolderName = useCallback(async (targetDir: string) => {
     const baseName = "新建文件夹";
@@ -787,15 +842,35 @@ export function FileTree() {
     );
   }
 
+  const effectiveRootPath = rootPath || projectPath;
+  const effectiveRootTitle = rootTitle || projectName;
   const atProjectRoot =
-    !currentPath || !projectPath || currentPath === projectPath;
+    !currentPath ||
+    !effectiveRootPath ||
+    normalizePath(currentPath) === normalizePath(effectiveRootPath);
 
   const handleGoUp = () => {
     if (atProjectRoot || !currentPath) {
       return;
     }
 
-    void loadDirectory(getParentPath(currentPath));
+    const parentPath = getParentPath(currentPath);
+    if (!parentPath) {
+      return;
+    }
+
+    if (effectiveRootPath) {
+      const normalizedParentPath = normalizePath(parentPath);
+      const normalizedRootPath = normalizePath(effectiveRootPath);
+      const parentWithinRoot =
+        normalizedParentPath === normalizedRootPath ||
+        normalizedParentPath.startsWith(`${normalizedRootPath}/`);
+      if (!parentWithinRoot) {
+        return;
+      }
+    }
+
+    void loadDirectory(parentPath);
   };
 
   return (
@@ -803,9 +878,9 @@ export function FileTree() {
       <div className="px-3 py-2 border-b border-gray-200 dark:border-gray-700 flex items-center gap-2">
         <h2
           className="flex-1 font-semibold text-sm truncate"
-          title={projectPath || ""}
+          title={effectiveRootPath || ""}
         >
-          {projectName}
+          {effectiveRootTitle}
         </h2>
         <button
           onClick={handleGoUp}
@@ -867,6 +942,7 @@ export function FileTree() {
           onShowDetails={handleShowDetails}
           onDelete={handleDelete}
           onCreateFolder={handleCreateFolder}
+          onOpenDirectoryTab={handleOpenDirectoryTab}
           onRunPluginAction={(action) =>
             runPluginAction(action, [contextMenu.file])
           }

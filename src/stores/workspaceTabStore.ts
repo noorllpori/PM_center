@@ -8,7 +8,7 @@ import type { TextEditorTransferPayload } from '../components/text-editor/textEd
 import { openStandaloneVideoPlayer } from '../components/video-player/openStandaloneVideoPlayer';
 import { getFileNameFromPath, getWorkspaceOpenTarget } from '../components/workspace/fileOpeners';
 
-export type WorkspaceTabType = 'files' | 'logs' | 'image' | 'text' | 'video';
+export type WorkspaceTabType = 'files' | 'directory' | 'logs' | 'image' | 'text' | 'video';
 
 export interface WorkspaceTab {
   id: string;
@@ -46,6 +46,17 @@ function createFileTab(
   };
 }
 
+function createDirectoryTab(directoryPath: string): WorkspaceTab {
+  return {
+    id: `directory-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    type: 'directory',
+    title: getFileNameFromPath(directoryPath) || '目录',
+    closable: true,
+    filePath: directoryPath,
+    isDirty: false,
+  };
+}
+
 export interface WorkspaceTabState {
   tabs: WorkspaceTab[];
   activeTabId: string;
@@ -62,6 +73,7 @@ export interface WorkspaceTabState {
       title?: string;
     },
   ) => Promise<boolean>;
+  openDirectoryInTab: (directoryPath: string) => string;
   openLogsTab: () => string;
   activateTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
@@ -140,6 +152,25 @@ export function createWorkspaceTabStore() {
         projectPath: options?.projectPath,
       });
       return true;
+    },
+
+    openDirectoryInTab: (directoryPath) => {
+      const existingTab = get().tabs.find(
+        (tab) => tab.type === 'directory' && tab.filePath === directoryPath,
+      );
+
+      if (existingTab) {
+        set({ activeTabId: existingTab.id });
+        return existingTab.id;
+      }
+
+      const nextTab = createDirectoryTab(directoryPath);
+      set((state) => ({
+        tabs: [...state.tabs, nextTab],
+        activeTabId: nextTab.id,
+      }));
+
+      return nextTab.id;
     },
 
     openLogsTab: () => {

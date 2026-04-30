@@ -131,6 +131,16 @@ async function restoreWorkspaceSession(
       continue;
     }
 
+    if (tab.type === 'directory') {
+      if (!tab.filePath) {
+        continue;
+      }
+
+      const tabId = workspaceTabStore.getState().openDirectoryInTab(tab.filePath);
+      restoredTabIds.set(getPersistedWorkspaceTabKey(tab), tabId);
+      continue;
+    }
+
     if (!tab.filePath) {
       continue;
     }
