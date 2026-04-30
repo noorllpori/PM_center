@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { ArrowUp, Grid, List, RefreshCw } from 'lucide-react';
@@ -47,6 +47,7 @@ interface DirectoryTabSurfaceProps {
   projectPath?: string | null;
   projectName?: string | null;
   onOpenDirectoryTab?: (path: string) => Promise<void> | void;
+  toolbarActions?: ReactNode;
   treePanelWidth: number;
   isResizingTreePanel: boolean;
   onStartTreeResize: (event: React.MouseEvent<HTMLDivElement>) => void;
@@ -124,6 +125,7 @@ export function DirectoryTabSurface({
   projectPath,
   projectName,
   onOpenDirectoryTab,
+  toolbarActions,
   treePanelWidth,
   isResizingTreePanel,
   onStartTreeResize,
@@ -751,6 +753,11 @@ export function DirectoryTabSurface({
               {getPathLabel(currentDirectory, projectPath, projectName)}
             </div>
           </div>
+          {toolbarActions && (
+            <div className="flex shrink-0 items-center">
+              {toolbarActions}
+            </div>
+          )}
           <div className="flex items-center rounded-md bg-gray-100 p-0.5 dark:bg-gray-800">
             <button
               type="button"

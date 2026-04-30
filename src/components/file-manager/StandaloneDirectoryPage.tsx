@@ -212,21 +212,6 @@ export function StandaloneDirectoryPage() {
   return (
     <WorkspaceTabStoreProvider store={workspaceTabStore}>
       <div className="relative h-screen bg-white dark:bg-gray-900">
-        {projectPath && (
-          <div className="pointer-events-none absolute right-3 top-3 z-40">
-            <button
-              type="button"
-              onClick={handleReturnToProject}
-              disabled={isReturning}
-              className="pointer-events-auto inline-flex items-center gap-1.5 rounded-md border border-gray-300 bg-white/95 px-3 py-1.5 text-xs text-gray-700 shadow-sm transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900/95 dark:text-gray-200 dark:hover:bg-gray-800"
-              title="回归到项目标签页"
-            >
-              <ArrowLeft className="h-3.5 w-3.5" />
-              回归项目标签页
-            </button>
-          </div>
-        )}
-
         {returnErrorMessage && (
           <div className="pointer-events-none absolute left-1/2 top-3 z-40 -translate-x-1/2 rounded-md border border-red-300 bg-white px-3 py-1.5 text-xs text-red-600 shadow">
             {returnErrorMessage}
@@ -239,6 +224,18 @@ export function StandaloneDirectoryPage() {
           projectPath={projectPath || directoryPath}
           projectName={projectName || getPathName(projectPath || directoryPath)}
           onOpenDirectoryTab={handleOpenDirectoryTab}
+          toolbarActions={projectPath ? (
+            <button
+              type="button"
+              onClick={handleReturnToProject}
+              disabled={isReturning}
+              className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs text-gray-700 shadow-sm transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+              title="回归到项目标签页"
+            >
+              <ArrowLeft className="h-3.5 w-3.5" />
+              回归项目标签页
+            </button>
+          ) : null}
           treePanelWidth={treePanelWidth}
           isResizingTreePanel={isResizingTreePanel}
           onStartTreeResize={handleStartTreeResize}
