@@ -52,6 +52,7 @@ export async function openStandaloneDirectoryViewer(
     minHeight: 520,
     center: true,
     resizable: true,
+    dragDropEnabled: false,
     focus,
     visible,
   });
