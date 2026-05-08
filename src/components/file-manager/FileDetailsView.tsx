@@ -1,8 +1,14 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { Box, ChevronDown, ChevronRight, ExternalLink, FileIcon, FileText, Film, FolderIcon, Hash, Image, Link2, Maximize2, Music4, RefreshCw, Tag as TagIcon } from 'lucide-react';
 import { Dialog } from '../Dialog';
-import { FileDetailsResponse, FileInfo, Tag } from '../../types';
+import {
+  BlenderSceneRenderEdit,
+  BlenderWriteReport,
+  FileDetailsResponse,
+  FileInfo,
+  Tag,
+} from '../../types';
 import { useFileDetails } from './useFileDetails';
 import {
   isDirectPreviewImageExtension,
@@ -262,6 +268,162 @@ function buildBlenderParameterSummary(items: FileDetailsResponse['sections'][num
   return parts.length > 0 ? parts.join(' / ') : `${items.length} 项参数`;
 }
 
+type EditableStatus = 'idle' | 'saving' | 'saved' | 'error';
+
+function parseResolutionValue(value: string) {
+  const match = value.trim().match(/^(\d+)\s*[xX×]\s*(\d+)$/);
+  if (!match) {
+    return null;
+  }
+  return {
+    resolutionX: Number(match[1]),
+    resolutionY: Number(match[2]),
+  };
+}
+
+function parseFrameRangeValue(value: string) {
+  const match = value.trim().match(/^(-?\d+)\s*[-~至]\s*(-?\d+)$/);
+  if (!match) {
+    return null;
+  }
+  return {
+    frameStart: Number(match[1]),
+    frameEnd: Number(match[2]),
+  };
+}
+
+function buildBlenderEditPayload(editKey: string, value: string): BlenderSceneRenderEdit | null {
+  if (editKey === 'scene.resolution') {
+    return parseResolutionValue(value);
+  }
+
+  if (editKey === 'scene.frameRange') {
+    return parseFrameRangeValue(value);
+  }
+
+  if (editKey === 'scene.fps') {
+    const fps = Number(value.trim());
+    return Number.isFinite(fps) && fps > 0 ? { fps } : null;
+  }
+
+  if (editKey === 'scene.outputPath') {
+    return { outputPath: value };
+  }
+
+  return null;
+}
+
+async function saveBlenderDetailEdit(
+  filePath: string,
+  editKey: string,
+  value: string,
+) {
+  const edit = buildBlenderEditPayload(editKey, value);
+  if (!edit) {
+    throw new Error('输入格式不正确');
+  }
+
+  await invoke<BlenderWriteReport>('update_blender_scene_render', {
+    path: filePath,
+    sceneSelector: { kind: 'first' },
+    edit,
+    options: { backup: true },
+  });
+}
+
+function BlenderEditableValue({
+  item,
+  filePath,
+  onSaved,
+}: {
+  item: FileDetailsResponse['sections'][number]['items'][number];
+  filePath: string;
+  onSaved: () => Promise<void>;
+}) {
+  const [value, setValue] = useState(item.value);
+  const [status, setStatus] = useState<EditableStatus>('idle');
+  const [error, setError] = useState<string | null>(null);
+  const editKey = item.editKey;
+
+  useEffect(() => {
+    setValue(item.value);
+    setStatus('idle');
+    setError(null);
+  }, [item.value, editKey, filePath]);
+
+  useEffect(() => {
+    if (!editKey || value === item.value) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void commit();
+    }, 900);
+
+    return () => window.clearTimeout(timer);
+  }, [editKey, filePath, item.value, value]);
+
+  const commit = async () => {
+    if (!editKey || value === item.value || status === 'saving') {
+      return;
+    }
+
+    setStatus('saving');
+    setError(null);
+    try {
+      await saveBlenderDetailEdit(filePath, editKey, value);
+      await onSaved();
+      setStatus('saved');
+      window.setTimeout(() => {
+        setStatus((current) => (current === 'saved' ? 'idle' : current));
+      }, 1200);
+    } catch (saveError) {
+      setStatus('error');
+      setError(String(saveError));
+    }
+  };
+
+  return (
+    <div className="flex min-w-0 flex-1 flex-col items-end gap-1">
+      <input
+        type={editKey === 'scene.outputPath' ? 'text' : 'text'}
+        value={value}
+        disabled={status === 'saving'}
+        onChange={(event) => {
+          setValue(event.target.value);
+          if (status !== 'saving') {
+            setStatus('idle');
+            setError(null);
+          }
+        }}
+        onBlur={() => {
+          void commit();
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') {
+            event.currentTarget.blur();
+          }
+        }}
+        className="w-full min-w-0 rounded-md border border-transparent bg-transparent px-2 py-1 text-right text-sm text-gray-900 outline-none transition-colors hover:border-gray-200 hover:bg-gray-50 focus:border-blue-300 focus:bg-white dark:text-gray-100 dark:hover:border-gray-700 dark:hover:bg-gray-800 dark:focus:border-blue-700 dark:focus:bg-gray-900"
+      />
+      {status !== 'idle' || error ? (
+        <span
+          className={`max-w-full truncate text-[11px] ${
+            status === 'error'
+              ? 'text-red-600 dark:text-red-300'
+              : status === 'saved'
+                ? 'text-emerald-600 dark:text-emerald-300'
+                : 'text-blue-600 dark:text-blue-300'
+          }`}
+          title={error || undefined}
+        >
+          {status === 'saving' ? '保存中...' : status === 'saved' ? '已保存' : error || '保存失败'}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 function DetailInlineList({
   item,
 }: {
@@ -377,11 +539,15 @@ function SectionBlock({
   id,
   title,
   items,
+  filePath,
+  onBlenderEditSaved,
   onOpenDetails,
 }: {
   id: string;
   title: string;
   items: FileDetailsResponse['sections'][number]['items'];
+  filePath: string;
+  onBlenderEditSaved: () => Promise<void>;
   onOpenDetails: (item: FileDetailsResponse['sections'][number]['items'][number]) => void;
 }) {
   const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set());
@@ -404,10 +570,25 @@ function SectionBlock({
     const hasDetails = !!entry.details;
 
     return (
-      <div key={key} className="text-sm">
+      <div
+        key={key}
+        className={`text-sm ${
+          entry.editKey
+            ? 'rounded-lg border border-blue-100 bg-blue-50/45 px-2 py-1.5 dark:border-blue-900/40 dark:bg-blue-950/20'
+            : ''
+        }`}
+      >
         <div className="flex items-start gap-3">
           <span className="min-w-[72px] text-gray-500">{entry.label}</span>
-          <span className="flex-1 text-right text-gray-900 dark:text-gray-100 break-all">{entry.value}</span>
+          {entry.editKey && filePath ? (
+            <BlenderEditableValue
+              item={entry}
+              filePath={filePath}
+              onSaved={onBlenderEditSaved}
+            />
+          ) : (
+            <span className="flex-1 text-right text-gray-900 dark:text-gray-100 break-all">{entry.value}</span>
+          )}
         </div>
 
         {hasDetails && (
@@ -537,7 +718,7 @@ function FileDetailsContent({
   view,
   selectedCount = 0,
 }: FileDetailsContentProps) {
-  const { details, isLoading, isRefreshing, errorMessage, refresh } = useFileDetails(file, view);
+  const { details, isLoading, isRefreshing, errorMessage, refresh, replaceDetails } = useFileDetails(file, view);
   const projectPath = useOptionalProjectStore((state) => state.projectPath);
   const openFileInTab = useWorkspaceTabStore((state) => state.openFileInTab);
   const [detailsModalItem, setDetailsModalItem] = useState<FileDetailsResponse['sections'][number]['items'][number] | null>(null);
@@ -546,6 +727,20 @@ function FileDetailsContent({
   const displayName = details?.basic.name || file?.name || '';
   const sections = details?.sections || [];
   const hasDetails = details !== null;
+
+  const refreshDetailsAfterBlenderEdit = useCallback(async () => {
+    if (!file) {
+      return;
+    }
+
+    const result = await invoke<FileDetailsResponse>('get_file_details', {
+      path: file.path,
+      view,
+      toolPaths: null,
+      forceRefresh: true,
+    });
+    replaceDetails(result);
+  }, [file, replaceDetails, view]);
 
   const actionButton = useMemo(() => {
     if (!file) {
@@ -623,6 +818,8 @@ function FileDetailsContent({
             id={section.id}
             title={section.title}
             items={section.items}
+            filePath={file.path}
+            onBlenderEditSaved={refreshDetailsAfterBlenderEdit}
             onOpenDetails={setDetailsModalItem}
           />
         ))}

@@ -8,9 +8,11 @@ use lofty::prelude::{Accessor, TaggedFileExt};
 use lofty::probe::Probe;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use crate::process_utils::tokio_command;
 use crate::python::{get_blender_file_info, resolve_blender_path};
@@ -20,6 +22,9 @@ use crate::tree_cache::{self, TreeCacheDb};
 const FILE_DETAILS_CACHE_TTL_SECONDS: i64 = 30 * 24 * 60 * 60;
 const FILE_DETAILS_CACHE_MAX_ENTRIES: usize = 5000;
 const FILE_DETAILS_SCHEMA_VERSION: u32 = 2;
+
+static BLENDER_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static BLENDER_AUTO_SAVE_BACKUPS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -71,6 +76,7 @@ pub struct FileDetailsItem {
     pub label: String,
     pub value: String,
     pub details: Option<FileDetailsItemDetails>,
+    pub edit_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -228,14 +234,30 @@ pub async fn update_blender_scene_render(
 ) -> Result<blendio::WriteReport, String> {
     let path_buf = PathBuf::from(path);
     tokio::task::spawn_blocking(move || {
+        let _guard = BLENDER_WRITE_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let backup_key = path_buf.to_string_lossy().to_string();
+        let mut options = options.unwrap_or_default();
+        if options.backup {
+            let mut backups = BLENDER_AUTO_SAVE_BACKUPS
+                .get_or_init(|| Mutex::new(HashSet::new()))
+                .lock()
+                .map_err(|error| error.to_string())?;
+            if backups.contains(&backup_key) {
+                options.backup = false;
+            } else {
+                backups.insert(backup_key);
+            }
+        }
+
         let mut session =
             blendio::BlendEditSession::open(&path_buf).map_err(|error| error.to_string())?;
         session
             .edit_scene_render(scene_selector, edit)
             .map_err(|error| error.to_string())?;
-        session
-            .commit(options.unwrap_or_default())
-            .map_err(|error| error.to_string())
+        session.commit(options).map_err(|error| error.to_string())
     })
     .await
     .map_err(|error| error.to_string())?
@@ -917,25 +939,36 @@ fn build_blendio_sections(
         ));
 
         if scene.resolution_x > 0 && scene.resolution_y > 0 {
-            media_items.push(item(
-                "分辨率",
-                format!("{} x {}", scene.resolution_x, scene.resolution_y),
-            ));
+            media_items.push(
+                item(
+                    "分辨率",
+                    format!("{} x {}", scene.resolution_x, scene.resolution_y),
+                )
+                .editable("scene.resolution"),
+            );
         }
 
         if scene.frame_start != 0 || scene.frame_end != 0 {
-            media_items.push(item(
-                "帧范围",
-                format!("{} - {}", scene.frame_start, scene.frame_end),
-            ));
+            media_items.push(
+                item(
+                    "帧范围",
+                    format!("{} - {}", scene.frame_start, scene.frame_end),
+                )
+                .editable("scene.frameRange"),
+            );
         }
 
         if scene.fps > 0.0 {
-            media_items.push(item("FPS", format_float(scene.fps as f64)));
+            media_items.push(item("FPS", format_float(scene.fps as f64)).editable("scene.fps"));
         }
 
         push_optional(&mut media_items, "渲染引擎", scene.render_engine.clone());
-        push_optional(&mut media_items, "输出路径", scene.output_path.clone());
+        push_optional_editable(
+            &mut media_items,
+            "输出路径",
+            scene.output_path.clone(),
+            "scene.outputPath",
+        );
         push_optional(&mut media_items, "世界", scene.world.clone());
         push_optional(&mut media_items, "主集合", scene.master_collection.clone());
     }
@@ -1356,6 +1389,14 @@ fn item(label: impl Into<String>, value: impl Into<String>) -> FileDetailsItem {
         label: label.into(),
         value: value.into(),
         details: None,
+        edit_key: None,
+    }
+}
+
+impl FileDetailsItem {
+    fn editable(mut self, edit_key: impl Into<String>) -> Self {
+        self.edit_key = Some(edit_key.into());
+        self
     }
 }
 
@@ -1369,6 +1410,7 @@ fn list_item(
         label: label.into(),
         value,
         details: Some(FileDetailsItemDetails::TextList { values }),
+        edit_key: None,
     })
 }
 
@@ -1389,6 +1431,7 @@ fn records_item(
         label: label.into(),
         value,
         details: Some(FileDetailsItemDetails::Records { columns, records }),
+        edit_key: None,
     })
 }
 
@@ -1408,6 +1451,19 @@ fn push_optional(items: &mut Vec<FileDetailsItem>, label: &str, value: Option<St
     if let Some(value) = value {
         if !value.trim().is_empty() {
             items.push(item(label, value));
+        }
+    }
+}
+
+fn push_optional_editable(
+    items: &mut Vec<FileDetailsItem>,
+    label: &str,
+    value: Option<String>,
+    edit_key: &str,
+) {
+    if let Some(value) = value {
+        if !value.trim().is_empty() {
+            items.push(item(label, value).editable(edit_key));
         }
     }
 }

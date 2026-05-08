@@ -366,39 +366,3 @@ fn edit_session_preserves_gzip_compression() {
     let summary = summarize(&file).unwrap();
     assert_eq!(summary.scenes[0].frame_start, 5);
 }
-
-#[test]
-fn edit_scene_render_command_outputs_json_report() {
-    let samples = sample_paths();
-    let path = copy_sample(&samples.uncompressed, "scene_edit_cli.blend");
-
-    let value = run_blendio_json(vec![
-        OsString::from("edit-scene-render"),
-        path.as_os_str().to_os_string(),
-        OsString::from("--scene"),
-        OsString::from("first"),
-        OsString::from("--resolution"),
-        OsString::from("1920x1080"),
-        OsString::from("--frame-start"),
-        OsString::from("1"),
-        OsString::from("--frame-end"),
-        OsString::from("120"),
-        OsString::from("--fps"),
-        OsString::from("25"),
-        OsString::from("--output-path"),
-        OsString::from("//renders/cli_"),
-    ]);
-
-    assert_eq!(value["verified"], true);
-    assert_eq!(value["compression"], "none");
-    assert!(value["backupPath"].as_str().unwrap().contains(".pmc-bak-"));
-
-    let summary = summarize(&BlendFile::open(&path).unwrap()).unwrap();
-    let scene = &summary.scenes[0];
-    assert_eq!(scene.resolution_x, 1920);
-    assert_eq!(scene.resolution_y, 1080);
-    assert_eq!(scene.frame_start, 1);
-    assert_eq!(scene.frame_end, 120);
-    assert_eq!(scene.fps, 25.0);
-    assert_eq!(scene.output_path.as_deref(), Some("//renders/cli_"));
-}

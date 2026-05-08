@@ -200,11 +200,20 @@ export function useFileDetails(file: FileInfo | null, view: 'panel' | 'dialog') 
     }
   }, [details, file, toolPaths, view]);
 
+  const replaceDetails = useCallback((nextDetails: FileDetailsResponse) => {
+    if (cacheKey) {
+      touchCacheEntry(cacheKey, nextDetails);
+    }
+    setDetails(nextDetails);
+    setErrorMessage(null);
+  }, [cacheKey]);
+
   return {
     details,
     isLoading,
     isRefreshing,
     errorMessage,
     refresh,
+    replaceDetails,
   };
 }

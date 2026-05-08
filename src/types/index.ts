@@ -14,6 +14,33 @@ export interface FileDetailsItem {
   label: string;
   value: string;
   details?: FileDetailsItemDetails | null;
+  editKey?: string | null;
+}
+
+export interface BlenderSceneRenderEdit {
+  resolutionX?: number | null;
+  resolutionY?: number | null;
+  frameStart?: number | null;
+  frameEnd?: number | null;
+  frameCurrent?: number | null;
+  fps?: number | null;
+  outputPath?: string | null;
+}
+
+export interface BlenderWriteOptions {
+  backup?: boolean;
+  threadCount?: number | null;
+  zstdLevel?: number | null;
+}
+
+export interface BlenderWriteReport {
+  path: string;
+  backupPath: string | null;
+  compression: 'none' | 'gzip' | 'zstd';
+  patchCount: number;
+  bytesChanged: number;
+  threadCount: number;
+  verified: boolean;
 }
 
 export type FileDetailsItemDetails =
