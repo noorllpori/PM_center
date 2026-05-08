@@ -1,11 +1,16 @@
 use std::ffi::OsString;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use blendio::{BlendFile, CompressionKind, summarize};
+use blendio::{
+    BlendEditSession, BlendFile, CompressionKind, SceneRenderEdit, SceneSelector, WriteOptions,
+    summarize,
+};
+use flate2::write::GzEncoder;
 use serde_json::Value;
 
 struct SamplePaths {
@@ -70,6 +75,28 @@ fn python_string(path: &Path) -> String {
         .replace('\\', "\\\\")
         .replace('\'', "\\'");
     format!("'{}'", escaped)
+}
+
+fn unique_temp_path(file_name: &str) -> PathBuf {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!("blendio-test-{}-{stamp}-{file_name}", std::process::id()))
+}
+
+fn copy_sample(source: &Path, file_name: &str) -> PathBuf {
+    let target = unique_temp_path(file_name);
+    fs::copy(source, &target).unwrap();
+    target
+}
+
+fn gzip_sample(source: &Path, file_name: &str) -> PathBuf {
+    let target = unique_temp_path(file_name);
+    let mut encoder = GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(&fs::read(source).unwrap()).unwrap();
+    fs::write(&target, encoder.finish().unwrap()).unwrap();
+    target
 }
 
 fn run_blendio_json(args: impl IntoIterator<Item = OsString>) -> Value {
@@ -239,4 +266,139 @@ fn info_command_defaults_to_human_readable_text() {
     assert!(text.contains("MyCube"));
     assert!(text.contains("MainCollection"));
     assert!(!text.trim_start().starts_with('{'));
+}
+
+#[test]
+fn edit_session_updates_uncompressed_scene_render_and_creates_backup() {
+    let samples = sample_paths();
+    let path = copy_sample(&samples.uncompressed, "scene_edit_uncompressed.blend");
+
+    let mut session = BlendEditSession::open(&path).unwrap();
+    session
+        .edit_scene_render(
+            SceneSelector::First,
+            SceneRenderEdit {
+                resolution_x: Some(1280),
+                resolution_y: Some(720),
+                frame_start: Some(10),
+                frame_end: Some(100),
+                frame_current: Some(20),
+                fps: Some(24.0),
+                output_path: Some("//renders/test_".to_owned()),
+            },
+        )
+        .unwrap();
+    let report = session.commit(WriteOptions::default()).unwrap();
+
+    assert_eq!(report.compression, CompressionKind::None);
+    assert!(report.verified);
+    assert!(report.patch_count >= 7);
+    assert!(report.backup_path.as_ref().unwrap().exists());
+
+    let file = BlendFile::open(&path).unwrap();
+    let summary = summarize(&file).unwrap();
+    let scene = &summary.scenes[0];
+    assert_eq!(scene.resolution_x, 1280);
+    assert_eq!(scene.resolution_y, 720);
+    assert_eq!(scene.frame_start, 10);
+    assert_eq!(scene.frame_end, 100);
+    assert_eq!(scene.frame_current, 20);
+    assert_eq!(scene.fps, 24.0);
+    assert_eq!(scene.output_path.as_deref(), Some("//renders/test_"));
+}
+
+#[test]
+fn edit_session_preserves_zstd_compression() {
+    let samples = sample_paths();
+    let path = copy_sample(&samples.compressed, "scene_edit_zstd.blend");
+
+    let mut session = BlendEditSession::open(&path).unwrap();
+    session
+        .edit_scene_render(
+            SceneSelector::Name("Scene".to_owned()),
+            SceneRenderEdit {
+                frame_end: Some(144),
+                fps: Some(30.0),
+                ..SceneRenderEdit::default()
+            },
+        )
+        .unwrap();
+    session
+        .commit(WriteOptions {
+            backup: false,
+            thread_count: Some(2),
+            zstd_level: Some(1),
+        })
+        .unwrap();
+
+    let file = BlendFile::open(&path).unwrap();
+    assert_eq!(file.header().compression, CompressionKind::Zstd);
+    let summary = summarize(&file).unwrap();
+    assert_eq!(summary.scenes[0].frame_end, 144);
+    assert_eq!(summary.scenes[0].fps, 30.0);
+}
+
+#[test]
+fn edit_session_preserves_gzip_compression() {
+    let samples = sample_paths();
+    let path = gzip_sample(&samples.uncompressed, "scene_edit_gzip.blend");
+
+    let mut session = BlendEditSession::open(&path).unwrap();
+    session
+        .edit_scene_render(
+            SceneSelector::First,
+            SceneRenderEdit {
+                frame_start: Some(5),
+                ..SceneRenderEdit::default()
+            },
+        )
+        .unwrap();
+    session
+        .commit(WriteOptions {
+            backup: false,
+            thread_count: Some(4),
+            zstd_level: None,
+        })
+        .unwrap();
+
+    let file = BlendFile::open(&path).unwrap();
+    assert_eq!(file.header().compression, CompressionKind::Gzip);
+    let summary = summarize(&file).unwrap();
+    assert_eq!(summary.scenes[0].frame_start, 5);
+}
+
+#[test]
+fn edit_scene_render_command_outputs_json_report() {
+    let samples = sample_paths();
+    let path = copy_sample(&samples.uncompressed, "scene_edit_cli.blend");
+
+    let value = run_blendio_json(vec![
+        OsString::from("edit-scene-render"),
+        path.as_os_str().to_os_string(),
+        OsString::from("--scene"),
+        OsString::from("first"),
+        OsString::from("--resolution"),
+        OsString::from("1920x1080"),
+        OsString::from("--frame-start"),
+        OsString::from("1"),
+        OsString::from("--frame-end"),
+        OsString::from("120"),
+        OsString::from("--fps"),
+        OsString::from("25"),
+        OsString::from("--output-path"),
+        OsString::from("//renders/cli_"),
+    ]);
+
+    assert_eq!(value["verified"], true);
+    assert_eq!(value["compression"], "none");
+    assert!(value["backupPath"].as_str().unwrap().contains(".pmc-bak-"));
+
+    let summary = summarize(&BlendFile::open(&path).unwrap()).unwrap();
+    let scene = &summary.scenes[0];
+    assert_eq!(scene.resolution_x, 1920);
+    assert_eq!(scene.resolution_y, 1080);
+    assert_eq!(scene.frame_start, 1);
+    assert_eq!(scene.frame_end, 120);
+    assert_eq!(scene.fps, 25.0);
+    assert_eq!(scene.output_path.as_deref(), Some("//renders/cli_"));
 }

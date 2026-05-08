@@ -76,6 +76,10 @@ impl BlockHeader {
     pub fn is_id(&self) -> bool {
         self.code.is_id()
     }
+
+    pub fn payload_offset(&self) -> usize {
+        self.payload_offset
+    }
 }
 
 pub fn parse_blocks(bytes: &[u8], header: &BlendHeader) -> Result<Vec<BlockHeader>> {

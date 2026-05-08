@@ -344,6 +344,7 @@ dependencies = [
 name = "blendio"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "clap",
  "flate2",
  "memmap2",

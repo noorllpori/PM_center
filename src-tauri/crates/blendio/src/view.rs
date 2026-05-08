@@ -137,7 +137,7 @@ impl BlendFile {
         })
     }
 
-    fn data(&self) -> &[u8] {
+    pub(crate) fn data(&self) -> &[u8] {
         self.storage.as_slice()
     }
 

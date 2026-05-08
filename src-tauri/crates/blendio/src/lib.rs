@@ -1,6 +1,7 @@
 pub mod array_view;
 pub mod bhead;
 pub mod cli;
+pub mod edit;
 pub mod error;
 pub mod external_data;
 pub mod header;
@@ -11,6 +12,9 @@ pub mod summary;
 pub mod view;
 
 pub use bhead::{BlockCode, BlockHeader};
+pub use edit::{
+    BlendEditSession, BlendPatch, SceneRenderEdit, SceneSelector, WriteOptions, WriteReport,
+};
 pub use error::{BlendError, Result};
 pub use external_data::{
     ExternalDataSummary, ExternalImage, ExternalLibrary, ExternalText, LinkedId,

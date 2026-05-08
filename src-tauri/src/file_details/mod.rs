@@ -219,6 +219,28 @@ pub async fn get_blender_preview_png(path: String) -> Result<Option<Vec<u8>>, St
     .map_err(|error| error.to_string())?
 }
 
+#[tauri::command]
+pub async fn update_blender_scene_render(
+    path: String,
+    scene_selector: blendio::SceneSelector,
+    edit: blendio::SceneRenderEdit,
+    options: Option<blendio::WriteOptions>,
+) -> Result<blendio::WriteReport, String> {
+    let path_buf = PathBuf::from(path);
+    tokio::task::spawn_blocking(move || {
+        let mut session =
+            blendio::BlendEditSession::open(&path_buf).map_err(|error| error.to_string())?;
+        session
+            .edit_scene_render(scene_selector, edit)
+            .map_err(|error| error.to_string())?;
+        session
+            .commit(options.unwrap_or_default())
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 fn resolve_cache_db_for_file(path: &str) -> Option<TreeCacheDb> {
     let project_root = tree_cache::detect_project_root_for_path(path)?;
     tree_cache::get_or_create_project_cache(&project_root).ok()

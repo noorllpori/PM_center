@@ -34,6 +34,34 @@ pub enum BlendError {
     NonStructBlock { code: String, offset: usize },
     #[error("old pointer 0x{ptr:X} could not be resolved")]
     MissingOldPointer { ptr: u64 },
+    #[error("scene not found: {selector}")]
+    SceneNotFound { selector: String },
+    #[error("field {struct_name}.{field_name} is missing")]
+    MissingField {
+        struct_name: String,
+        field_name: String,
+    },
+    #[error("field {struct_name}.{field_name} has unsupported type or size")]
+    FieldTypeMismatch {
+        struct_name: String,
+        field_name: String,
+    },
+    #[error("string for field {field_name} is too long: {actual} bytes, capacity is {capacity}")]
+    StringTooLong {
+        field_name: String,
+        actual: usize,
+        capacity: usize,
+    },
+    #[error("patch range 0x{start:X}..0x{end:X} is invalid")]
+    InvalidPatchRange { start: usize, end: usize },
+    #[error("patch ranges overlap at 0x{offset:X}")]
+    PatchConflict { offset: usize },
+    #[error("patch at 0x{offset:X} no longer matches the source bytes")]
+    PatchOldBytesMismatch { offset: usize },
+    #[error("compression write error: {0}")]
+    CompressionWrite(String),
+    #[error("write verification failed: {0}")]
+    Verification(String),
     #[error("export error: {0}")]
     Export(String),
 }

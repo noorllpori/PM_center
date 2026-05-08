@@ -10,7 +10,10 @@ use crate::summary::{
     MaterialSummary, MeshSummary, ModifierSummary, ObjectSummary, SceneSummary, TextSummary,
     WorldSummary, collect_id_entries, summarize,
 };
-use crate::{BHeadType, BlendError, BlendFile, CompressionKind, Endian, FieldDef, StructDef};
+use crate::{
+    BHeadType, BlendEditSession, BlendError, BlendFile, CompressionKind, Endian, FieldDef,
+    SceneRenderEdit, SceneSelector, StructDef, WriteOptions,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "blendio", version, about = "Read Blender 4.5 .blend files")]
@@ -38,6 +41,27 @@ enum Commands {
     },
     Ids {
         file: PathBuf,
+    },
+    EditSceneRender {
+        file: PathBuf,
+        #[arg(long, default_value = "first")]
+        scene: String,
+        #[arg(long)]
+        resolution: Option<String>,
+        #[arg(long = "frame-start")]
+        frame_start: Option<i32>,
+        #[arg(long = "frame-end")]
+        frame_end: Option<i32>,
+        #[arg(long = "frame-current")]
+        frame_current: Option<i32>,
+        #[arg(long)]
+        fps: Option<f32>,
+        #[arg(long = "output-path")]
+        output_path: Option<String>,
+        #[arg(long = "no-backup")]
+        no_backup: bool,
+        #[arg(long)]
+        threads: Option<usize>,
     },
 }
 
@@ -132,6 +156,48 @@ pub fn run() -> Result<()> {
                 cli.json_out.as_deref(),
             )
         }
+        Commands::EditSceneRender {
+            file,
+            scene,
+            resolution,
+            frame_start,
+            frame_end,
+            frame_current,
+            fps,
+            output_path,
+            no_backup,
+            threads,
+        } => {
+            let (resolution_x, resolution_y) = match resolution {
+                Some(value) => {
+                    let (x, y) = parse_resolution(&value)?;
+                    (Some(x), Some(y))
+                }
+                None => (None, None),
+            };
+            let edit = SceneRenderEdit {
+                resolution_x,
+                resolution_y,
+                frame_start,
+                frame_end,
+                frame_current,
+                fps,
+                output_path,
+            };
+            let mut session = BlendEditSession::open(&file)?;
+            session.edit_scene_render(parse_scene_selector(&scene), edit)?;
+            let report = session.commit(WriteOptions {
+                backup: !no_backup,
+                thread_count: threads,
+                zstd_level: None,
+            })?;
+            emit_output(
+                &report,
+                &render_write_report_text(&report),
+                cli.json,
+                cli.json_out.as_deref(),
+            )
+        }
     }
 }
 
@@ -155,6 +221,54 @@ fn emit_output<T: Serialize + ?Sized>(
     }
 
     Ok(())
+}
+
+fn parse_scene_selector(value: &str) -> SceneSelector {
+    if value.eq_ignore_ascii_case("first") {
+        return SceneSelector::First;
+    }
+
+    if let Some(hex) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        if let Ok(ptr) = u64::from_str_radix(hex, 16) {
+            return SceneSelector::OldPtr(ptr);
+        }
+    }
+
+    SceneSelector::Name(value.to_owned())
+}
+
+fn parse_resolution(value: &str) -> Result<(i32, i32)> {
+    let (x, y) = value
+        .split_once('x')
+        .or_else(|| value.split_once('X'))
+        .ok_or_else(|| BlendError::InvalidHeader(format!("invalid resolution {value}")))?;
+    let x = x
+        .trim()
+        .parse::<i32>()
+        .map_err(|_| BlendError::InvalidHeader(format!("invalid resolution width {value}")))?;
+    let y = y
+        .trim()
+        .parse::<i32>()
+        .map_err(|_| BlendError::InvalidHeader(format!("invalid resolution height {value}")))?;
+    Ok((x, y))
+}
+
+fn render_write_report_text(report: &crate::WriteReport) -> String {
+    let mut out = String::new();
+    writeln!(out, "Blend Write Report").unwrap();
+    writeln!(out, "File: {}", report.path.display()).unwrap();
+    if let Some(backup_path) = &report.backup_path {
+        writeln!(out, "Backup: {}", backup_path.display()).unwrap();
+    }
+    writeln!(out, "Compression: {}", compression_label(report.compression)).unwrap();
+    writeln!(out, "Patches: {}", report.patch_count).unwrap();
+    writeln!(out, "Bytes changed: {}", report.bytes_changed).unwrap();
+    writeln!(out, "Threads: {}", report.thread_count).unwrap();
+    writeln!(out, "Verified: {}", report.verified).unwrap();
+    out
 }
 
 fn render_info_text(path: &Path, summary: &FileSummary) -> String {
