@@ -43,6 +43,24 @@ const TEXT_EXTENSIONS = new Set([
   'mk', 'gradle', 'sql', 'prisma', 'graphql', 'gql', 'lua', 'log',
 ]);
 
+const BLENDER_PARAMETER_LABELS = new Set([
+  '压缩方式',
+  '字节序',
+  '块头类型',
+  '指针大小',
+  '块数量',
+  'ID 数量',
+  '场景数',
+  '对象数',
+  '集合数',
+  '网格数',
+  '材质数',
+  '相机数',
+  '灯光数',
+  '动作数',
+  '图片数',
+]);
+
 function getFileExtension(file: FileInfo | null) {
   return file?.extension?.toLowerCase() || '';
 }
@@ -214,6 +232,32 @@ function formatDetailValue(value: unknown): string {
   return String(value);
 }
 
+function isBlenderParameterItem(item: FileDetailsResponse['sections'][number]['items'][number]) {
+  return BLENDER_PARAMETER_LABELS.has(item.label);
+}
+
+function getItemValue(
+  items: FileDetailsResponse['sections'][number]['items'],
+  label: string,
+) {
+  return items.find((item) => item.label === label)?.value;
+}
+
+function buildBlenderParameterSummary(items: FileDetailsResponse['sections'][number]['items']) {
+  const parts = [
+    ['场景数', '场景'],
+    ['对象数', '对象'],
+    ['图片数', '图片'],
+  ]
+    .map(([label, title]) => {
+      const value = getItemValue(items, label);
+      return value ? `${title} ${value}` : null;
+    })
+    .filter(Boolean);
+
+  return parts.length > 0 ? parts.join(' / ') : `${items.length} 项参数`;
+}
+
 function DetailInlineList({
   item,
 }: {
@@ -326,19 +370,77 @@ function DetailsModal({
 }
 
 function SectionBlock({
+  id,
   title,
   items,
   onOpenDetails,
 }: {
+  id: string;
   title: string;
   items: FileDetailsResponse['sections'][number]['items'];
   onOpenDetails: (item: FileDetailsResponse['sections'][number]['items'][number]) => void;
 }) {
   const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set());
+  const [isParameterGroupExpanded, setIsParameterGroupExpanded] = useState(false);
 
   if (items.length === 0) {
     return null;
   }
+
+  const parameterItems = id === 'media' ? items.filter(isBlenderParameterItem) : [];
+  const regularItems = parameterItems.length > 0 ? items.filter((item) => !isBlenderParameterItem(item)) : items;
+
+  const renderEntry = (
+    entry: FileDetailsResponse['sections'][number]['items'][number],
+    index: number,
+    keyPrefix: string,
+  ) => {
+    const key = `${keyPrefix}-${entry.label}-${index}`;
+    const isExpanded = expandedKeys.has(key);
+    const hasDetails = !!entry.details;
+
+    return (
+      <div key={key} className="text-sm">
+        <div className="flex items-start gap-3">
+          <span className="min-w-[72px] text-gray-500">{entry.label}</span>
+          <span className="flex-1 text-right text-gray-900 dark:text-gray-100 break-all">{entry.value}</span>
+        </div>
+
+        {hasDetails && (
+          <div className="mt-1 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setExpandedKeys((current) => {
+                  const next = new Set(current);
+                  if (next.has(key)) {
+                    next.delete(key);
+                  } else {
+                    next.add(key);
+                  }
+                  return next;
+                });
+              }}
+              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-blue-600 transition-colors hover:bg-blue-50 dark:text-blue-300 dark:hover:bg-blue-900/20"
+            >
+              {isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+              {isExpanded ? '收起' : '展开'}
+            </button>
+            <button
+              type="button"
+              onClick={() => onOpenDetails(entry)}
+              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-gray-600 transition-colors hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+            >
+              <Maximize2 className="h-3.5 w-3.5" />
+              小面板
+            </button>
+          </div>
+        )}
+
+        {isExpanded && <DetailInlineList item={entry} />}
+      </div>
+    );
+  };
 
   return (
     <div className="pt-4 border-t border-gray-200 dark:border-gray-700 first:pt-0 first:border-t-0">
@@ -347,53 +449,30 @@ function SectionBlock({
         <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{title}</span>
       </div>
       <div className="space-y-3">
-        {items.map((entry, index) => {
-          const key = `${entry.label}-${index}`;
-          const isExpanded = expandedKeys.has(key);
-          const hasDetails = !!entry.details;
-
-          return (
-            <div key={key} className="text-sm">
-              <div className="flex items-start gap-3">
-                <span className="min-w-[72px] text-gray-500">{entry.label}</span>
-                <span className="flex-1 text-right text-gray-900 dark:text-gray-100 break-all">{entry.value}</span>
+        {parameterItems.length > 0 && (
+          <div className="rounded-lg border border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800/60">
+            <button
+              type="button"
+              onClick={() => setIsParameterGroupExpanded((value) => !value)}
+              className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
+            >
+              <span className="flex min-w-0 items-center gap-2">
+                {isParameterGroupExpanded ? <ChevronDown className="h-4 w-4 shrink-0 text-gray-500" /> : <ChevronRight className="h-4 w-4 shrink-0 text-gray-500" />}
+                <span className="text-sm font-medium text-gray-700 dark:text-gray-200">文件解析参数</span>
+              </span>
+              <span className="min-w-0 flex-1 truncate text-right text-xs text-gray-500 dark:text-gray-400">
+                {buildBlenderParameterSummary(parameterItems)}
+              </span>
+            </button>
+            {isParameterGroupExpanded && (
+              <div className="space-y-3 border-t border-gray-200 px-3 py-3 dark:border-gray-700">
+                {parameterItems.map((entry, index) => renderEntry(entry, index, 'parameter'))}
               </div>
+            )}
+          </div>
+        )}
 
-              {hasDetails && (
-                <div className="mt-1 flex justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setExpandedKeys((current) => {
-                        const next = new Set(current);
-                        if (next.has(key)) {
-                          next.delete(key);
-                        } else {
-                          next.add(key);
-                        }
-                        return next;
-                      });
-                    }}
-                    className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-blue-600 transition-colors hover:bg-blue-50 dark:text-blue-300 dark:hover:bg-blue-900/20"
-                  >
-                    {isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-                    {isExpanded ? '收起' : '展开'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onOpenDetails(entry)}
-                    className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-gray-600 transition-colors hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
-                  >
-                    <Maximize2 className="h-3.5 w-3.5" />
-                    小面板
-                  </button>
-                </div>
-              )}
-
-              {isExpanded && <DetailInlineList item={entry} />}
-            </div>
-          );
-        })}
+        {regularItems.map((entry, index) => renderEntry(entry, index, 'item'))}
       </div>
     </div>
   );
@@ -537,6 +616,7 @@ function FileDetailsContent({
         {!isLoading && sections.map((section) => (
           <SectionBlock
             key={section.id}
+            id={section.id}
             title={section.title}
             items={section.items}
             onOpenDetails={setDetailsModalItem}
