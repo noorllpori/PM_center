@@ -25,7 +25,7 @@ mod watcher;
 
 use db::FileChange;
 use db::{Database, FileMetadata, Tag};
-use file_details::get_file_details;
+use file_details::{get_blender_external_data, get_file_details};
 use p2p::{init_p2p, send_p2p_message, start_p2p_discovery, stop_p2p_discovery, update_p2p_user};
 use plugin::{
     get_plugin_dirs, inspect_plugin_dependencies, install_plugin_dependencies, list_plugins,
@@ -952,6 +952,7 @@ pub fn run() {
             fs::paste_system_clipboard,
             fs::get_file_property,
             fs::read_file,
+            get_blender_external_data,
             get_file_details,
             inspect_tool_paths,
             move_project_entry,

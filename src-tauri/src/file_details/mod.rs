@@ -19,6 +19,7 @@ use crate::tree_cache::{self, TreeCacheDb};
 
 const FILE_DETAILS_CACHE_TTL_SECONDS: i64 = 30 * 24 * 60 * 60;
 const FILE_DETAILS_CACHE_MAX_ENTRIES: usize = 5000;
+const FILE_DETAILS_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -69,6 +70,26 @@ pub struct FileDetailsSection {
 pub struct FileDetailsItem {
     pub label: String,
     pub value: String,
+    pub details: Option<FileDetailsItemDetails>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum FileDetailsItemDetails {
+    TextList {
+        values: Vec<String>,
+    },
+    Records {
+        columns: Vec<FileDetailsRecordColumn>,
+        records: Vec<Value>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileDetailsRecordColumn {
+    pub key: String,
+    pub label: String,
 }
 
 struct ParserOutcome {
@@ -162,6 +183,20 @@ pub async fn get_file_details(
     Ok(response)
 }
 
+#[tauri::command]
+pub async fn get_blender_external_data(
+    path: String,
+) -> Result<blendio::ExternalDataSummary, String> {
+    let path_buf = PathBuf::from(path);
+    tokio::task::spawn_blocking(move || {
+        let file = blendio::BlendFile::open(&path_buf).map_err(|error| error.to_string())?;
+        blendio::collect_external_data_with_base(&file, Some(&path_buf))
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 fn resolve_cache_db_for_file(path: &str) -> Option<TreeCacheDb> {
     let project_root = tree_cache::detect_project_root_for_path(path)?;
     tree_cache::get_or_create_project_cache(&project_root).ok()
@@ -174,6 +209,7 @@ fn build_file_details_signature(
     blender_path: Option<&str>,
 ) -> String {
     serde_json::json!({
+        "schemaVersion": FILE_DETAILS_SCHEMA_VERSION,
         "path": path,
         "modified": basic.modified,
         "size": basic.size,
@@ -738,6 +774,8 @@ async fn parse_blendio_details(path: &Path) -> Result<ParserOutcome, String> {
     tokio::task::spawn_blocking(move || {
         let file = blendio::BlendFile::open(&path_buf).map_err(|error| error.to_string())?;
         let summary = blendio::summarize(&file).map_err(|error| error.to_string())?;
+        let external_data = blendio::collect_external_data_with_base(&file, Some(&path_buf))
+            .map_err(|error| error.to_string())?;
 
         Ok(ParserOutcome {
             parser: FileDetailsParser {
@@ -746,7 +784,7 @@ async fn parse_blendio_details(path: &Path) -> Result<ParserOutcome, String> {
                 status: "ok".to_string(),
                 warning: None,
             },
-            sections: build_blendio_sections(&summary),
+            sections: build_blendio_sections(&summary, &external_data),
         })
     })
     .await
@@ -792,7 +830,10 @@ async fn parse_blender_fallback_details(
     )
 }
 
-fn build_blendio_sections(summary: &blendio::FileSummary) -> Vec<FileDetailsSection> {
+fn build_blendio_sections(
+    summary: &blendio::FileSummary,
+    external_data: &blendio::ExternalDataSummary,
+) -> Vec<FileDetailsSection> {
     let mut media_items = vec![
         item(
             "Blender 版本",
@@ -856,100 +897,88 @@ fn build_blendio_sections(summary: &blendio::FileSummary) -> Vec<FileDetailsSect
     }
 
     let mut metadata_items = Vec::new();
-    push_optional(
+    push_list_item(
         &mut metadata_items,
         "场景列表",
-        preview_values(
-            summary
-                .scenes
-                .iter()
-                .map(|scene| scene.name.clone())
-                .collect(),
-            6,
-        ),
+        summary
+            .scenes
+            .iter()
+            .map(|scene| scene.name.clone())
+            .collect(),
+        6,
     );
-    push_optional(
+    push_list_item(
         &mut metadata_items,
         "相机列表",
-        preview_values(
-            summary
-                .cameras
-                .iter()
-                .map(|camera| camera.name.clone())
-                .collect(),
-            6,
-        ),
+        summary
+            .cameras
+            .iter()
+            .map(|camera| camera.name.clone())
+            .collect(),
+        6,
     );
-    push_optional(
+    push_list_item(
         &mut metadata_items,
         "灯光列表",
-        preview_values(
-            summary
-                .lights
-                .iter()
-                .map(|light| light.name.clone())
-                .collect(),
-            6,
-        ),
+        summary
+            .lights
+            .iter()
+            .map(|light| light.name.clone())
+            .collect(),
+        6,
     );
-    push_optional(
+    push_list_item(
         &mut metadata_items,
         "集合列表",
-        preview_values(
-            summary
-                .collections
-                .iter()
-                .map(|collection| collection.name.clone())
-                .collect(),
-            6,
-        ),
+        summary
+            .collections
+            .iter()
+            .map(|collection| collection.name.clone())
+            .collect(),
+        6,
     );
-    push_optional(
+    push_list_item(
         &mut metadata_items,
         "材质列表",
-        preview_values(
-            summary
-                .materials
-                .iter()
-                .map(|material| material.name.clone())
-                .collect(),
-            6,
-        ),
+        summary
+            .materials
+            .iter()
+            .map(|material| material.name.clone())
+            .collect(),
+        6,
     );
-    push_optional(
+    push_list_item(
         &mut metadata_items,
         "动画列表",
-        preview_values(
-            summary
-                .actions
-                .iter()
-                .map(|action| action.name.clone())
-                .collect(),
-            6,
-        ),
+        summary
+            .actions
+            .iter()
+            .map(|action| action.name.clone())
+            .collect(),
+        6,
     );
-    push_optional(
+    push_list_item(
         &mut metadata_items,
         "外部库",
-        preview_values(
-            summary
-                .libraries
-                .iter()
-                .map(|library| {
-                    library
-                        .filepath
-                        .clone()
-                        .unwrap_or_else(|| library.name.clone())
-                })
-                .collect(),
-            4,
-        ),
+        summary
+            .libraries
+            .iter()
+            .map(|library| {
+                library
+                    .filepath
+                    .clone()
+                    .unwrap_or_else(|| library.name.clone())
+            })
+            .collect(),
+        4,
     );
 
     let mut sections = vec![section("media", "媒体信息", media_items)];
     if !metadata_items.is_empty() {
         sections.push(section("metadata", "元数据/标签", metadata_items));
     }
+    let external_sections = build_external_data_sections(external_data);
+    sections.extend(external_sections);
 
     sections
 }
@@ -1036,46 +1065,175 @@ fn build_blender_python_sections(info: &Value) -> Vec<FileDetailsSection> {
     }
 
     let mut metadata_items = Vec::new();
-    push_optional(
+    push_list_item(
         &mut metadata_items,
         "场景列表",
-        preview_values(
-            info.get("scenes")
-                .and_then(Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(|item| {
-                            item.get("name").and_then(Value::as_str).map(str::to_string)
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default(),
-            6,
-        ),
+        info.get("scenes")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.get("name").and_then(Value::as_str).map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+        6,
     );
-    push_optional(
+    push_list_item(
         &mut metadata_items,
         "相机列表",
-        preview_values(
-            info.get("cameras")
-                .and_then(Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(|item| {
-                            item.get("name").and_then(Value::as_str).map(str::to_string)
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default(),
-            6,
-        ),
+        info.get("cameras")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.get("name").and_then(Value::as_str).map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+        6,
     );
 
     let mut sections = vec![section("media", "媒体信息", media_items)];
     if !metadata_items.is_empty() {
         sections.push(section("metadata", "元数据/标签", metadata_items));
+    }
+
+    sections
+}
+
+fn build_external_data_sections(
+    external_data: &blendio::ExternalDataSummary,
+) -> Vec<FileDetailsSection> {
+    let mut sections = Vec::new();
+
+    let mut texture_items = Vec::new();
+    push_records_item(
+        &mut texture_items,
+        "贴图/图片",
+        external_data
+            .images
+            .iter()
+            .map(|image| {
+                serde_json::json!({
+                    "name": image.name,
+                    "path": image.filepath,
+                    "resolvedPath": image.resolved_path,
+                    "source": image.source,
+                    "imageType": image.image_type,
+                    "packed": bool_label(image.packed),
+                    "external": bool_label(image.is_external),
+                    "size": image_size_label(image.generated_width, image.generated_height),
+                    "colorspace": image.colorspace,
+                    "libraryPath": image.library_path,
+                })
+            })
+            .collect(),
+        vec![
+            record_column("name", "名称"),
+            record_column("path", "路径"),
+            record_column("resolvedPath", "解析路径"),
+            record_column("source", "来源"),
+            record_column("imageType", "类型"),
+            record_column("packed", "打包"),
+            record_column("external", "外部"),
+            record_column("size", "尺寸"),
+            record_column("colorspace", "色彩空间"),
+            record_column("libraryPath", "外部库"),
+        ],
+        4,
+    );
+    if !texture_items.is_empty() {
+        sections.push(section("external-textures", "外部贴图/图片", texture_items));
+    }
+
+    let mut library_items = Vec::new();
+    push_records_item(
+        &mut library_items,
+        "外部库文件",
+        external_data
+            .libraries
+            .iter()
+            .map(|library| {
+                serde_json::json!({
+                    "name": library.name,
+                    "path": library.filepath,
+                    "resolvedPath": library.resolved_path,
+                    "packed": bool_label(library.packed),
+                })
+            })
+            .collect(),
+        vec![
+            record_column("name", "名称"),
+            record_column("path", "路径"),
+            record_column("resolvedPath", "解析路径"),
+            record_column("packed", "打包"),
+        ],
+        4,
+    );
+    if !library_items.is_empty() {
+        sections.push(section("external-libraries", "外部库", library_items));
+    }
+
+    let mut text_items = Vec::new();
+    push_records_item(
+        &mut text_items,
+        "外部文本",
+        external_data
+            .texts
+            .iter()
+            .filter(|text| text.is_external || text.library_path.is_some())
+            .map(|text| {
+                serde_json::json!({
+                    "name": text.name,
+                    "path": text.filepath,
+                    "resolvedPath": text.resolved_path,
+                    "lineCount": text.line_count,
+                    "external": bool_label(text.is_external),
+                    "libraryPath": text.library_path,
+                })
+            })
+            .collect(),
+        vec![
+            record_column("name", "名称"),
+            record_column("path", "路径"),
+            record_column("resolvedPath", "解析路径"),
+            record_column("lineCount", "行数"),
+            record_column("external", "外部"),
+            record_column("libraryPath", "外部库"),
+        ],
+        4,
+    );
+    if !text_items.is_empty() {
+        sections.push(section("external-texts", "外部文本", text_items));
+    }
+
+    let mut linked_id_items = Vec::new();
+    push_records_item(
+        &mut linked_id_items,
+        "链接数据块",
+        external_data
+            .linked_ids
+            .iter()
+            .map(|entry| {
+                serde_json::json!({
+                    "kind": entry.kind,
+                    "code": entry.code,
+                    "name": entry.name,
+                    "libraryPath": entry.library_path,
+                })
+            })
+            .collect(),
+        vec![
+            record_column("kind", "类型"),
+            record_column("code", "代码"),
+            record_column("name", "名称"),
+            record_column("libraryPath", "外部库"),
+        ],
+        6,
+    );
+    if !linked_id_items.is_empty() {
+        sections.push(section("linked-data-blocks", "链接数据块", linked_id_items));
     }
 
     sections
@@ -1096,6 +1254,26 @@ fn preview_values(mut values: Vec<String>, limit: usize) -> Option<String> {
     } else {
         Some(preview)
     }
+}
+
+fn preview_record_values(records: &[Value], limit: usize) -> Option<String> {
+    preview_values(
+        records
+            .iter()
+            .filter_map(|record| {
+                ["path", "resolvedPath", "name", "libraryPath"]
+                    .iter()
+                    .find_map(|key| {
+                        record
+                            .get(*key)
+                            .and_then(Value::as_str)
+                            .filter(|value| !value.trim().is_empty())
+                            .map(str::to_string)
+                    })
+            })
+            .collect(),
+        limit,
+    )
 }
 
 fn format_blend_file_version(version: u16) -> String {
@@ -1133,7 +1311,41 @@ fn item(label: impl Into<String>, value: impl Into<String>) -> FileDetailsItem {
     FileDetailsItem {
         label: label.into(),
         value: value.into(),
+        details: None,
     }
+}
+
+fn list_item(
+    label: impl Into<String>,
+    values: Vec<String>,
+    limit: usize,
+) -> Option<FileDetailsItem> {
+    let value = preview_values(values.clone(), limit)?;
+    Some(FileDetailsItem {
+        label: label.into(),
+        value,
+        details: Some(FileDetailsItemDetails::TextList { values }),
+    })
+}
+
+fn records_item(
+    label: impl Into<String>,
+    records: Vec<Value>,
+    columns: Vec<FileDetailsRecordColumn>,
+    limit: usize,
+) -> Option<FileDetailsItem> {
+    if records.is_empty() {
+        return None;
+    }
+
+    let total = records.len();
+    let value = preview_record_values(&records, limit).unwrap_or_else(|| format!("{} 项", total));
+
+    Some(FileDetailsItem {
+        label: label.into(),
+        value,
+        details: Some(FileDetailsItemDetails::Records { columns, records }),
+    })
 }
 
 fn section(
@@ -1153,6 +1365,44 @@ fn push_optional(items: &mut Vec<FileDetailsItem>, label: &str, value: Option<St
         if !value.trim().is_empty() {
             items.push(item(label, value));
         }
+    }
+}
+
+fn push_list_item(
+    items: &mut Vec<FileDetailsItem>,
+    label: &str,
+    values: Vec<String>,
+    limit: usize,
+) {
+    if let Some(item) = list_item(label, values, limit) {
+        items.push(item);
+    }
+}
+
+fn push_records_item(
+    items: &mut Vec<FileDetailsItem>,
+    label: &str,
+    records: Vec<Value>,
+    columns: Vec<FileDetailsRecordColumn>,
+    limit: usize,
+) {
+    if let Some(item) = records_item(label, records, columns, limit) {
+        items.push(item);
+    }
+}
+
+fn record_column(key: &str, label: &str) -> FileDetailsRecordColumn {
+    FileDetailsRecordColumn {
+        key: key.to_string(),
+        label: label.to_string(),
+    }
+}
+
+fn image_size_label(width: i32, height: i32) -> Option<String> {
+    if width > 0 && height > 0 {
+        Some(format!("{} x {}", width, height))
+    } else {
+        None
     }
 }
 

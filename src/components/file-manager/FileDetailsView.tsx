@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
-import { Box, ExternalLink, FileIcon, FileText, Film, FolderIcon, Hash, Image, Link2, Music4, RefreshCw, Tag as TagIcon } from 'lucide-react';
+import { Box, ChevronDown, ChevronRight, ExternalLink, FileIcon, FileText, Film, FolderIcon, Hash, Image, Link2, Maximize2, Music4, RefreshCw, Tag as TagIcon } from 'lucide-react';
 import { Dialog } from '../Dialog';
 import { FileDetailsResponse, FileInfo, Tag } from '../../types';
 import { useFileDetails } from './useFileDetails';
@@ -198,7 +198,144 @@ function FilePreviewHeader({
   );
 }
 
-function SectionBlock({ title, items }: { title: string; items: FileDetailsResponse['sections'][number]['items'] }) {
+function formatDetailValue(value: unknown): string {
+  if (value === null || value === undefined || value === '') {
+    return '-';
+  }
+
+  if (typeof value === 'boolean') {
+    return value ? '是' : '否';
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(formatDetailValue).join('、');
+  }
+
+  return String(value);
+}
+
+function DetailInlineList({
+  item,
+}: {
+  item: FileDetailsResponse['sections'][number]['items'][number];
+}) {
+  const details = item.details;
+
+  if (!details) {
+    return null;
+  }
+
+  if (details.kind === 'textList') {
+    return (
+      <div className="mt-2 max-h-56 overflow-auto rounded-lg border border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800/70">
+        {details.values.map((value, index) => (
+          <div
+            key={`${value}-${index}`}
+            className="border-b border-gray-200 px-3 py-2 text-xs text-gray-700 last:border-b-0 dark:border-gray-700 dark:text-gray-200 break-all"
+          >
+            {value}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-2 max-h-72 overflow-auto rounded-lg border border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800/70">
+      {details.records.map((record, index) => (
+        <div
+          key={index}
+          className="border-b border-gray-200 px-3 py-2 last:border-b-0 dark:border-gray-700"
+        >
+          {details.columns.map((column) => {
+            const value = formatDetailValue(record[column.key]);
+            if (value === '-') {
+              return null;
+            }
+
+            return (
+              <div key={column.key} className="grid grid-cols-[76px_minmax(0,1fr)] gap-2 py-0.5 text-xs">
+                <span className="text-gray-500 dark:text-gray-400">{column.label}</span>
+                <span className="break-all text-gray-800 dark:text-gray-100">{value}</span>
+              </div>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DetailsModal({
+  item,
+  isOpen,
+  onClose,
+}: {
+  item: FileDetailsResponse['sections'][number]['items'][number] | null;
+  isOpen: boolean;
+  onClose: () => void;
+}) {
+  const details = item?.details;
+
+  return (
+    <Dialog
+      isOpen={isOpen && !!details}
+      onClose={onClose}
+      title={item?.label || '完整列表'}
+      size="xl"
+    >
+      {details?.kind === 'textList' ? (
+        <div className="max-h-[65vh] overflow-auto rounded-lg border border-gray-200 dark:border-gray-700">
+          {details.values.map((value, index) => (
+            <div
+              key={`${value}-${index}`}
+              className="border-b border-gray-200 px-3 py-2 text-sm text-gray-800 last:border-b-0 dark:border-gray-700 dark:text-gray-100 break-all"
+            >
+              {value}
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {details?.kind === 'records' ? (
+        <div className="max-h-[65vh] overflow-auto rounded-lg border border-gray-200 dark:border-gray-700">
+          {details.records.map((record, index) => (
+            <div
+              key={index}
+              className="border-b border-gray-200 px-4 py-3 last:border-b-0 dark:border-gray-700"
+            >
+              {details.columns.map((column) => {
+                const value = formatDetailValue(record[column.key]);
+                if (value === '-') {
+                  return null;
+                }
+
+                return (
+                  <div key={column.key} className="grid grid-cols-[96px_minmax(0,1fr)] gap-3 py-1 text-sm">
+                    <span className="text-gray-500 dark:text-gray-400">{column.label}</span>
+                    <span className="break-all text-gray-900 dark:text-gray-100">{value}</span>
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </Dialog>
+  );
+}
+
+function SectionBlock({
+  title,
+  items,
+  onOpenDetails,
+}: {
+  title: string;
+  items: FileDetailsResponse['sections'][number]['items'];
+  onOpenDetails: (item: FileDetailsResponse['sections'][number]['items'][number]) => void;
+}) {
+  const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set());
+
   if (items.length === 0) {
     return null;
   }
@@ -210,12 +347,53 @@ function SectionBlock({ title, items }: { title: string; items: FileDetailsRespo
         <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{title}</span>
       </div>
       <div className="space-y-3">
-        {items.map((entry, index) => (
-          <div key={`${entry.label}-${index}`} className="flex items-start gap-3 text-sm">
-            <span className="min-w-[72px] text-gray-500">{entry.label}</span>
-            <span className="flex-1 text-right text-gray-900 dark:text-gray-100 break-all">{entry.value}</span>
-          </div>
-        ))}
+        {items.map((entry, index) => {
+          const key = `${entry.label}-${index}`;
+          const isExpanded = expandedKeys.has(key);
+          const hasDetails = !!entry.details;
+
+          return (
+            <div key={key} className="text-sm">
+              <div className="flex items-start gap-3">
+                <span className="min-w-[72px] text-gray-500">{entry.label}</span>
+                <span className="flex-1 text-right text-gray-900 dark:text-gray-100 break-all">{entry.value}</span>
+              </div>
+
+              {hasDetails && (
+                <div className="mt-1 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setExpandedKeys((current) => {
+                        const next = new Set(current);
+                        if (next.has(key)) {
+                          next.delete(key);
+                        } else {
+                          next.add(key);
+                        }
+                        return next;
+                      });
+                    }}
+                    className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-blue-600 transition-colors hover:bg-blue-50 dark:text-blue-300 dark:hover:bg-blue-900/20"
+                  >
+                    {isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                    {isExpanded ? '收起' : '展开'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onOpenDetails(entry)}
+                    className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-gray-600 transition-colors hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+                  >
+                    <Maximize2 className="h-3.5 w-3.5" />
+                    小面板
+                  </button>
+                </div>
+              )}
+
+              {isExpanded && <DetailInlineList item={entry} />}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -279,6 +457,7 @@ function FileDetailsContent({
   const { details, isLoading, isRefreshing, errorMessage, refresh } = useFileDetails(file, view);
   const projectPath = useOptionalProjectStore((state) => state.projectPath);
   const openFileInTab = useWorkspaceTabStore((state) => state.openFileInTab);
+  const [detailsModalItem, setDetailsModalItem] = useState<FileDetailsResponse['sections'][number]['items'][number] | null>(null);
 
   const displayPath = details?.basic.path || file?.path || '';
   const displayName = details?.basic.name || file?.name || '';
@@ -356,7 +535,12 @@ function FileDetailsContent({
         )}
 
         {!isLoading && sections.map((section) => (
-          <SectionBlock key={section.id} title={section.title} items={section.items} />
+          <SectionBlock
+            key={section.id}
+            title={section.title}
+            items={section.items}
+            onOpenDetails={setDetailsModalItem}
+          />
         ))}
 
         <div className="pt-4 border-t border-gray-200 dark:border-gray-700">
@@ -410,6 +594,12 @@ function FileDetailsContent({
           {actionButton}
         </div>
       </div>
+
+      <DetailsModal
+        item={detailsModalItem}
+        isOpen={!!detailsModalItem}
+        onClose={() => setDetailsModalItem(null)}
+      />
     </div>
   );
 }

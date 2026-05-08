@@ -452,8 +452,8 @@ fn image_summary(view: &StructView<'_>) -> ImageSummary {
             .unwrap_or_else(|| "Image".to_owned()),
         filepath: field_c_string(view, "name"),
         packed: field_pointer(view, "packedfile").is_some(),
-        source_code: field_i16(view, "source").unwrap_or_default() as i32,
-        image_type_code: field_i16(view, "type").unwrap_or_default() as i32,
+        source_code: field_numeric_code(view, "source").unwrap_or_default(),
+        image_type_code: field_numeric_code(view, "type").unwrap_or_default(),
         generated_width: field_i32(view, "gen_x").unwrap_or_default(),
         generated_height: field_i32(view, "gen_y").unwrap_or_default(),
         colorspace: view
@@ -623,6 +623,16 @@ fn field_i16(view: &StructView<'_>, name: &str) -> Option<i16> {
 
 fn field_i32(view: &StructView<'_>, name: &str) -> Option<i32> {
     view.field(name)?.as_i32()
+}
+
+fn field_numeric_code(view: &StructView<'_>, name: &str) -> Option<i32> {
+    let field = view.field(name)?;
+    match field.field_def().size {
+        1 => field.as_u8().map(i32::from),
+        2 => field.as_i16().map(i32::from),
+        4 => field.as_i32(),
+        _ => None,
+    }
 }
 
 fn field_u8(view: &StructView<'_>, name: &str) -> Option<u8> {

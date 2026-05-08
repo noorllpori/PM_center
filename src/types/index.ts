@@ -13,6 +13,23 @@ export interface FileInfo {
 export interface FileDetailsItem {
   label: string;
   value: string;
+  details?: FileDetailsItemDetails | null;
+}
+
+export type FileDetailsItemDetails =
+  | {
+      kind: 'textList';
+      values: string[];
+    }
+  | {
+      kind: 'records';
+      columns: FileDetailsRecordColumn[];
+      records: Record<string, unknown>[];
+    };
+
+export interface FileDetailsRecordColumn {
+  key: string;
+  label: string;
 }
 
 export interface FileDetailsSection {
@@ -49,6 +66,52 @@ export interface FileDetailsResponse {
   basic: FileDetailsBasic;
   parser: FileDetailsParser;
   sections: FileDetailsSection[];
+}
+
+export interface BlenderExternalDataSummary {
+  images: BlenderExternalImage[];
+  libraries: BlenderExternalLibrary[];
+  texts: BlenderExternalText[];
+  linkedIds: BlenderLinkedId[];
+}
+
+export interface BlenderExternalImage {
+  name: string;
+  filepath: string | null;
+  resolvedPath: string | null;
+  packed: boolean;
+  sourceCode: number;
+  source: string;
+  imageTypeCode: number;
+  imageType: string;
+  generatedWidth: number;
+  generatedHeight: number;
+  colorspace: string | null;
+  libraryPath: string | null;
+  isExternal: boolean;
+}
+
+export interface BlenderExternalLibrary {
+  name: string;
+  filepath: string | null;
+  resolvedPath: string | null;
+  packed: boolean;
+}
+
+export interface BlenderExternalText {
+  name: string;
+  filepath: string | null;
+  resolvedPath: string | null;
+  lineCount: number;
+  isExternal: boolean;
+  libraryPath: string | null;
+}
+
+export interface BlenderLinkedId {
+  code: string;
+  kind: string;
+  name: string | null;
+  libraryPath: string | null;
 }
 
 // 树节点
