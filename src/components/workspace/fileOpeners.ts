@@ -1,6 +1,6 @@
 import { isImageExtension } from '../image-viewer/imageViewerUtils';
 
-export type WorkspaceOpenTarget = 'image' | 'text' | 'video';
+export type WorkspaceOpenTarget = 'image' | 'text' | 'video' | 'blend';
 
 const TEXT_FILE_EXTENSIONS = new Set([
   'txt',
@@ -123,6 +123,10 @@ export function isVideoExtension(extension?: string | null): boolean {
 
 export function getWorkspaceOpenTarget(pathOrExtension?: string | null): WorkspaceOpenTarget | null {
   const extension = getFileExtension(pathOrExtension);
+
+  if (extension === 'blend') {
+    return 'blend';
+  }
 
   if (isImageExtension(extension)) {
     return 'image';

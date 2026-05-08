@@ -84,7 +84,8 @@ function sanitizeWorkspaceTab(tab: unknown): PersistedWorkspaceTab | null {
     candidate.type !== 'directory' &&
     candidate.type !== 'image' &&
     candidate.type !== 'text' &&
-    candidate.type !== 'video'
+    candidate.type !== 'video' &&
+    candidate.type !== 'blend'
   ) {
     return null;
   }
@@ -112,7 +113,8 @@ function sanitizeActiveWorkspaceTab(tab: unknown): PersistedWorkspaceActiveTab {
     candidate.type !== 'logs' &&
     candidate.type !== 'image' &&
     candidate.type !== 'text' &&
-    candidate.type !== 'video'
+    candidate.type !== 'video' &&
+    candidate.type !== 'blend'
   ) {
     return { type: 'files' };
   }

@@ -9,7 +9,7 @@ import { openStandaloneVideoPlayer } from '../components/video-player/openStanda
 import { getFileNameFromPath, getWorkspaceOpenTarget } from '../components/workspace/fileOpeners';
 import { openStandaloneDirectoryViewer } from '../components/file-manager/openStandaloneDirectoryViewer';
 
-export type WorkspaceTabType = 'files' | 'directory' | 'logs' | 'image' | 'text' | 'video';
+export type WorkspaceTabType = 'files' | 'directory' | 'logs' | 'image' | 'text' | 'video' | 'blend';
 
 export interface WorkspaceTab {
   id: string;
@@ -32,7 +32,7 @@ const FILES_TAB: WorkspaceTab = {
 };
 
 function createFileTab(
-  type: 'image' | 'text' | 'video',
+  type: 'image' | 'text' | 'video' | 'blend',
   filePath: string,
   editorSnapshot?: TextEditorTransferPayload,
 ): WorkspaceTab {
@@ -109,6 +109,10 @@ export function createWorkspaceTabStore(storeOptions: CreateWorkspaceTabStoreOpt
       }
 
       if (storeOptions.forceStandaloneFileOpen) {
+        if (target === 'blend') {
+          return null;
+        }
+
         const opened = await get().openFileInStandaloneWindow(filePath, {
           projectPath: storeOptions.standaloneProjectPath,
         });
@@ -166,6 +170,10 @@ export function createWorkspaceTabStore(storeOptions: CreateWorkspaceTabStoreOpt
           projectPath: options?.projectPath,
         });
         return true;
+      }
+
+      if (target === 'blend') {
+        return false;
       }
 
       await openStandaloneTextEditor({

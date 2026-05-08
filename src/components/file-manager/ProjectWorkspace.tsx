@@ -6,6 +6,7 @@ import { FileTree } from './FileTree';
 import { FileList } from './FileList';
 import { ColumnSettings } from './ColumnSettings';
 import { FileDetail } from './FileDetail';
+import { BlenderFileTab } from './BlenderFileTab';
 import { DirectoryTabSurface } from './DirectoryTabSurface';
 import { MdtOverviewPanel } from './MdtOverviewPanel';
 import {
@@ -1300,6 +1301,15 @@ export function ProjectWorkspace() {
                     <VideoPlayerSurface
                       title={tab.title}
                       source={tab.filePath}
+                    />
+                  </div>
+                )}
+
+                {tab.type === 'blend' && tab.filePath && (
+                  <div className="h-full w-full min-w-0 min-h-0 overflow-hidden">
+                    <BlenderFileTab
+                      title={tab.title}
+                      filePath={tab.filePath}
                     />
                   </div>
                 )}

@@ -1332,7 +1332,7 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
       }
 
       try {
-        if (openInStandalone) {
+        if (openInStandalone && openTarget !== 'blend') {
           const opened = await openFileInStandaloneWindow(file.path, {
             projectPath: projectPath || undefined,
           });
@@ -1343,6 +1343,15 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
         }
 
         const tabId = await openFileInTab(file.path);
+        if (!tabId && openTarget === 'blend') {
+          showToast({
+            title: "打开失败",
+            message: "当前窗口暂不支持打开 Blender 标签页。",
+            tone: "warning",
+          });
+          return;
+        }
+
         if (!tabId) {
           await handleSystemOpenFile(file);
         }
