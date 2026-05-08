@@ -16,7 +16,8 @@ export async function cacheResolvedPreviewThumbnail(
     return;
   }
 
-  if (file.extension?.toLowerCase() !== 'psd') {
+  const extension = file.extension?.toLowerCase();
+  if (extension !== 'psd' && extension !== 'blend') {
     return;
   }
 

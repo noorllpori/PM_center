@@ -197,6 +197,28 @@ pub async fn get_blender_external_data(
     .map_err(|error| error.to_string())?
 }
 
+#[tauri::command]
+pub async fn get_blender_preview_png(path: String) -> Result<Option<Vec<u8>>, String> {
+    let path_buf = PathBuf::from(path);
+    tokio::task::spawn_blocking(move || {
+        let preview =
+            blendio::extract_preview_from_path(&path_buf).map_err(|error| error.to_string())?;
+        let Some(preview) = preview else {
+            return Ok(None);
+        };
+
+        let image = image::RgbaImage::from_raw(preview.width, preview.height, preview.rgba)
+            .ok_or_else(|| "invalid blend preview pixels".to_string())?;
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .map_err(|error| error.to_string())?;
+        Ok(Some(bytes.into_inner()))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 fn resolve_cache_db_for_file(path: &str) -> Option<TreeCacheDb> {
     let project_root = tree_cache::detect_project_root_for_path(path)?;
     tree_cache::get_or_create_project_cache(&project_root).ok()

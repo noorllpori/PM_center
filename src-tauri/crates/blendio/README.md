@@ -36,6 +36,7 @@ README 这里保留快速上手和最常用命令。
 - `DNA1 / SDNA` 结构定义解析
 - old-pointer 索引
 - struct 视图、数组块读取、`ListBase` 链表遍历
+- `.blend` 内嵌 preview / thumbnail 提取，兼容 Blender `BlendThumb.dll` 使用的 `TEST` 缩略图块
 - 更丰富的 `info` 摘要，包括 Scene / Object / Collection / Library / Image / Action / Text / Mesh / Camera / Light / Material / World
 
 ## 构建
@@ -143,17 +144,19 @@ blendio = { path = "../BlendIO_rustc" }
 读取摘要：
 
 ```rust
-use blendio::{BlendFile, collect_external_data_with_base, summarize};
+use blendio::{BlendFile, collect_external_data_with_base, extract_preview_from_path, summarize};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::path::Path::new("D:\\test\\demo.blend");
     let file = BlendFile::open(path)?;
     let summary = summarize(&file)?;
     let external_data = collect_external_data_with_base(&file, Some(path))?;
+    let preview = extract_preview_from_path(path)?;
 
     println!("blend version: {}", summary.header.file_version);
     println!("object count: {}", summary.objects.len());
     println!("image / texture count: {}", external_data.images.len());
+    println!("has preview: {}", preview.is_some());
     Ok(())
 }
 ```
@@ -174,6 +177,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - `iter_listbase(...)`
 - `summarize(&BlendFile)`
 - `collect_external_data_with_base(&BlendFile, Some(path))`
+- `extract_preview_from_path(path)`
 
 ## 测试
 

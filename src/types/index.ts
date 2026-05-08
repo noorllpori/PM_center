@@ -75,6 +75,12 @@ export interface BlenderExternalDataSummary {
   linkedIds: BlenderLinkedId[];
 }
 
+export interface BlenderPreview {
+  width: number;
+  height: number;
+  rgba: number[];
+}
+
 export interface BlenderExternalImage {
   name: string;
   filepath: string | null;

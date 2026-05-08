@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { readFile } from '@tauri-apps/plugin-fs';
 import { getImageExtension, getImageMimeType, isPsdExtension } from './imageViewerUtils';
 
@@ -40,6 +41,21 @@ function canvasToBlob(canvas: HTMLCanvasElement) {
       reject(new Error('无法生成 PSD 预览图像。'));
     }, 'image/png');
   });
+}
+
+async function resolveBlendPreviewSource(source: string) {
+  const bytes = await invoke<number[] | null>('get_blender_preview_png', {
+    path: source,
+  });
+
+  if (!bytes?.length) {
+    throw new Error('BLEND 文件缺少可用预览图。');
+  }
+
+  const blob = new Blob([new Uint8Array(bytes)], {
+    type: 'image/png',
+  });
+  return URL.createObjectURL(blob);
 }
 
 async function resolvePsdPreviewSource(source: string) {
@@ -173,9 +189,13 @@ export function useResolvedImageSource(source: string) {
 
       try {
         const extension = getImageExtension(source);
-        objectUrl = isPsdExtension(extension)
-          ? await resolvePsdPreviewSource(source)
-          : await resolveRasterSource(source);
+        if (extension === 'blend') {
+          objectUrl = await resolveBlendPreviewSource(source);
+        } else if (isPsdExtension(extension)) {
+          objectUrl = await resolvePsdPreviewSource(source);
+        } else {
+          objectUrl = await resolveRasterSource(source);
+        }
 
         if (!isActive) {
           return;

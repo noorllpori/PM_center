@@ -232,6 +232,12 @@ fn cleanup_stale_thumbnails(
 }
 
 fn render_thumbnail_png(path: &Path, extension: Option<&str>) -> Result<Vec<u8>, String> {
+    if is_blend_extension(extension) {
+        if let Ok(bytes) = render_blend_thumbnail_png(path) {
+            return Ok(bytes);
+        }
+    }
+
     if can_decode_with_image_crate(extension) {
         if let Ok(bytes) = render_raster_thumbnail_png(path) {
             return Ok(bytes);
@@ -244,6 +250,18 @@ fn render_thumbnail_png(path: &Path, extension: Option<&str>) -> Result<Vec<u8>,
     }
 
     Err("unsupported thumbnail format".to_string())
+}
+
+fn render_blend_thumbnail_png(path: &Path) -> Result<Vec<u8>, String> {
+    let preview = blendio::extract_preview_from_path(path).map_err(|error| error.to_string())?;
+    let Some(preview) = preview else {
+        return Err("blend preview is unavailable".to_string());
+    };
+
+    let image = RgbaImage::from_raw(preview.width, preview.height, preview.rgba)
+        .ok_or_else(|| "invalid blend preview pixels".to_string())?;
+    let thumbnail = DynamicImage::ImageRgba8(image).thumbnail(THUMBNAIL_SIZE, THUMBNAIL_SIZE);
+    encode_thumbnail_png(thumbnail)
 }
 
 fn render_raster_thumbnail_png(path: &Path) -> Result<Vec<u8>, String> {
@@ -335,6 +353,12 @@ fn aces_filmic(value: f32) -> f32 {
     ((value * (a * value + b)) / (value * (c * value + d) + e)).clamp(0.0, 1.0)
 }
 
+fn is_blend_extension(extension: Option<&str>) -> bool {
+    extension
+        .map(|value| value.eq_ignore_ascii_case("blend"))
+        .unwrap_or(false)
+}
+
 fn can_decode_with_image_crate(extension: Option<&str>) -> bool {
     matches!(
         extension.map(|value| value.to_ascii_lowercase()),
@@ -342,6 +366,7 @@ fn can_decode_with_image_crate(extension: Option<&str>) -> bool {
             if matches!(
                 ext.as_str(),
                 "bmp"
+                    | "blend"
                     | "exr"
                     | "gif"
                     | "hdr"

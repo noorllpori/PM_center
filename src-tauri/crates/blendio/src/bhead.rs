@@ -125,7 +125,7 @@ pub fn parse_blocks(bytes: &[u8], header: &BlendHeader) -> Result<Vec<BlockHeade
     Ok(blocks)
 }
 
-fn parse_block_header(
+pub fn parse_block_header(
     bytes: &[u8],
     kind: BHeadType,
     offset: usize,

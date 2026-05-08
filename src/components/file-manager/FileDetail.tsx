@@ -46,6 +46,10 @@ function getPreviewSource(file: FileInfo): { kind: 'image' | 'video'; src: strin
     return { kind: 'image', src: file.path };
   }
 
+  if (extension === 'blend') {
+    return { kind: 'image', src: file.path };
+  }
+
   if (isVideoExtension(extension)) {
     const src = resolvePreviewSource(file.path);
     return src ? { kind: 'video', src } : null;

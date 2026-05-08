@@ -5,6 +5,7 @@ pub mod error;
 pub mod external_data;
 pub mod header;
 pub mod input;
+pub mod preview;
 pub mod sdna;
 pub mod summary;
 pub mod view;
@@ -16,6 +17,9 @@ pub use external_data::{
     collect_external_data, collect_external_data_with_base,
 };
 pub use header::{BHeadType, BlendHeader, CompressionKind, Endian, parse_blend_header};
+pub use preview::{
+    BlendPreview, extract_preview, extract_preview_from_bytes, extract_preview_from_path,
+};
 pub use sdna::{FieldDef, Schema, StructDef};
 pub use summary::{
     ActionSummary, FileSummary, IdEntry, IdReference, ImageSummary, LibrarySummary, MeshSummary,

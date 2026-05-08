@@ -135,6 +135,10 @@ function getFilePreview(file: FileInfo | null): { kind: 'image' | 'video'; src: 
     return { kind: 'image', src: file.path };
   }
 
+  if (ext === 'blend') {
+    return { kind: 'image', src: file.path };
+  }
+
   if (VIDEO_EXTENSIONS.has(ext)) {
     return { kind: 'video', src };
   }
