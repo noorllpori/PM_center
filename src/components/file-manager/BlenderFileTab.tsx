@@ -14,6 +14,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { Dialog } from '../Dialog';
+import { useResolvedImageSource } from '../image-viewer/useResolvedImageSource';
 import { useSettingsStore } from '../../stores/settingsStore';
 import type {
   BlenderSceneRenderEdit,
@@ -600,6 +601,69 @@ function StatusBanner({
   );
 }
 
+function BlenderPreviewPanel({
+  filePath,
+  title,
+}: {
+  filePath: string;
+  title: string;
+}) {
+  const { resolvedSource, isLoading, errorMessage } = useResolvedImageSource(filePath);
+  const [hasPreviewError, setHasPreviewError] = useState(false);
+
+  useEffect(() => {
+    setHasPreviewError(false);
+  }, [filePath, resolvedSource]);
+
+  const hasError = Boolean(errorMessage) || hasPreviewError;
+  const showImage = Boolean(resolvedSource) && !hasError;
+
+  return (
+    <section className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <Image className="h-4 w-4 shrink-0 text-gray-400" />
+          <h3 className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">预览图</h3>
+        </div>
+        {isLoading || hasError ? (
+          <span className={`shrink-0 text-xs ${hasError ? 'text-amber-600 dark:text-amber-300' : 'text-gray-500 dark:text-gray-400'}`}>
+            {hasError ? '无预览' : '读取中...'}
+          </span>
+        ) : null}
+      </div>
+
+      <div className="relative flex aspect-[4/3] items-center justify-center overflow-hidden rounded-md bg-gray-950">
+        {showImage ? (
+          <img
+            src={resolvedSource!}
+            alt={title}
+            className="h-full w-full object-contain"
+            draggable={false}
+            onError={() => setHasPreviewError(true)}
+          />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center p-6 text-center text-gray-300">
+            {isLoading ? (
+              <div>
+                <RefreshCw className="mx-auto mb-3 h-8 w-8 animate-spin opacity-80" />
+                <p className="text-sm">正在读取预览...</p>
+              </div>
+            ) : (
+              <div className="max-w-sm" title={errorMessage || undefined}>
+                <Image className="mx-auto mb-2 h-10 w-10 opacity-40" />
+                <p className="text-sm font-medium">{hasPreviewError ? '预览图渲染失败' : '暂无可用预览图'}</p>
+                {errorMessage ? (
+                  <p className="mt-2 line-clamp-2 break-all text-xs text-gray-400">{errorMessage}</p>
+                ) : null}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 export function BlenderFileTab({
   filePath,
   title,
@@ -814,6 +878,11 @@ export function BlenderFileTab({
             </main>
 
             <aside className="min-w-0 space-y-4">
+              <BlenderPreviewPanel
+                filePath={filePath}
+                title={displayName}
+              />
+
               {sideSections.map((section) => (
                 <section
                   key={section.id}
