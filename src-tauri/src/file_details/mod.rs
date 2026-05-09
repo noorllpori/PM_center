@@ -867,7 +867,7 @@ async fn parse_blender_fallback_details(
             "blender",
             "native",
             format!(
-                "内置 BlendIO 解析失败：{}。如需兼容回退，可在设置 > 工具路径里手动指定 Blender。",
+                "内置 BlendIO 解析失败：{}。如需兼容回退，可在设置 > Blender 版本管理里添加可用 Blender。",
                 native_error
             ),
         );

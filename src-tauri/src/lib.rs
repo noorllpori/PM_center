@@ -44,7 +44,7 @@ use python_env::{
     pip_uninstall_package, scan_app_venvs,
 };
 use tauri_plugin_global_shortcut::ShortcutState;
-use tools::inspect_tool_paths;
+use tools::{inspect_blender_executable, inspect_tool_paths, scan_blender_installations};
 
 #[derive(Default)]
 struct DbStateInner {
@@ -983,6 +983,8 @@ pub fn run() {
             run_python_file,
             pip_install,
             get_blender_file_info,
+            inspect_blender_executable,
+            scan_blender_installations,
             get_file_changes,
             get_change_stats,
             archive_old_changes,

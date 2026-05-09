@@ -18,6 +18,21 @@ export interface ToolPaths {
   blender: string | null;
 }
 
+export interface BlenderInstallationInfo {
+  path: string;
+  version: string | null;
+  versionLine: string | null;
+  status: string;
+  source: string;
+  lastCheckedAt: number;
+  message: string | null;
+  isFavorite: boolean;
+}
+
+type BlenderInstallationInput = Omit<BlenderInstallationInfo, 'isFavorite'> & {
+  isFavorite?: boolean;
+};
+
 interface SettingsState {
   recentProjects: RecentProject[];
   autoOpenLastProject: boolean;
@@ -26,6 +41,7 @@ interface SettingsState {
   projectsRootDir: string | null; // 项目根目录（扫描用）
   ignoredProjects: string[]; // 被忽略的项目路径列表
   toolPaths: ToolPaths;
+  blenderInstallations: BlenderInstallationInfo[];
   globalExcludePatterns: string[];
   
   // 加载设置
@@ -50,6 +66,11 @@ interface SettingsState {
   clearIgnoredProjects: () => Promise<void>;
   // 设置工具路径
   setToolPath: (tool: keyof ToolPaths, path: string | null) => Promise<void>;
+  // 设置 Blender 安装列表
+  setBlenderInstallations: (installations: BlenderInstallationInput[]) => Promise<void>;
+  addOrUpdateBlenderInstallation: (installation: BlenderInstallationInput) => Promise<void>;
+  updateBlenderInstallationFavorite: (path: string, isFavorite: boolean) => Promise<void>;
+  removeBlenderInstallation: (path: string) => Promise<void>;
   // 设置全局排除规则
   setGlobalExcludePatterns: (patterns: string[]) => Promise<void>;
 }
@@ -70,6 +91,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     ffprobe: null,
     blender: null,
   },
+  blenderInstallations: [],
   globalExcludePatterns: [...DEFAULT_EXCLUDE_PATTERNS],
 
   loadSettings: async () => {
@@ -81,6 +103,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       const rootDir = await store.get<string | null>('projectsRootDir');
       const ignored = await store.get<string[]>('ignoredProjects');
       const toolPaths = await store.get<ToolPaths>('toolPaths');
+      const blenderInstallations = await store.get<BlenderInstallationInput[]>('blenderInstallations');
       const globalExcludePatterns = await store.get<string[]>('globalExcludePatterns');
       
       if (recent) {
@@ -104,14 +127,39 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         set({ ignoredProjects: ignored });
       }
 
-      if (toolPaths) {
-        set({
-          toolPaths: {
-            ffprobe: toolPaths.ffprobe ?? null,
-            blender: toolPaths.blender ?? null,
-          },
+      const nextToolPaths = {
+        ffprobe: toolPaths?.ffprobe ?? null,
+        blender: toolPaths?.blender ?? null,
+      };
+      const nextBlenderInstallations = sanitizeBlenderInstallations(blenderInstallations);
+
+      if (
+        nextToolPaths.blender &&
+        !nextBlenderInstallations.some((installation) =>
+          normalizePathKey(installation.path) === normalizePathKey(nextToolPaths.blender!),
+        )
+      ) {
+        nextBlenderInstallations.push({
+          path: nextToolPaths.blender,
+          version: null,
+          versionLine: null,
+          status: 'unknown',
+          source: 'configured',
+          lastCheckedAt: 0,
+          message: '旧配置迁移，等待重新检测',
+          isFavorite: false,
         });
       }
+
+      const syncedToolPaths = syncToolPathsWithBlender(
+        nextToolPaths,
+        sortBlenderInstallations(nextBlenderInstallations),
+      );
+
+      set({
+        toolPaths: syncedToolPaths,
+        blenderInstallations: sortBlenderInstallations(nextBlenderInstallations),
+      });
 
       if (globalExcludePatterns) {
         set({ globalExcludePatterns });
@@ -307,10 +355,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   setToolPath: async (tool, path) => {
     try {
-      const nextToolPaths = {
+      const nextToolPaths = syncToolPathsWithBlender({
         ...get().toolPaths,
         [tool]: path,
-      };
+      }, get().blenderInstallations);
 
       const store = await load(STORE_FILE);
       await store.set('toolPaths', nextToolPaths);
@@ -321,4 +369,191 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       console.error(`Failed to set tool path for ${tool}:`, error);
     }
   },
+
+  setBlenderInstallations: async (installations) => {
+    try {
+      const nextInstallations = sanitizeBlenderInstallations(installations, get().blenderInstallations);
+      const nextToolPaths = syncToolPathsWithBlender(get().toolPaths, nextInstallations);
+      const store = await load(STORE_FILE);
+      await store.set('blenderInstallations', nextInstallations);
+      await store.set('toolPaths', nextToolPaths);
+      await store.save();
+
+      set({
+        blenderInstallations: nextInstallations,
+        toolPaths: nextToolPaths,
+      });
+    } catch (error) {
+      console.error('Failed to set Blender installations:', error);
+    }
+  },
+
+  addOrUpdateBlenderInstallation: async (installation) => {
+    try {
+      const nextInstallations = upsertBlenderInstallation(get().blenderInstallations, installation);
+      const nextToolPaths = syncToolPathsWithBlender(get().toolPaths, nextInstallations);
+      const store = await load(STORE_FILE);
+      await store.set('blenderInstallations', nextInstallations);
+      await store.set('toolPaths', nextToolPaths);
+      await store.save();
+
+      set({
+        blenderInstallations: nextInstallations,
+        toolPaths: nextToolPaths,
+      });
+    } catch (error) {
+      console.error('Failed to add Blender installation:', error);
+    }
+  },
+
+  updateBlenderInstallationFavorite: async (path, isFavorite) => {
+    try {
+      const key = normalizePathKey(path);
+      const nextInstallations = sortBlenderInstallations(
+        get().blenderInstallations.map((installation) =>
+          normalizePathKey(installation.path) === key
+            ? { ...installation, isFavorite }
+            : installation,
+        ),
+      );
+      const nextToolPaths = syncToolPathsWithBlender(get().toolPaths, nextInstallations);
+
+      const store = await load(STORE_FILE);
+      await store.set('blenderInstallations', nextInstallations);
+      await store.set('toolPaths', nextToolPaths);
+      await store.save();
+
+      set({
+        blenderInstallations: nextInstallations,
+        toolPaths: nextToolPaths,
+      });
+    } catch (error) {
+      console.error('Failed to update Blender favorite flag:', error);
+    }
+  },
+
+  removeBlenderInstallation: async (path) => {
+    try {
+      const key = normalizePathKey(path);
+      const nextInstallations = get().blenderInstallations.filter(
+        (installation) => normalizePathKey(installation.path) !== key,
+      );
+      const nextToolPaths = syncToolPathsWithBlender(get().toolPaths, nextInstallations);
+
+      const store = await load(STORE_FILE);
+      await store.set('blenderInstallations', nextInstallations);
+      await store.set('toolPaths', nextToolPaths);
+      await store.save();
+
+      set({
+        blenderInstallations: nextInstallations,
+        toolPaths: nextToolPaths,
+      });
+    } catch (error) {
+      console.error('Failed to remove Blender installation:', error);
+    }
+  },
 }));
+
+function normalizePathKey(path: string) {
+  return path.replace(/[\\/]+/g, '/').replace(/\/$/, '').toLowerCase();
+}
+
+function sanitizeBlenderInstallations(
+  installations?: BlenderInstallationInput[] | null,
+  existingInstallations: BlenderInstallationInfo[] = [],
+): BlenderInstallationInfo[] {
+  if (!Array.isArray(installations)) {
+    return [];
+  }
+
+  return installations.reduce<BlenderInstallationInfo[]>((items, installation) => {
+    if (!installation?.path) {
+      return items;
+    }
+
+    const existingInstallation =
+      findBlenderInstallation(items, installation.path) ??
+      findBlenderInstallation(existingInstallations, installation.path);
+
+    return upsertBlenderInstallation(
+      items,
+      normalizeBlenderInstallation(installation, existingInstallation),
+    );
+  }, []);
+}
+
+function upsertBlenderInstallation(
+  installations: BlenderInstallationInfo[],
+  installation: BlenderInstallationInput,
+) {
+  const normalizedInstallation = normalizeBlenderInstallation(
+    installation,
+    findBlenderInstallation(installations, installation.path),
+  );
+  const key = normalizePathKey(installation.path);
+  const next = installations.filter((item) => normalizePathKey(item.path) !== key);
+  next.push(normalizedInstallation);
+  return sortBlenderInstallations(next);
+}
+
+function normalizeBlenderInstallation(
+  installation: BlenderInstallationInput,
+  existingInstallation?: BlenderInstallationInfo,
+): BlenderInstallationInfo {
+  return {
+    path: installation.path,
+    version: installation.version ?? null,
+    versionLine: installation.versionLine ?? null,
+    status: installation.status || 'unknown',
+    source: installation.source || 'manual',
+    lastCheckedAt: installation.lastCheckedAt || 0,
+    message: installation.message ?? null,
+    isFavorite: installation.isFavorite ?? existingInstallation?.isFavorite ?? false,
+  };
+}
+
+function findBlenderInstallation(
+  installations: BlenderInstallationInfo[],
+  path: string,
+) {
+  const key = normalizePathKey(path);
+  return installations.find((installation) => normalizePathKey(installation.path) === key);
+}
+
+function syncToolPathsWithBlender(
+  toolPaths: ToolPaths,
+  blenderInstallations: BlenderInstallationInfo[],
+): ToolPaths {
+  return {
+    ...toolPaths,
+    blender: resolveAutomaticBlenderPath(blenderInstallations),
+  };
+}
+
+function resolveAutomaticBlenderPath(installations: BlenderInstallationInfo[]) {
+  return installations.find((installation) => installation.status === 'ready')?.path ?? null;
+}
+
+function sortBlenderInstallations(installations: BlenderInstallationInfo[]) {
+  return [...installations].sort((left, right) => {
+    const versionCompare = compareVersion(right.version, left.version);
+    if (versionCompare !== 0) {
+      return versionCompare;
+    }
+    return left.path.localeCompare(right.path);
+  });
+}
+
+function compareVersion(left?: string | null, right?: string | null) {
+  const leftParts = (left || '').split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const rightParts = (right || '').split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const length = Math.max(leftParts.length, rightParts.length);
+  for (let index = 0; index < length; index += 1) {
+    const diff = (leftParts[index] || 0) - (rightParts[index] || 0);
+    if (diff !== 0) {
+      return diff;
+    }
+  }
+  return 0;
+}

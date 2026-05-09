@@ -28,13 +28,14 @@ import {
   Search,
   Settings,
   SlidersHorizontal,
+  Star,
   Trash2,
   Wrench,
   Puzzle,
 } from 'lucide-react';
 import { AlertDialog, ConfirmDialog, Dialog } from './Dialog';
 import { useOptionalProjectStoreShallow } from '../stores/projectStore';
-import { ToolPaths, useSettingsStore } from '../stores/settingsStore';
+import { BlenderInstallationInfo, ToolPaths, useSettingsStore } from '../stores/settingsStore';
 import {
   DEFAULT_EXCLUDE_PATTERNS,
   PRESET_EXCLUDE_PATTERNS,
@@ -59,7 +60,7 @@ interface SettingsPanelProps {
 }
 
 interface ToolStatus {
-  id: keyof ToolPaths;
+  id: 'ffprobe';
   label: string;
   configuredPath: string | null;
   detectedPath: string | null;
@@ -81,6 +82,36 @@ function toolSourceLabel(source: string) {
     default:
       return '未找到';
   }
+}
+
+function blenderSourceLabel(source: string) {
+  switch (source) {
+    case 'manual':
+      return '手动添加';
+    case 'scan':
+      return '扫描发现';
+    case 'configured':
+      return '旧配置';
+    default:
+      return '未知来源';
+  }
+}
+
+function blenderStatusLabel(status: string) {
+  switch (status) {
+    case 'ready':
+      return '可用';
+    case 'missing':
+      return '缺失';
+    case 'unavailable':
+      return '不可用';
+    default:
+      return '待检测';
+  }
+}
+
+function normalizePathKey(path?: string | null) {
+  return (path || '').replace(/[\\/]+/g, '/').replace(/\/$/, '').toLowerCase();
 }
 
 function pluginDependencyStatusMeta(status: PluginDependencyStatus) {
@@ -178,6 +209,7 @@ export function SettingsPanel({
     ignoredProjects,
     recentProjects,
     toolPaths,
+    blenderInstallations,
     loadSettings,
     setAutoOpen,
     setLaunchOnStartup,
@@ -185,6 +217,10 @@ export function SettingsPanel({
     clearIgnoredProjects,
     unignoreProject,
     setToolPath,
+    setBlenderInstallations,
+    addOrUpdateBlenderInstallation,
+    updateBlenderInstallationFavorite,
+    removeBlenderInstallation,
     globalExcludePatterns,
     setGlobalExcludePatterns,
   } = useSettingsStore();
@@ -203,6 +239,8 @@ export function SettingsPanel({
   const [needsProjectRefresh, setNeedsProjectRefresh] = useState(false);
   const [toolStatuses, setToolStatuses] = useState<ToolStatus[]>([]);
   const [isLoadingTools, setIsLoadingTools] = useState(false);
+  const [isScanningBlenders, setIsScanningBlenders] = useState(false);
+  const [blenderPendingPath, setBlenderPendingPath] = useState<string | null>(null);
   const [isUpdatingLaunchOnStartup, setIsUpdatingLaunchOnStartup] = useState(false);
   const [isExitingApp, setIsExitingApp] = useState(false);
   const [globalTaskScriptsPath, setGlobalTaskScriptsPath] = useState<string | null>(null);
@@ -353,6 +391,10 @@ export function SettingsPanel({
     () => [...recentProjects].sort((left, right) => right.openedAt - left.openedAt),
     [recentProjects],
   );
+  const currentAutomaticBlender = useMemo(
+    () => blenderInstallations.find((installation) => installation.status === 'ready') ?? null,
+    [blenderInstallations],
+  );
 
   const currentPatterns = activeScope === 'global' ? globalPatterns : projectPatterns;
 
@@ -439,6 +481,143 @@ export function SettingsPanel({
   const handleClearToolPath = async (tool: keyof ToolPaths) => {
     await setToolPath(tool, null);
     await loadToolStatuses();
+  };
+
+  const handleAddBlenderExecutable = async () => {
+    try {
+      const selected = await open({
+        directory: false,
+        multiple: false,
+        title: '选择 Blender 可执行文件',
+        filters: [
+          {
+            name: 'Executable',
+            extensions: ['exe'],
+          },
+        ],
+      });
+
+      if (!selected || typeof selected !== 'string') {
+        return;
+      }
+
+      const selectedKey = normalizePathKey(selected);
+      if (blenderInstallations.some((installation) => normalizePathKey(installation.path) === selectedKey)) {
+        setAlertDialog({
+          isOpen: true,
+          title: 'Blender 已存在',
+          message: '这个 Blender 路径已经在版本列表里。',
+        });
+        return;
+      }
+
+      setBlenderPendingPath(selected);
+      const installation = await invoke<BlenderInstallationInfo>('inspect_blender_executable', {
+        path: selected,
+      });
+      await addOrUpdateBlenderInstallation(installation);
+    } catch (error) {
+      setAlertDialog({
+        isOpen: true,
+        title: '添加 Blender 失败',
+        message: String(error),
+      });
+    } finally {
+      setBlenderPendingPath(null);
+    }
+  };
+
+  const handleScanBlenders = async () => {
+    setIsScanningBlenders(true);
+    try {
+      const results = await invoke<BlenderInstallationInfo[]>('scan_blender_installations');
+      const merged = [...blenderInstallations];
+
+      for (const result of results) {
+        const key = normalizePathKey(result.path);
+        const index = merged.findIndex((installation) => normalizePathKey(installation.path) === key);
+        if (index >= 0) {
+          merged[index] = result;
+        } else {
+          merged.push(result);
+        }
+      }
+
+      await setBlenderInstallations(merged);
+      if (results.length === 0) {
+        setAlertDialog({
+          isOpen: true,
+          title: '未发现 Blender',
+          message: '扫描常见目录和用户主目录后，没有找到 Blender 可执行文件。',
+        });
+      }
+    } catch (error) {
+      setAlertDialog({
+        isOpen: true,
+        title: '扫描 Blender 失败',
+        message: String(error),
+      });
+    } finally {
+      setIsScanningBlenders(false);
+    }
+  };
+
+  const handleRefreshBlenderInstallation = async (installation: BlenderInstallationInfo) => {
+    setBlenderPendingPath(installation.path);
+    try {
+      const result = await invoke<BlenderInstallationInfo>('inspect_blender_executable', {
+        path: installation.path,
+      });
+      await addOrUpdateBlenderInstallation({
+        ...result,
+        source: installation.source,
+      });
+    } catch (error) {
+      setAlertDialog({
+        isOpen: true,
+        title: '重新检测 Blender 失败',
+        message: String(error),
+      });
+    } finally {
+      setBlenderPendingPath(null);
+    }
+  };
+
+  const handleToggleBlenderFavorite = async (installation: BlenderInstallationInfo) => {
+    await updateBlenderInstallationFavorite(installation.path, !installation.isFavorite);
+  };
+
+  const handleRemoveBlenderInstallation = async (installation: BlenderInstallationInfo) => {
+    const isCurrent = normalizePathKey(currentAutomaticBlender?.path) === normalizePathKey(installation.path);
+    const nextAutomaticBlender =
+      blenderInstallations.find(
+        (item) =>
+          normalizePathKey(item.path) !== normalizePathKey(installation.path) &&
+          item.status === 'ready',
+      ) ?? null;
+
+    await removeBlenderInstallation(installation.path);
+    if (isCurrent) {
+      setAlertDialog({
+        isOpen: true,
+        title: '已移除当前解析版本',
+        message: nextAutomaticBlender
+          ? `兼容解析已自动切换到 ${nextAutomaticBlender.version ? `Blender ${nextAutomaticBlender.version}` : nextAutomaticBlender.path}。`
+          : '当前没有登记可用 Blender，后续 .blend 兼容解析会回退到自动探测。',
+      });
+    }
+  };
+
+  const handleOpenBlenderLocation = async (path: string) => {
+    try {
+      await invoke('show_in_folder', { path });
+    } catch (error) {
+      setAlertDialog({
+        isOpen: true,
+        title: '打开 Blender 位置失败',
+        message: String(error),
+      });
+    }
   };
 
   const handleToggleLaunchOnStartup = async (enabled: boolean) => {
@@ -1549,7 +1728,7 @@ export function SettingsPanel({
           <Wrench className="w-4 h-4 text-blue-500" />
           <div className="flex-1">
             <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">工具路径</h4>
-            <p className="text-xs text-gray-500 mt-1">视频分析依赖 `ffprobe`，`.blend` 优先使用内置 BlendIO，`Blender` 仅用于兼容回退。</p>
+            <p className="text-xs text-gray-500 mt-1">视频分析依赖 `ffprobe`，Blender 版本用于 `.blend` 兼容解析兜底。</p>
           </div>
           <button
             onClick={() => void loadToolStatuses()}
@@ -1569,11 +1748,7 @@ export function SettingsPanel({
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
-                    {tool.id === 'blender' ? (
-                      <Box className="w-4 h-4 text-orange-500" />
-                    ) : (
-                      <Search className="w-4 h-4 text-emerald-500" />
-                    )}
+                    <Search className="w-4 h-4 text-emerald-500" />
                     <span className="font-medium text-sm text-gray-900 dark:text-gray-100">{tool.label}</span>
                     <span
                       className={`px-2 py-0.5 text-xs rounded-full ${
@@ -1606,25 +1781,23 @@ export function SettingsPanel({
 
                 <div className="flex flex-col gap-2">
                   <button
-                    onClick={() => void handleSelectToolPath(tool.id)}
+                    onClick={() => void handleSelectToolPath('ffprobe')}
                     className="px-3 py-2 text-sm rounded-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
                   >
                     指定路径
                   </button>
 
-                  {tool.id === 'ffprobe' && (
-                    <button
-                      onClick={() => void handleOpenFfprobeDownloadPage()}
-                      className="px-3 py-2 text-sm rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors flex items-center justify-center gap-1.5"
-                    >
-                      <Download className="w-4 h-4" />
-                      打开下载页
-                    </button>
-                  )}
+                  <button
+                    onClick={() => void handleOpenFfprobeDownloadPage()}
+                    className="px-3 py-2 text-sm rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <Download className="w-4 h-4" />
+                    打开下载页
+                  </button>
 
                   {tool.configuredPath && (
                     <button
-                      onClick={() => void handleClearToolPath(tool.id)}
+                      onClick={() => void handleClearToolPath('ffprobe')}
                       className="px-3 py-2 text-sm rounded-lg text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
                     >
                       清除指定
@@ -1634,6 +1807,144 @@ export function SettingsPanel({
               </div>
             </div>
           ))}
+
+          <div className="rounded-xl border border-orange-100 dark:border-orange-900/40 bg-orange-50/40 dark:bg-orange-950/10 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <Box className="w-4 h-4 text-orange-500" />
+                  <span className="font-medium text-sm text-gray-900 dark:text-gray-100">Blender 版本管理</span>
+                  <span className="px-2 py-0.5 text-xs rounded-full bg-white text-orange-700 border border-orange-100 dark:bg-gray-900 dark:text-orange-300 dark:border-orange-900/50">
+                    {blenderInstallations.length} 个版本
+                  </span>
+                </div>
+                <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                  兼容解析默认使用列表中版本最高且可用的 Blender
+                </p>
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400 break-all">
+                  {currentAutomaticBlender
+                    ? `${currentAutomaticBlender.version ? `Blender ${currentAutomaticBlender.version}` : 'Blender'} · ${currentAutomaticBlender.path}`
+                    : '当前没有登记可用 Blender，后续会回退到自动探测。'}
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={() => void handleAddBlenderExecutable()}
+                  disabled={!!blenderPendingPath || isScanningBlenders}
+                  className="px-3 py-2 text-sm rounded-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-60 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
+                >
+                  <Plus className="w-4 h-4" />
+                  手动添加
+                </button>
+                <button
+                  onClick={() => void handleScanBlenders()}
+                  disabled={!!blenderPendingPath || isScanningBlenders}
+                  className="px-3 py-2 text-sm rounded-lg bg-orange-600 hover:bg-orange-700 disabled:bg-gray-300 text-white transition-colors flex items-center gap-1.5"
+                >
+                  <Search className="w-4 h-4" />
+                  {isScanningBlenders ? '扫描中...' : '扫描'}
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 space-y-2">
+              {blenderInstallations.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-orange-200 bg-white/80 px-3 py-4 text-center text-sm text-gray-500 dark:border-orange-900/40 dark:bg-gray-900/60 dark:text-gray-400">
+                  还没有登记 Blender 版本
+                </div>
+              ) : (
+                blenderInstallations.map((installation) => {
+                  const isCurrent =
+                    normalizePathKey(currentAutomaticBlender?.path) === normalizePathKey(installation.path);
+                  const isPending = blenderPendingPath === installation.path;
+
+                  return (
+                    <div
+                      key={installation.path}
+                      className={`rounded-lg border px-3 py-3 ${
+                        isCurrent
+                          ? 'border-orange-300 bg-white dark:border-orange-700 dark:bg-orange-950/20'
+                          : 'border-gray-200 bg-white/85 dark:border-gray-700 dark:bg-gray-900/70'
+                      }`}
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-medium text-sm text-gray-900 dark:text-gray-100">
+                              {installation.version ? `Blender ${installation.version}` : 'Blender'}
+                            </span>
+                            <span
+                              className={`px-2 py-0.5 text-xs rounded-full ${
+                                installation.status === 'ready'
+                                  ? 'bg-green-100 text-green-700 dark:bg-green-900/20 dark:text-green-300'
+                                  : 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/20 dark:text-yellow-300'
+                              }`}
+                            >
+                              {blenderStatusLabel(installation.status)}
+                            </span>
+                            {isCurrent && (
+                              <span className="px-2 py-0.5 text-xs rounded-full bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-200">
+                                当前解析版本
+                              </span>
+                            )}
+                            {installation.isFavorite && (
+                              <span className="px-2 py-0.5 text-xs rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-200">
+                                常用
+                              </span>
+                            )}
+                            <span className="text-xs text-gray-400">{blenderSourceLabel(installation.source)}</span>
+                          </div>
+                          <p className="mt-2 text-sm text-gray-800 dark:text-gray-200 break-all">{installation.path}</p>
+                          {installation.versionLine && (
+                            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400 break-all">{installation.versionLine}</p>
+                          )}
+                          {installation.message && (
+                            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{installation.message}</p>
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap justify-end gap-2">
+                          <button
+                            onClick={() => void handleToggleBlenderFavorite(installation)}
+                            className={`px-3 py-1.5 text-xs rounded-lg border transition-colors inline-flex items-center gap-1.5 ${
+                              installation.isFavorite
+                                ? 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200 dark:hover:bg-amber-900/30'
+                                : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200'
+                            }`}
+                          >
+                            <Star
+                              className={`w-3.5 h-3.5 ${installation.isFavorite ? 'fill-current' : ''}`}
+                            />
+                            {installation.isFavorite ? '取消常用' : '设为常用'}
+                          </button>
+                          <button
+                            onClick={() => void handleRefreshBlenderInstallation(installation)}
+                            disabled={!!blenderPendingPath || isScanningBlenders}
+                            className="px-3 py-1.5 text-xs rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+                          >
+                            {isPending ? '检测中...' : '重新检测'}
+                          </button>
+                          <button
+                            onClick={() => void handleOpenBlenderLocation(installation.path)}
+                            className="px-3 py-1.5 text-xs rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                          >
+                            打开位置
+                          </button>
+                          <button
+                            onClick={() => void handleRemoveBlenderInstallation(installation)}
+                            className="px-3 py-1.5 text-xs rounded-lg text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                          >
+                            移除
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
         </div>
       </section>
 
