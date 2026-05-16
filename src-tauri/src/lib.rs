@@ -942,6 +942,7 @@ pub fn run() {
             fs::show_in_folder,
             fs::reveal_in_explorer,
             fs::open_file,
+            fs::open_file_with_program,
             fs::open_path,
             fs::delete_file,
             fs::delete_paths,

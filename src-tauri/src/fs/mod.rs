@@ -918,6 +918,36 @@ pub async fn open_file(path: String) -> Result<(), String> {
     Ok(())
 }
 
+// 用指定程序打开文件
+#[tauri::command]
+pub async fn open_file_with_program(program_path: String, file_path: String) -> Result<(), String> {
+    let program_path = program_path.trim();
+    let file_path = file_path.trim();
+
+    if program_path.is_empty() {
+        return Err("程序路径为空".to_string());
+    }
+
+    if file_path.is_empty() {
+        return Err("文件路径为空".to_string());
+    }
+
+    if !PathBuf::from(program_path).is_file() {
+        return Err("未找到指定程序".to_string());
+    }
+
+    if !PathBuf::from(file_path).is_file() {
+        return Err("未找到要打开的文件".to_string());
+    }
+
+    std_command(program_path)
+        .arg(file_path)
+        .spawn()
+        .map_err(|error| format!("打开文件失败: {}", error))?;
+
+    Ok(())
+}
+
 // 打开文件夹
 #[tauri::command]
 pub async fn open_path(path: String) -> Result<(), String> {

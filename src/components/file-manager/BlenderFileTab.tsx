@@ -11,11 +11,13 @@ import {
   Image,
   Link2,
   Maximize2,
+  Play,
   RefreshCw,
 } from 'lucide-react';
 import { Dialog } from '../Dialog';
 import { useResolvedImageSource } from '../image-viewer/useResolvedImageSource';
 import { useSettingsStore } from '../../stores/settingsStore';
+import type { BlenderInstallationInfo } from '../../stores/settingsStore';
 import type {
   BlenderSceneRenderEdit,
   BlenderWriteReport,
@@ -53,6 +55,37 @@ const EXTERNAL_SECTION_IDS = new Set([
 
 function getFileNameFromPath(path: string) {
   return path.split(/[\\/]/).pop() || path;
+}
+
+function getBlenderVersionLabel(installation: BlenderInstallationInfo) {
+  return installation.version ? `Blender ${installation.version}` : getFileNameFromPath(installation.path);
+}
+
+function getBlenderInstallationVersionKey(installation: BlenderInstallationInfo) {
+  return parseMajorMinorVersion(installation.version) ?? parseMajorMinorVersion(installation.versionLine);
+}
+
+function parseMajorMinorVersion(value?: string | null) {
+  if (!value || value === '-') {
+    return null;
+  }
+
+  const dottedMatch = value.match(/\b(\d+)\.(\d+)\b/);
+  if (dottedMatch) {
+    return `${Number(dottedMatch[1])}.${Number(dottedMatch[2])}`;
+  }
+
+  const codeMatch = value.match(/\b(\d{3,4})\b/);
+  if (!codeMatch) {
+    return null;
+  }
+
+  const versionCode = Number(codeMatch[1]);
+  if (!Number.isFinite(versionCode) || versionCode < 100) {
+    return null;
+  }
+
+  return `${Math.floor(versionCode / 100)}.${versionCode % 100}`;
 }
 
 function formatDetailValue(value: unknown): string {
@@ -601,6 +634,189 @@ function StatusBanner({
   );
 }
 
+function BlenderOpenButton({
+  filePath,
+  installations,
+  fileBlenderVersion,
+}: {
+  filePath: string;
+  installations: BlenderInstallationInfo[];
+  fileBlenderVersion: string | null;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [isOpening, setIsOpening] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  const favoriteInstallations = useMemo(
+    () => installations.filter((installation) => installation.isFavorite && installation.status === 'ready'),
+    [installations],
+  );
+  const fileVersionKey = useMemo(() => parseMajorMinorVersion(fileBlenderVersion), [fileBlenderVersion]);
+  const matchedVersionInstallation = useMemo(() => {
+    if (!fileVersionKey) {
+      return null;
+    }
+
+    return installations.find((installation) =>
+      installation.status === 'ready' &&
+      getBlenderInstallationVersionKey(installation) === fileVersionKey,
+    ) ?? null;
+  }, [fileVersionKey, installations]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (menuRef.current?.contains(event.target as Node)) {
+        return;
+      }
+
+      setIsOpen(false);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isOpen]);
+
+  const openDefault = useCallback(async () => {
+    setIsOpening(true);
+    setErrorMessage(null);
+    setIsOpen(false);
+
+    try {
+      await invoke('open_file', { path: filePath });
+    } catch (error) {
+      setErrorMessage(String(error));
+    } finally {
+      setIsOpening(false);
+    }
+  }, [filePath]);
+
+  const openWithInstallation = useCallback(
+    async (installation: BlenderInstallationInfo) => {
+      setIsOpening(true);
+      setErrorMessage(null);
+      setIsOpen(false);
+
+      try {
+        await invoke('open_file_with_program', {
+          programPath: installation.path,
+          filePath,
+        });
+      } catch (error) {
+        setErrorMessage(String(error));
+      } finally {
+        setIsOpening(false);
+      }
+    },
+    [filePath],
+  );
+
+  return (
+    <div ref={menuRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setIsOpen((value) => !value)}
+        disabled={isOpening}
+        className="inline-flex h-8 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-xs text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+        title={errorMessage || '打开 Blender 文件'}
+      >
+        <Play className="h-3.5 w-3.5" />
+        {isOpening ? '打开中...' : '打开'}
+        <ChevronDown className="h-3.5 w-3.5 text-gray-400" />
+      </button>
+
+      {isOpen ? (
+        <div className="absolute right-0 top-full z-30 mt-2 w-72 overflow-hidden rounded-lg border border-gray-200 bg-white py-1 shadow-xl dark:border-gray-700 dark:bg-gray-900">
+          <button
+            type="button"
+            onClick={() => void openDefault()}
+            className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-800 transition-colors hover:bg-gray-50 dark:text-gray-100 dark:hover:bg-gray-800"
+          >
+            <Play className="h-4 w-4 shrink-0 text-gray-400" />
+            <span className="min-w-0">
+              <span className="block truncate">默认打开</span>
+              <span className="block truncate text-xs text-gray-500 dark:text-gray-400">使用系统关联程序</span>
+            </span>
+          </button>
+
+          <div className="my-1 border-t border-gray-100 dark:border-gray-800" />
+
+          {matchedVersionInstallation ? (
+            <button
+              type="button"
+              onClick={() => void openWithInstallation(matchedVersionInstallation)}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-800 transition-colors hover:bg-gray-50 dark:text-gray-100 dark:hover:bg-gray-800"
+              title={matchedVersionInstallation.path}
+            >
+              <Box className="h-4 w-4 shrink-0 text-orange-500" />
+              <span className="min-w-0">
+                <span className="block truncate">匹配文件版本打开</span>
+                <span className="block truncate text-xs text-gray-500 dark:text-gray-400">
+                  文件 {fileVersionKey}，使用 {getBlenderVersionLabel(matchedVersionInstallation)}
+                </span>
+              </span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled
+              className="flex w-full cursor-not-allowed items-center gap-2 px-3 py-2 text-left text-sm text-gray-400 dark:text-gray-500"
+              title={fileVersionKey ? `未登记 Blender ${fileVersionKey}` : '无法识别文件 Blender 版本'}
+            >
+              <Box className="h-4 w-4 shrink-0 text-gray-300 dark:text-gray-600" />
+              <span className="min-w-0">
+                <span className="block truncate">匹配文件版本打开</span>
+                <span className="block truncate text-xs text-gray-400 dark:text-gray-500">
+                  {fileVersionKey ? `未找到 Blender ${fileVersionKey}` : '等待文件版本解析'}
+                </span>
+              </span>
+            </button>
+          )}
+
+          <div className="my-1 border-t border-gray-100 dark:border-gray-800" />
+
+          {favoriteInstallations.length > 0 ? (
+            favoriteInstallations.map((installation) => (
+              <button
+                key={installation.path}
+                type="button"
+                onClick={() => void openWithInstallation(installation)}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-800 transition-colors hover:bg-gray-50 dark:text-gray-100 dark:hover:bg-gray-800"
+                title={installation.path}
+              >
+                <Box className="h-4 w-4 shrink-0 text-orange-500" />
+                <span className="min-w-0">
+                  <span className="block truncate">{getBlenderVersionLabel(installation)}</span>
+                  <span className="block truncate text-xs text-gray-500 dark:text-gray-400">{installation.path}</span>
+                </span>
+              </button>
+            ))
+          ) : (
+            <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">
+              设置里还没有常用 Blender 版本
+            </div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function BlenderPreviewPanel({
   filePath,
   title,
@@ -672,6 +888,7 @@ export function BlenderFileTab({
   title?: string;
 }) {
   const toolPaths = useSettingsStore((state) => state.toolPaths);
+  const blenderInstallations = useSettingsStore((state) => state.blenderInstallations);
   const [details, setDetails] = useState<FileDetailsResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -787,6 +1004,11 @@ export function BlenderFileTab({
             </div>
 
             <div className="flex shrink-0 items-center gap-2">
+              <BlenderOpenButton
+                filePath={filePath}
+                installations={blenderInstallations}
+                fileBlenderVersion={getItemValue(mediaItems, 'Blender 版本')}
+              />
               <button
                 type="button"
                 onClick={handleRefresh}
