@@ -72,6 +72,15 @@ export function ShellTabBar({
                 } ${tab.closable ? 'cursor-grab active:cursor-grabbing' : 'cursor-default'}`}
                 title={tab.projectPath || tab.title}
                 onClick={() => onActivateTab(tab.id)}
+                onMouseDown={(event) => {
+                  if (event.button !== 1 || !tab.closable) {
+                    return;
+                  }
+
+                  event.preventDefault();
+                  event.stopPropagation();
+                  requestCloseTab(tab);
+                }}
                 onDragStart={() => {
                   if (!tab.closable) {
                     return;

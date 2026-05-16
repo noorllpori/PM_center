@@ -151,6 +151,16 @@ export function WorkspaceTabBar({
                 setContextMenu(null);
                 onActivateTab(tab.id);
               }}
+              onMouseDown={(event) => {
+                if (event.button !== 1 || !tab.closable) {
+                  return;
+                }
+
+                event.preventDefault();
+                event.stopPropagation();
+                setContextMenu(null);
+                onCloseTab(tab.id);
+              }}
               onContextMenu={(event) => {
                 if (!tab.closable) {
                   return;
