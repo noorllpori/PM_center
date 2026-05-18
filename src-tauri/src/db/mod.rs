@@ -3,6 +3,7 @@ use rusqlite::{params, params_from_iter, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use uuid::Uuid;
 
 fn replace_path_prefix(path: &str, old_path: &str, new_path: &str) -> Option<String> {
     if path == old_path {
@@ -39,6 +40,17 @@ pub struct FileMetadata {
     pub custom_data: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Collection {
+    pub id: String,
+    pub directory_path: String,
+    pub name: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub item_count: i64,
+    pub member_paths: Vec<String>,
+}
+
 // 文件变更记录
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileChange {
@@ -67,6 +79,7 @@ impl Database {
 
         let db_path = data_dir.join("data.db");
         let conn = Connection::open(&db_path)?;
+        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
 
         Self::init_tables(&conn)?;
 
@@ -111,6 +124,42 @@ impl Database {
                 custom_data TEXT
             )
             "#,
+            [],
+        )?;
+
+        conn.execute(
+            r#"
+            CREATE TABLE IF NOT EXISTS collections (
+                id TEXT PRIMARY KEY,
+                directory_path TEXT NOT NULL,
+                name TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(directory_path, name)
+            )
+            "#,
+            [],
+        )?;
+
+        conn.execute(
+            r#"
+            CREATE TABLE IF NOT EXISTS collection_items (
+                collection_id TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                PRIMARY KEY(collection_id, file_path),
+                FOREIGN KEY(collection_id) REFERENCES collections(id) ON DELETE CASCADE
+            )
+            "#,
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_collections_directory ON collections(directory_path)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_collection_items_collection ON collection_items(collection_id, position)",
             [],
         )?;
 
@@ -326,6 +375,176 @@ impl Database {
         Ok(())
     }
 
+    pub fn create_collection(
+        &self,
+        directory_path: &str,
+        name: &str,
+        member_paths: &[String],
+    ) -> Result<Collection, rusqlite::Error> {
+        let trimmed_name = name.trim();
+        if trimmed_name.is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "collection name is required".to_string(),
+            ));
+        }
+
+        let mut unique_member_paths = Vec::new();
+        let mut seen_paths = std::collections::HashSet::new();
+        for member_path in member_paths {
+            let member_path = member_path.trim();
+            if member_path.is_empty() || !seen_paths.insert(member_path.to_string()) {
+                continue;
+            }
+            unique_member_paths.push(member_path.to_string());
+        }
+
+        if unique_member_paths.is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "collection members are required".to_string(),
+            ));
+        }
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let now = Self::current_timestamp();
+        let id = Uuid::new_v4().to_string();
+
+        tx.execute(
+            r#"
+            INSERT INTO collections (id, directory_path, name, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+            params![id, directory_path, trimmed_name, now, now],
+        )?;
+
+        for (position, member_path) in unique_member_paths.iter().enumerate() {
+            tx.execute(
+                r#"
+                INSERT INTO collection_items (collection_id, file_path, position)
+                VALUES (?1, ?2, ?3)
+                "#,
+                params![id, member_path, position as i64],
+            )?;
+        }
+
+        tx.commit()?;
+
+        Ok(Collection {
+            id,
+            directory_path: directory_path.to_string(),
+            name: trimmed_name.to_string(),
+            created_at: now,
+            updated_at: now,
+            item_count: unique_member_paths.len() as i64,
+            member_paths: unique_member_paths,
+        })
+    }
+
+    pub fn list_collections(
+        &self,
+        directory_path: &str,
+    ) -> Result<Vec<Collection>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT c.id, c.directory_path, c.name, c.created_at, c.updated_at,
+                   COUNT(ci.file_path) AS item_count
+            FROM collections c
+            LEFT JOIN collection_items ci ON ci.collection_id = c.id
+            WHERE c.directory_path = ?1
+            GROUP BY c.id, c.directory_path, c.name, c.created_at, c.updated_at
+            ORDER BY lower(c.name)
+            "#,
+        )?;
+
+        let mut collections = stmt
+            .query_map(params![directory_path], |row| {
+                Ok(Collection {
+                    id: row.get(0)?,
+                    directory_path: row.get(1)?,
+                    name: row.get(2)?,
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
+                    item_count: row.get(5)?,
+                    member_paths: Vec::new(),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        drop(stmt);
+
+        for collection in &mut collections {
+            collection.member_paths =
+                Self::get_collection_item_paths_with_conn(&conn, &collection.id)?;
+        }
+
+        Ok(collections)
+    }
+
+    pub fn get_collection_item_paths(
+        &self,
+        collection_id: &str,
+    ) -> Result<Vec<String>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        Self::get_collection_item_paths_with_conn(&conn, collection_id)
+    }
+
+    pub fn rename_collection(
+        &self,
+        collection_id: &str,
+        name: &str,
+    ) -> Result<(), rusqlite::Error> {
+        let trimmed_name = name.trim();
+        if trimmed_name.is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "collection name is required".to_string(),
+            ));
+        }
+
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            r#"
+            UPDATE collections
+            SET name = ?1, updated_at = ?2
+            WHERE id = ?3
+            "#,
+            params![trimmed_name, Self::current_timestamp(), collection_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_collection(&self, collection_id: &str) -> Result<(), rusqlite::Error> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM collection_items WHERE collection_id = ?1",
+            params![collection_id],
+        )?;
+        tx.execute("DELETE FROM collections WHERE id = ?1", params![collection_id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn get_collection_item_paths_with_conn(
+        conn: &Connection,
+        collection_id: &str,
+    ) -> Result<Vec<String>, rusqlite::Error> {
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT file_path
+            FROM collection_items
+            WHERE collection_id = ?1
+            ORDER BY position ASC, file_path ASC
+            "#,
+        )?;
+
+        let paths = stmt
+            .query_map(params![collection_id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(paths)
+    }
+
     pub fn move_path_references(
         &self,
         old_path: &str,
@@ -383,6 +602,40 @@ impl Database {
                     VALUES (?1, ?2, ?3, ?4)
                     "#,
                     params![updated_path, status, notes, custom_data],
+                )?;
+            }
+        }
+
+        let collection_rows: Vec<(String, String)> = {
+            let mut stmt = tx.prepare("SELECT id, directory_path FROM collections")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+
+        for (id, directory_path) in collection_rows {
+            if let Some(updated_path) = replace_path_prefix(&directory_path, old_path, new_path) {
+                tx.execute(
+                    "UPDATE collections SET directory_path = ?1, updated_at = ?2 WHERE id = ?3",
+                    params![updated_path, Self::current_timestamp(), id],
+                )?;
+            }
+        }
+
+        let collection_item_rows: Vec<(String, String)> = {
+            let mut stmt = tx.prepare("SELECT collection_id, file_path FROM collection_items")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+
+        for (collection_id, file_path) in collection_item_rows {
+            if let Some(updated_path) = replace_path_prefix(&file_path, old_path, new_path) {
+                tx.execute(
+                    "UPDATE OR IGNORE collection_items SET file_path = ?1 WHERE collection_id = ?2 AND file_path = ?3",
+                    params![updated_path, collection_id, file_path],
                 )?;
             }
         }
@@ -628,6 +881,13 @@ impl Database {
         let datetime =
             DateTime::from_timestamp(timestamp, 0).unwrap_or_else(|| DateTime::UNIX_EPOCH);
         datetime.format("%Y-%m-%d").to_string()
+    }
+
+    fn current_timestamp() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs() as i64)
+            .unwrap_or_default()
     }
 
     // 获取归档的变更记录

@@ -8,8 +8,23 @@ import type { TextEditorTransferPayload } from '../components/text-editor/textEd
 import { openStandaloneVideoPlayer } from '../components/video-player/openStandaloneVideoPlayer';
 import { getFileNameFromPath, getWorkspaceOpenTarget } from '../components/workspace/fileOpeners';
 import { openStandaloneDirectoryViewer } from '../components/file-manager/openStandaloneDirectoryViewer';
+import type { ImageSequenceInfo } from '../types';
 
-export type WorkspaceTabType = 'files' | 'directory' | 'logs' | 'image' | 'text' | 'video' | 'blend';
+export type WorkspaceTabType = 'files' | 'directory' | 'logs' | 'image' | 'text' | 'video' | 'blend' | 'collection';
+
+export type WorkspaceCollectionTabData =
+  | {
+      kind: 'manual_collection';
+      id: string;
+      title: string;
+      projectPath: string;
+      directoryPath: string;
+    }
+  | {
+      kind: 'image_sequence';
+      title: string;
+      sequence: ImageSequenceInfo;
+    };
 
 export interface WorkspaceTab {
   id: string;
@@ -19,6 +34,7 @@ export interface WorkspaceTab {
   filePath?: string;
   isDirty?: boolean;
   editorSnapshot?: TextEditorTransferPayload;
+  collection?: WorkspaceCollectionTabData;
 }
 
 const FILES_TAB_ID = 'files';
@@ -58,6 +74,23 @@ function createDirectoryTab(directoryPath: string): WorkspaceTab {
   };
 }
 
+function createCollectionTab(collection: WorkspaceCollectionTabData): WorkspaceTab {
+  const identity =
+    collection.kind === 'manual_collection'
+      ? collection.id
+      : collection.sequence.virtual_path;
+
+  return {
+    id: `collection-${collection.kind}-${identity}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    type: 'collection',
+    title: collection.title,
+    closable: true,
+    filePath: identity,
+    isDirty: false,
+    collection,
+  };
+}
+
 export interface WorkspaceTabState {
   tabs: WorkspaceTab[];
   activeTabId: string;
@@ -83,6 +116,7 @@ export interface WorkspaceTabState {
     },
   ) => Promise<boolean>;
   openDirectoryInTab: (directoryPath: string) => string;
+  openCollectionInTab: (collection: WorkspaceCollectionTabData) => string;
   openLogsTab: () => string;
   activateTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
@@ -213,6 +247,32 @@ export function createWorkspaceTabStore(storeOptions: CreateWorkspaceTabStoreOpt
       }
 
       const nextTab = createDirectoryTab(directoryPath);
+      set((state) => ({
+        tabs: [...state.tabs, nextTab],
+        activeTabId: nextTab.id,
+      }));
+
+      return nextTab.id;
+    },
+
+    openCollectionInTab: (collection) => {
+      const identity =
+        collection.kind === 'manual_collection'
+          ? collection.id
+          : collection.sequence.virtual_path;
+      const existingTab = get().tabs.find(
+        (tab) =>
+          tab.type === 'collection' &&
+          tab.collection?.kind === collection.kind &&
+          tab.filePath === identity,
+      );
+
+      if (existingTab) {
+        set({ activeTabId: existingTab.id });
+        return existingTab.id;
+      }
+
+      const nextTab = createCollectionTab(collection);
       set((state) => ({
         tabs: [...state.tabs, nextTab],
         activeTabId: nextTab.id,

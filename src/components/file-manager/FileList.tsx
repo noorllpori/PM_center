@@ -12,13 +12,13 @@ import { useUiStore } from "../../stores/uiStore";
 import { useWorkspaceTabStore } from "../../stores/workspaceTabStore";
 import { APP_VERSION } from "../../config/appMeta";
 import type { PluginAction } from "../../types/plugin";
-import { FileIcon, FolderIcon, Image, Film, FileText, Box } from "lucide-react";
+import { FileIcon, FolderIcon, Image, Film, FileText, Box, Layers } from "lucide-react";
 import {
   CurrentDirectoryContextMenu,
   FileContextMenu,
 } from "./FileContextMenu";
 import { FileDetailsDialog } from "./FileDetailsView";
-import { InputDialog } from "../Dialog";
+import { ConfirmDialog, InputDialog } from "../Dialog";
 import {
   canMovePathsToDirectory,
   compactDraggedPaths,
@@ -51,6 +51,7 @@ import {
 import { useResolvedImageSource } from "../image-viewer/useResolvedImageSource";
 import { normalizeMdtReferenceKey } from "../../utils/mdt";
 import { cacheResolvedPreviewThumbnail } from "./thumbnailCache";
+import { isVirtualFile } from "../../utils/collections";
 
 function formatSize(bytes: number): string {
   if (bytes === 0) return "-";
@@ -77,6 +78,14 @@ function formatDate(dateStr: string | null): string {
 }
 
 function getFileIcon(file: FileInfo) {
+  if (file.entry_kind === "manual_collection") {
+    return <Layers className="w-5 h-5 text-violet-500" />;
+  }
+
+  if (file.entry_kind === "image_sequence") {
+    return <Film className="w-5 h-5 text-teal-500" />;
+  }
+
   if (file.is_dir) {
     return <FolderIcon className="w-5 h-5 text-yellow-500" />;
   }
@@ -242,7 +251,7 @@ const ListRow = memo(function ListRow({
 
   return (
     <div
-      draggable
+      draggable={!isVirtualFile(file)}
       style={{ height: LIST_ROW_HEIGHT }}
       className={`
         group relative flex min-w-max items-center border-b border-gray-100 dark:border-gray-800
@@ -267,13 +276,19 @@ const ListRow = memo(function ListRow({
         e.preventDefault();
         onContextMenu(file, e.clientX, e.clientY);
       }}
-      onDragStart={(e) => onDragStart(file, e)}
+      onDragStart={(e) => {
+        if (isVirtualFile(file)) {
+          e.preventDefault();
+          return;
+        }
+        onDragStart(file, e);
+      }}
       onDragEnd={onDragEnd}
       onDragOver={(e) => {
         const internalDragPaths = getDraggedPathsFromDataTransfer(
           e.dataTransfer,
         );
-        if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths))
+        if (isVirtualFile(file) || !file.is_dir || !canDropToDirectory(file.path, internalDragPaths))
           return;
         e.preventDefault();
         e.dataTransfer.dropEffect = "move";
@@ -283,7 +298,7 @@ const ListRow = memo(function ListRow({
         const internalDragPaths = getDraggedPathsFromDataTransfer(
           e.dataTransfer,
         );
-        if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths))
+        if (isVirtualFile(file) || !file.is_dir || !canDropToDirectory(file.path, internalDragPaths))
           return;
         e.preventDefault();
         onHoverDirectory(file.path);
@@ -292,7 +307,7 @@ const ListRow = memo(function ListRow({
         const internalDragPaths = getDraggedPathsFromDataTransfer(
           e.dataTransfer,
         );
-        if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths))
+        if (isVirtualFile(file) || !file.is_dir || !canDropToDirectory(file.path, internalDragPaths))
           return;
         e.preventDefault();
         e.stopPropagation();
@@ -380,7 +395,11 @@ const ListRow = memo(function ListRow({
           {col.key === "size" && formatSize(file.size)}
           {col.key === "modified" && formatDate(file.modified)}
           {col.key === "type" &&
-            (file.is_dir ? "文件夹" : file.extension?.toUpperCase() || "文件")}
+            (file.entry_kind === "manual_collection"
+              ? "集合"
+              : file.entry_kind === "image_sequence"
+                ? `图片序列 ${file.sequence?.frame_count ?? file.item_count ?? 0} 帧`
+                : file.is_dir ? "文件夹" : file.extension?.toUpperCase() || "文件")}
           {col.key === "tags" && (
             <div className="flex gap-1 flex-wrap">
               {fileTagList.map((tag) => (
@@ -683,7 +702,7 @@ const GridCard = memo(function GridCard({
 
   return (
     <div
-      draggable
+      draggable={!isVirtualFile(file)}
       className={`
         group relative flex h-full flex-col p-3 rounded-lg cursor-pointer select-none transition-all
         ${
@@ -706,13 +725,19 @@ const GridCard = memo(function GridCard({
         e.preventDefault();
         onContextMenu(file, e.clientX, e.clientY);
       }}
-      onDragStart={(e) => onDragStart(file, e)}
+      onDragStart={(e) => {
+        if (isVirtualFile(file)) {
+          e.preventDefault();
+          return;
+        }
+        onDragStart(file, e);
+      }}
       onDragEnd={onDragEnd}
       onDragOver={(e) => {
         const internalDragPaths = getDraggedPathsFromDataTransfer(
           e.dataTransfer,
         );
-        if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths))
+        if (isVirtualFile(file) || !file.is_dir || !canDropToDirectory(file.path, internalDragPaths))
           return;
         e.preventDefault();
         e.dataTransfer.dropEffect = "move";
@@ -722,7 +747,7 @@ const GridCard = memo(function GridCard({
         const internalDragPaths = getDraggedPathsFromDataTransfer(
           e.dataTransfer,
         );
-        if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths))
+        if (isVirtualFile(file) || !file.is_dir || !canDropToDirectory(file.path, internalDragPaths))
           return;
         e.preventDefault();
         onHoverDirectory(file.path);
@@ -731,7 +756,7 @@ const GridCard = memo(function GridCard({
         const internalDragPaths = getDraggedPathsFromDataTransfer(
           e.dataTransfer,
         );
-        if (!file.is_dir || !canDropToDirectory(file.path, internalDragPaths))
+        if (isVirtualFile(file) || !file.is_dir || !canDropToDirectory(file.path, internalDragPaths))
           return;
         e.preventDefault();
         e.stopPropagation();
@@ -749,11 +774,13 @@ const GridCard = memo(function GridCard({
             MDT {relatedMdtCount}
           </div>
         )}
-        <ExternalDragHandle
-          resolvePaths={() => getExternalDragPaths(file)}
-          className={`inline-flex h-7 w-7 items-center justify-center rounded-full bg-white/90 text-gray-500 shadow-sm ring-1 ring-black/5 transition hover:bg-white hover:text-gray-800 dark:bg-gray-900/85 dark:text-gray-300 dark:ring-white/10 dark:hover:bg-gray-800 dark:hover:text-gray-100 ${externalDragHandleVisibilityClass}`}
-          iconClassName="h-4 w-4"
-        />
+        {!isVirtualFile(file) && (
+          <ExternalDragHandle
+            resolvePaths={() => getExternalDragPaths(file)}
+            className={`inline-flex h-7 w-7 items-center justify-center rounded-full bg-white/90 text-gray-500 shadow-sm ring-1 ring-black/5 transition hover:bg-white hover:text-gray-800 dark:bg-gray-900/85 dark:text-gray-300 dark:ring-white/10 dark:hover:bg-gray-800 dark:hover:text-gray-100 ${externalDragHandleVisibilityClass}`}
+            iconClassName="h-4 w-4"
+          />
+        )}
       </div>
 
       <div
@@ -835,7 +862,16 @@ const GridCardPreview = memo(function GridCardPreview({
   }, [file, preview?.kind, projectPath, resolvedSource]);
 
   if (!preview || hasPreviewError) {
-    return <div className="flex h-full w-full items-center justify-center">{getFileIcon(file)}</div>;
+    return (
+      <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-gray-400">
+        {getFileIcon(file)}
+        {file.entry_kind === "image_sequence" && (
+          <span className="max-w-full truncate text-xs text-gray-500">
+            {file.sequence?.frame_count ?? file.item_count ?? 0} 帧
+          </span>
+        )}
+      </div>
+    );
   }
 
   if (preview.kind === "image") {
@@ -1104,6 +1140,9 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
   const openFileInStandaloneWindow = useWorkspaceTabStore(
     (state) => state.openFileInStandaloneWindow,
   );
+  const openCollectionInTab = useWorkspaceTabStore(
+    (state) => state.openCollectionInTab,
+  );
   const pluginProjectKey = projectPath || "__global__";
   const pluginState = usePluginStore(
     (state) => state.byProject[pluginProjectKey],
@@ -1141,6 +1180,29 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
     folderName: "",
   });
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
+  const [collectionDialog, setCollectionDialog] = useState<{
+    mode: "create" | "rename" | null;
+    isOpen: boolean;
+    name: string;
+    memberPaths: string[];
+    collectionId: string | null;
+  }>({
+    mode: null,
+    isOpen: false,
+    name: "",
+    memberPaths: [],
+    collectionId: null,
+  });
+  const [isSavingCollection, setIsSavingCollection] = useState(false);
+  const [deleteCollectionDialog, setDeleteCollectionDialog] = useState<{
+    isOpen: boolean;
+    collectionId: string | null;
+    name: string;
+  }>({
+    isOpen: false,
+    collectionId: null,
+    name: "",
+  });
   const [resizingColumnKey, setResizingColumnKey] = useState<string | null>(
     null,
   );
@@ -1219,6 +1281,19 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
       .map((path) => allKnownFiles.get(path))
       .filter((file): file is FileInfo => Boolean(file));
   }, [allKnownFiles, selectedFiles]);
+  const realSelectedFileInfos = useMemo(
+    () => selectedFileInfos.filter((file) => !isVirtualFile(file)),
+    [selectedFileInfos],
+  );
+  const canCreateCollectionFromSelection = useMemo(() => {
+    if (!currentPath || searchQuery || realSelectedFileInfos.length < 2) {
+      return false;
+    }
+
+    return realSelectedFileInfos.every(
+      (file) => getParentPath(file.path) === currentPath,
+    );
+  }, [currentPath, realSelectedFileInfos, searchQuery]);
 
   useEffect(() => {
     const anchorPath = selectionAnchorPathRef.current;
@@ -1287,6 +1362,30 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
 
   const handleSystemOpenFile = useCallback(
     async (file: FileInfo) => {
+      if (file.entry_kind === "manual_collection" && file.collection_id) {
+        if (!projectPath || !currentPath) {
+          return;
+        }
+
+        openCollectionInTab({
+          kind: "manual_collection",
+          id: file.collection_id,
+          title: file.name,
+          projectPath,
+          directoryPath: file.directory_path || currentPath,
+        });
+        return;
+      }
+
+      if (file.entry_kind === "image_sequence" && file.sequence) {
+        openCollectionInTab({
+          kind: "image_sequence",
+          title: file.name,
+          sequence: file.sequence,
+        });
+        return;
+      }
+
       try {
         await invoke("open_file", { path: file.path });
         showToast({
@@ -1303,7 +1402,7 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
         });
       }
     },
-    [showToast],
+    [currentPath, openCollectionInTab, projectPath, showToast],
   );
 
   const handleOpenDirectoryTab = useCallback(
@@ -1320,6 +1419,30 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
 
   const handleDoubleClick = useCallback(
     async (file: FileInfo, openInStandalone: boolean) => {
+      if (file.entry_kind === "manual_collection" && file.collection_id) {
+        if (!projectPath || !currentPath) {
+          return;
+        }
+
+        openCollectionInTab({
+          kind: "manual_collection",
+          id: file.collection_id,
+          title: file.name,
+          projectPath,
+          directoryPath: file.directory_path || currentPath,
+        });
+        return;
+      }
+
+      if (file.entry_kind === "image_sequence" && file.sequence) {
+        openCollectionInTab({
+          kind: "image_sequence",
+          title: file.name,
+          sequence: file.sequence,
+        });
+        return;
+      }
+
       if (file.is_dir) {
         await loadDirectory(file.path);
         return;
@@ -1367,6 +1490,8 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
     [
       handleSystemOpenFile,
       loadDirectory,
+      currentPath,
+      openCollectionInTab,
       openFileInStandaloneWindow,
       openFileInTab,
       projectPath,
@@ -1376,19 +1501,28 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
 
   const resolveSystemContextMenuPaths = useCallback(
     (file: FileInfo, selectionIncludesTarget: boolean) => {
+      if (isVirtualFile(file)) {
+        return [];
+      }
+
       if (!selectionIncludesTarget) {
         return [file.path];
       }
 
       const candidateFiles =
         selectedFileInfos.length > 0 ? selectedFileInfos : [file];
+      const realCandidateFiles = candidateFiles.filter((candidate) => !isVirtualFile(candidate));
+      if (realCandidateFiles.length === 0) {
+        return [];
+      }
+
       const targetParentPath = getParentPath(file.path);
-      const canUseSelection = candidateFiles.every(
+      const canUseSelection = realCandidateFiles.every(
         (candidate) => getParentPath(candidate.path) === targetParentPath,
       );
 
       return canUseSelection
-        ? candidateFiles.map((candidate) => candidate.path)
+        ? realCandidateFiles.map((candidate) => candidate.path)
         : [file.path];
     },
     [selectedFileInfos],
@@ -1397,10 +1531,15 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
   const openSystemContextMenu = useCallback(
     async (file: FileInfo, selectionIncludesTarget: boolean) => {
       try {
+        const paths = resolveSystemContextMenuPaths(file, selectionIncludesTarget);
+        if (paths.length === 0) {
+          return;
+        }
+
         const result = await invoke<{ status: string }>(
           "show_system_context_menu",
           {
-            paths: resolveSystemContextMenuPaths(file, selectionIncludesTarget),
+            paths,
           },
         );
 
@@ -1425,6 +1564,7 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
       const now = Date.now();
       const lastTrigger = lastFileContextMenuTriggerRef.current;
       const shouldOpenSystemMenu =
+        !isVirtualFile(file) &&
         lastTrigger?.path === file.path &&
         now - lastTrigger.timestamp <= SYSTEM_CONTEXT_DOUBLE_TRIGGER_MS;
 
@@ -1528,6 +1668,167 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
   const handleRefresh = useCallback(() => {
     void refresh();
   }, [refresh]);
+
+  const handleOpenCreateCollectionDialog = useCallback(() => {
+    if (!canCreateCollectionFromSelection) {
+      showToast({
+        title: "无法创建集合",
+        message: "请选择当前目录中的至少两个真实项目。",
+        tone: "warning",
+      });
+      return;
+    }
+
+    const defaultName =
+      realSelectedFileInfos[0]?.name
+        ? `${realSelectedFileInfos[0].name} 集合`
+        : "新集合";
+
+    setCollectionDialog({
+      mode: "create",
+      isOpen: true,
+      name: defaultName,
+      memberPaths: realSelectedFileInfos.map((file) => file.path),
+      collectionId: null,
+    });
+  }, [canCreateCollectionFromSelection, realSelectedFileInfos, showToast]);
+
+  const handleOpenRenameCollectionDialog = useCallback((file: FileInfo) => {
+    if (!file.collection_id) {
+      return;
+    }
+
+    setCollectionDialog({
+      mode: "rename",
+      isOpen: true,
+      name: file.name,
+      memberPaths: [],
+      collectionId: file.collection_id,
+    });
+  }, []);
+
+  const handleOpenDeleteCollectionDialog = useCallback((file: FileInfo) => {
+    if (!file.collection_id) {
+      return;
+    }
+
+    setDeleteCollectionDialog({
+      isOpen: true,
+      collectionId: file.collection_id,
+      name: file.name,
+    });
+  }, []);
+
+  const handleCloseCollectionDialog = useCallback(() => {
+    if (isSavingCollection) {
+      return;
+    }
+
+    setCollectionDialog((state) => ({
+      ...state,
+      isOpen: false,
+    }));
+  }, [isSavingCollection]);
+
+  const handleCollectionNameChange = useCallback((name: string) => {
+    setCollectionDialog((state) => ({
+      ...state,
+      name,
+    }));
+  }, []);
+
+  const handleConfirmCollectionDialog = useCallback(
+    async (rawName: string) => {
+      if (!projectPath || !currentPath || !collectionDialog.mode) {
+        return;
+      }
+
+      const name = rawName.trim();
+      if (!name) {
+        showToast({
+          title: "集合名称不能为空",
+          message: "请输入一个集合名称。",
+          tone: "error",
+        });
+        return;
+      }
+
+      setIsSavingCollection(true);
+      try {
+        if (collectionDialog.mode === "create") {
+          await invoke("create_collection", {
+            projectPath,
+            directoryPath: currentPath,
+            name,
+            memberPaths: collectionDialog.memberPaths,
+          });
+          showToast({
+            title: "集合已创建",
+            message: name,
+            tone: "success",
+          });
+        } else if (collectionDialog.collectionId) {
+          await invoke("rename_collection", {
+            projectPath,
+            collectionId: collectionDialog.collectionId,
+            name,
+          });
+          showToast({
+            title: "集合已重命名",
+            message: name,
+            tone: "success",
+          });
+        }
+
+        setCollectionDialog((state) => ({
+          ...state,
+          isOpen: false,
+        }));
+        await refresh();
+      } catch (error) {
+        console.error("Failed to save collection:", error);
+        showToast({
+          title: "集合操作失败",
+          message: String(error),
+          tone: "error",
+        });
+      } finally {
+        setIsSavingCollection(false);
+      }
+    },
+    [collectionDialog, currentPath, projectPath, refresh, showToast],
+  );
+
+  const handleConfirmDeleteCollection = useCallback(async () => {
+    if (!projectPath || !deleteCollectionDialog.collectionId) {
+      return;
+    }
+
+    try {
+      await invoke("delete_collection", {
+        projectPath,
+        collectionId: deleteCollectionDialog.collectionId,
+      });
+      setDeleteCollectionDialog({
+        isOpen: false,
+        collectionId: null,
+        name: "",
+      });
+      await refresh();
+      showToast({
+        title: "集合已删除",
+        message: deleteCollectionDialog.name,
+        tone: "success",
+      });
+    } catch (error) {
+      console.error("Failed to delete collection:", error);
+      showToast({
+        title: "删除集合失败",
+        message: String(error),
+        tone: "error",
+      });
+    }
+  }, [deleteCollectionDialog, projectPath, refresh, showToast]);
 
   const stopColumnResize = useCallback(() => {
     columnResizeStateRef.current = null;
@@ -1774,12 +2075,19 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
 
   const getDraggedItems = useCallback(
     (file: FileInfo) => {
+      if (isVirtualFile(file)) {
+        return [];
+      }
+
       if (selectedFiles.has(file.path) && selectedFiles.size > 1) {
-        return Array.from(selectedFiles);
+        return Array.from(selectedFiles).filter((path) => {
+          const selectedFile = allKnownFiles.get(path);
+          return selectedFile ? !isVirtualFile(selectedFile) : true;
+        });
       }
       return [file.path];
     },
-    [selectedFiles],
+    [allKnownFiles, selectedFiles],
   );
 
   const canDropToDirectory = useCallback(
@@ -1791,6 +2099,11 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
 
   const handleDragStart = useCallback(
     (file: FileInfo, event: React.DragEvent<HTMLDivElement>) => {
+      if (isVirtualFile(file)) {
+        event.preventDefault();
+        return;
+      }
+
       startInternalDrag(event, getDraggedItems(file));
     },
     [getDraggedItems, startInternalDrag],
@@ -2061,6 +2374,10 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
           onShowDetails={handleShowDetails}
           onDelete={handleDeleteFromContextMenu}
           onCreateFolder={handleCreateFolder}
+          onCreateCollection={handleOpenCreateCollectionDialog}
+          canCreateCollection={canCreateCollectionFromSelection}
+          onRenameCollection={handleOpenRenameCollectionDialog}
+          onDeleteCollection={handleOpenDeleteCollectionDialog}
           onOpenFile={handleSystemOpenFile}
           onOpenDirectoryTab={handleOpenDirectoryTab}
           onRunPluginAction={(action) =>
@@ -2109,6 +2426,40 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
             : undefined
         }
         selectOnOpen
+      />
+
+      <InputDialog
+        isOpen={collectionDialog.isOpen}
+        onClose={handleCloseCollectionDialog}
+        onConfirm={handleConfirmCollectionDialog}
+        title={collectionDialog.mode === "rename" ? "重命名集合" : "创建集合"}
+        label="集合名称"
+        value={collectionDialog.name}
+        onChange={handleCollectionNameChange}
+        confirmText={isSavingCollection ? "保存中..." : "保存"}
+        disabled={isSavingCollection}
+        description={
+          collectionDialog.mode === "create"
+            ? `将收纳 ${collectionDialog.memberPaths.length} 个项目，磁盘文件不会移动。`
+            : "只修改集合名称，不影响真实文件。"
+        }
+        selectOnOpen
+      />
+
+      <ConfirmDialog
+        isOpen={deleteCollectionDialog.isOpen}
+        onClose={() =>
+          setDeleteCollectionDialog({
+            isOpen: false,
+            collectionId: null,
+            name: "",
+          })
+        }
+        onConfirm={handleConfirmDeleteCollection}
+        title="删除集合"
+        message={`删除集合“${deleteCollectionDialog.name}”？\n真实文件不会被删除。`}
+        confirmText="删除集合"
+        type="danger"
       />
 
       {conflictDialog}

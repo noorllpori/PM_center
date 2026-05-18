@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { Box, ExternalLink, FileText, Film, Folder, History, Image as ImageIcon, X } from 'lucide-react';
+import { Box, ExternalLink, FileText, Film, Folder, History, Image as ImageIcon, Layers, X } from 'lucide-react';
 import type { WorkspaceTab } from '../../stores/workspaceTabStore';
 
 interface WorkspaceTabBarProps {
@@ -33,6 +33,8 @@ function getTabIcon(tab: WorkspaceTab) {
       return <Film className="h-4 w-4 text-rose-500" />;
     case 'blend':
       return <Box className="h-4 w-4 text-orange-500" />;
+    case 'collection':
+      return <Layers className="h-4 w-4 text-violet-500" />;
     default:
       return null;
   }

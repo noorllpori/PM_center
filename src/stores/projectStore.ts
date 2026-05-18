@@ -20,6 +20,12 @@ import {
   readProjectExcludePatterns,
   shouldExcludeFile,
 } from '../utils/excludePatterns';
+import {
+  createManualCollectionFileInfo,
+  detectImageSequences,
+  isVirtualFile,
+  type ProjectCollectionInfo,
+} from '../utils/collections';
 
 // 获取项目的排除规则
 function getExcludePatterns(projectPath: string): string[] {
@@ -155,6 +161,15 @@ export interface ProjectState {
   refreshMdtIndex: () => Promise<void>;
 }
 
+function sortDirectoryEntries(files: FileInfo[]) {
+  return [...files].sort((left, right) => {
+    if (left.is_dir !== right.is_dir) {
+      return left.is_dir ? -1 : 1;
+    }
+    return left.name.localeCompare(right.name, 'zh-CN', { sensitivity: 'base' });
+  });
+}
+
 function createInitialProjectState(): Omit<ProjectState, keyof {
   setProject: unknown;
   activateProject: unknown;
@@ -264,9 +279,47 @@ export function createProjectStore() {
           files = files.filter((file) => !shouldExcludeFile(file.name, excludePatterns));
         }
 
+        const manualHiddenPaths = new Set<string>();
+        let manualCollectionFiles: FileInfo[] = [];
+
+        if (activeProjectPath) {
+          try {
+            const collections = await invoke<ProjectCollectionInfo[]>('list_collections', {
+              projectPath: activeProjectPath,
+              directoryPath: path,
+            });
+
+            manualCollectionFiles = collections.map(createManualCollectionFileInfo);
+            for (const collection of collections) {
+              for (const memberPath of collection.member_paths || []) {
+                manualHiddenPaths.add(memberPath);
+              }
+            }
+          } catch (error) {
+            console.error('Failed to load collections:', error);
+          }
+        }
+
+        const filesAfterManualCollections = files.filter(
+          (file) => !manualHiddenPaths.has(file.path),
+        );
+        const imageSequenceFiles = detectImageSequences(path, filesAfterManualCollections);
+        const sequenceHiddenPaths = new Set<string>();
+        for (const sequenceFile of imageSequenceFiles) {
+          for (const frame of sequenceFile.sequence?.frames || []) {
+            sequenceHiddenPaths.add(frame.path);
+          }
+        }
+
+        files = sortDirectoryEntries([
+          ...manualCollectionFiles,
+          ...imageSequenceFiles,
+          ...filesAfterManualCollections.filter((file) => !sequenceHiddenPaths.has(file.path)),
+        ]);
+
         const fileTags = new Map<string, string[]>();
         if (activeProjectPath) {
-          const filePaths = files.map((file) => file.path);
+          const filePaths = files.filter((file) => !isVirtualFile(file)).map((file) => file.path);
           if (filePaths.length > 0) {
             const tagsByPath = await invoke<Record<string, string[]>>('get_file_tags_batch', {
               projectPath: activeProjectPath,

@@ -741,11 +741,15 @@ pub async fn search_files(root_path: String, query: String) -> Result<Vec<FileIn
 // 获取文件详情
 #[tauri::command]
 pub async fn get_file_info(path: String) -> Result<FileInfo, String> {
+    get_file_info_internal(&path).await
+}
+
+pub async fn get_file_info_internal(path: &str) -> Result<FileInfo, String> {
     let metadata = tokio::fs::metadata(&path)
         .await
         .map_err(|e| e.to_string())?;
 
-    let path_buf = PathBuf::from(&path);
+    let path_buf = PathBuf::from(path);
     let name = path_buf
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -760,17 +764,17 @@ pub async fn get_file_info(path: String) -> Result<FileInfo, String> {
         .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
         .map(|duration| duration.as_secs() as i64);
     let thumbnail_source = thumbnail_source_for_path(
-        &path,
+        path,
         metadata.is_dir(),
         metadata.len(),
         modified_ts,
         extension.clone(),
     );
-    let project_root = tree_cache::detect_project_root_for_path(&path);
+    let project_root = tree_cache::detect_project_root_for_path(path);
 
     Ok(FileInfo {
         name,
-        path,
+        path: path.to_string(),
         is_dir: metadata.is_dir(),
         size: metadata.len(),
         modified: format_time(metadata.modified()),

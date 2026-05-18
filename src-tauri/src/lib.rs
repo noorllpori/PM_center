@@ -24,7 +24,7 @@ mod tree_cache;
 mod watcher;
 
 use db::FileChange;
-use db::{Database, FileMetadata, Tag};
+use db::{Collection, Database, FileMetadata, Tag};
 use file_details::{
     get_blender_external_data, get_blender_preview_png, get_file_details,
     update_blender_scene_render,
@@ -681,6 +681,88 @@ async fn update_file_metadata(
 }
 
 #[tauri::command]
+async fn create_collection(
+    db_state: tauri::State<'_, DbState>,
+    project_path: String,
+    directory_path: String,
+    name: String,
+    member_paths: Vec<String>,
+) -> Result<Collection, String> {
+    let db = get_or_create_db(&db_state, &project_path).await?;
+    db.create_collection(&directory_path, &name, &member_paths)
+        .map_err(|e| {
+            let message = e.to_string();
+            if message.contains("UNIQUE constraint failed") {
+                "当前目录已存在同名集合".to_string()
+            } else {
+                message
+            }
+        })
+}
+
+#[tauri::command]
+async fn list_collections(
+    db_state: tauri::State<'_, DbState>,
+    project_path: String,
+    directory_path: String,
+) -> Result<Vec<Collection>, String> {
+    let db = get_or_create_db(&db_state, &project_path).await?;
+    db.list_collections(&directory_path)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_collection_items(
+    db_state: tauri::State<'_, DbState>,
+    project_path: String,
+    collection_id: String,
+) -> Result<Vec<fs::FileInfo>, String> {
+    let db = get_or_create_db(&db_state, &project_path).await?;
+    let item_paths = db
+        .get_collection_item_paths(&collection_id)
+        .map_err(|e| e.to_string())?;
+    let mut items = Vec::new();
+
+    for item_path in item_paths {
+        if let Ok(file_info) = fs::get_file_info_internal(&item_path).await {
+            items.push(file_info);
+        }
+    }
+
+    Ok(items)
+}
+
+#[tauri::command]
+async fn rename_collection(
+    db_state: tauri::State<'_, DbState>,
+    project_path: String,
+    collection_id: String,
+    name: String,
+) -> Result<(), String> {
+    let db = get_or_create_db(&db_state, &project_path).await?;
+    db.rename_collection(&collection_id, &name)
+        .map_err(|e| {
+            let message = e.to_string();
+            if message.contains("UNIQUE constraint failed") {
+                "当前目录已存在同名集合".to_string()
+            } else {
+                message
+            }
+        })
+}
+
+#[tauri::command]
+async fn delete_collection(
+    db_state: tauri::State<'_, DbState>,
+    project_path: String,
+    collection_id: String,
+) -> Result<(), String> {
+    let db = get_or_create_db(&db_state, &project_path).await?;
+    db.delete_collection(&collection_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn get_file_changes(
     db_state: tauri::State<'_, DbState>,
     project_path: String,
@@ -979,6 +1061,11 @@ pub fn run() {
             remove_tag_from_file,
             get_file_metadata,
             update_file_metadata,
+            create_collection,
+            list_collections,
+            get_collection_items,
+            rename_collection,
+            delete_collection,
             detect_python_envs,
             run_python_script,
             run_python_file,

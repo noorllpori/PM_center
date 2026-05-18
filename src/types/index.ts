@@ -1,4 +1,24 @@
 // 文件信息
+export type FileEntryKind = 'file' | 'manual_collection' | 'image_sequence';
+
+export interface ImageSequenceInfo {
+  id: string;
+  virtual_path: string;
+  directory_path: string;
+  prefix: string;
+  extension: string;
+  padding: number;
+  start_frame: number;
+  end_frame: number;
+  frame_count: number;
+  missing_count: number;
+  frames: Array<{
+    frame: number;
+    path: string;
+    name: string;
+  }>;
+}
+
 export interface FileInfo {
   name: string;
   path: string;
@@ -8,6 +28,15 @@ export interface FileInfo {
   created: string | null;
   extension: string | null;
   thumbnail: string | null;
+  entry_kind?: FileEntryKind;
+  virtual_path?: string;
+  collection_id?: string;
+  item_count?: number;
+  sequence?: ImageSequenceInfo | null;
+  collection_member_paths?: string[];
+  directory_path?: string;
+  created_at?: number;
+  updated_at?: number;
 }
 
 export interface FileDetailsItem {

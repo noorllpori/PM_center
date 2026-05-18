@@ -43,6 +43,10 @@ interface ContextMenuProps {
   onShowDetails?: (file: FileInfo) => void;
   onDelete?: (file: FileInfo) => Promise<void> | void;
   onCreateFolder?: () => Promise<void> | void;
+  onCreateCollection?: () => Promise<void> | void;
+  canCreateCollection?: boolean;
+  onRenameCollection?: (file: FileInfo) => Promise<void> | void;
+  onDeleteCollection?: (file: FileInfo) => Promise<void> | void;
   onOpenFile?: (file: FileInfo) => Promise<void> | void;
   onOpenDirectoryTab?: (file: FileInfo) => Promise<void> | void;
   onRunPluginAction?: (action: PluginAction) => void;
@@ -321,6 +325,10 @@ export function FileContextMenu({
   onShowDetails,
   onDelete,
   onCreateFolder,
+  onCreateCollection,
+  canCreateCollection = false,
+  onRenameCollection,
+  onDeleteCollection,
   onOpenFile,
   onOpenDirectoryTab,
   onRunPluginAction,
@@ -335,6 +343,9 @@ export function FileContextMenu({
   });
   const [openPluginSubmenu, setOpenPluginSubmenu] = useState<OpenPluginSubmenu | null>(null);
   const pluginMenuEntries = buildFileContextPluginMenuEntries(pluginActions);
+  const isManualCollection = file.entry_kind === 'manual_collection';
+  const isImageSequence = file.entry_kind === 'image_sequence';
+  const isVirtualEntry = isManualCollection || isImageSequence;
 
   useContextMenuDismiss([menuRef, submenuRef], onClose);
 
@@ -374,7 +385,9 @@ export function FileContextMenu({
 
   const handleOpen = async () => {
     try {
-      if (file.is_dir) {
+      if (isVirtualEntry && onOpenFile) {
+        await onOpenFile(file);
+      } else if (file.is_dir) {
         await invoke('open_path', { path: file.path });
       } else if (onOpenFile) {
         await onOpenFile(file);
@@ -500,6 +513,33 @@ export function FileContextMenu({
     onClose();
   };
 
+  const handleCreateCollection = async () => {
+    try {
+      await onCreateCollection?.();
+    } catch (error) {
+      console.error('Failed to create collection:', error);
+    }
+    onClose();
+  };
+
+  const handleRenameCollection = async () => {
+    try {
+      await onRenameCollection?.(file);
+    } catch (error) {
+      console.error('Failed to rename collection:', error);
+    }
+    onClose();
+  };
+
+  const handleDeleteCollection = async () => {
+    try {
+      await onDeleteCollection?.(file);
+    } catch (error) {
+      console.error('Failed to delete collection:', error);
+    }
+    onClose();
+  };
+
   const handleShowDetails = () => {
     onShowDetails?.(file);
     onClose();
@@ -573,6 +613,42 @@ export function FileContextMenu({
     [openPluginSubmenu?.key, openPluginSubmenu?.actions.length ?? 0],
   );
 
+  if (isVirtualEntry) {
+    return (
+      <div
+        ref={menuRef}
+        className="bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 py-1 min-w-[180px]"
+        style={menuStyle}
+      >
+        <MenuItem onClick={handleOpen} icon={<FolderOpen className="w-4 h-4" />}>
+          {isManualCollection ? '打开集合' : '打开序列'}
+        </MenuItem>
+
+        {isManualCollection && (
+          <>
+            <MenuDivider />
+
+            <MenuItem onClick={handleRenameCollection} icon={<FileEdit className="w-4 h-4" />}>
+              重命名集合
+            </MenuItem>
+
+            <MenuItem
+              onClick={handleDeleteCollection}
+              icon={<Trash2 className="w-4 h-4" />}
+              danger
+            >
+              删除集合
+            </MenuItem>
+          </>
+        )}
+
+        <MenuItem onClick={handleCopyName} icon={<ClipboardCopy className="w-4 h-4" />}>
+          {isManualCollection ? '复制集合名' : '复制序列名'}
+        </MenuItem>
+      </div>
+    );
+  }
+
   return (
     <>
       <div
@@ -619,6 +695,14 @@ export function FileContextMenu({
 
         <MenuItem onClick={handleCreateFolder} icon={<FolderPlus className="w-4 h-4" />}>
           在当前目录新建文件夹
+        </MenuItem>
+
+        <MenuItem
+          onClick={handleCreateCollection}
+          icon={<FolderPlus className="w-4 h-4" />}
+          disabled={!canCreateCollection}
+        >
+          创建集合
         </MenuItem>
 
         <MenuDivider />

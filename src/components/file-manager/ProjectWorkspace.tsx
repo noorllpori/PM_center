@@ -7,7 +7,9 @@ import { FileList } from './FileList';
 import { ColumnSettings } from './ColumnSettings';
 import { FileDetail } from './FileDetail';
 import { BlenderFileTab } from './BlenderFileTab';
+import { CollectionTabSurface } from './CollectionTabSurface';
 import { DirectoryTabSurface } from './DirectoryTabSurface';
+import { ImageSequencePlayerSurface } from './ImageSequencePlayerSurface';
 import { MdtOverviewPanel } from './MdtOverviewPanel';
 import {
   buildRenamedFileName,
@@ -40,6 +42,7 @@ import { useClipboardStore } from '../../stores/clipboardStore';
 import { useFileDragStore } from '../../stores/fileDragStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceTabStore, useWorkspaceTabStoreApi } from '../../stores/workspaceTabStore';
+import { isVirtualFile } from '../../utils/collections';
 
 const FILE_TREE_PANEL_WIDTH_KEY = 'pm-center:file-tree-panel-width';
 const FILE_TREE_PANEL_MIN_WIDTH = 220;
@@ -306,8 +309,12 @@ export function ProjectWorkspace() {
       [...state.files, ...displayFiles].map((file) => [file.path, file]),
     );
 
-    return Array.from(state.selectedFiles).map((path) => {
+    return Array.from(state.selectedFiles).flatMap((path) => {
       const file = fileMap.get(path);
+      if (file && isVirtualFile(file)) {
+        return [];
+      }
+
       return {
         path,
         name: file?.name || getPathName(path),
@@ -403,7 +410,14 @@ export function ProjectWorkspace() {
 
   const handleDeleteSelection = useCallback(async () => {
     const state = projectStore.getState();
-    const selectedPaths = Array.from(state.selectedFiles);
+    const displayFiles = state.searchQuery ? state.searchResults : state.files;
+    const fileMap = new Map(
+      [...state.files, ...displayFiles].map((file) => [file.path, file]),
+    );
+    const selectedPaths = Array.from(state.selectedFiles).filter((path) => {
+      const file = fileMap.get(path);
+      return file ? !isVirtualFile(file) : true;
+    });
     if (selectedPaths.length === 0) {
       return false;
     }
@@ -1310,6 +1324,25 @@ export function ProjectWorkspace() {
                     <BlenderFileTab
                       title={tab.title}
                       filePath={tab.filePath}
+                    />
+                  </div>
+                )}
+
+                {tab.type === 'collection' && tab.collection?.kind === 'manual_collection' && (
+                  <div className="h-full w-full min-w-0 min-h-0 overflow-hidden">
+                    <CollectionTabSurface
+                      title={tab.title}
+                      collectionId={tab.collection.id}
+                      projectPath={tab.collection.projectPath}
+                    />
+                  </div>
+                )}
+
+                {tab.type === 'collection' && tab.collection?.kind === 'image_sequence' && (
+                  <div className="h-full w-full min-w-0 min-h-0 overflow-hidden">
+                    <ImageSequencePlayerSurface
+                      title={tab.title}
+                      sequence={tab.collection.sequence}
                     />
                   </div>
                 )}
