@@ -1030,6 +1030,7 @@ pub fn run() {
             fs::delete_paths,
             fs::move_file,
             fs::copy_file,
+            fs::copy_path_to_target,
             fs::start_external_file_drag,
             fs::show_system_context_menu,
             fs::rename_file,

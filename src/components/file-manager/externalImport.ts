@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/core';
 import { exists, mkdir, remove, writeFile } from '@tauri-apps/plugin-fs';
 import {
   buildRenamedFileName,
@@ -78,6 +79,18 @@ function arePathsEquivalent(left: string, right: string): boolean {
   return normalizePath(left).toLowerCase() === normalizePath(right).toLowerCase();
 }
 
+function normalizeDroppedPath(value: string): string {
+  if (value.startsWith('/') && /^[a-zA-Z]:\//.test(value.slice(1))) {
+    return value.slice(1).replace(/\//g, '\\');
+  }
+
+  return value;
+}
+
+function getPathName(path: string): string {
+  return path.split(/[\\/]/).pop() || path;
+}
+
 async function readFileEntry(entry: FileSystemFileEntry): Promise<File> {
   return new Promise((resolve, reject) => {
     entry.file(resolve, reject);
@@ -111,7 +124,19 @@ async function ensureParentDirectory(filePath: string): Promise<void> {
 
 async function writeDroppedFile(targetPath: string, file: File): Promise<void> {
   await ensureParentDirectory(targetPath);
+  if (file.stream) {
+    await writeFile(targetPath, file.stream());
+    return;
+  }
+
   await writeFile(targetPath, new Uint8Array(await file.arrayBuffer()));
+}
+
+async function copySourcePathToTarget(sourcePath: string, targetPath: string): Promise<void> {
+  await invoke('copy_path_to_target', {
+    source: normalizeDroppedPath(sourcePath),
+    target: targetPath,
+  });
 }
 
 async function importEntry(entry: FileSystemEntry, targetPath: string): Promise<void> {
@@ -163,7 +188,11 @@ async function getDroppedRoots(dataTransfer: DataTransfer): Promise<ExternalDrop
             name: entry.name,
             sourcePath,
             importIntoTargetPath: async (targetPath: string) => {
-              await writeDroppedFile(targetPath, file);
+              if (sourcePath) {
+                await copySourcePathToTarget(sourcePath, targetPath);
+              } else {
+                await writeDroppedFile(targetPath, file);
+              }
             },
           };
         }
@@ -173,7 +202,11 @@ async function getDroppedRoots(dataTransfer: DataTransfer): Promise<ExternalDrop
           name: entry.name,
           sourcePath,
           importIntoTargetPath: async (targetPath: string) => {
-            await importEntry(entry, targetPath);
+            if (sourcePath) {
+              await copySourcePathToTarget(sourcePath, targetPath);
+            } else {
+              await importEntry(entry, targetPath);
+            }
           },
         };
       }),
@@ -185,9 +218,34 @@ async function getDroppedRoots(dataTransfer: DataTransfer): Promise<ExternalDrop
     name: file.name,
     sourcePath: getDroppedFileSourcePath(file),
     importIntoTargetPath: async (targetPath: string) => {
-      await writeDroppedFile(targetPath, file);
+      const sourcePath = getDroppedFileSourcePath(file);
+      if (sourcePath) {
+        await copySourcePathToTarget(sourcePath, targetPath);
+      } else {
+        await writeDroppedFile(targetPath, file);
+      }
     },
   }));
+}
+
+export async function importExternalPaths(
+  sourcePaths: string[],
+  targetDir: string,
+  options: ExternalDropImportOptions = {},
+): Promise<ExternalDropImportResult> {
+  const roots: ExternalDropRoot[] = sourcePaths
+    .map(normalizeDroppedPath)
+    .filter(Boolean)
+    .map((sourcePath) => ({
+      kind: 'file' as const,
+      name: getPathName(sourcePath),
+      sourcePath,
+      importIntoTargetPath: async (targetPath: string) => {
+        await copySourcePathToTarget(sourcePath, targetPath);
+      },
+    }));
+
+  return importExternalRoots(roots, targetDir, options);
 }
 
 export async function importExternalDrop(
@@ -196,6 +254,14 @@ export async function importExternalDrop(
   options: ExternalDropImportOptions = {},
 ): Promise<ExternalDropImportResult> {
   const roots = await getDroppedRoots(dataTransfer);
+  return importExternalRoots(roots, targetDir, options);
+}
+
+async function importExternalRoots(
+  roots: ExternalDropRoot[],
+  targetDir: string,
+  options: ExternalDropImportOptions = {},
+): Promise<ExternalDropImportResult> {
   const targetLabel = options.targetLabel || targetDir;
 
   let successCount = 0;

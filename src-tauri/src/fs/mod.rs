@@ -1297,12 +1297,72 @@ async fn copy_path_to_directory(
     Ok(target_path)
 }
 
+fn normalize_compare_path(path: &PathBuf) -> String {
+    tree_cache::normalize_path_key(&path.to_string_lossy())
+        .trim_end_matches(|value| value == '\\' || value == '/')
+        .to_string()
+}
+
+fn is_same_or_descendant_fs_path(path: &PathBuf, parent: &PathBuf) -> bool {
+    let path_key = normalize_compare_path(path);
+    let parent_key = normalize_compare_path(parent);
+
+    if path_key == parent_key {
+        return true;
+    }
+
+    let separator = if cfg!(windows) { "\\" } else { "/" };
+    path_key.starts_with(&format!("{}{}", parent_key, separator))
+}
+
+async fn copy_path_to_exact_target(
+    source_path: PathBuf,
+    target_path: PathBuf,
+) -> Result<(), String> {
+    if is_same_or_descendant_fs_path(&source_path, &target_path) {
+        return Err("源路径和目标路径相同".to_string());
+    }
+
+    let metadata = tokio::fs::metadata(&source_path)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if metadata.is_dir() && is_same_or_descendant_fs_path(&target_path, &source_path) {
+        return Err("不能把文件夹复制到它自身或其子目录中".to_string());
+    }
+
+    if target_path.exists() {
+        return Err("目标位置已存在同名文件或文件夹".to_string());
+    }
+
+    if let Some(parent) = target_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    if metadata.is_dir() {
+        copy_dir_recursive(source_path, target_path).await?;
+    } else {
+        tokio::fs::copy(&source_path, &target_path)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
 // 复制文件或目录
 #[tauri::command]
 pub async fn copy_file(source: String, target: String) -> Result<(), String> {
     copy_path_to_directory(PathBuf::from(source), PathBuf::from(target), false).await?;
 
     Ok(())
+}
+
+#[tauri::command]
+pub async fn copy_path_to_target(source: String, target: String) -> Result<(), String> {
+    copy_path_to_exact_target(PathBuf::from(source), PathBuf::from(target)).await
 }
 
 #[tauri::command]
