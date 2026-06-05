@@ -18,7 +18,13 @@ import {
   joinPath,
   normalizePath,
 } from './dragDrop';
-import { importExternalDrop, type ConflictResolution } from './externalImport';
+import {
+  formatImportBytes,
+  importExternalDrop,
+  isExternalImportCancelled,
+  type ConflictResolution,
+  type ExternalImportProgress,
+} from './externalImport';
 import { MoveConflictDialog } from './MoveConflictDialog';
 
 interface ProjectFsChangeEventPayload {
@@ -143,6 +149,8 @@ export function DirectoryTabSurface({
   const [isLoadingInitialDirectory, setIsLoadingInitialDirectory] = useState(false);
   const [isDragImportActive, setIsDragImportActive] = useState(false);
   const [isImportingDrop, setIsImportingDrop] = useState(false);
+  const [externalImportProgress, setExternalImportProgress] = useState<ExternalImportProgress | null>(null);
+  const externalImportAbortRef = useRef<AbortController | null>(null);
   const [externalDropConflictState, setExternalDropConflictState] = useState({
     isOpen: false,
     sourceName: '',
@@ -496,6 +504,11 @@ export function DirectoryTabSurface({
     });
   }, []);
 
+  const handleCancelExternalImport = useCallback(() => {
+    externalImportAbortRef.current?.abort();
+    resolveExternalDropConflictChoice({ action: 'cancel' });
+  }, [resolveExternalDropConflictChoice]);
+
   const handleExternalDragEnter = useCallback(
     (event: React.DragEvent<HTMLDivElement>) => {
       if (!isExternalFileDrag(event.dataTransfer, hasActiveInternalDrag)) {
@@ -549,6 +562,9 @@ export function DirectoryTabSurface({
 
       const targetDir = directoryStore.getState().currentPath || initialPath;
       setIsImportingDrop(true);
+      setExternalImportProgress(null);
+      const importAbortController = new AbortController();
+      externalImportAbortRef.current = importAbortController;
 
       try {
         const {
@@ -561,6 +577,8 @@ export function DirectoryTabSurface({
           targetLabel: getProjectPathLabel(targetDir, projectPath || null, projectName || null),
           requestConflictChoice: (sourceName, targetLabel) =>
             requestExternalDropConflictChoice(sourceName, targetLabel, targetDir),
+          onProgress: setExternalImportProgress,
+          signal: importAbortController.signal,
         });
 
         await directoryStore.getState().refresh(true, true);
@@ -584,11 +602,29 @@ export function DirectoryTabSurface({
             )}`,
             tone: failedItems.length > 0
               ? (successCount > 0 ? 'warning' : 'error')
-              : 'success',
+            : 'success',
+          });
+        }
+      } catch (error) {
+        if (isExternalImportCancelled(error)) {
+          showToast({
+            title: '导入已取消',
+            message: `已停止导入到 ${getProjectPathLabel(targetDir, projectPath || null, projectName || null)}`,
+            tone: 'warning',
+          });
+        } else {
+          showToast({
+            title: '导入失败',
+            message: String(error),
+            tone: 'error',
           });
         }
       } finally {
+        if (externalImportAbortRef.current === importAbortController) {
+          externalImportAbortRef.current = null;
+        }
         setIsImportingDrop(false);
+        setExternalImportProgress(null);
       }
     },
     [
@@ -605,6 +641,7 @@ export function DirectoryTabSurface({
 
   useEffect(() => {
     return () => {
+      externalImportAbortRef.current?.abort();
       externalDropConflictResolverRef.current?.({ action: 'cancel' });
       externalDropConflictResolverRef.current = null;
     };
@@ -717,6 +754,9 @@ export function DirectoryTabSurface({
 
   const dropTargetLabel = getProjectPathLabel(currentDirectory, projectPath || null, projectName || null);
   const showDropOverlay = isDragImportActive || isImportingDrop;
+  const importProgressPercent = externalImportProgress?.totalBytes
+    ? Math.min(100, Math.max(0, (externalImportProgress.bytesCopied / externalImportProgress.totalBytes) * 100))
+    : null;
 
   return (
     <ProjectStoreProvider store={directoryStore}>
@@ -859,6 +899,44 @@ export function DirectoryTabSurface({
               <div className="mt-1 max-w-[420px] truncate text-xs text-blue-600/80 dark:text-blue-300/80">
                 {dropTargetLabel}
               </div>
+              {isImportingDrop && externalImportProgress && (
+                <div className="mt-4 w-[360px] max-w-[80vw] text-left">
+                  <div className="flex items-center justify-between gap-3 text-xs text-gray-500 dark:text-gray-400">
+                    <span className="min-w-0 truncate" title={externalImportProgress.currentName}>
+                      {externalImportProgress.currentName}
+                    </span>
+                    <span className="shrink-0">
+                      {externalImportProgress.itemIndex}/{externalImportProgress.itemCount}
+                    </span>
+                  </div>
+                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+                    <div
+                      className="h-full rounded-full bg-blue-500 transition-[width] duration-150"
+                      style={{ width: `${importProgressPercent ?? 0}%` }}
+                    />
+                  </div>
+                  <div className="mt-2 flex items-center justify-between gap-3 text-xs text-gray-500 dark:text-gray-400">
+                    <span>
+                      {formatImportBytes(externalImportProgress.bytesCopied)}
+                      {externalImportProgress.totalBytes > 0
+                        ? ` / ${formatImportBytes(externalImportProgress.totalBytes)}`
+                        : ''}
+                    </span>
+                    <span>{importProgressPercent !== null ? `${Math.round(importProgressPercent)}%` : '处理中'}</span>
+                  </div>
+                </div>
+              )}
+              {isImportingDrop && (
+                <div className="mt-4 flex justify-center">
+                  <button
+                    type="button"
+                    className="pointer-events-auto rounded-md border border-gray-300 bg-white px-4 py-1.5 text-sm text-gray-700 transition-colors hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+                    onClick={handleCancelExternalImport}
+                  >
+                    取消
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         )}

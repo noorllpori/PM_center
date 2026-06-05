@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
-import { exists, mkdir, remove, writeFile } from '@tauri-apps/plugin-fs';
+import { listen } from '@tauri-apps/api/event';
+import { create, exists, mkdir, remove } from '@tauri-apps/plugin-fs';
 import {
   buildRenamedFileName,
   getFileNameFromPath,
@@ -16,6 +17,33 @@ interface ExternalDropImportResult {
   failedItems: string[];
 }
 
+export function formatImportBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return '0 B';
+  }
+
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let unitIndex = 0;
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+export interface ExternalImportProgress {
+  itemIndex: number;
+  itemCount: number;
+  currentName: string;
+  targetPath: string;
+  bytesCopied: number;
+  totalBytes: number;
+  done: boolean;
+}
+
 export interface ConflictResolution {
   action: 'overwrite' | 'rename' | 'cancel';
   renameName?: string;
@@ -27,6 +55,25 @@ interface ExternalDropImportOptions {
     sourceName: string,
     targetLabel: string,
   ) => Promise<ConflictResolution>;
+  onProgress?: (progress: ExternalImportProgress) => void;
+  signal?: AbortSignal;
+}
+
+interface ImportProgressContext {
+  itemIndex: number;
+  itemCount: number;
+  currentName: string;
+  onProgress?: (progress: ExternalImportProgress) => void;
+  signal?: AbortSignal;
+}
+
+interface FileCopyProgressEventPayload {
+  progressId: string;
+  source: string;
+  target: string;
+  bytesCopied: number;
+  totalBytes: number;
+  done: boolean;
 }
 
 type WebkitDataTransferItem = DataTransferItem & {
@@ -47,14 +94,35 @@ type ExternalDropRoot =
       kind: 'entry';
       name: string;
       sourcePath?: string;
-      importIntoTargetPath: (targetPath: string) => Promise<void>;
+      importIntoTargetPath: (targetPath: string, progress: ImportProgressContext) => Promise<void>;
     }
   | {
       kind: 'file';
       name: string;
       sourcePath?: string;
-      importIntoTargetPath: (targetPath: string) => Promise<void>;
+      importIntoTargetPath: (targetPath: string, progress: ImportProgressContext) => Promise<void>;
     };
+
+const FRONTEND_FILE_COPY_CHUNK_SIZE = 16 * 1024 * 1024;
+const IMPORT_CANCELLED_MESSAGE = '导入已取消';
+
+export class ExternalImportCancelledError extends Error {
+  constructor() {
+    super(IMPORT_CANCELLED_MESSAGE);
+    this.name = 'ExternalImportCancelledError';
+  }
+}
+
+export function isExternalImportCancelled(error: unknown): boolean {
+  return error instanceof ExternalImportCancelledError
+    || String(error).includes(IMPORT_CANCELLED_MESSAGE);
+}
+
+function throwIfImportCancelled(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw new ExternalImportCancelledError();
+  }
+}
 
 function looksLikeAbsolutePath(value: string): boolean {
   return /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith('\\\\');
@@ -91,6 +159,29 @@ function getPathName(path: string): string {
   return path.split(/[\\/]/).pop() || path;
 }
 
+function createProgressId(): string {
+  const randomPart = Math.random().toString(36).slice(2);
+  return `external-import-${Date.now()}-${randomPart}`;
+}
+
+function emitImportProgress(
+  context: ImportProgressContext,
+  targetPath: string,
+  bytesCopied: number,
+  totalBytes: number,
+  done = false,
+) {
+  context.onProgress?.({
+    itemIndex: context.itemIndex,
+    itemCount: context.itemCount,
+    currentName: context.currentName,
+    targetPath,
+    bytesCopied,
+    totalBytes,
+    done,
+  });
+}
+
 async function readFileEntry(entry: FileSystemFileEntry): Promise<File> {
   return new Promise((resolve, reject) => {
     entry.file(resolve, reject);
@@ -122,24 +213,103 @@ async function ensureParentDirectory(filePath: string): Promise<void> {
   await mkdir(parentPath, { recursive: true });
 }
 
-async function writeDroppedFile(targetPath: string, file: File): Promise<void> {
+async function writeDroppedFile(
+  targetPath: string,
+  file: File,
+  progress: ImportProgressContext,
+): Promise<void> {
+  throwIfImportCancelled(progress.signal);
   await ensureParentDirectory(targetPath);
-  if (file.stream) {
-    await writeFile(targetPath, file.stream());
-    return;
+  let bytesCopied = 0;
+  let lastProgressAt = 0;
+
+  const reportProgress = (done = false) => {
+    const now = Date.now();
+    if (!done && now - lastProgressAt < 100) {
+      return;
+    }
+
+    lastProgressAt = now;
+    emitImportProgress(progress, targetPath, bytesCopied, file.size, done);
+  };
+
+  reportProgress(false);
+
+  const handle = await create(targetPath);
+  try {
+    for (let offset = 0; offset < file.size; offset += FRONTEND_FILE_COPY_CHUNK_SIZE) {
+      throwIfImportCancelled(progress.signal);
+      const chunk = file.slice(offset, offset + FRONTEND_FILE_COPY_CHUNK_SIZE);
+      const bytes = new Uint8Array(await chunk.arrayBuffer());
+      throwIfImportCancelled(progress.signal);
+      await handle.write(bytes);
+      bytesCopied += bytes.byteLength;
+      reportProgress(false);
+    }
+  } finally {
+    await handle.close();
   }
 
-  await writeFile(targetPath, new Uint8Array(await file.arrayBuffer()));
+  throwIfImportCancelled(progress.signal);
+  reportProgress(true);
 }
 
-async function copySourcePathToTarget(sourcePath: string, targetPath: string): Promise<void> {
-  await invoke('copy_path_to_target', {
-    source: normalizeDroppedPath(sourcePath),
-    target: targetPath,
-  });
+async function copySourcePathToTarget(
+  sourcePath: string,
+  targetPath: string,
+  progress: ImportProgressContext,
+): Promise<void> {
+  throwIfImportCancelled(progress.signal);
+  const progressId = createProgressId();
+  let unlisten: (() => void) | null = null;
+  const cancelRustCopy = () => {
+    void invoke('cancel_file_copy', { progressId }).catch(() => {});
+  };
+
+  try {
+    unlisten = await listen<FileCopyProgressEventPayload>('pm-center:file-copy-progress', (event) => {
+      const payload = event.payload;
+      if (!payload || payload.progressId !== progressId) {
+        return;
+      }
+
+      emitImportProgress(
+        progress,
+        payload.target || targetPath,
+        payload.bytesCopied,
+        payload.totalBytes,
+        payload.done,
+      );
+    });
+
+    progress.signal?.addEventListener('abort', cancelRustCopy, { once: true });
+
+    try {
+      await invoke('copy_path_to_target', {
+        source: normalizeDroppedPath(sourcePath),
+        target: targetPath,
+        progressId,
+      });
+    } catch (error) {
+      if (isExternalImportCancelled(error)) {
+        throw new ExternalImportCancelledError();
+      }
+      throw error;
+    }
+
+    throwIfImportCancelled(progress.signal);
+  } finally {
+    progress.signal?.removeEventListener('abort', cancelRustCopy);
+    unlisten?.();
+  }
 }
 
-async function importEntry(entry: FileSystemEntry, targetPath: string): Promise<void> {
+async function importEntry(
+  entry: FileSystemEntry,
+  targetPath: string,
+  progress: ImportProgressContext,
+): Promise<void> {
+  throwIfImportCancelled(progress.signal);
   if (entry.isDirectory) {
     await mkdir(targetPath, { recursive: true });
 
@@ -147,14 +317,15 @@ async function importEntry(entry: FileSystemEntry, targetPath: string): Promise<
     const children = await readAllDirectoryEntries(directoryEntry.createReader());
 
     for (const child of children) {
-      await importEntry(child, joinPath(targetPath, child.name));
+      throwIfImportCancelled(progress.signal);
+      await importEntry(child, joinPath(targetPath, child.name), progress);
     }
 
     return;
   }
 
   const file = await readFileEntry(entry as FileSystemFileEntry);
-  await writeDroppedFile(targetPath, file);
+  await writeDroppedFile(targetPath, file, progress);
 }
 
 async function buildRenamedPath(path: string): Promise<string> {
@@ -187,11 +358,11 @@ async function getDroppedRoots(dataTransfer: DataTransfer): Promise<ExternalDrop
             kind: 'entry' as const,
             name: entry.name,
             sourcePath,
-            importIntoTargetPath: async (targetPath: string) => {
+            importIntoTargetPath: async (targetPath: string, progress: ImportProgressContext) => {
               if (sourcePath) {
-                await copySourcePathToTarget(sourcePath, targetPath);
+                await copySourcePathToTarget(sourcePath, targetPath, progress);
               } else {
-                await writeDroppedFile(targetPath, file);
+                await writeDroppedFile(targetPath, file, progress);
               }
             },
           };
@@ -201,11 +372,11 @@ async function getDroppedRoots(dataTransfer: DataTransfer): Promise<ExternalDrop
           kind: 'entry' as const,
           name: entry.name,
           sourcePath,
-          importIntoTargetPath: async (targetPath: string) => {
+          importIntoTargetPath: async (targetPath: string, progress: ImportProgressContext) => {
             if (sourcePath) {
-              await copySourcePathToTarget(sourcePath, targetPath);
+              await copySourcePathToTarget(sourcePath, targetPath, progress);
             } else {
-              await importEntry(entry, targetPath);
+              await importEntry(entry, targetPath, progress);
             }
           },
         };
@@ -217,12 +388,12 @@ async function getDroppedRoots(dataTransfer: DataTransfer): Promise<ExternalDrop
     kind: 'file' as const,
     name: file.name,
     sourcePath: getDroppedFileSourcePath(file),
-    importIntoTargetPath: async (targetPath: string) => {
+    importIntoTargetPath: async (targetPath: string, progress: ImportProgressContext) => {
       const sourcePath = getDroppedFileSourcePath(file);
       if (sourcePath) {
-        await copySourcePathToTarget(sourcePath, targetPath);
+        await copySourcePathToTarget(sourcePath, targetPath, progress);
       } else {
-        await writeDroppedFile(targetPath, file);
+        await writeDroppedFile(targetPath, file, progress);
       }
     },
   }));
@@ -240,8 +411,8 @@ export async function importExternalPaths(
       kind: 'file' as const,
       name: getPathName(sourcePath),
       sourcePath,
-      importIntoTargetPath: async (targetPath: string) => {
-        await copySourcePathToTarget(sourcePath, targetPath);
+      importIntoTargetPath: async (targetPath: string, progress: ImportProgressContext) => {
+        await copySourcePathToTarget(sourcePath, targetPath, progress);
       },
     }));
 
@@ -254,6 +425,7 @@ export async function importExternalDrop(
   options: ExternalDropImportOptions = {},
 ): Promise<ExternalDropImportResult> {
   const roots = await getDroppedRoots(dataTransfer);
+  throwIfImportCancelled(options.signal);
   return importExternalRoots(roots, targetDir, options);
 }
 
@@ -270,13 +442,16 @@ async function importExternalRoots(
   let skippedCount = 0;
   const failedItems: string[] = [];
 
-  for (const root of roots) {
+  for (const [rootIndex, root] of roots.entries()) {
+    throwIfImportCancelled(options.signal);
     let targetPath = joinPath(targetDir, root.name);
     let appliedRename = false;
     let appliedOverwrite = false;
+    let importStarted = false;
 
     try {
       while (await exists(targetPath)) {
+        throwIfImportCancelled(options.signal);
         if (
           root.sourcePath &&
           arePathsEquivalent(root.sourcePath, targetPath)
@@ -309,11 +484,21 @@ async function importExternalRoots(
         }
       }
 
+      throwIfImportCancelled(options.signal);
+
       if (!targetPath) {
         continue;
       }
 
-      await root.importIntoTargetPath(targetPath);
+      throwIfImportCancelled(options.signal);
+      importStarted = true;
+      await root.importIntoTargetPath(targetPath, {
+        itemIndex: rootIndex + 1,
+        itemCount: roots.length,
+        currentName: root.name,
+        onProgress: options.onProgress,
+        signal: options.signal,
+      });
       successCount += 1;
       if (appliedOverwrite) {
         overwriteCount += 1;
@@ -322,6 +507,18 @@ async function importExternalRoots(
         renameCount += 1;
       }
     } catch (error) {
+      if (importStarted && targetPath) {
+        try {
+          if (await exists(targetPath)) {
+            await remove(targetPath, { recursive: true });
+          }
+        } catch {
+          // Keep the original import error visible; cleanup is best-effort.
+        }
+      }
+      if (isExternalImportCancelled(error)) {
+        throw new ExternalImportCancelledError();
+      }
       failedItems.push(`${root.name}: ${String(error)}`);
     }
   }

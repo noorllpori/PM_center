@@ -9,7 +9,10 @@ use std::future::Future;
 use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tauri::Emitter;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::process_utils::std_command;
 use crate::thumbnail_cache::{self, ThumbnailSource};
@@ -75,6 +78,115 @@ pub struct ExternalFileDragResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemContextMenuResult {
     pub status: String,
+}
+
+const FILE_COPY_PROGRESS_EVENT: &str = "pm-center:file-copy-progress";
+const FILE_COPY_BUFFER_SIZE: usize = 16 * 1024 * 1024;
+const FILE_COPY_PROGRESS_INTERVAL_MS: u64 = 120;
+const FILE_COPY_CANCELLED_MESSAGE: &str = "导入已取消";
+
+lazy_static::lazy_static! {
+    static ref CANCELLED_FILE_COPIES: Arc<Mutex<HashSet<String>>> =
+        Arc::new(Mutex::new(HashSet::new()));
+}
+
+struct CopyProgressConfig {
+    app: tauri::AppHandle,
+    progress_id: String,
+}
+
+struct CopyProgressContext {
+    app: tauri::AppHandle,
+    progress_id: String,
+    source: String,
+    target: String,
+    total_bytes: u64,
+    copied_bytes: u64,
+    last_emit_at: Instant,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FileCopyProgressEvent {
+    progress_id: String,
+    source: String,
+    target: String,
+    bytes_copied: u64,
+    total_bytes: u64,
+    done: bool,
+}
+
+impl CopyProgressContext {
+    fn new(config: CopyProgressConfig, source: &PathBuf, target: &PathBuf, total_bytes: u64) -> Self {
+        Self {
+            app: config.app,
+            progress_id: config.progress_id,
+            source: source.to_string_lossy().to_string(),
+            target: target.to_string_lossy().to_string(),
+            total_bytes,
+            copied_bytes: 0,
+            last_emit_at: Instant::now() - Duration::from_millis(FILE_COPY_PROGRESS_INTERVAL_MS),
+        }
+    }
+
+    fn emit(&mut self, done: bool) {
+        if !done
+            && self.last_emit_at.elapsed()
+                < Duration::from_millis(FILE_COPY_PROGRESS_INTERVAL_MS)
+        {
+            return;
+        }
+
+        self.last_emit_at = Instant::now();
+        let _ = self.app.emit(
+            FILE_COPY_PROGRESS_EVENT,
+            FileCopyProgressEvent {
+                progress_id: self.progress_id.clone(),
+                source: self.source.clone(),
+                target: self.target.clone(),
+                bytes_copied: self.copied_bytes.min(self.total_bytes),
+                total_bytes: self.total_bytes,
+                done,
+            },
+        );
+    }
+
+    fn add_bytes(&mut self, bytes: u64) {
+        self.copied_bytes = self.copied_bytes.saturating_add(bytes);
+        self.emit(false);
+    }
+
+    fn is_cancelled(&self) -> bool {
+        is_file_copy_cancelled(&self.progress_id)
+    }
+
+    fn throw_if_cancelled(&self) -> Result<(), String> {
+        if self.is_cancelled() {
+            return Err(FILE_COPY_CANCELLED_MESSAGE.to_string());
+        }
+
+        Ok(())
+    }
+
+    fn finish(&mut self) {
+        self.copied_bytes = self.total_bytes;
+        self.emit(true);
+    }
+}
+
+fn is_file_copy_cancelled(progress_id: &str) -> bool {
+    CANCELLED_FILE_COPIES
+        .lock()
+        .map(|cancelled| cancelled.contains(progress_id))
+        .unwrap_or(false)
+}
+
+fn throw_if_file_copy_cancelled(progress_id: &str) -> Result<(), String> {
+    if is_file_copy_cancelled(progress_id) {
+        return Err(FILE_COPY_CANCELLED_MESSAGE.to_string());
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -1315,9 +1427,113 @@ fn is_same_or_descendant_fs_path(path: &PathBuf, parent: &PathBuf) -> bool {
     path_key.starts_with(&format!("{}{}", parent_key, separator))
 }
 
+fn calculate_copy_size(
+    source: PathBuf,
+    progress_id: Option<String>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64, String>> + Send>> {
+    Box::pin(async move {
+        if let Some(progress_id) = &progress_id {
+            throw_if_file_copy_cancelled(progress_id)?;
+        }
+
+        let metadata = tokio::fs::metadata(&source)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if !metadata.is_dir() {
+            return Ok(metadata.len());
+        }
+
+        let mut total = 0_u64;
+        let mut entries = tokio::fs::read_dir(&source)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
+            if let Some(progress_id) = &progress_id {
+                throw_if_file_copy_cancelled(progress_id)?;
+            }
+            total = total.saturating_add(calculate_copy_size(entry.path(), progress_id.clone()).await?);
+        }
+
+        Ok(total)
+    })
+}
+
+async fn copy_file_with_progress(
+    source: &PathBuf,
+    target: &PathBuf,
+    progress: &mut CopyProgressContext,
+) -> Result<(), String> {
+    progress.throw_if_cancelled()?;
+    let mut input = tokio::fs::File::open(source)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut output = tokio::fs::File::create(target)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut buffer = vec![0_u8; FILE_COPY_BUFFER_SIZE];
+
+    loop {
+        progress.throw_if_cancelled()?;
+        let bytes_read = input
+            .read(&mut buffer)
+            .await
+            .map_err(|e| e.to_string())?;
+        if bytes_read == 0 {
+            break;
+        }
+
+        output
+            .write_all(&buffer[..bytes_read])
+            .await
+            .map_err(|e| e.to_string())?;
+        progress.add_bytes(bytes_read as u64);
+    }
+
+    progress.throw_if_cancelled()?;
+    output.flush().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn copy_path_recursive_with_progress<'a>(
+    source: PathBuf,
+    target: PathBuf,
+    progress: &'a mut CopyProgressContext,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    Box::pin(async move {
+        progress.throw_if_cancelled()?;
+        let metadata = tokio::fs::metadata(&source)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if metadata.is_dir() {
+            tokio::fs::create_dir_all(&target)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            let mut entries = tokio::fs::read_dir(&source)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
+                progress.throw_if_cancelled()?;
+                let source_path = entry.path();
+                let target_path = target.join(entry.file_name());
+                copy_path_recursive_with_progress(source_path, target_path, progress).await?;
+            }
+        } else {
+            copy_file_with_progress(&source, &target, progress).await?;
+        }
+
+        Ok(())
+    })
+}
+
 async fn copy_path_to_exact_target(
     source_path: PathBuf,
     target_path: PathBuf,
+    progress_config: Option<CopyProgressConfig>,
 ) -> Result<(), String> {
     if is_same_or_descendant_fs_path(&source_path, &target_path) {
         return Err("源路径和目标路径相同".to_string());
@@ -1341,7 +1557,23 @@ async fn copy_path_to_exact_target(
             .map_err(|e| e.to_string())?;
     }
 
-    if metadata.is_dir() {
+    if let Some(progress_config) = progress_config {
+        let progress_id = progress_config.progress_id.clone();
+        let total_bytes = calculate_copy_size(source_path.clone(), Some(progress_id)).await?;
+        let mut progress =
+            CopyProgressContext::new(progress_config, &source_path, &target_path, total_bytes);
+        progress.emit(false);
+        let copy_result =
+            copy_path_recursive_with_progress(source_path, target_path, &mut progress).await;
+        let progress_id = progress.progress_id.clone();
+        if copy_result.is_ok() {
+            progress.finish();
+        }
+        let _ = CANCELLED_FILE_COPIES
+            .lock()
+            .map(|mut cancelled| cancelled.remove(&progress_id));
+        copy_result?;
+    } else if metadata.is_dir() {
         copy_dir_recursive(source_path, target_path).await?;
     } else {
         tokio::fs::copy(&source_path, &target_path)
@@ -1361,8 +1593,30 @@ pub async fn copy_file(source: String, target: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn copy_path_to_target(source: String, target: String) -> Result<(), String> {
-    copy_path_to_exact_target(PathBuf::from(source), PathBuf::from(target)).await
+pub async fn copy_path_to_target(
+    app: tauri::AppHandle,
+    source: String,
+    target: String,
+    progress_id: Option<String>,
+) -> Result<(), String> {
+    let progress_config = progress_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(|progress_id| CopyProgressConfig { app, progress_id });
+
+    copy_path_to_exact_target(PathBuf::from(source), PathBuf::from(target), progress_config).await
+}
+
+#[tauri::command]
+pub async fn cancel_file_copy(progress_id: String) -> Result<(), String> {
+    let progress_id = progress_id.trim();
+    if progress_id.is_empty() {
+        return Ok(());
+    }
+
+    let mut cancelled = CANCELLED_FILE_COPIES.lock().map_err(|e| e.to_string())?;
+    cancelled.insert(progress_id.to_string());
+    Ok(())
 }
 
 #[tauri::command]
