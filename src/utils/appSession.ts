@@ -80,7 +80,6 @@ function sanitizeWorkspaceTab(tab: unknown): PersistedWorkspaceTab | null {
 
   const candidate = tab as Partial<PersistedWorkspaceTab>;
   if (
-    candidate.type !== 'logs' &&
     candidate.type !== 'directory' &&
     candidate.type !== 'image' &&
     candidate.type !== 'text' &&
@@ -90,7 +89,7 @@ function sanitizeWorkspaceTab(tab: unknown): PersistedWorkspaceTab | null {
     return null;
   }
 
-  if (candidate.type !== 'logs' && !candidate.filePath) {
+  if (!candidate.filePath) {
     return null;
   }
 
@@ -110,7 +109,6 @@ function sanitizeActiveWorkspaceTab(tab: unknown): PersistedWorkspaceActiveTab {
   if (
     candidate.type !== 'files' &&
     candidate.type !== 'directory' &&
-    candidate.type !== 'logs' &&
     candidate.type !== 'image' &&
     candidate.type !== 'text' &&
     candidate.type !== 'video' &&
@@ -119,7 +117,7 @@ function sanitizeActiveWorkspaceTab(tab: unknown): PersistedWorkspaceActiveTab {
     return { type: 'files' };
   }
 
-  if (candidate.type !== 'files' && candidate.type !== 'logs' && !candidate.filePath) {
+  if (candidate.type !== 'files' && !candidate.filePath) {
     return { type: 'files' };
   }
 

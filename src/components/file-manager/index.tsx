@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { History, MessageCircle, Terminal, X } from 'lucide-react';
+import { MessageCircle, Terminal, X } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
 import { WelcomeScreen } from '../WelcomeScreen';
 import { P2PChat } from '../P2PChat';
@@ -17,7 +17,7 @@ import { ShellTabBar } from '../shell/ShellTabBar';
 import { Dialog } from '../Dialog';
 import { createProjectStore, type ProjectStoreApi } from '../../stores/projectStore';
 import { useTaskStore } from '../../stores/taskStore';
-import { createWorkspaceTabStore, type WorkspaceTabStoreApi, useWorkspaceTabStore } from '../../stores/workspaceTabStore';
+import { createWorkspaceTabStore, type WorkspaceTabStoreApi } from '../../stores/workspaceTabStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useShellTabStore, normalizeProjectPath } from '../../stores/shellTabStore';
@@ -74,7 +74,7 @@ function getFileNameFromPath(path: string) {
 }
 
 function getPersistedWorkspaceTabKey(tab: PersistedWorkspaceTab | PersistedWorkspaceActiveTab) {
-  return tab.type === 'logs' || tab.type === 'files'
+  return tab.type === 'files'
     ? tab.type
     : `${tab.type}:${tab.filePath || ''}`;
 }
@@ -86,10 +86,6 @@ function serializeWorkspaceSession(
   const tabs = state.tabs.flatMap<PersistedWorkspaceTab>((tab) => {
     if (tab.type === 'files') {
       return [];
-    }
-
-    if (tab.type === 'logs') {
-      return [{ type: 'logs', title: tab.title }];
     }
 
     if (!tab.filePath) {
@@ -105,9 +101,7 @@ function serializeWorkspaceSession(
 
   const activeTab = state.tabs.find((tab) => tab.id === state.activeTabId) ?? state.tabs[0];
   const activePersistedTab: PersistedWorkspaceActiveTab =
-    activeTab?.type === 'logs'
-      ? { type: 'logs' }
-      : activeTab?.type && activeTab.type !== 'files' && activeTab.filePath
+    activeTab?.type && activeTab.type !== 'files' && activeTab.filePath
         ? { type: activeTab.type, filePath: activeTab.filePath }
         : { type: 'files' };
 
@@ -126,12 +120,6 @@ async function restoreWorkspaceSession(
   const restoredTabIds = new Map<string, string>();
 
   for (const tab of session.tabs) {
-    if (tab.type === 'logs') {
-      const tabId = workspaceTabStore.getState().openLogsTab();
-      restoredTabIds.set(getPersistedWorkspaceTabKey(tab), tabId);
-      continue;
-    }
-
     if (tab.type === 'directory') {
       if (!tab.filePath) {
         continue;
@@ -201,27 +189,6 @@ async function restoreStandaloneWindow(window: PersistedStandaloneWindow) {
     projectPath: window.projectPath,
     focus: false,
   });
-}
-
-function ProjectLogsButton({ onOpen }: { onOpen: () => void }) {
-  const activeWorkspaceType = useWorkspaceTabStore((state) => {
-    const activeTab = state.tabs.find((tab) => tab.id === state.activeTabId);
-    return activeTab?.type;
-  });
-
-  return (
-    <button
-      onClick={onOpen}
-      className={`p-2 rounded-lg transition-colors ${
-        activeWorkspaceType === 'logs'
-          ? 'bg-amber-50 text-amber-600 dark:bg-amber-900/20 dark:text-amber-300'
-          : 'text-gray-500 hover:text-amber-600 dark:text-gray-400 dark:hover:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/20'
-      }`}
-      title="日志"
-    >
-      <History className="w-5 h-5" />
-    </button>
-  );
 }
 
 export function FileManager() {
@@ -847,14 +814,6 @@ export function FileManager() {
     }
   };
 
-  const handleOpenLogsTab = () => {
-    if (!activeProjectSession) {
-      return;
-    }
-
-    activeProjectSession.workspaceTabStore.getState().openLogsTab();
-  };
-
   const toastStyles = {
     info: 'border-blue-200 bg-white text-gray-900',
     success: 'border-green-200 bg-white text-gray-900',
@@ -885,14 +844,6 @@ export function FileManager() {
         </div>
 
         <div className="flex items-center gap-2 px-3 border-l border-gray-200 dark:border-gray-700">
-          {activeProjectSession && (
-            <ProjectSessionProvider
-              projectStore={activeProjectSession.projectStore}
-              workspaceTabStore={activeProjectSession.workspaceTabStore}
-            >
-              <ProjectLogsButton onOpen={handleOpenLogsTab} />
-            </ProjectSessionProvider>
-          )}
           <button
             onClick={() => setIsPythonEnvOpen(true)}
             className="p-2 text-gray-500 hover:text-green-600 dark:text-gray-400 
@@ -960,7 +911,7 @@ export function FileManager() {
       />
 
       {toast.isOpen && (
-        <div className="fixed right-4 bottom-20 z-[120] w-[360px] max-w-[calc(100vw-2rem)]">
+        <div className="fixed right-4 top-16 z-[120] w-[360px] max-w-[calc(100vw-2rem)]">
           <div className={`relative overflow-hidden rounded-xl border shadow-xl ${toastStyles[toast.tone]}`}>
             <div className={`absolute left-0 top-0 h-full w-1 ${toastAccentStyles[toast.tone]}`} />
             <div className="flex items-start gap-3 px-4 py-3 pl-5">

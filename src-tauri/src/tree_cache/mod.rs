@@ -1,5 +1,5 @@
 use rusqlite::{params, Connection, OptionalExtension};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -22,10 +22,6 @@ pub struct FsEntrySnapshot {
 pub struct TreeCacheDb {
     conn: Arc<Mutex<Connection>>,
     project_path: String,
-}
-
-lazy_static::lazy_static! {
-    static ref TREE_CACHE_DBS: Arc<Mutex<HashMap<String, TreeCacheDb>>> = Arc::new(Mutex::new(HashMap::new()));
 }
 
 pub fn normalize_path_key(path: &str) -> String {
@@ -60,52 +56,11 @@ pub fn detect_project_root_for_path(path: &str) -> Option<String> {
 }
 
 pub fn get_or_create_project_cache(project_path: &str) -> Result<TreeCacheDb, String> {
-    let project_key = normalize_path_key(project_path);
-    {
-        let guard = TREE_CACHE_DBS.lock().map_err(|error| error.to_string())?;
-        if let Some(db) = guard.get(&project_key) {
-            return Ok(db.clone());
-        }
-    }
-
-    let db = TreeCacheDb::new(project_path)?;
-    let mut guard = TREE_CACHE_DBS.lock().map_err(|error| error.to_string())?;
-    let existing = guard
-        .entry(project_key)
-        .or_insert_with(|| db.clone())
-        .clone();
-    Ok(existing)
+    TreeCacheDb::new(project_path)
 }
 
 pub fn process_dirty_dirs(max_dirs_per_project: usize) -> Result<(), String> {
-    let caches = {
-        let guard = TREE_CACHE_DBS.lock().map_err(|error| error.to_string())?;
-        guard.values().cloned().collect::<Vec<_>>()
-    };
-
-    for cache in caches {
-        let dirty_dirs = cache.get_dirty_dirs(max_dirs_per_project)?;
-        if dirty_dirs.is_empty() {
-            continue;
-        }
-
-        for dir_path in dirty_dirs {
-            let path = PathBuf::from(&dir_path);
-            if !path.exists() || !path.is_dir() {
-                cache.remove_path_subtree(&dir_path)?;
-                cache.clear_dir_dirty(&dir_path)?;
-                continue;
-            }
-
-            let entries = scan_directory_entries_from_disk(&cache.project_path, &dir_path)?;
-            cache.replace_directory_entries(&dir_path, &entries)?;
-        }
-
-        if cache.count_dirty_dirs()? == 0 {
-            cache.set_tree_clean()?;
-        }
-    }
-
+    let _ = max_dirs_per_project;
     Ok(())
 }
 

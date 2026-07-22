@@ -10,7 +10,7 @@ import { getFileNameFromPath, getWorkspaceOpenTarget } from '../components/works
 import { openStandaloneDirectoryViewer } from '../components/file-manager/openStandaloneDirectoryViewer';
 import type { ImageSequenceInfo } from '../types';
 
-export type WorkspaceTabType = 'files' | 'directory' | 'logs' | 'image' | 'text' | 'video' | 'blend' | 'collection';
+export type WorkspaceTabType = 'files' | 'directory' | 'image' | 'text' | 'video' | 'blend' | 'collection';
 
 export type WorkspaceCollectionTabData =
   | {
@@ -38,7 +38,6 @@ export interface WorkspaceTab {
 }
 
 const FILES_TAB_ID = 'files';
-const LOGS_TAB_ID = 'logs';
 
 const FILES_TAB: WorkspaceTab = {
   id: FILES_TAB_ID,
@@ -117,7 +116,6 @@ export interface WorkspaceTabState {
   ) => Promise<boolean>;
   openDirectoryInTab: (directoryPath: string) => string;
   openCollectionInTab: (collection: WorkspaceCollectionTabData) => string;
-  openLogsTab: () => string;
   activateTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
   reorderTabs: (fromId: string, toId: string) => void;
@@ -273,29 +271,6 @@ export function createWorkspaceTabStore(storeOptions: CreateWorkspaceTabStoreOpt
       }
 
       const nextTab = createCollectionTab(collection);
-      set((state) => ({
-        tabs: [...state.tabs, nextTab],
-        activeTabId: nextTab.id,
-      }));
-
-      return nextTab.id;
-    },
-
-    openLogsTab: () => {
-      const existingTab = get().tabs.find((tab) => tab.id === LOGS_TAB_ID);
-      if (existingTab) {
-        set({ activeTabId: existingTab.id });
-        return existingTab.id;
-      }
-
-      const nextTab: WorkspaceTab = {
-        id: LOGS_TAB_ID,
-        type: 'logs',
-        title: '日志',
-        closable: true,
-        isDirty: false,
-      };
-
       set((state) => ({
         tabs: [...state.tabs, nextTab],
         activeTabId: nextTab.id,

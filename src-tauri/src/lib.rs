@@ -47,26 +47,15 @@ use tauri_plugin_global_shortcut::ShortcutState;
 use tools::{inspect_blender_executable, inspect_tool_paths, scan_blender_installations};
 
 #[derive(Default)]
-struct DbStateInner {
-    databases: HashMap<String, Database>,
-}
+struct DbStateInner;
 
 type DbState = Arc<Mutex<DbStateInner>>;
 
 async fn get_or_create_db(
-    db_state: &tauri::State<'_, DbState>,
+    _db_state: &tauri::State<'_, DbState>,
     project_path: &str,
 ) -> Result<Database, String> {
-    let mut guard = db_state.lock().await;
-
-    if let Some(db) = guard.databases.get(project_path) {
-        return Ok(db.clone());
-    }
-
-    let db = Database::new(project_path).map_err(|e| e.to_string())?;
-    guard.databases.insert(project_path.to_string(), db.clone());
-
-    Ok(db)
+    Database::new(project_path).map_err(|e| e.to_string())
 }
 
 fn ensure_project_support_files(project_path: &str) -> Result<(), String> {
@@ -91,11 +80,7 @@ async fn init_project(
     project_path: String,
 ) -> Result<(), String> {
     ensure_project_support_files(&project_path)?;
-    let db = get_or_create_db(&db_state, &project_path).await?;
-    let _ = tree_cache::get_or_create_project_cache(&project_path)?;
-
-    let _ = watcher::init_project(project_path.clone(), true);
-    let _ = watcher::set_active_project(&project_path, &db);
+    let _ = get_or_create_db(&db_state, &project_path).await?;
 
     Ok(())
 }
@@ -105,8 +90,7 @@ async fn activate_project(
     db_state: tauri::State<'_, DbState>,
     project_path: String,
 ) -> Result<(), String> {
-    let db = get_or_create_db(&db_state, &project_path).await?;
-    let _ = watcher::set_active_project(&project_path, &db);
+    let _ = get_or_create_db(&db_state, &project_path).await?;
     Ok(())
 }
 
@@ -740,15 +724,14 @@ async fn rename_collection(
     name: String,
 ) -> Result<(), String> {
     let db = get_or_create_db(&db_state, &project_path).await?;
-    db.rename_collection(&collection_id, &name)
-        .map_err(|e| {
-            let message = e.to_string();
-            if message.contains("UNIQUE constraint failed") {
-                "当前目录已存在同名集合".to_string()
-            } else {
-                message
-            }
-        })
+    db.rename_collection(&collection_id, &name).map_err(|e| {
+        let message = e.to_string();
+        if message.contains("UNIQUE constraint failed") {
+            "当前目录已存在同名集合".to_string()
+        } else {
+            message
+        }
+    })
 }
 
 #[tauri::command]
@@ -950,68 +933,6 @@ pub fn run() {
             #[cfg(debug_assertions)]
             window.close_devtools();
 
-            // 启动后台任务：休眠项目扫描（低频率）
-            let db_state_for_scan = db_state.clone();
-            tauri::async_runtime::spawn(async move {
-                // 等待数据库初始化
-                tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-
-                loop {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(300)).await; // 5分钟
-
-                    let databases = {
-                        let guard = db_state_for_scan.lock().await;
-                        guard.databases.clone()
-                    };
-
-                    if !databases.is_empty() {
-                        watcher::run_dormant_scan(databases).await;
-                    }
-                }
-            });
-
-            // 启动后台任务：每天归档一次
-            let db_state_for_archive = db_state.clone();
-            tauri::async_runtime::spawn(async move {
-                let mut archive_interval =
-                    tokio::time::interval(tokio::time::Duration::from_secs(86400)); // 24小时
-
-                loop {
-                    archive_interval.tick().await;
-
-                    let databases = {
-                        let guard = db_state_for_archive.lock().await;
-                        guard.databases.values().cloned().collect::<Vec<_>>()
-                    };
-
-                    for db in databases {
-                        let _ = db.archive_old_changes();
-                    }
-                }
-            });
-
-            // 启动后台任务：高频增量修复缓存脏目录
-            tauri::async_runtime::spawn(async move {
-                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(2));
-
-                loop {
-                    interval.tick().await;
-                    let _ = tree_cache::process_dirty_dirs(50);
-                }
-            });
-
-            // 启动后台任务：低频全量树校验（活动项目）
-            tauri::async_runtime::spawn(async move {
-                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(600));
-
-                loop {
-                    interval.tick().await;
-                    if let Some(active_project_path) = watcher::get_active_project_path() {
-                        let _ = tree_cache::rebuild_project_tree_cache(&active_project_path);
-                    }
-                }
-            });
-
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1037,6 +958,7 @@ pub fn run() {
             fs::rename_file,
             fs::path_exists,
             fs::get_system_clipboard_status,
+            fs::get_system_clipboard_files,
             fs::paste_system_clipboard,
             fs::get_file_property,
             fs::read_file,

@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { create, exists, mkdir, remove } from '@tauri-apps/plugin-fs';
+import { exists, mkdir, remove, writeFile } from '@tauri-apps/plugin-fs';
 import {
   buildRenamedFileName,
   getFileNameFromPath,
@@ -9,29 +9,12 @@ import {
   normalizePath,
 } from './dragDrop';
 
-interface ExternalDropImportResult {
+export interface ExternalDropImportResult {
   successCount: number;
   overwriteCount: number;
   renameCount: number;
   skippedCount: number;
   failedItems: string[];
-}
-
-export function formatImportBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) {
-    return '0 B';
-  }
-
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let value = bytes;
-  let unitIndex = 0;
-
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex += 1;
-  }
-
-  return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
 export interface ExternalImportProgress {
@@ -235,19 +218,24 @@ async function writeDroppedFile(
 
   reportProgress(false);
 
-  const handle = await create(targetPath);
-  try {
-    for (let offset = 0; offset < file.size; offset += FRONTEND_FILE_COPY_CHUNK_SIZE) {
-      throwIfImportCancelled(progress.signal);
-      const chunk = file.slice(offset, offset + FRONTEND_FILE_COPY_CHUNK_SIZE);
-      const bytes = new Uint8Array(await chunk.arrayBuffer());
-      throwIfImportCancelled(progress.signal);
-      await handle.write(bytes);
-      bytesCopied += bytes.byteLength;
-      reportProgress(false);
-    }
-  } finally {
-    await handle.close();
+  if (file.size === 0) {
+    await writeFile(targetPath, new Uint8Array());
+  }
+
+  for (let offset = 0; offset < file.size; offset += FRONTEND_FILE_COPY_CHUNK_SIZE) {
+    throwIfImportCancelled(progress.signal);
+    const chunk = file.slice(offset, offset + FRONTEND_FILE_COPY_CHUNK_SIZE);
+    const bytes = new Uint8Array(await chunk.arrayBuffer());
+    throwIfImportCancelled(progress.signal);
+
+    // writeFile sends Uint8Array as the IPC request body. FileHandle.write wraps
+    // the same bytes in JSON command arguments, which is much slower for large drops.
+    await writeFile(targetPath, bytes, {
+      append: offset > 0,
+      create: true,
+    });
+    bytesCopied += bytes.byteLength;
+    reportProgress(false);
   }
 
   throwIfImportCancelled(progress.signal);

@@ -335,7 +335,7 @@ export function FileContextMenu({
 }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const submenuRef = useRef<HTMLDivElement>(null);
-  const { items: clipboardItems, cut, copy, paste, hasItem } = useClipboardStore();
+  const { items: clipboardItems, cut, copy, paste, pasteSystem, hasItem } = useClipboardStore();
   const showToast = useUiStore((state) => state.showToast);
   const [systemClipboardStatus, setSystemClipboardStatus] = useState<SystemClipboardStatus>({
     hasFiles: false,
@@ -455,8 +455,7 @@ export function FileContextMenu({
       if (clipboardItems.length > 0) {
         success = await paste(targetDir, projectPath);
       } else {
-        const pastedPaths = await invoke<string[]>('paste_system_clipboard', { targetDir });
-        success = pastedPaths.length > 0;
+        success = (await pasteSystem(targetDir)) > 0;
       }
 
       if (success) {
@@ -796,7 +795,7 @@ export function CurrentDirectoryContextMenu({
 }: CurrentDirectoryContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const submenuRef = useRef<HTMLDivElement>(null);
-  const { items: clipboardItems, paste, hasItem } = useClipboardStore();
+  const { items: clipboardItems, paste, pasteSystem, hasItem } = useClipboardStore();
   const showToast = useUiStore((state) => state.showToast);
   const [systemClipboardStatus, setSystemClipboardStatus] = useState<SystemClipboardStatus>({
     hasFiles: false,
@@ -866,8 +865,7 @@ export function CurrentDirectoryContextMenu({
       if (clipboardItems.length > 0) {
         success = await paste(currentPath, projectPath);
       } else {
-        const pastedPaths = await invoke<string[]>('paste_system_clipboard', { targetDir: currentPath });
-        success = pastedPaths.length > 0;
+        success = (await pasteSystem(currentPath)) > 0;
       }
 
       if (success) {

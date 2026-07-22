@@ -5,6 +5,7 @@ import { StandaloneDirectoryPage, isStandaloneDirectoryRoute } from './component
 import { StandaloneImageViewerPage, isStandaloneImageViewerRoute } from './components/image-viewer/StandaloneImageViewerPage';
 import { StandaloneTextEditorPage, isStandaloneTextEditorRoute } from './components/text-editor/StandaloneTextEditorPage';
 import { StandaloneVideoPlayerPage, isStandaloneVideoPlayerRoute } from './components/video-player/StandaloneVideoPlayerPage';
+import { FileOperationPanel } from './components/file-manager/FileOperationPanel';
 import { initTaskEventListeners, loadTaskState } from './stores/taskStore';
 
 function App() {
@@ -27,26 +28,28 @@ function App() {
     document.body.style.colorScheme = 'light';
   }, [isStandaloneWindow]);
 
+  let content;
   if (isDirectoryWindow) {
-    return <StandaloneDirectoryPage />;
-  }
-
-  if (isImageViewerWindow) {
-    return <StandaloneImageViewerPage />;
-  }
-
-  if (isTextEditorWindow) {
-    return <StandaloneTextEditorPage />;
-  }
-
-  if (isVideoPlayerWindow) {
-    return <StandaloneVideoPlayerPage />;
+    content = <StandaloneDirectoryPage />;
+  } else if (isImageViewerWindow) {
+    content = <StandaloneImageViewerPage />;
+  } else if (isTextEditorWindow) {
+    content = <StandaloneTextEditorPage />;
+  } else if (isVideoPlayerWindow) {
+    content = <StandaloneVideoPlayerPage />;
+  } else {
+    content = (
+      <>
+        <FileManager />
+        <WindowManager />
+      </>
+    );
   }
 
   return (
     <>
-      <FileManager />
-      <WindowManager />
+      {content}
+      <FileOperationPanel />
     </>
   );
 }

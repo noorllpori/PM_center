@@ -1625,6 +1625,16 @@ pub async fn get_system_clipboard_status() -> Result<SystemClipboardStatus, Stri
 }
 
 #[tauri::command]
+pub async fn get_system_clipboard_files() -> Result<Vec<String>, String> {
+    read_system_clipboard_file_list().map(|paths| {
+        paths
+            .into_iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect()
+    })
+}
+
+#[tauri::command]
 pub async fn paste_system_clipboard(target_dir: String) -> Result<Vec<String>, String> {
     let target_dir_path = PathBuf::from(&target_dir);
     let metadata = tokio::fs::metadata(&target_dir_path)

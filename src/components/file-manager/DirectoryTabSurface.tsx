@@ -6,6 +6,7 @@ import { createProjectStore, ProjectStoreProvider } from '../../stores/projectSt
 import type { ProjectStoreApi } from '../../stores/projectStore';
 import { useClipboardStore } from '../../stores/clipboardStore';
 import { useFileDragStore } from '../../stores/fileDragStore';
+import { useFileOperationStore } from '../../stores/fileOperationStore';
 import { useUiStore } from '../../stores/uiStore';
 import { FileList } from './FileList';
 import { FileDetail } from './FileDetail';
@@ -19,11 +20,9 @@ import {
   normalizePath,
 } from './dragDrop';
 import {
-  formatImportBytes,
   importExternalDrop,
   isExternalImportCancelled,
   type ConflictResolution,
-  type ExternalImportProgress,
 } from './externalImport';
 import { MoveConflictDialog } from './MoveConflictDialog';
 
@@ -40,11 +39,6 @@ interface ThumbnailCacheUpdatedEventPayload {
   projectPath: string;
   directoryPath: string;
   updatedCount: number;
-}
-
-interface SystemClipboardStatus {
-  hasFiles: boolean;
-  hasImage: boolean;
 }
 
 interface DirectoryTabSurfaceProps {
@@ -111,15 +105,13 @@ function createDirectoryTabStore(
   projectName?: string | null,
 ) {
   const store = createProjectStore();
-  const rootPath = projectPath || initialPath;
-  const rootName = projectName || getPathName(rootPath);
 
   store.setState({
-    projectPath: rootPath,
-    projectName: rootName,
+    projectPath: projectPath || null,
+    projectName: projectName || (projectPath ? getPathName(projectPath) : null),
     isInitialized: true,
     currentPath: initialPath,
-    expandedKeys: new Set([rootPath, initialPath]),
+    expandedKeys: new Set(projectPath ? [projectPath, initialPath] : [initialPath]),
   });
 
   return store;
@@ -149,7 +141,6 @@ export function DirectoryTabSurface({
   const [isLoadingInitialDirectory, setIsLoadingInitialDirectory] = useState(false);
   const [isDragImportActive, setIsDragImportActive] = useState(false);
   const [isImportingDrop, setIsImportingDrop] = useState(false);
-  const [externalImportProgress, setExternalImportProgress] = useState<ExternalImportProgress | null>(null);
   const externalImportAbortRef = useRef<AbortController | null>(null);
   const [externalDropConflictState, setExternalDropConflictState] = useState({
     isOpen: false,
@@ -288,7 +279,7 @@ export function DirectoryTabSurface({
   const handlePasteIntoCurrentDirectory = useCallback(async () => {
     const state = directoryStore.getState();
     const targetDir = state.currentPath || initialPath;
-    if (!state.projectPath || !targetDir) {
+    if (!targetDir) {
       return false;
     }
 
@@ -300,15 +291,9 @@ export function DirectoryTabSurface({
 
       if (internalClipboardItems.length > 0) {
         pastedCount = internalClipboardItems.length;
-        success = await clipboardStore.paste(targetDir, state.projectPath);
+        success = await clipboardStore.paste(targetDir, state.projectPath || targetDir);
       } else {
-        const clipboardStatus = await invoke<SystemClipboardStatus>('get_system_clipboard_status');
-        if (!clipboardStatus.hasFiles && !clipboardStatus.hasImage) {
-          return false;
-        }
-
-        const pastedPaths = await invoke<string[]>('paste_system_clipboard', { targetDir });
-        pastedCount = pastedPaths.length;
+        pastedCount = await clipboardStore.pasteSystem(targetDir);
         success = pastedCount > 0;
       }
 
@@ -511,7 +496,7 @@ export function DirectoryTabSurface({
 
   const handleExternalDragEnter = useCallback(
     (event: React.DragEvent<HTMLDivElement>) => {
-      if (!isExternalFileDrag(event.dataTransfer, hasActiveInternalDrag)) {
+      if (isImportingDrop || !isExternalFileDrag(event.dataTransfer, hasActiveInternalDrag)) {
         return;
       }
 
@@ -519,12 +504,12 @@ export function DirectoryTabSurface({
       externalDragDepthRef.current += 1;
       setIsDragImportActive(true);
     },
-    [hasActiveInternalDrag],
+    [hasActiveInternalDrag, isImportingDrop],
   );
 
   const handleExternalDragOver = useCallback(
     (event: React.DragEvent<HTMLDivElement>) => {
-      if (!isExternalFileDrag(event.dataTransfer, hasActiveInternalDrag)) {
+      if (isImportingDrop || !isExternalFileDrag(event.dataTransfer, hasActiveInternalDrag)) {
         return;
       }
 
@@ -532,12 +517,12 @@ export function DirectoryTabSurface({
       event.dataTransfer.dropEffect = 'copy';
       setIsDragImportActive(true);
     },
-    [hasActiveInternalDrag],
+    [hasActiveInternalDrag, isImportingDrop],
   );
 
   const handleExternalDragLeave = useCallback(
     (event: React.DragEvent<HTMLDivElement>) => {
-      if (!isExternalFileDrag(event.dataTransfer, hasActiveInternalDrag)) {
+      if (isImportingDrop || !isExternalFileDrag(event.dataTransfer, hasActiveInternalDrag)) {
         return;
       }
 
@@ -553,7 +538,7 @@ export function DirectoryTabSurface({
 
   const handleExternalDrop = useCallback(
     async (event: React.DragEvent<HTMLDivElement>) => {
-      if (!isExternalFileDrag(event.dataTransfer, hasActiveInternalDrag)) {
+      if (isImportingDrop || !isExternalFileDrag(event.dataTransfer, hasActiveInternalDrag)) {
         return;
       }
 
@@ -562,9 +547,15 @@ export function DirectoryTabSurface({
 
       const targetDir = directoryStore.getState().currentPath || initialPath;
       setIsImportingDrop(true);
-      setExternalImportProgress(null);
       const importAbortController = new AbortController();
       externalImportAbortRef.current = importAbortController;
+      const operationStore = useFileOperationStore.getState();
+      const operationId = operationStore.startOperation({
+        kind: 'import',
+        title: '正在导入文件',
+        detail: `目标：${getProjectPathLabel(targetDir, projectPath || null, projectName || null)}`,
+        onCancel: handleCancelExternalImport,
+      });
 
       try {
         const {
@@ -577,9 +568,38 @@ export function DirectoryTabSurface({
           targetLabel: getProjectPathLabel(targetDir, projectPath || null, projectName || null),
           requestConflictChoice: (sourceName, targetLabel) =>
             requestExternalDropConflictChoice(sourceName, targetLabel, targetDir),
-          onProgress: setExternalImportProgress,
+          onProgress: (progress) => {
+            operationStore.updateOperation(operationId, {
+              currentName: progress.currentName,
+              itemIndex: progress.itemIndex,
+              itemCount: progress.itemCount,
+              completedItems: progress.done ? progress.itemIndex : Math.max(0, progress.itemIndex - 1),
+              bytesCompleted: progress.bytesCopied,
+              totalBytes: progress.totalBytes,
+            });
+          },
           signal: importAbortController.signal,
         });
+
+        const operationSummary = [
+          successCount > 0 ? `导入 ${successCount} 个` : '',
+          skippedCount > 0 ? `跳过 ${skippedCount} 个` : '',
+          failedItems.length > 0 ? `失败 ${failedItems.length} 个` : '',
+        ].filter(Boolean).join('，');
+
+        if (failedItems.length > 0) {
+          operationStore.failOperation(operationId, failedItems[0], {
+            title: successCount > 0 ? '导入部分完成' : '导入失败',
+            detail: operationSummary,
+            completedItems: successCount,
+          });
+        } else {
+          operationStore.completeOperation(operationId, {
+            title: '导入完成',
+            detail: operationSummary || `目标：${getProjectPathLabel(targetDir, projectPath || null, projectName || null)}`,
+            completedItems: successCount + skippedCount,
+          });
+        }
 
         await directoryStore.getState().refresh(true, true);
 
@@ -607,12 +627,14 @@ export function DirectoryTabSurface({
         }
       } catch (error) {
         if (isExternalImportCancelled(error)) {
+          operationStore.markOperationCancelled(operationId);
           showToast({
             title: '导入已取消',
             message: `已停止导入到 ${getProjectPathLabel(targetDir, projectPath || null, projectName || null)}`,
             tone: 'warning',
           });
         } else {
+          operationStore.failOperation(operationId, String(error), { title: '导入失败' });
           showToast({
             title: '导入失败',
             message: String(error),
@@ -624,13 +646,14 @@ export function DirectoryTabSurface({
           externalImportAbortRef.current = null;
         }
         setIsImportingDrop(false);
-        setExternalImportProgress(null);
       }
     },
     [
       directoryStore,
+      handleCancelExternalImport,
       hasActiveInternalDrag,
       initialPath,
+      isImportingDrop,
       projectName,
       projectPath,
       requestExternalDropConflictChoice,
@@ -753,10 +776,7 @@ export function DirectoryTabSurface({
   }, [directoryStore, projectPath]);
 
   const dropTargetLabel = getProjectPathLabel(currentDirectory, projectPath || null, projectName || null);
-  const showDropOverlay = isDragImportActive || isImportingDrop;
-  const importProgressPercent = externalImportProgress?.totalBytes
-    ? Math.min(100, Math.max(0, (externalImportProgress.bytesCopied / externalImportProgress.totalBytes) * 100))
-    : null;
+  const showDropOverlay = isDragImportActive && !isImportingDrop;
 
   return (
     <ProjectStoreProvider store={directoryStore}>
@@ -894,49 +914,11 @@ export function DirectoryTabSurface({
           <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-blue-500/10 backdrop-blur-[1px]">
             <div className="rounded-xl border border-blue-200 bg-white/95 px-5 py-4 text-center shadow-xl dark:border-blue-800 dark:bg-gray-900/95">
               <div className="text-sm font-semibold text-blue-700 dark:text-blue-200">
-                {isImportingDrop ? '正在导入...' : '释放后导入到当前目录'}
+                释放后导入到当前目录
               </div>
               <div className="mt-1 max-w-[420px] truncate text-xs text-blue-600/80 dark:text-blue-300/80">
                 {dropTargetLabel}
               </div>
-              {isImportingDrop && externalImportProgress && (
-                <div className="mt-4 w-[360px] max-w-[80vw] text-left">
-                  <div className="flex items-center justify-between gap-3 text-xs text-gray-500 dark:text-gray-400">
-                    <span className="min-w-0 truncate" title={externalImportProgress.currentName}>
-                      {externalImportProgress.currentName}
-                    </span>
-                    <span className="shrink-0">
-                      {externalImportProgress.itemIndex}/{externalImportProgress.itemCount}
-                    </span>
-                  </div>
-                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
-                    <div
-                      className="h-full rounded-full bg-blue-500 transition-[width] duration-150"
-                      style={{ width: `${importProgressPercent ?? 0}%` }}
-                    />
-                  </div>
-                  <div className="mt-2 flex items-center justify-between gap-3 text-xs text-gray-500 dark:text-gray-400">
-                    <span>
-                      {formatImportBytes(externalImportProgress.bytesCopied)}
-                      {externalImportProgress.totalBytes > 0
-                        ? ` / ${formatImportBytes(externalImportProgress.totalBytes)}`
-                        : ''}
-                    </span>
-                    <span>{importProgressPercent !== null ? `${Math.round(importProgressPercent)}%` : '处理中'}</span>
-                  </div>
-                </div>
-              )}
-              {isImportingDrop && (
-                <div className="mt-4 flex justify-center">
-                  <button
-                    type="button"
-                    className="pointer-events-auto rounded-md border border-gray-300 bg-white px-4 py-1.5 text-sm text-gray-700 transition-colors hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
-                    onClick={handleCancelExternalImport}
-                  >
-                    取消
-                  </button>
-                </div>
-              )}
             </div>
           </div>
         )}

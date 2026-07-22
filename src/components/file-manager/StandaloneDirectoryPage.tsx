@@ -221,8 +221,8 @@ export function StandaloneDirectoryPage() {
         <DirectoryTabSurface
           initialPath={directoryPath}
           isActive
-          projectPath={projectPath || directoryPath}
-          projectName={projectName || getPathName(projectPath || directoryPath)}
+          projectPath={projectPath || null}
+          projectName={projectPath ? (projectName || getPathName(projectPath)) : null}
           onOpenDirectoryTab={handleOpenDirectoryTab}
           toolbarActions={projectPath ? (
             <button

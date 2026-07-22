@@ -20,14 +20,11 @@ import {
   normalizePath,
 } from './dragDrop';
 import {
-  formatImportBytes,
   importExternalDrop,
   isExternalImportCancelled,
   type ConflictResolution,
-  type ExternalImportProgress,
 } from './externalImport';
 import { MoveConflictDialog } from './MoveConflictDialog';
-import { ChangeLog } from '../ChangeLog';
 import { ImageViewerSurface } from '../image-viewer/ImageViewerSurface';
 import { TextEditorSurface } from '../text-editor/TextEditorSurface';
 import { openStandaloneTextEditor } from '../text-editor/openStandaloneTextEditor';
@@ -46,6 +43,7 @@ import { getFileExtension } from '../workspace/fileOpeners';
 import { useProjectStoreApi, useProjectStoreShallow } from '../../stores/projectStore';
 import { useClipboardStore } from '../../stores/clipboardStore';
 import { useFileDragStore } from '../../stores/fileDragStore';
+import { useFileOperationStore } from '../../stores/fileOperationStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceTabStore, useWorkspaceTabStoreApi } from '../../stores/workspaceTabStore';
 import { isVirtualFile } from '../../utils/collections';
@@ -62,11 +60,6 @@ const TEXT_DETACH_EVENT_TIMEOUT_MS = 10000;
 const FS_REFRESH_ACTIVE_DELAY_MS = 500;
 const FS_REFRESH_INACTIVE_DELAY_MS = 500;
 const FS_TREE_REFRESH_MIN_INTERVAL_MS = 800;
-
-interface SystemClipboardStatus {
-  hasFiles: boolean;
-  hasImage: boolean;
-}
 
 interface ProjectFsChangeEventPayload {
   projectPath: string;
@@ -225,7 +218,6 @@ export function ProjectWorkspace() {
 
   const [isDragImportActive, setIsDragImportActive] = useState(false);
   const [isImportingDrop, setIsImportingDrop] = useState(false);
-  const [externalImportProgress, setExternalImportProgress] = useState<ExternalImportProgress | null>(null);
   const externalImportAbortRef = useRef<AbortController | null>(null);
   const [externalDropConflictState, setExternalDropConflictState] = useState<{
     isOpen: boolean;
@@ -371,13 +363,7 @@ export function ProjectWorkspace() {
         pastedCount = internalClipboardItems.length;
         success = await clipboardStore.paste(targetDir, state.projectPath);
       } else {
-        const clipboardStatus = await invoke<SystemClipboardStatus>('get_system_clipboard_status');
-        if (!clipboardStatus.hasFiles && !clipboardStatus.hasImage) {
-          return false;
-        }
-
-        const pastedPaths = await invoke<string[]>('paste_system_clipboard', { targetDir });
-        pastedCount = pastedPaths.length;
+        pastedCount = await clipboardStore.pasteSystem(targetDir);
         success = pastedCount > 0;
       }
 
@@ -1086,17 +1072,17 @@ export function ProjectWorkspace() {
   );
 
   const handleExternalDragEnter = useCallback((event: React.DragEvent<HTMLDivElement>) => {
-    if (!isInitialized || !isFilesWorkspaceActive || !isExternalFileDrag(event.dataTransfer, hasActiveInternalDrag)) {
+    if (isImportingDrop || !isInitialized || !isFilesWorkspaceActive || !isExternalFileDrag(event.dataTransfer, hasActiveInternalDrag)) {
       return;
     }
 
     event.preventDefault();
     externalDragDepthRef.current += 1;
     setIsDragImportActive(true);
-  }, [hasActiveInternalDrag, isFilesWorkspaceActive, isInitialized]);
+  }, [hasActiveInternalDrag, isFilesWorkspaceActive, isImportingDrop, isInitialized]);
 
   const handleExternalDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
-    if (!isInitialized || !isFilesWorkspaceActive || !isExternalFileDrag(event.dataTransfer, hasActiveInternalDrag)) {
+    if (isImportingDrop || !isInitialized || !isFilesWorkspaceActive || !isExternalFileDrag(event.dataTransfer, hasActiveInternalDrag)) {
       return;
     }
 
@@ -1106,10 +1092,10 @@ export function ProjectWorkspace() {
     if (!isDragImportActive) {
       setIsDragImportActive(true);
     }
-  }, [hasActiveInternalDrag, isDragImportActive, isFilesWorkspaceActive, isInitialized]);
+  }, [hasActiveInternalDrag, isDragImportActive, isFilesWorkspaceActive, isImportingDrop, isInitialized]);
 
   const handleExternalDragLeave = useCallback((event: React.DragEvent<HTMLDivElement>) => {
-    if (!isInitialized || !isFilesWorkspaceActive || !isExternalFileDrag(event.dataTransfer, hasActiveInternalDrag)) {
+    if (isImportingDrop || !isInitialized || !isFilesWorkspaceActive || !isExternalFileDrag(event.dataTransfer, hasActiveInternalDrag)) {
       return;
     }
 
@@ -1122,7 +1108,7 @@ export function ProjectWorkspace() {
   }, [hasActiveInternalDrag, isFilesWorkspaceActive, isImportingDrop, isInitialized]);
 
   const handleExternalDrop = useCallback(async (event: React.DragEvent<HTMLDivElement>) => {
-    if (!isInitialized || !isFilesWorkspaceActive || !isExternalFileDrag(event.dataTransfer, hasActiveInternalDrag)) {
+    if (isImportingDrop || !isInitialized || !isFilesWorkspaceActive || !isExternalFileDrag(event.dataTransfer, hasActiveInternalDrag)) {
       return;
     }
 
@@ -1135,9 +1121,15 @@ export function ProjectWorkspace() {
     }
 
     setIsImportingDrop(true);
-    setExternalImportProgress(null);
     const importAbortController = new AbortController();
     externalImportAbortRef.current = importAbortController;
+    const operationStore = useFileOperationStore.getState();
+    const operationId = operationStore.startOperation({
+      kind: 'import',
+      title: '正在导入文件',
+      detail: `目标：${getPathLabel(targetDir, projectPath, projectName)}`,
+      onCancel: handleCancelExternalImport,
+    });
 
     try {
       const {
@@ -1150,9 +1142,38 @@ export function ProjectWorkspace() {
         targetLabel: getPathLabel(targetDir, projectPath, projectName),
         requestConflictChoice: (sourceName, targetLabel) =>
           requestExternalDropConflictChoice(sourceName, targetLabel, targetDir),
-        onProgress: setExternalImportProgress,
+        onProgress: (progress) => {
+          operationStore.updateOperation(operationId, {
+            currentName: progress.currentName,
+            itemIndex: progress.itemIndex,
+            itemCount: progress.itemCount,
+            completedItems: progress.done ? progress.itemIndex : Math.max(0, progress.itemIndex - 1),
+            bytesCompleted: progress.bytesCopied,
+            totalBytes: progress.totalBytes,
+          });
+        },
         signal: importAbortController.signal,
       });
+
+      const operationSummary = [
+        successCount > 0 ? `导入 ${successCount} 个` : '',
+        skippedCount > 0 ? `跳过 ${skippedCount} 个` : '',
+        failedItems.length > 0 ? `失败 ${failedItems.length} 个` : '',
+      ].filter(Boolean).join('，');
+
+      if (failedItems.length > 0) {
+        operationStore.failOperation(operationId, failedItems[0], {
+          title: successCount > 0 ? '导入部分完成' : '导入失败',
+          detail: operationSummary,
+          completedItems: successCount,
+        });
+      } else {
+        operationStore.completeOperation(operationId, {
+          title: '导入完成',
+          detail: operationSummary || `目标：${getPathLabel(targetDir, projectPath, projectName)}`,
+          completedItems: successCount + skippedCount,
+        });
+      }
 
       try {
         await refresh();
@@ -1187,12 +1208,14 @@ export function ProjectWorkspace() {
       }
     } catch (error) {
       if (isExternalImportCancelled(error)) {
+        operationStore.markOperationCancelled(operationId);
         showToast({
           title: '导入已取消',
           message: `已停止导入到 ${getPathLabel(targetDir, projectPath, projectName)}`,
           tone: 'warning',
         });
       } else {
+        operationStore.failOperation(operationId, String(error), { title: '导入失败' });
         showToast({
           title: '导入失败',
           message: String(error),
@@ -1204,12 +1227,13 @@ export function ProjectWorkspace() {
         externalImportAbortRef.current = null;
       }
       setIsImportingDrop(false);
-      setExternalImportProgress(null);
     }
   }, [
     currentPath,
+    handleCancelExternalImport,
     hasActiveInternalDrag,
     isFilesWorkspaceActive,
+    isImportingDrop,
     isInitialized,
     projectName,
     projectPath,
@@ -1220,10 +1244,7 @@ export function ProjectWorkspace() {
   ]);
 
   const dropTargetLabel = getPathLabel(currentPath || projectPath, projectPath, projectName);
-  const showDropOverlay = isInitialized && isFilesWorkspaceActive && (isDragImportActive || isImportingDrop);
-  const importProgressPercent = externalImportProgress?.totalBytes
-    ? Math.min(100, Math.max(0, (externalImportProgress.bytesCopied / externalImportProgress.totalBytes) * 100))
-    : null;
+  const showDropOverlay = isInitialized && isFilesWorkspaceActive && isDragImportActive && !isImportingDrop;
 
   if (!isInitialized) {
       return (
@@ -1313,12 +1334,6 @@ export function ProjectWorkspace() {
                     >
                       <FileDetail />
                     </div>
-                  </div>
-                )}
-
-                {tab.type === 'logs' && (
-                  <div className="h-full w-full min-w-0 min-h-0">
-                    <ChangeLog />
                   </div>
                 )}
 
@@ -1438,51 +1453,11 @@ export function ProjectWorkspace() {
                 <Upload className="w-7 h-7" />
               </div>
               <h3 className="text-lg font-semibold text-gray-900">
-                {isImportingDrop ? '正在导入文件...' : '松开鼠标即可导入'}
+                松开鼠标即可导入
               </h3>
               <p className="mt-2 text-sm text-gray-600">
-                {isImportingDrop
-                  ? `正在复制到 ${dropTargetLabel}`
-                  : `外部拖入的文件或文件夹会复制到 ${dropTargetLabel}`}
+                {`外部拖入的文件或文件夹会复制到 ${dropTargetLabel}`}
               </p>
-              {isImportingDrop && externalImportProgress && (
-                <div className="mt-5 text-left">
-                  <div className="flex items-center justify-between gap-3 text-xs text-gray-500">
-                    <span className="min-w-0 truncate" title={externalImportProgress.currentName}>
-                      {externalImportProgress.currentName}
-                    </span>
-                    <span className="shrink-0">
-                      {externalImportProgress.itemIndex}/{externalImportProgress.itemCount}
-                    </span>
-                  </div>
-                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-gray-200">
-                    <div
-                      className="h-full rounded-full bg-blue-500 transition-[width] duration-150"
-                      style={{ width: `${importProgressPercent ?? 0}%` }}
-                    />
-                  </div>
-                  <div className="mt-2 flex items-center justify-between gap-3 text-xs text-gray-500">
-                    <span>
-                      {formatImportBytes(externalImportProgress.bytesCopied)}
-                      {externalImportProgress.totalBytes > 0
-                        ? ` / ${formatImportBytes(externalImportProgress.totalBytes)}`
-                        : ''}
-                    </span>
-                    <span>{importProgressPercent !== null ? `${Math.round(importProgressPercent)}%` : '处理中'}</span>
-                  </div>
-                </div>
-              )}
-              {isImportingDrop && (
-                <div className="mt-4 flex justify-center">
-                  <button
-                    type="button"
-                    className="pointer-events-auto rounded-md border border-gray-300 bg-white px-4 py-1.5 text-sm text-gray-700 transition-colors hover:bg-gray-100"
-                    onClick={handleCancelExternalImport}
-                  >
-                    取消
-                  </button>
-                </div>
-              )}
             </div>
           </div>
         )}

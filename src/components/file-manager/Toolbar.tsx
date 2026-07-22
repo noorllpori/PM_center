@@ -4,6 +4,7 @@ import { useProjectStoreShallow } from '../../stores/projectStore';
 import { usePluginStore } from '../../stores/pluginStore';
 import { useTaskStore } from '../../stores/taskStore';
 import { useUiStore } from '../../stores/uiStore';
+import { useWorkspaceTabStore } from '../../stores/workspaceTabStore';
 import { SettingsPanel } from '../SettingsPanel';
 import { APP_VERSION } from '../../config/appMeta';
 import { buildPluginContextItems, getVisiblePluginActions } from '../../utils/pluginActions';
@@ -64,6 +65,10 @@ export function Toolbar({ onOpenProject }: ToolbarProps) {
   const pluginState = usePluginStore((state) => state.byProject[pluginProjectKey]);
   const loadPlugins = usePluginStore((state) => state.loadPlugins);
   const refreshProjectPlugins = usePluginStore((state) => state.refreshProjectPlugins);
+  const isFilesTabActive = useWorkspaceTabStore((state) => {
+    const activeTab = state.tabs.find((tab) => tab.id === state.activeTabId);
+    return activeTab?.type === 'files';
+  });
 
   useEffect(() => {
     setLocalSearch(searchQuery);
@@ -277,7 +282,7 @@ export function Toolbar({ onOpenProject }: ToolbarProps) {
           </div>
         )}
 
-        {isInitialized && (
+        {isInitialized && isFilesTabActive && (
           <div className="flex items-center bg-gray-100 dark:bg-gray-800 rounded-md p-0.5">
             <button
               onClick={() => setViewMode('list')}
