@@ -228,7 +228,10 @@ export function createProjectStore() {
     setProject: async (path: string) => {
       try {
         clearFileDetailsCache();
-        await invoke('init_project', { projectPath: path });
+        await invoke('init_project', {
+          projectPath: path,
+          excludePatterns: getExcludePatterns(path),
+        });
         const name = path.split(/[\\/]/).pop() || 'Project';
 
         set({
@@ -256,7 +259,10 @@ export function createProjectStore() {
       }
 
       try {
-        await invoke('activate_project', { projectPath });
+        await invoke('activate_project', {
+          projectPath,
+          excludePatterns: getExcludePatterns(projectPath),
+        });
       } catch (error) {
         console.error('Failed to activate project:', error);
         throw error;

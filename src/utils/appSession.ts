@@ -84,12 +84,13 @@ function sanitizeWorkspaceTab(tab: unknown): PersistedWorkspaceTab | null {
     candidate.type !== 'image' &&
     candidate.type !== 'text' &&
     candidate.type !== 'video' &&
-    candidate.type !== 'blend'
+    candidate.type !== 'blend' &&
+    candidate.type !== 'cache'
   ) {
     return null;
   }
 
-  if (!candidate.filePath) {
+  if (candidate.type !== 'cache' && !candidate.filePath) {
     return null;
   }
 
@@ -112,12 +113,13 @@ function sanitizeActiveWorkspaceTab(tab: unknown): PersistedWorkspaceActiveTab {
     candidate.type !== 'image' &&
     candidate.type !== 'text' &&
     candidate.type !== 'video' &&
-    candidate.type !== 'blend'
+    candidate.type !== 'blend' &&
+    candidate.type !== 'cache'
   ) {
     return { type: 'files' };
   }
 
-  if (candidate.type !== 'files' && !candidate.filePath) {
+  if (candidate.type !== 'files' && candidate.type !== 'cache' && !candidate.filePath) {
     return { type: 'files' };
   }
 

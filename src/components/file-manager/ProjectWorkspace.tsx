@@ -8,6 +8,7 @@ import { ColumnSettings } from './ColumnSettings';
 import { FileDetail } from './FileDetail';
 import { BlenderFileTab } from './BlenderFileTab';
 import { CollectionTabSurface } from './CollectionTabSurface';
+import { CacheManagerSurface } from './CacheManagerSurface';
 import { DirectoryTabSurface } from './DirectoryTabSurface';
 import { ImageSequencePlayerSurface } from './ImageSequencePlayerSurface';
 import { MdtOverviewPanel } from './MdtOverviewPanel';
@@ -1335,6 +1336,10 @@ export function ProjectWorkspace() {
                       <FileDetail />
                     </div>
                   </div>
+                )}
+
+                {tab.type === 'cache' && (
+                  <CacheManagerSurface isActive={isActive} />
                 )}
 
                 {tab.type === 'directory' && tab.filePath && (

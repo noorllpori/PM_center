@@ -16,6 +16,7 @@ import {
   Settings,
   Puzzle,
   ChevronDown,
+  Database,
 } from 'lucide-react';
 
 export const TOOLBAR_SEARCH_FOCUS_EVENT = 'pm-center:focus-toolbar-search';
@@ -61,6 +62,7 @@ export function Toolbar({ onOpenProject }: ToolbarProps) {
   const pluginMenuRef = useRef<HTMLDivElement | null>(null);
   const addTask = useTaskStore((state) => state.addTask);
   const showToast = useUiStore((state) => state.showToast);
+  const openCacheManagerTab = useWorkspaceTabStore((state) => state.openCacheManagerTab);
   const pluginProjectKey = projectPath || '__global__';
   const pluginState = usePluginStore((state) => state.byProject[pluginProjectKey]);
   const loadPlugins = usePluginStore((state) => state.loadPlugins);
@@ -376,6 +378,18 @@ export function Toolbar({ onOpenProject }: ToolbarProps) {
               </div>
             )}
           </div>
+        )}
+
+        {isInitialized && (
+          <button
+            onClick={openCacheManagerTab}
+            className="p-1.5 text-gray-600 hover:text-gray-900 dark:text-gray-400
+                       dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800
+                       rounded-md transition-colors"
+            title="缓存管理"
+          >
+            <Database className="w-4 h-4" />
+          </button>
         )}
 
         {isInitialized && (

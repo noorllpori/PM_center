@@ -8,6 +8,7 @@ use tauri::{
 };
 use tokio::sync::Mutex;
 
+mod cache_manager;
 mod db;
 mod file_details;
 mod fs;
@@ -47,15 +48,31 @@ use tauri_plugin_global_shortcut::ShortcutState;
 use tools::{inspect_blender_executable, inspect_tool_paths, scan_blender_installations};
 
 #[derive(Default)]
-struct DbStateInner;
+struct DbStateInner {
+    databases: HashMap<String, Database>,
+}
 
 type DbState = Arc<Mutex<DbStateInner>>;
 
 async fn get_or_create_db(
-    _db_state: &tauri::State<'_, DbState>,
+    db_state: &tauri::State<'_, DbState>,
     project_path: &str,
 ) -> Result<Database, String> {
-    Database::new(project_path).map_err(|e| e.to_string())
+    let project_key = tree_cache::normalize_path_key(project_path);
+    {
+        let state = db_state.lock().await;
+        if let Some(database) = state.databases.get(&project_key) {
+            return Ok(database.clone());
+        }
+    }
+
+    let database = Database::new(project_path).map_err(|e| e.to_string())?;
+    let mut state = db_state.lock().await;
+    Ok(state
+        .databases
+        .entry(project_key)
+        .or_insert_with(|| database.clone())
+        .clone())
 }
 
 fn ensure_project_support_files(project_path: &str) -> Result<(), String> {
@@ -78,9 +95,16 @@ fn ensure_project_support_files(project_path: &str) -> Result<(), String> {
 async fn init_project(
     db_state: tauri::State<'_, DbState>,
     project_path: String,
+    exclude_patterns: Option<Vec<String>>,
 ) -> Result<(), String> {
     ensure_project_support_files(&project_path)?;
-    let _ = get_or_create_db(&db_state, &project_path).await?;
+    let db = get_or_create_db(&db_state, &project_path).await?;
+    let _ = tree_cache::get_or_create_project_cache(&project_path)?;
+    watcher::set_active_project(
+        &project_path,
+        &db,
+        exclude_patterns.as_deref().unwrap_or(&[]),
+    )?;
 
     Ok(())
 }
@@ -89,8 +113,15 @@ async fn init_project(
 async fn activate_project(
     db_state: tauri::State<'_, DbState>,
     project_path: String,
+    exclude_patterns: Option<Vec<String>>,
 ) -> Result<(), String> {
-    let _ = get_or_create_db(&db_state, &project_path).await?;
+    let db = get_or_create_db(&db_state, &project_path).await?;
+    let _ = tree_cache::get_or_create_project_cache(&project_path)?;
+    watcher::set_active_project(
+        &project_path,
+        &db,
+        exclude_patterns.as_deref().unwrap_or(&[]),
+    )?;
     Ok(())
 }
 
@@ -521,7 +552,7 @@ async fn create_project(
     fs::create_dir_all(&project_path).map_err(|e| format!("创建项目目录失败: {}", e))?;
 
     // 初始化项目
-    init_project(db_state, project_path.to_string_lossy().to_string()).await?;
+    init_project(db_state, project_path.to_string_lossy().to_string(), None).await?;
 
     Ok(project_path.to_string_lossy().to_string())
 }
@@ -872,6 +903,19 @@ pub fn run() {
         .manage(db_state_for_single)
         .setup(move |app| {
             watcher::set_app_handle(app.handle().clone());
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+                loop {
+                    interval.tick().await;
+                    let Some(project_path) = watcher::get_active_project_path() else {
+                        continue;
+                    };
+                    if cache_manager::is_project_under_maintenance(&project_path) {
+                        continue;
+                    }
+                    let _ = tree_cache::process_project_dirty_dirs(&project_path, 25);
+                }
+            });
             let window = app.get_webview_window("main").unwrap();
 
             // 创建托盘菜单
@@ -936,6 +980,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            cache_manager::get_project_cache_report,
+            cache_manager::check_project_cache,
+            cache_manager::run_project_cache_action,
+            cache_manager::cancel_cache_maintenance,
             fs::read_directory,
             fs::get_directory_tree,
             fs::search_files,

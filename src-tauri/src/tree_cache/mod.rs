@@ -1,5 +1,5 @@
 use rusqlite::{params, Connection, OptionalExtension};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -22,6 +22,13 @@ pub struct FsEntrySnapshot {
 pub struct TreeCacheDb {
     conn: Arc<Mutex<Connection>>,
     project_path: String,
+}
+
+pub const TREE_REBUILD_CANCELLED_MESSAGE: &str = "缓存维护已取消";
+
+lazy_static::lazy_static! {
+    static ref TREE_CACHE_DBS: Arc<Mutex<HashMap<String, TreeCacheDb>>> =
+        Arc::new(Mutex::new(HashMap::new()));
 }
 
 pub fn normalize_path_key(path: &str) -> String {
@@ -56,15 +63,79 @@ pub fn detect_project_root_for_path(path: &str) -> Option<String> {
 }
 
 pub fn get_or_create_project_cache(project_path: &str) -> Result<TreeCacheDb, String> {
-    TreeCacheDb::new(project_path)
+    let project_key = normalize_path_key(project_path);
+    {
+        let guard = TREE_CACHE_DBS.lock().map_err(|error| error.to_string())?;
+        if let Some(db) = guard.get(&project_key) {
+            return Ok(db.clone());
+        }
+    }
+
+    let db = TreeCacheDb::new(project_path)?;
+    let mut guard = TREE_CACHE_DBS.lock().map_err(|error| error.to_string())?;
+    Ok(guard
+        .entry(project_key)
+        .or_insert_with(|| db.clone())
+        .clone())
 }
 
 pub fn process_dirty_dirs(max_dirs_per_project: usize) -> Result<(), String> {
-    let _ = max_dirs_per_project;
+    let project_paths = {
+        let guard = TREE_CACHE_DBS.lock().map_err(|error| error.to_string())?;
+        guard
+            .values()
+            .map(|cache| cache.project_path.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for project_path in project_paths {
+        process_project_dirty_dirs(&project_path, max_dirs_per_project)?;
+    }
+
     Ok(())
 }
 
+pub fn process_project_dirty_dirs(project_path: &str, max_dirs: usize) -> Result<usize, String> {
+    let cache = get_or_create_project_cache(project_path)?;
+    let dirty_dirs = cache.get_dirty_dirs(max_dirs)?;
+    let had_dirty_dirs = !dirty_dirs.is_empty();
+    let mut processed = 0usize;
+
+    for dir_path in dirty_dirs {
+        let path = PathBuf::from(&dir_path);
+        if !path.exists() || !path.is_dir() {
+            cache.remove_path_subtree(&dir_path)?;
+            cache.clear_dir_dirty(&dir_path)?;
+            processed += 1;
+            continue;
+        }
+
+        let entries = scan_directory_entries_from_disk(project_path, &dir_path)?;
+        cache.replace_directory_entries(&dir_path, &entries)?;
+        processed += 1;
+    }
+
+    if had_dirty_dirs && cache.count_dirty_dirs()? == 0 {
+        cache.set_tree_clean()?;
+    }
+
+    Ok(processed)
+}
+
 pub fn rebuild_project_tree_cache(project_path: &str) -> Result<(), String> {
+    rebuild_project_tree_cache_with_control(project_path, &[], || false, |_, _| {}).map(|_| ())
+}
+
+pub fn rebuild_project_tree_cache_with_control<C, P>(
+    project_path: &str,
+    exclude_patterns: &[String],
+    is_cancelled: C,
+    mut on_progress: P,
+) -> Result<usize, String>
+where
+    C: Fn() -> bool,
+    P: FnMut(usize, &Path),
+{
     let cache = get_or_create_project_cache(project_path)?;
     let project_root = PathBuf::from(project_path);
     if !project_root.exists() || !project_root.is_dir() {
@@ -77,7 +148,10 @@ pub fn rebuild_project_tree_cache(project_path: &str) -> Result<(), String> {
     let mut stack = vec![project_root.clone()];
 
     while let Some(current_dir) = stack.pop() {
-        if should_skip_path(&project_root, &current_dir) {
+        if is_cancelled() {
+            return Err(TREE_REBUILD_CANCELLED_MESSAGE.to_string());
+        }
+        if should_skip_path_with_patterns(&project_root, &current_dir, exclude_patterns) {
             continue;
         }
 
@@ -88,12 +162,15 @@ pub fn rebuild_project_tree_cache(project_path: &str) -> Result<(), String> {
             .map_err(|error| format!("failed to scan {}: {}", current_dir.display(), error))?;
 
         for entry_result in dir_entries {
+            if is_cancelled() {
+                return Err(TREE_REBUILD_CANCELLED_MESSAGE.to_string());
+            }
             let entry = match entry_result {
                 Ok(entry) => entry,
                 Err(_) => continue,
             };
             let entry_path = entry.path();
-            if should_skip_path(&project_root, &entry_path) {
+            if should_skip_path_with_patterns(&project_root, &entry_path, exclude_patterns) {
                 continue;
             }
 
@@ -133,14 +210,22 @@ pub fn rebuild_project_tree_cache(project_path: &str) -> Result<(), String> {
                 last_seen_ts: now,
             });
 
+            if entries.len() == 1 || entries.len() % 50 == 0 {
+                on_progress(entries.len(), &entry_path);
+            }
+
             if is_dir {
                 stack.push(entry_path);
             }
         }
     }
 
+    if is_cancelled() {
+        return Err(TREE_REBUILD_CANCELLED_MESSAGE.to_string());
+    }
     cache.replace_all_entries(&entries, &scanned_dirs, now)?;
-    Ok(())
+    on_progress(entries.len(), &project_root);
+    Ok(entries.len())
 }
 
 pub fn scan_directory_entries_from_disk(
@@ -844,22 +929,98 @@ impl TreeCacheDb {
 
         Ok(())
     }
+
+    pub fn clear_file_details_cache_and_compact(&self) -> Result<usize, String> {
+        let conn = self.conn.lock().map_err(|error| error.to_string())?;
+        let count = conn
+            .query_row("SELECT COUNT(*) FROM file_details_cache", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(|error| error.to_string())?;
+        conn.execute("DELETE FROM file_details_cache", [])
+            .map_err(|error| error.to_string())?;
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")
+            .map_err(|error| error.to_string())?;
+        Ok(count.max(0) as usize)
+    }
 }
 
 fn should_skip_path(project_root: &Path, path: &Path) -> bool {
+    should_skip_path_with_patterns(project_root, path, &[])
+}
+
+pub fn should_skip_path_with_patterns(
+    project_root: &Path,
+    path: &Path,
+    patterns: &[String],
+) -> bool {
     if !path.starts_with(project_root) {
         return false;
     }
 
     match path.strip_prefix(project_root) {
-        Ok(relative) => relative.components().any(|component| {
-            component
-                .as_os_str()
-                .to_string_lossy()
-                .eq_ignore_ascii_case(".pm_center")
-        }),
+        Ok(relative) => {
+            if relative.components().any(|component| {
+                component
+                    .as_os_str()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(".pm_center")
+            }) {
+                return true;
+            }
+
+            let relative_value = relative.to_string_lossy().replace('\\', "/");
+            let file_name = path
+                .file_name()
+                .map(|value| value.to_string_lossy().to_string())
+                .unwrap_or_default();
+            patterns
+                .iter()
+                .any(|pattern| matches_exclude_pattern(&relative_value, &file_name, pattern.trim()))
+        }
         Err(_) => false,
     }
+}
+
+fn matches_exclude_pattern(relative_path: &str, file_name: &str, pattern: &str) -> bool {
+    if pattern.is_empty() {
+        return false;
+    }
+
+    let normalized = pattern.trim_matches(['/', '\\']);
+    if !normalized.contains(['*', '?', '[']) {
+        return file_name.eq_ignore_ascii_case(normalized)
+            || relative_path.eq_ignore_ascii_case(normalized)
+            || relative_path
+                .to_lowercase()
+                .starts_with(&format!("{}/", normalized.to_lowercase()));
+    }
+
+    let mut expression = String::from("^");
+    let mut chars = normalized.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '*' => expression.push_str(".*"),
+            '?' => expression.push('.'),
+            '[' => {
+                expression.push('[');
+                for class_char in chars.by_ref() {
+                    expression.push(class_char);
+                    if class_char == ']' {
+                        break;
+                    }
+                }
+            }
+            _ => expression.push_str(&regex::escape(&ch.to_string())),
+        }
+    }
+    expression.push('$');
+
+    regex::RegexBuilder::new(&expression)
+        .case_insensitive(true)
+        .build()
+        .map(|matcher| matcher.is_match(file_name) || matcher.is_match(relative_path))
+        .unwrap_or(false)
 }
 
 fn now_ts() -> i64 {

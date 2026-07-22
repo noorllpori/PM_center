@@ -10,7 +10,7 @@ import { getFileNameFromPath, getWorkspaceOpenTarget } from '../components/works
 import { openStandaloneDirectoryViewer } from '../components/file-manager/openStandaloneDirectoryViewer';
 import type { ImageSequenceInfo } from '../types';
 
-export type WorkspaceTabType = 'files' | 'directory' | 'image' | 'text' | 'video' | 'blend' | 'collection';
+export type WorkspaceTabType = 'files' | 'cache' | 'directory' | 'image' | 'text' | 'video' | 'blend' | 'collection';
 
 export type WorkspaceCollectionTabData =
   | {
@@ -38,12 +38,20 @@ export interface WorkspaceTab {
 }
 
 const FILES_TAB_ID = 'files';
+export const CACHE_MANAGER_TAB_ID = 'cache-manager';
 
 const FILES_TAB: WorkspaceTab = {
   id: FILES_TAB_ID,
   type: 'files',
   title: '文件列表',
   closable: false,
+};
+
+const CACHE_MANAGER_TAB: WorkspaceTab = {
+  id: CACHE_MANAGER_TAB_ID,
+  type: 'cache',
+  title: '缓存管理',
+  closable: true,
 };
 
 function createFileTab(
@@ -115,6 +123,7 @@ export interface WorkspaceTabState {
     },
   ) => Promise<boolean>;
   openDirectoryInTab: (directoryPath: string) => string;
+  openCacheManagerTab: () => string;
   openCollectionInTab: (collection: WorkspaceCollectionTabData) => string;
   activateTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
@@ -251,6 +260,24 @@ export function createWorkspaceTabStore(storeOptions: CreateWorkspaceTabStoreOpt
       }));
 
       return nextTab.id;
+    },
+
+    openCacheManagerTab: () => {
+      if (storeOptions.forceStandaloneFileOpen) {
+        return CACHE_MANAGER_TAB_ID;
+      }
+
+      const existingTab = get().tabs.find((tab) => tab.id === CACHE_MANAGER_TAB_ID);
+      if (existingTab) {
+        set({ activeTabId: CACHE_MANAGER_TAB_ID });
+        return CACHE_MANAGER_TAB_ID;
+      }
+
+      set((state) => ({
+        tabs: [...state.tabs, CACHE_MANAGER_TAB],
+        activeTabId: CACHE_MANAGER_TAB_ID,
+      }));
+      return CACHE_MANAGER_TAB_ID;
     },
 
     openCollectionInTab: (collection) => {

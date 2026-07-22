@@ -1,70 +1,34 @@
-use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::path::{Path, PathBuf};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
 
-use crate::db::Database;
-use crate::tree_cache::get_or_create_project_cache;
+use crate::cache_manager;
+use crate::db::{Database, FileChange};
+use crate::tree_cache::{
+    get_or_create_project_cache, normalize_path_key, should_skip_path_with_patterns,
+};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum ChangeType {
+const EVENT_BATCH_WINDOW: Duration = Duration::from_millis(500);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChangeType {
     Created,
     Modified,
     Deleted,
 }
 
 impl ChangeType {
-    pub fn as_str(&self) -> &'static str {
+    fn as_str(self) -> &'static str {
         match self {
-            ChangeType::Created => "created",
-            ChangeType::Modified => "modified",
-            ChangeType::Deleted => "deleted",
+            Self::Created => "created",
+            Self::Modified => "modified",
+            Self::Deleted => "deleted",
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WatchConfig {
-    pub max_depth_active: i32,
-    pub max_depth_dormant: i32,
-    pub exclude_patterns: Vec<String>,
-    pub dormant_scan_interval_sec: u64,
-}
-
-impl Default for WatchConfig {
-    fn default() -> Self {
-        Self {
-            max_depth_active: 5,
-            max_depth_dormant: 3,
-            exclude_patterns: vec![
-                ".pm_center".to_string(),
-                ".git".to_string(),
-                "temp".to_string(),
-                "cache".to_string(),
-                "*.tmp".to_string(),
-                "*.temp".to_string(),
-                "Thumbs.db".to_string(),
-                ".DS_Store".to_string(),
-            ],
-            dormant_scan_interval_sec: 30,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum ProjectWatchState {
-    Active,
-    Dormant,
-}
-
-pub struct ProjectWatcherState {
-    pub project_path: String,
-    pub state: ProjectWatchState,
-    pub config: WatchConfig,
-    pub file_cache: HashMap<String, (u64, i64)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,459 +50,272 @@ pub struct ThumbnailCacheUpdatedEvent {
     pub updated_count: usize,
 }
 
-// 全局状态
+#[derive(Debug)]
+struct PendingEvent {
+    path: PathBuf,
+    change_type: ChangeType,
+    is_dir: bool,
+    is_rename: bool,
+}
+
 lazy_static::lazy_static! {
-    static ref PROJECTS: Arc<Mutex<HashMap<String, ProjectWatcherState>>> = Arc::new(Mutex::new(HashMap::new()));
-    static ref ACTIVE_WATCHER: Arc<Mutex<Option<RecommendedWatcher>>> = Arc::new(Mutex::new(None));
+    static ref ACTIVE_WATCHER: Arc<Mutex<Option<RecommendedWatcher>>> =
+        Arc::new(Mutex::new(None));
+    static ref ACTIVE_PROJECT: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     static ref APP_HANDLE: Arc<Mutex<Option<tauri::AppHandle>>> = Arc::new(Mutex::new(None));
 }
 
 pub fn set_app_handle(app_handle: tauri::AppHandle) {
-    let mut handle = APP_HANDLE.lock().unwrap();
-    *handle = Some(app_handle);
+    if let Ok(mut handle) = APP_HANDLE.lock() {
+        *handle = Some(app_handle);
+    }
 }
 
-// 初始化项目监控
-pub fn init_project(path: String, is_active: bool) -> Result<(), String> {
-    let mut cache = HashMap::new();
-    let config = WatchConfig::default();
-    scan_directory(
-        &PathBuf::from(&path),
-        0,
-        config.max_depth_active,
-        &config.exclude_patterns,
-        &mut cache,
-    );
-
-    let state = if is_active {
-        ProjectWatchState::Active
-    } else {
-        ProjectWatchState::Dormant
-    };
-
-    {
-        let mut projects = PROJECTS.lock().unwrap();
-        projects.insert(
-            path.clone(),
-            ProjectWatcherState {
-                project_path: path,
-                state,
-                config,
-                file_cache: cache,
-            },
-        );
+pub fn set_active_project(
+    path: &str,
+    db: &Database,
+    exclude_patterns: &[String],
+) -> Result<(), String> {
+    let project_root = PathBuf::from(path);
+    if !project_root.is_dir() {
+        return Err("项目目录不存在或不可访问".to_string());
     }
 
-    Ok(())
-}
-
-// 设置活跃项目
-pub fn set_active_project(path: &str, db: &Database) -> Result<(), String> {
-    // 停止之前的 watcher
-    {
-        let mut watcher = ACTIVE_WATCHER.lock().unwrap();
-        *watcher = None;
+    if let Ok(mut active_watcher) = ACTIVE_WATCHER.lock() {
+        *active_watcher = None;
+    }
+    if let Ok(mut active_project) = ACTIVE_PROJECT.lock() {
+        *active_project = None;
     }
 
-    // 更新项目状态
-    {
-        let mut projects = PROJECTS.lock().unwrap();
-
-        for (_, watcher) in projects.iter_mut() {
-            watcher.state = ProjectWatchState::Dormant;
-        }
-
-        if let Some(watcher) = projects.get_mut(path) {
-            watcher.state = ProjectWatchState::Active;
-        } else {
-            drop(projects);
-            init_project(path.to_string(), true)?;
-        }
-    }
-
-    // 启动 notify 监控
-    start_notify_watcher(path, db)?;
-
-    Ok(())
-}
-
-// 启动 notify 监控
-fn start_notify_watcher(path: &str, db: &Database) -> Result<(), String> {
-    let path = PathBuf::from(path);
-    let db = db.clone();
-
+    let (sender, receiver) = mpsc::channel::<Result<Event, notify::Error>>();
+    let callback_sender = sender.clone();
     let mut watcher = RecommendedWatcher::new(
-        move |res: Result<Event, notify::Error>| {
-            if let Ok(event) = res {
-                handle_notify_event(event, &db);
-            }
+        move |result| {
+            let _ = callback_sender.send(result);
         },
         Config::default(),
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|error| error.to_string())?;
 
     watcher
-        .watch(&path, RecursiveMode::Recursive)
-        .map_err(|e| e.to_string())?;
+        .watch(&project_root, RecursiveMode::Recursive)
+        .map_err(|error| error.to_string())?;
 
-    {
-        let mut active = ACTIVE_WATCHER.lock().unwrap();
-        *active = Some(watcher);
+    let project_path = path.to_string();
+    let worker_project_path = project_path.clone();
+    let worker_db = db.clone();
+    let worker_excludes = exclude_patterns.to_vec();
+    std::thread::Builder::new()
+        .name("pm-center-watcher".to_string())
+        .spawn(move || {
+            run_event_worker(receiver, &worker_project_path, &worker_db, &worker_excludes)
+        })
+        .map_err(|error| error.to_string())?;
+
+    drop(sender);
+    if let Ok(mut active_project) = ACTIVE_PROJECT.lock() {
+        *active_project = Some(project_path);
     }
-
+    let mut active_watcher = ACTIVE_WATCHER.lock().map_err(|error| error.to_string())?;
+    *active_watcher = Some(watcher);
     Ok(())
 }
 
-// 处理 notify 事件
-fn handle_notify_event(event: Event, db: &Database) {
-    let projects_guard = PROJECTS.lock().unwrap();
-    let is_rename_event = matches!(
-        event.kind,
-        notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
-    );
-
-    for file_path in &event.paths {
-        let project_info = projects_guard
-            .iter()
-            .find(|(p, _)| file_path.starts_with(p));
-
-        if let Some((project_path, watcher)) = project_info {
-            if should_exclude(file_path, &watcher.config.exclude_patterns) {
-                continue;
-            }
-
-            let depth = calculate_depth(project_path, file_path);
-            if depth > watcher.config.max_depth_active {
-                continue;
-            }
-
-            let change_type = match event.kind {
-                notify::EventKind::Create(_) => ChangeType::Created,
-                notify::EventKind::Modify(_) => ChangeType::Modified,
-                notify::EventKind::Remove(_) => ChangeType::Deleted,
-                _ => continue,
-            };
-
-            // 检查路径类型：如果是目录，只记录 Created/Deleted，不记录 Modified
-            // 因为目录的 Modified 通常是由于内部文件变动导致的
-            let is_dir = if change_type == ChangeType::Deleted {
-                // 已删除的路径，通过缓存判断（如果无法确定，保守起见假设是文件）
-                false
-            } else {
-                std::fs::metadata(file_path)
-                    .ok()
-                    .map(|m| m.is_dir())
-                    .unwrap_or(false)
-            };
-
-            if is_dir && change_type == ChangeType::Modified {
-                // 跳过目录的修改事件（只保留目录的创建和删除）
-                continue;
-            }
-
-            let file_size = if change_type != ChangeType::Deleted && !is_dir {
-                std::fs::metadata(file_path).ok().map(|m| m.len())
-            } else {
-                None
-            };
-
-            if let Ok(cache_db) = get_or_create_project_cache(project_path) {
-                let changed_path = file_path.to_string_lossy().to_string();
-
-                if let Some(parent) = file_path.parent() {
-                    let parent_path = parent.to_string_lossy().to_string();
-                    let _ = cache_db.mark_dir_dirty(&parent_path);
-                }
-
-                if is_dir {
-                    let _ = cache_db.mark_dir_dirty(&changed_path);
-                    let _ = cache_db.invalidate_file_details_by_prefix(&changed_path);
-                } else {
-                    let _ = cache_db.invalidate_file_details(&changed_path);
-                }
-
-                if is_rename_event
-                    || matches!(change_type, ChangeType::Created | ChangeType::Deleted)
-                {
-                    let _ = cache_db.mark_tree_dirty();
-                }
-            }
-
-            // 直接写入数据库
-            let change = crate::db::FileChange {
-                id: 0,
-                project_path: project_path.clone(),
-                file_path: file_path.to_string_lossy().to_string(),
-                change_type: change_type.as_str().to_string(),
-                file_size: file_size.map(|s| s as i64),
-                timestamp: current_timestamp(),
-                depth,
-            };
-
-            let _ = db.add_file_change(&change);
-
-            println!(
-                "[Watcher] {:?} - {} - {:?}",
-                change_type,
-                file_path.display(),
-                file_size
-            );
-
-            emit_project_fs_change(ProjectFsChangeEvent {
-                project_path: project_path.clone(),
-                file_path: file_path.to_string_lossy().to_string(),
-                change_type: if is_rename_event {
-                    "renamed".to_string()
-                } else {
-                    change_type.as_str().to_string()
-                },
-                is_dir,
-                is_rename: is_rename_event,
-                timestamp: current_timestamp(),
-            });
-        }
-    }
-}
-
 pub fn get_active_project_path() -> Option<String> {
-    let projects = PROJECTS.lock().ok()?;
-    projects
-        .iter()
-        .find(|(_, watcher)| matches!(watcher.state, ProjectWatchState::Active))
-        .map(|(path, _)| path.clone())
+    ACTIVE_PROJECT.lock().ok().and_then(|path| path.clone())
 }
 
-fn emit_project_fs_change(payload: ProjectFsChangeEvent) {
-    let handle = APP_HANDLE.lock().unwrap();
-    if let Some(app_handle) = handle.as_ref() {
-        let _ = app_handle.emit("pm-center:project-fs-change", payload);
-    }
-}
-
-pub fn emit_thumbnail_cache_updated(payload: ThumbnailCacheUpdatedEvent) {
-    let handle = APP_HANDLE.lock().unwrap();
-    if let Some(app_handle) = handle.as_ref() {
-        let _ = app_handle.emit("pm-center:thumbnail-cache-updated", payload);
-    }
-}
-
-// 休眠项目轮询 - 降低频率到5分钟，减少CPU占用
-pub async fn run_dormant_scan(databases: HashMap<String, Database>) {
-    // 先收集需要处理的项目路径
-    let dormant_projects: Vec<(String, WatchConfig)> = {
-        let projects = PROJECTS.lock().unwrap();
-        projects
-            .iter()
-            .filter(|(_, p)| matches!(p.state, ProjectWatchState::Dormant))
-            .take(3) // 只处理3个
-            .map(|(path, p)| (path.clone(), p.config.clone()))
-            .collect()
-    };
-
-    // 逐个处理，不持有锁
-    for (path, config) in dormant_projects {
-        tokio::task::yield_now().await;
-
-        if let Ok(changes) = scan_dormant_project(&path, &config) {
-            if !changes.is_empty() {
-                let Some(db) = databases.get(&path) else {
-                    continue;
-                };
-                let db_changes: Vec<crate::db::FileChange> = changes
-                    .into_iter()
-                    .map(|c| crate::db::FileChange {
-                        id: 0,
-                        project_path: c.project_path,
-                        file_path: c.file_path,
-                        change_type: c.change_type,
-                        file_size: c.file_size.map(|s| s as i64),
-                        timestamp: c.timestamp,
-                        depth: c.depth,
-                    })
-                    .collect();
-                let _ = db.add_file_changes_batch(&db_changes);
-            }
-        }
-
-        // 每个项目之间等待一下，避免阻塞
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
-
-// 变更数据结构
-struct PendingChange {
-    project_path: String,
-    file_path: String,
-    change_type: String,
-    file_size: Option<u64>,
-    timestamp: i64,
-    depth: i32,
-}
-
-// 扫描休眠项目 - 限制处理数量
-fn scan_dormant_project(path: &str, config: &WatchConfig) -> Result<Vec<PendingChange>, String> {
-    let mut projects = PROJECTS.lock().unwrap();
-    let watcher = projects.get_mut(path).ok_or("Project not found")?;
-
-    let mut new_cache = HashMap::new();
-    // 降低休眠项目扫描深度到2层，减少IO
-    scan_directory_limited(
-        &PathBuf::from(path),
-        0,
-        2, // 只扫描2层
-        &config.exclude_patterns,
-        &mut new_cache,
-        1000, // 最多1000个文件
-    );
-
-    let mut changes = Vec::new();
-
-    for (file_path, (new_size, new_time)) in &new_cache {
-        match watcher.file_cache.get(file_path) {
-            None => {
-                changes.push(PendingChange {
-                    project_path: path.to_string(),
-                    file_path: file_path.clone(),
-                    change_type: ChangeType::Created.as_str().to_string(),
-                    file_size: Some(*new_size),
-                    timestamp: *new_time,
-                    depth: 0,
-                });
-            }
-            Some((old_size, old_time)) => {
-                if new_size != old_size || new_time != old_time {
-                    changes.push(PendingChange {
-                        project_path: path.to_string(),
-                        file_path: file_path.clone(),
-                        change_type: ChangeType::Modified.as_str().to_string(),
-                        file_size: Some(*new_size),
-                        timestamp: *new_time,
-                        depth: 0,
-                    });
-                }
-            }
-        }
-    }
-
-    for (file_path, _) in &watcher.file_cache {
-        if !new_cache.contains_key(file_path) {
-            changes.push(PendingChange {
-                project_path: path.to_string(),
-                file_path: file_path.clone(),
-                change_type: ChangeType::Deleted.as_str().to_string(),
-                file_size: None,
-                timestamp: current_timestamp(),
-                depth: 0,
-            });
-        }
-    }
-
-    watcher.file_cache = new_cache;
-    Ok(changes)
-}
-
-// 扫描目录
-fn scan_directory(
-    path: &PathBuf,
-    depth: i32,
-    max_depth: i32,
+fn run_event_worker(
+    receiver: mpsc::Receiver<Result<Event, notify::Error>>,
+    project_path: &str,
+    db: &Database,
     exclude_patterns: &[String],
-    cache: &mut HashMap<String, (u64, i64)>,
 ) {
-    scan_directory_limited(path, depth, max_depth, exclude_patterns, cache, usize::MAX);
-}
+    let mut batch = Vec::new();
 
-// 有限制的扫描目录
-fn scan_directory_limited(
-    path: &PathBuf,
-    depth: i32,
-    max_depth: i32,
-    exclude_patterns: &[String],
-    cache: &mut HashMap<String, (u64, i64)>,
-    max_files: usize,
-) {
-    if depth > max_depth {
-        return;
-    }
-
-    if should_exclude(path, exclude_patterns) {
-        return;
-    }
-
-    if cache.len() >= max_files {
-        return;
-    }
-
-    if let Ok(entries) = std::fs::read_dir(path) {
-        for entry in entries.flatten() {
-            if cache.len() >= max_files {
+    loop {
+        match receiver.recv_timeout(EVENT_BATCH_WINDOW) {
+            Ok(Ok(event)) => batch.push(event),
+            Ok(Err(_)) => mark_tree_dirty(project_path),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                flush_events(project_path, db, exclude_patterns, &mut batch)
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                flush_events(project_path, db, exclude_patterns, &mut batch);
                 break;
             }
+        }
+    }
+}
 
-            let path = entry.path();
+fn flush_events(
+    project_path: &str,
+    db: &Database,
+    exclude_patterns: &[String],
+    events: &mut Vec<Event>,
+) {
+    if events.is_empty() {
+        return;
+    }
 
-            if should_exclude(&path, exclude_patterns) {
+    let project_root = PathBuf::from(project_path);
+    let mut pending = HashMap::<String, PendingEvent>::new();
+    for event in events.drain(..) {
+        let is_rename = matches!(
+            event.kind,
+            EventKind::Modify(notify::event::ModifyKind::Name(_))
+        );
+        let change_type = match event.kind {
+            EventKind::Create(_) => ChangeType::Created,
+            EventKind::Modify(_) => ChangeType::Modified,
+            EventKind::Remove(_) => ChangeType::Deleted,
+            EventKind::Other => {
+                mark_tree_dirty(project_path);
+                continue;
+            }
+            _ => continue,
+        };
+
+        for path in event.paths {
+            if should_skip_path_with_patterns(&project_root, &path, exclude_patterns) {
+                continue;
+            }
+            let is_dir = if change_type == ChangeType::Deleted {
+                false
+            } else {
+                path.metadata()
+                    .map(|metadata| metadata.is_dir())
+                    .unwrap_or(false)
+            };
+            if is_dir && change_type == ChangeType::Modified && !is_rename {
                 continue;
             }
 
-            if let Ok(meta) = entry.metadata() {
-                let modified = meta
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0);
-
-                cache.insert(path.to_string_lossy().to_string(), (meta.len(), modified));
-
-                if meta.is_dir() {
-                    scan_directory_limited(
-                        &path,
-                        depth + 1,
-                        max_depth,
-                        exclude_patterns,
-                        cache,
-                        max_files,
-                    );
-                }
-            }
+            pending.insert(
+                normalize_path_key(&path.to_string_lossy()),
+                PendingEvent {
+                    path,
+                    change_type,
+                    is_dir,
+                    is_rename,
+                },
+            );
         }
+    }
+
+    if pending.is_empty() {
+        return;
+    }
+
+    let timestamp = current_timestamp();
+    let mut db_changes = Vec::with_capacity(pending.len());
+    for event in pending.into_values() {
+        let path_string = event.path.to_string_lossy().to_string();
+        let affects_tree = event.is_rename
+            || matches!(event.change_type, ChangeType::Created | ChangeType::Deleted);
+
+        if cache_manager::is_project_under_maintenance(project_path) {
+            cache_manager::queue_cache_event(
+                project_path,
+                &path_string,
+                event.is_dir,
+                affects_tree,
+            );
+        } else {
+            invalidate_cache_for_event(project_path, &event.path, event.is_dir, affects_tree);
+        }
+
+        let file_size = if event.change_type != ChangeType::Deleted && !event.is_dir {
+            event
+                .path
+                .metadata()
+                .ok()
+                .map(|metadata| metadata.len() as i64)
+        } else {
+            None
+        };
+        db_changes.push(FileChange {
+            id: 0,
+            project_path: project_path.to_string(),
+            file_path: path_string.clone(),
+            change_type: event.change_type.as_str().to_string(),
+            file_size,
+            timestamp,
+            depth: calculate_depth(&project_root, &event.path),
+        });
+
+        emit_project_fs_change(ProjectFsChangeEvent {
+            project_path: project_path.to_string(),
+            file_path: path_string,
+            change_type: if event.is_rename {
+                "renamed".to_string()
+            } else {
+                event.change_type.as_str().to_string()
+            },
+            is_dir: event.is_dir,
+            is_rename: event.is_rename,
+            timestamp,
+        });
+    }
+
+    let _ = db.add_file_changes_batch(&db_changes);
+}
+
+fn invalidate_cache_for_event(project_path: &str, path: &Path, is_dir: bool, affects_tree: bool) {
+    let Ok(cache) = get_or_create_project_cache(project_path) else {
+        return;
+    };
+    let path_string = path.to_string_lossy().to_string();
+    if let Some(parent) = path.parent() {
+        let _ = cache.mark_dir_dirty(&parent.to_string_lossy());
+    }
+    if is_dir {
+        let _ = cache.mark_dir_dirty(&path_string);
+        let _ = cache.invalidate_file_details_by_prefix(&path_string);
+    } else {
+        let _ = cache.invalidate_file_details(&path_string);
+    }
+    if affects_tree {
+        let _ = cache.mark_tree_dirty();
     }
 }
 
-fn calculate_depth(project_path: &str, file_path: &PathBuf) -> i32 {
-    let project = PathBuf::from(project_path);
-    file_path.components().count() as i32 - project.components().count() as i32
+fn mark_tree_dirty(project_path: &str) {
+    if cache_manager::is_project_under_maintenance(project_path) {
+        cache_manager::queue_cache_event(project_path, project_path, true, true);
+        return;
+    }
+    if let Ok(cache) = get_or_create_project_cache(project_path) {
+        let _ = cache.mark_tree_dirty();
+    }
 }
 
-fn should_exclude(path: &PathBuf, patterns: &[String]) -> bool {
-    let path_str = path.to_string_lossy();
-    let file_name = path
-        .file_name()
-        .map(|n| n.to_string_lossy())
-        .unwrap_or_default();
-
-    for pattern in patterns {
-        if pattern.contains('*') {
-            let regex = pattern.replace(".", "\\.").replace("*", ".*");
-            if let Ok(re) = regex::Regex::new(&regex) {
-                if re.is_match(&file_name) {
-                    return true;
-                }
-            }
-        } else if path_str.contains(pattern) {
-            return true;
-        }
-    }
-    false
+fn calculate_depth(project_root: &Path, path: &Path) -> i32 {
+    path.components()
+        .count()
+        .saturating_sub(project_root.components().count()) as i32
 }
 
 fn current_timestamp() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or_default()
 }
 
-// Tauri 命令 - 这些命令在 lib.rs 中定义，这里只保留内部函数
-// 实际命令实现移到 lib.rs 以保持类型一致
+fn emit_project_fs_change(payload: ProjectFsChangeEvent) {
+    if let Ok(handle) = APP_HANDLE.lock() {
+        if let Some(app_handle) = handle.as_ref() {
+            let _ = app_handle.emit("pm-center:project-fs-change", payload);
+        }
+    }
+}
+
+pub fn emit_thumbnail_cache_updated(payload: ThumbnailCacheUpdatedEvent) {
+    if let Ok(handle) = APP_HANDLE.lock() {
+        if let Some(app_handle) = handle.as_ref() {
+            let _ = app_handle.emit("pm-center:thumbnail-cache-updated", payload);
+        }
+    }
+}

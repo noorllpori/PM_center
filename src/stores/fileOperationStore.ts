@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-export type FileOperationKind = 'import' | 'copy' | 'move' | 'paste';
+export type FileOperationKind = 'import' | 'copy' | 'move' | 'paste' | 'maintenance';
 export type FileOperationStatus = 'running' | 'cancelling' | 'completed' | 'failed' | 'cancelled';
 
 export interface FileOperation {

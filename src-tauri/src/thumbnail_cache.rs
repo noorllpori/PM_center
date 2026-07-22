@@ -14,6 +14,8 @@ const THUMBNAIL_SIZE: u32 = 320;
 lazy_static::lazy_static! {
     static ref IN_FLIGHT_THUMBNAILS: Arc<Mutex<HashSet<String>>> =
         Arc::new(Mutex::new(HashSet::new()));
+    static ref MAINTENANCE_PROJECTS: Arc<Mutex<HashSet<String>>> =
+        Arc::new(Mutex::new(HashSet::new()));
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +59,10 @@ pub fn queue_directory_thumbnail_generation(
     directory_path: String,
     sources: Vec<ThumbnailSource>,
 ) {
+    if is_project_under_maintenance(&project_path) {
+        return;
+    }
+
     let mut jobs = Vec::new();
 
     for source in sources {
@@ -131,6 +137,9 @@ fn generate_thumbnail_jobs(project_path: &str, jobs: &[ThumbnailJob]) -> Result<
 
     let mut updated_count = 0usize;
     for job in jobs {
+        if is_project_under_maintenance(project_path) {
+            continue;
+        }
         let source_path = PathBuf::from(&job.source_path);
         if !source_path.exists() || !source_path.is_file() {
             continue;
@@ -150,6 +159,9 @@ fn generate_thumbnail_jobs(project_path: &str, jobs: &[ThumbnailJob]) -> Result<
             }
         };
 
+        if is_project_under_maintenance(project_path) {
+            continue;
+        }
         persist_thumbnail_png(&job.target_path, &job.cache_prefix, &png_bytes)?;
         updated_count += 1;
     }
@@ -442,6 +454,77 @@ fn project_thumbnail_root(project_path: &str) -> PathBuf {
     PathBuf::from(project_path)
         .join(".pm_center")
         .join("thumbnails")
+}
+
+pub fn expected_thumbnail_path(project_path: &str, source: &ThumbnailSource) -> Option<PathBuf> {
+    build_thumbnail_relative_path(project_path, source)
+        .map(|relative| project_thumbnail_root(project_path).join(relative))
+}
+
+pub fn begin_project_maintenance(project_path: &str) -> Result<bool, String> {
+    let mut guard = MAINTENANCE_PROJECTS
+        .lock()
+        .map_err(|error| error.to_string())?;
+    Ok(guard.insert(normalize_job_key(project_path)))
+}
+
+pub fn end_project_maintenance(project_path: &str) {
+    if let Ok(mut guard) = MAINTENANCE_PROJECTS.lock() {
+        guard.remove(&normalize_job_key(project_path));
+    }
+}
+
+pub fn is_project_under_maintenance(project_path: &str) -> bool {
+    MAINTENANCE_PROJECTS
+        .lock()
+        .map(|guard| guard.contains(&normalize_job_key(project_path)))
+        .unwrap_or(false)
+}
+
+pub fn project_in_flight_count(project_path: &str) -> usize {
+    let root_key = normalize_job_key(project_thumbnail_root(project_path));
+    IN_FLIGHT_THUMBNAILS
+        .lock()
+        .map(|guard| {
+            guard
+                .iter()
+                .filter(|key| key.starts_with(&root_key))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+pub fn clear_project_thumbnail_cache(project_path: &str) -> Result<(usize, u64), String> {
+    let root = project_thumbnail_root(project_path);
+    fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+    let mut files_removed = 0usize;
+    let mut bytes_removed = 0u64;
+    let mut directories = Vec::new();
+
+    for entry in walkdir::WalkDir::new(&root)
+        .min_depth(1)
+        .contents_first(true)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
+        let path = entry.path();
+        if entry.file_type().is_dir() {
+            directories.push(path.to_path_buf());
+            continue;
+        }
+
+        bytes_removed =
+            bytes_removed.saturating_add(entry.metadata().map(|m| m.len()).unwrap_or(0));
+        fs::remove_file(path)
+            .map_err(|error| format!("failed to remove thumbnail {}: {}", path.display(), error))?;
+        files_removed += 1;
+    }
+
+    for directory in directories {
+        let _ = fs::remove_dir(&directory);
+    }
+
+    Ok((files_removed, bytes_removed))
 }
 
 fn normalize_job_key(value: impl AsRef<Path>) -> String {

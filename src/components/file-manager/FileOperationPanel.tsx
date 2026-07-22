@@ -4,6 +4,7 @@ import {
   ChevronUp,
   ClipboardPaste,
   Copy,
+  Database,
   LoaderCircle,
   Scissors,
   Trash2,
@@ -40,6 +41,8 @@ function getOperationIcon(kind: FileOperationKind) {
       return Scissors;
     case 'paste':
       return ClipboardPaste;
+    case 'maintenance':
+      return Database;
     default:
       return Copy;
   }
@@ -182,7 +185,7 @@ export function FileOperationPanel() {
       <div className="flex h-11 items-center gap-2 px-3">
         <ClipboardPaste className="h-4 w-4 text-gray-500 dark:text-gray-400" />
         <p className="min-w-0 flex-1 text-sm font-semibold text-gray-900 dark:text-gray-100">
-          文件任务
+          后台任务
           {activeCount > 0 && (
             <span className="ml-2 text-xs font-normal text-gray-500 dark:text-gray-400">
               {activeCount} 个进行中
