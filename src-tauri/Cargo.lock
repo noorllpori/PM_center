@@ -3198,7 +3198,7 @@ dependencies = [
 
 [[package]]
 name = "pm_center"
-version = "2.3.9"
+version = "2.3.10"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import {
   AlertCircle,
   Activity,
   Archive,
   Check,
+  ChevronLeft,
   ChevronDown,
   ChevronRight,
   CirclePause,
@@ -14,10 +15,13 @@ import {
   Cpu,
   FolderOpen,
   Gauge,
+  Image as ImageIcon,
   Layers3,
   ListRestart,
   LoaderCircle,
   MemoryStick,
+  Maximize2,
+  Minimize2,
   Pause,
   Play,
   Plus,
@@ -412,9 +416,19 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
   const performanceSamples = detail.performanceSamples || [];
   const [logExpanded, setLogExpanded] = useState(false);
   const [showPerformance, setShowPerformance] = useState(false);
+  const [selectedFrameNumber, setSelectedFrameNumber] = useState<number | null>(null);
+  const [previewFrameNumber, setPreviewFrameNumber] = useState<number | null>(null);
   const canPause = ['pending', 'starting', 'running'].includes(job.status);
   const canResume = ['paused', 'failed', 'cancelled'].includes(job.status);
   const failedFrames = frames.filter((frame) => frame.status === 'failed').map((frame) => frame.frame);
+  const previewableFrames = useMemo(
+    () => frames.filter((frame) => ['completed', 'skipped'].includes(frame.status) && Boolean(frame.outputPath.trim())),
+    [frames],
+  );
+  const previewableFrameNumbers = useMemo(
+    () => new Set(previewableFrames.map((frame) => frame.frame)),
+    [previewableFrames],
+  );
   const smoothedEta = useSmoothedEta(job, detail.eta);
   const completionEstimate = formatCompletionEstimate(smoothedEta);
   const summaryItems: Array<{ label: string; value: string | number; detail: string }> = [
@@ -428,7 +442,18 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
   useEffect(() => {
     setLogExpanded(false);
     setShowPerformance(false);
+    setSelectedFrameNumber(null);
+    setPreviewFrameNumber(null);
   }, [job.id]);
+
+  useEffect(() => {
+    if (selectedFrameNumber !== null && !frames.some((frame) => frame.frame === selectedFrameNumber)) {
+      setSelectedFrameNumber(null);
+    }
+    if (previewFrameNumber !== null && !previewableFrames.some((frame) => frame.frame === previewFrameNumber)) {
+      setPreviewFrameNumber(null);
+    }
+  }, [frames, previewFrameNumber, previewableFrames, selectedFrameNumber]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -461,7 +486,22 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
         <div className="sticky top-0 grid grid-cols-[64px_82px_64px_1fr] bg-gray-50 px-3 py-1.5 text-[10px] font-medium text-gray-500 dark:bg-gray-900"><span>帧</span><span>状态</span><span>耗时</span><span>输出</span></div>
-        {frames.map((frame) => <FrameRow key={frame.frame} frame={frame} />)}
+        {frames.map((frame) => {
+          const previewable = previewableFrameNumbers.has(frame.frame);
+          return (
+            <FrameRow
+              key={frame.frame}
+              frame={frame}
+              selected={selectedFrameNumber === frame.frame}
+              previewable={previewable}
+              onSelect={() => setSelectedFrameNumber(frame.frame)}
+              onPreview={() => {
+                setSelectedFrameNumber(frame.frame);
+                if (previewable) setPreviewFrameNumber(frame.frame);
+              }}
+            />
+          );
+        })}
       </div>
       <div className={`flex shrink-0 flex-col border-t border-gray-200 dark:border-gray-800 ${logExpanded ? 'h-[38%] min-h-[140px] max-h-[320px]' : 'h-8'}`}>
         <button type="button" onClick={() => setLogExpanded((expanded) => !expanded)} className="flex h-8 shrink-0 items-center gap-2 bg-gray-100 px-3 text-[10px] font-medium text-gray-600 hover:bg-gray-200 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800">
@@ -475,6 +515,18 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
         </div>}
       </div>
       {showPerformance && <PerformanceChartDialog job={job} samples={performanceSamples} onClose={() => setShowPerformance(false)} />}
+      {previewFrameNumber !== null && (
+        <RenderFramePreview
+          jobName={job.name}
+          frames={previewableFrames}
+          currentFrameNumber={previewFrameNumber}
+          onFrameChange={(frameNumber) => {
+            setPreviewFrameNumber(frameNumber);
+            setSelectedFrameNumber(frameNumber);
+          }}
+          onClose={() => setPreviewFrameNumber(null)}
+        />
+      )}
     </div>
   );
 }
@@ -566,8 +618,177 @@ function WaveformChart({ title, color, samples, value, maxValue, formatValue }: 
   );
 }
 
-function FrameRow({ frame }: { frame: RenderFrame }) {
-  return <div className="grid grid-cols-[64px_82px_64px_1fr] border-t border-gray-100 px-3 py-1.5 text-[11px] dark:border-gray-900"><span className="tabular-nums">{frame.frame}</span><span className={frame.status === 'failed' ? 'text-red-600' : frame.status === 'completed' ? 'text-emerald-600' : 'text-gray-500'}>{STATUS_LABELS[frame.status] || frame.status}</span><span className="text-gray-500">{formatDuration(frame.durationMs)}</span><span className="truncate text-gray-500" title={frame.outputPath}>{fileName(frame.outputPath)}</span></div>;
+function FrameRow({ frame, selected, previewable, onSelect, onPreview }: { frame: RenderFrame; selected: boolean; previewable: boolean; onSelect: () => void; onPreview: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-pressed={selected}
+      onClick={onSelect}
+      onDoubleClick={onPreview}
+      title={previewable ? `双击预览帧 ${frame.frame}` : `帧 ${frame.frame} 暂无可预览输出`}
+      className={`grid h-8 w-full grid-cols-[62px_82px_64px_1fr] items-center border-l-2 border-t px-2.5 text-left text-[11px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500 dark:border-t-gray-900 ${
+        selected
+          ? 'border-l-blue-600 border-t-blue-200 bg-blue-100 text-blue-950 shadow-[inset_0_0_0_1px_rgba(37,99,235,0.22)] dark:border-l-blue-400 dark:border-t-blue-900 dark:bg-blue-950/70 dark:text-blue-100'
+          : 'border-l-transparent border-t-gray-100 hover:bg-gray-50 dark:hover:bg-gray-900/70'
+      }`}
+    >
+      <span className="font-medium tabular-nums">{frame.frame}</span>
+      <span className={frame.status === 'failed' ? 'text-red-600' : frame.status === 'completed' ? 'text-emerald-600 dark:text-emerald-400' : selected ? 'text-blue-700 dark:text-blue-300' : 'text-gray-500'}>{STATUS_LABELS[frame.status] || frame.status}</span>
+      <span className={selected ? 'text-blue-700 dark:text-blue-300' : 'text-gray-500'}>{formatDuration(frame.durationMs)}</span>
+      <span className={`flex min-w-0 items-center gap-1.5 ${selected ? 'text-blue-800 dark:text-blue-200' : 'text-gray-500'}`}>
+        {previewable && <ImageIcon className="h-3 w-3 shrink-0" />}
+        <span className="truncate" title={frame.outputPath}>{fileName(frame.outputPath)}</span>
+      </span>
+    </button>
+  );
+}
+
+const PREVIEW_FPS_OPTIONS = [1, 2, 4, 8, 12, 24];
+
+function RenderFramePreview({ jobName, frames, currentFrameNumber, onFrameChange, onClose }: { jobName: string; frames: RenderFrame[]; currentFrameNumber: number; onFrameChange: (frameNumber: number) => void; onClose: () => void }) {
+  const previewRef = useRef<HTMLDivElement>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [fps, setFps] = useState(8);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isImageLoading, setIsImageLoading] = useState(true);
+  const [imageError, setImageError] = useState(false);
+  const currentIndex = Math.max(0, frames.findIndex((frame) => frame.frame === currentFrameNumber));
+  const currentFrame = frames[currentIndex] || null;
+  const currentSource = useMemo(
+    () => currentFrame ? convertFileSrc(currentFrame.outputPath) : '',
+    [currentFrame],
+  );
+
+  const goPrevious = useCallback(() => {
+    if (currentIndex > 0) onFrameChange(frames[currentIndex - 1].frame);
+  }, [currentIndex, frames, onFrameChange]);
+
+  const goNext = useCallback(() => {
+    if (currentIndex < frames.length - 1) onFrameChange(frames[currentIndex + 1].frame);
+  }, [currentIndex, frames, onFrameChange]);
+
+  const toggleFullscreen = useCallback(async () => {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+        return;
+      }
+      await previewRef.current?.requestFullscreen();
+    } catch {
+      setIsFullscreen(false);
+    }
+  }, []);
+
+  const closePreview = useCallback(() => {
+    if (document.fullscreenElement === previewRef.current) void document.exitFullscreen();
+    onClose();
+  }, [onClose]);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => setIsFullscreen(document.fullscreenElement === previewRef.current);
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        goPrevious();
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        goNext();
+      } else if (event.key === ' ') {
+        event.preventDefault();
+        setIsPlaying((playing) => !playing);
+      } else if (event.key.toLowerCase() === 'f') {
+        event.preventDefault();
+        void toggleFullscreen();
+      } else if (event.key === 'Escape' && !document.fullscreenElement) {
+        closePreview();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [closePreview, goNext, goPrevious, toggleFullscreen]);
+
+  useEffect(() => {
+    if (!isPlaying) return;
+    if (frames.length <= 1 || currentIndex >= frames.length - 1) {
+      setIsPlaying(false);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      onFrameChange(frames[currentIndex + 1].frame);
+    }, 1000 / fps);
+    return () => window.clearTimeout(timer);
+  }, [currentIndex, fps, frames, isPlaying, onFrameChange]);
+
+  useEffect(() => {
+    setIsImageLoading(true);
+    setImageError(false);
+  }, [currentSource]);
+
+  useEffect(() => {
+    [frames[currentIndex - 1], frames[currentIndex + 1]].forEach((frame) => {
+      if (!frame) return;
+      const image = new Image();
+      image.src = convertFileSrc(frame.outputPath);
+    });
+  }, [currentIndex, frames]);
+
+  return (
+    <div ref={previewRef} role="dialog" aria-modal="true" aria-label="渲染帧预览" className="fixed inset-0 z-[110] flex min-h-0 flex-col bg-neutral-950 text-white">
+      <div className="flex min-h-12 shrink-0 flex-wrap items-center gap-2 border-b border-white/10 bg-neutral-950 px-3 py-2">
+        <ImageIcon className="h-4 w-4 shrink-0 text-blue-400" />
+        <div className="min-w-[140px] flex-1">
+          <p className="truncate text-sm font-medium">{jobName}</p>
+          <p className="truncate text-[10px] text-white/50">帧 {currentFrame?.frame ?? '-'} · {currentIndex + 1}/{frames.length}</p>
+        </div>
+        <div className="flex max-w-full flex-wrap items-center justify-end gap-1">
+          <button type="button" onClick={goPrevious} disabled={currentIndex <= 0} title="上一帧" className="flex h-8 w-8 items-center justify-center rounded hover:bg-white/10 disabled:opacity-30"><ChevronLeft className="h-4 w-4" /></button>
+          <button type="button" onClick={() => setIsPlaying((playing) => !playing)} disabled={frames.length <= 1} title={isPlaying ? '暂停测试播放' : '测试播放'} className={`flex h-8 items-center gap-1.5 rounded px-2.5 text-xs ${isPlaying ? 'bg-blue-600 hover:bg-blue-500' : 'bg-white/10 hover:bg-white/15'} disabled:opacity-30`}>
+            {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+            <span>{isPlaying ? '暂停' : '测试播放'}</span>
+          </button>
+          <button type="button" onClick={goNext} disabled={currentIndex >= frames.length - 1} title="下一帧" className="flex h-8 w-8 items-center justify-center rounded hover:bg-white/10 disabled:opacity-30"><ChevronRight className="h-4 w-4" /></button>
+          <label className="ml-1 flex h-8 items-center gap-1 rounded border border-white/10 px-2 text-[10px] text-white/60">
+            FPS
+            <select value={fps} onChange={(event) => setFps(Number(event.target.value))} className="bg-neutral-950 text-xs text-white outline-none">
+              {PREVIEW_FPS_OPTIONS.map((value) => <option key={value} value={value}>{value}</option>)}
+            </select>
+          </label>
+          <button type="button" onClick={() => void toggleFullscreen()} title={isFullscreen ? '退出全屏' : '全屏预览'} className="ml-1 flex h-8 w-8 items-center justify-center rounded hover:bg-white/10">{isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}</button>
+          <button type="button" onClick={closePreview} title="关闭预览" className="flex h-8 w-8 items-center justify-center rounded hover:bg-white/10"><X className="h-4 w-4" /></button>
+        </div>
+      </div>
+
+      <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-black">
+        {currentSource && !imageError ? (
+          <img
+            key={currentSource}
+            src={currentSource}
+            alt={`渲染帧 ${currentFrame?.frame ?? ''}`}
+            draggable={false}
+            onLoad={() => setIsImageLoading(false)}
+            onError={() => { setIsImageLoading(false); setImageError(true); setIsPlaying(false); }}
+            className={`max-h-full max-w-full select-none object-contain transition-opacity ${isImageLoading ? 'opacity-0' : 'opacity-100'}`}
+          />
+        ) : (
+          <div className="max-w-md px-6 text-center text-white/55"><ImageIcon className="mx-auto mb-3 h-12 w-12 opacity-40" /><p className="text-sm">无法显示此帧</p><p className="mt-1 break-all text-[11px] text-white/35">{currentFrame?.outputPath}</p></div>
+        )}
+        {isImageLoading && !imageError && <div className="absolute inset-0 flex items-center justify-center"><LoaderCircle className="h-8 w-8 animate-spin text-white/55" /></div>}
+        <button type="button" onClick={goPrevious} disabled={currentIndex <= 0} title="上一帧" className="absolute left-3 flex h-12 w-10 items-center justify-center rounded bg-black/45 text-white/80 backdrop-blur-sm hover:bg-black/70 disabled:hidden"><ChevronLeft className="h-6 w-6" /></button>
+        <button type="button" onClick={goNext} disabled={currentIndex >= frames.length - 1} title="下一帧" className="absolute right-3 flex h-12 w-10 items-center justify-center rounded bg-black/45 text-white/80 backdrop-blur-sm hover:bg-black/70 disabled:hidden"><ChevronRight className="h-6 w-6" /></button>
+      </div>
+
+      <div className="flex h-8 shrink-0 items-center gap-3 border-t border-white/10 bg-neutral-950 px-3 text-[10px] text-white/45">
+        <span className="shrink-0 tabular-nums">{currentFrame ? `${currentFrame.frame} / ${frames[frames.length - 1]?.frame}` : '-'}</span>
+        <span className="min-w-0 flex-1 truncate" title={currentFrame?.outputPath}>{currentFrame?.outputPath}</span>
+        <span className="shrink-0">{isPlaying ? `${fps} FPS 播放中` : '已暂停'}</span>
+      </div>
+    </div>
+  );
 }
 
 function IconAction({ title, icon, disabled, onClick }: { title: string; icon: React.ReactElement; disabled: boolean; onClick: () => void }) {
