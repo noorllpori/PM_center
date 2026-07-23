@@ -180,3 +180,24 @@ export interface CreateRenderBatchRequest {
     outputFormat?: string | null;
   }>;
 }
+
+export type RenderVideoPackageFormat = 'mp4' | 'mov' | 'webm';
+
+export interface RenderBatchPackageRequest {
+  fps: number;
+  format: RenderVideoPackageFormat;
+  ffmpegPath: string | null;
+}
+
+export interface RenderBatchPackageOutput {
+  jobId: string;
+  jobName: string;
+  outputPath: string;
+  /** Frames with no readable image on disk; the generated video uses black placeholders. */
+  missingFrames: number[];
+}
+
+export interface RenderBatchPackageResult {
+  outputDir: string;
+  outputs: RenderBatchPackageOutput[];
+}

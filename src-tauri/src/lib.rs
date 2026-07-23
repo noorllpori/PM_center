@@ -1011,6 +1011,8 @@ pub fn run() {
             render_center::delete_render_preset,
             render_center::get_render_scheduler_settings,
             render_center::set_render_scheduler_settings,
+            render_center::package_render_batch,
+            render_center::package_render_job,
             render_center::open_render_output,
             fs::read_directory,
             fs::get_directory_tree,

@@ -14,6 +14,7 @@ const BLENDER_SCAN_HOME_MAX_DEPTH: usize = 4;
 #[serde(rename_all = "camelCase")]
 pub struct ToolPathsInput {
     pub ffprobe: Option<String>,
+    pub ffmpeg: Option<String>,
     pub blender: Option<String>,
 }
 
@@ -52,6 +53,11 @@ pub async fn inspect_tool_paths(
             tool_paths
                 .as_ref()
                 .and_then(|paths| paths.ffprobe.as_deref()),
+        ),
+        build_ffmpeg_status(
+            tool_paths
+                .as_ref()
+                .and_then(|paths| paths.ffmpeg.as_deref()),
         ),
     ])
 }
@@ -92,7 +98,14 @@ pub fn resolve_ffprobe_path(configured_path: Option<&str>) -> Option<String> {
         .or_else(detect_ffprobe_on_path)
 }
 
+pub fn resolve_ffmpeg_path(configured_path: Option<&str>) -> Option<String> {
+    configured_path
+        .and_then(validate_tool_path)
+        .or_else(detect_ffmpeg_on_path)
+}
+
 static DETECTED_FFPROBE_PATH: OnceLock<Option<String>> = OnceLock::new();
+static DETECTED_FFMPEG_PATH: OnceLock<Option<String>> = OnceLock::new();
 
 fn build_ffprobe_status(configured_path: Option<&str>) -> ToolStatus {
     let configured_path = configured_path
@@ -141,6 +154,53 @@ fn build_ffprobe_status(configured_path: Option<&str>) -> ToolStatus {
     }
 }
 
+fn build_ffmpeg_status(configured_path: Option<&str>) -> ToolStatus {
+    let configured_path = configured_path
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(str::to_string);
+    let configured_valid = configured_path.as_deref().and_then(validate_tool_path);
+    let detected_path = detect_ffmpeg_on_path();
+    let resolved_path = configured_valid.clone().or_else(|| detected_path.clone());
+
+    let source = if configured_valid.is_some() {
+        "configured"
+    } else if detected_path.is_some() {
+        "system"
+    } else {
+        "missing"
+    };
+
+    let message = if configured_path.is_some() && configured_valid.is_none() {
+        Some("已配置的 ffmpeg 路径无效，当前已回退到自动探测结果或无法打包视频".to_string())
+    } else if resolved_path.is_none() {
+        Some("未检测到 ffmpeg，渲染帧无法打包为视频。请在此处手动指定 ffmpeg。".to_string())
+    } else {
+        Some(match source {
+            "configured" => "正在使用你指定的 ffmpeg 路径".to_string(),
+            _ => "正在使用系统环境中的 ffmpeg".to_string(),
+        })
+    };
+
+    ToolStatus {
+        id: "ffmpeg".to_string(),
+        label: "FFmpeg".to_string(),
+        configured_path,
+        detected_path,
+        resolved_path: resolved_path.clone(),
+        source: source.to_string(),
+        status: if resolved_path.is_some() {
+            "ready".to_string()
+        } else {
+            "missing".to_string()
+        },
+        version: resolved_path
+            .as_deref()
+            .and_then(|path| read_tool_version(path, "-version")),
+        message,
+    }
+}
+
 fn validate_tool_path(path: &str) -> Option<String> {
     let trimmed = path.trim();
     if trimmed.is_empty() || !Path::new(trimmed).exists() {
@@ -155,13 +215,27 @@ fn detect_ffprobe_on_path() -> Option<String> {
         .clone()
 }
 
+fn detect_ffmpeg_on_path() -> Option<String> {
+    DETECTED_FFMPEG_PATH
+        .get_or_init(detect_ffmpeg_on_path_uncached)
+        .clone()
+}
+
 fn detect_ffprobe_on_path_uncached() -> Option<String> {
+    detect_tool_on_path("ffprobe")
+}
+
+fn detect_ffmpeg_on_path_uncached() -> Option<String> {
+    detect_tool_on_path("ffmpeg")
+}
+
+fn detect_tool_on_path(tool: &str) -> Option<String> {
     #[cfg(target_os = "windows")]
     let lookup_cmd = "where";
     #[cfg(not(target_os = "windows"))]
     let lookup_cmd = "which";
 
-    let output = std_command(lookup_cmd).arg("ffprobe").output().ok()?;
+    let output = std_command(lookup_cmd).arg(tool).output().ok()?;
 
     if !output.status.success() {
         return None;

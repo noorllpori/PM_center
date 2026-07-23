@@ -15,6 +15,7 @@ import {
   Copy,
   Cpu,
   FolderOpen,
+  Film,
   Gauge,
   GripVertical,
   Image as ImageIcon,
@@ -49,6 +50,8 @@ import type {
   RenderExecutionMode,
   RenderFrame,
   RenderFrameOrderMode,
+  RenderBatchPackageRequest,
+  RenderBatchPackageResult,
   RenderJob,
   RenderJobDetail,
   RenderPerformanceSample,
@@ -56,6 +59,7 @@ import type {
   RenderSceneInfo,
   RenderSchedulerSettings,
   RenderSourceInfo,
+  RenderVideoPackageFormat,
   UpdateRenderJobRequest,
 } from '../../types/render';
 
@@ -65,6 +69,24 @@ type FrameContextMenu = {
   x: number;
   y: number;
   frameNumbers: number[];
+};
+
+type BatchContextMenu = {
+  x: number;
+  y: number;
+  batch: RenderBatchGroup;
+};
+
+type JobContextMenu = {
+  x: number;
+  y: number;
+  batch: RenderBatchGroup;
+  job: RenderJob;
+};
+
+type VideoPackageTarget = {
+  batch: RenderBatchGroup;
+  job?: RenderJob;
 };
 
 type FrameMarquee = {
@@ -231,6 +253,7 @@ export function RenderCenterSurface({ isActive }: { isActive: boolean }) {
     projectName: state.projectName,
   }));
   const showToast = useUiStore((state) => state.showToast);
+  const ffmpegPath = useSettingsStore((state) => state.toolPaths.ffmpeg);
   const jobs = useRenderStore((state) => projectPath ? state.jobsByProject[projectPath] || EMPTY_RENDER_JOBS : EMPTY_RENDER_JOBS);
   const isLoading = useRenderStore((state) => projectPath ? state.loadingProjects[projectPath] : false);
   const refreshProject = useRenderStore((state) => state.refreshProject);
@@ -250,6 +273,9 @@ export function RenderCenterSurface({ isActive }: { isActive: boolean }) {
   const [dragOverJobId, setDragOverJobId] = useState<string | null>(null);
   const [draggedBatchId, setDraggedBatchId] = useState<string | null>(null);
   const [dragOverBatchId, setDragOverBatchId] = useState<string | null>(null);
+  const [batchContextMenu, setBatchContextMenu] = useState<BatchContextMenu | null>(null);
+  const [jobContextMenu, setJobContextMenu] = useState<JobContextMenu | null>(null);
+  const [packageTarget, setPackageTarget] = useState<VideoPackageTarget | null>(null);
 
   const visibleJobs = useMemo(() => jobs.filter((job) =>
     view === 'results' ? ['completed', 'failed', 'cancelled'].includes(job.status) : !job.archived,
@@ -319,6 +345,28 @@ export function RenderCenterSurface({ isActive }: { isActive: boolean }) {
     });
     return () => { void unlisten.then((dispose) => dispose()); };
   }, [loadDetail, selectedJobId]);
+  useEffect(() => {
+    if (!batchContextMenu && !jobContextMenu) return;
+    const close = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target?.closest('[data-render-context-menu]')) {
+        setBatchContextMenu(null);
+        setJobContextMenu(null);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setBatchContextMenu(null);
+        setJobContextMenu(null);
+      }
+    };
+    window.addEventListener('mousedown', close);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      window.removeEventListener('mousedown', close);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [batchContextMenu, jobContextMenu]);
 
   const updateSchedulerSettings = async (settings: RenderSchedulerSettings) => {
     try {
@@ -516,6 +564,16 @@ export function RenderCenterSurface({ isActive }: { isActive: boolean }) {
                   <section key={batch.id} className={`${batch.id === dragOverBatchId && batch.id !== draggedBatchId ? 'border-t-2 border-t-blue-500' : ''}`}>
                     <div
                       draggable={batchDraggable}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setJobContextMenu(null);
+                        setBatchContextMenu({
+                          x: Math.min(event.clientX, window.innerWidth - 232),
+                          y: Math.min(event.clientY, window.innerHeight - 100),
+                          batch,
+                        });
+                      }}
                       onDragStart={(event) => {
                         event.dataTransfer.effectAllowed = 'move';
                         event.dataTransfer.setData('text/plain', batch.id);
@@ -549,6 +607,17 @@ export function RenderCenterSurface({ isActive }: { isActive: boolean }) {
                           isDragging={job.id === draggedJobId}
                           isDropTarget={job.id === dragOverJobId && job.id !== draggedJobId}
                           onClick={() => selectJob(job)}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setBatchContextMenu(null);
+                            setJobContextMenu({
+                              x: Math.min(event.clientX, window.innerWidth - 232),
+                              y: Math.min(event.clientY, window.innerHeight - 100),
+                              batch,
+                              job,
+                            });
+                          }}
                           onDragStart={(event) => {
                             event.stopPropagation();
                             event.dataTransfer.effectAllowed = 'move';
@@ -602,6 +671,130 @@ export function RenderCenterSurface({ isActive }: { isActive: boolean }) {
           onCreated={async () => { setShowCreate(false); setView('queue'); await refresh(); }}
         />
       )}
+      {batchContextMenu && (
+        <div
+          data-render-context-menu
+          role="menu"
+          className="fixed z-[120] w-56 overflow-hidden rounded border border-gray-200 bg-white py-1 shadow-xl dark:border-gray-700 dark:bg-gray-900"
+          style={{ left: batchContextMenu.x, top: batchContextMenu.y }}
+        >
+          <div className="border-b border-gray-100 px-3 py-1.5 text-[10px] text-gray-500 dark:border-gray-800">{batchContextMenu.batch.name}</div>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setPackageTarget({ batch: batchContextMenu.batch });
+              setBatchContextMenu(null);
+            }}
+            className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs hover:bg-gray-100 dark:hover:bg-gray-800"
+          >
+            <Film className="h-3.5 w-3.5" />打包当前范围为视频
+          </button>
+        </div>
+      )}
+      {jobContextMenu && (
+        <div
+          data-render-context-menu
+          role="menu"
+          className="fixed z-[120] w-56 overflow-hidden rounded border border-gray-200 bg-white py-1 shadow-xl dark:border-gray-700 dark:bg-gray-900"
+          style={{ left: jobContextMenu.x, top: jobContextMenu.y }}
+        >
+          <div className="border-b border-gray-100 px-3 py-1.5 text-[10px] text-gray-500 dark:border-gray-800">{jobContextMenu.job.name}</div>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setPackageTarget({ batch: jobContextMenu.batch, job: jobContextMenu.job });
+              setJobContextMenu(null);
+            }}
+            className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs hover:bg-gray-100 dark:hover:bg-gray-800"
+          >
+            <Film className="h-3.5 w-3.5" />打包当前范围为视频
+          </button>
+        </div>
+      )}
+      {packageTarget && (
+        <PackageRenderBatchDialog
+          target={packageTarget}
+          projectPath={projectPath}
+          ffmpegPath={ffmpegPath}
+          onClose={() => setPackageTarget(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function PackageRenderBatchDialog({
+  target,
+  projectPath,
+  ffmpegPath,
+  onClose,
+}: {
+  target: VideoPackageTarget;
+  projectPath: string;
+  ffmpegPath: string | null;
+  onClose: () => void;
+}) {
+  const { batch, job } = target;
+  const showToast = useUiStore((state) => state.showToast);
+  const [fps, setFps] = useState(25);
+  const [format, setFormat] = useState<RenderVideoPackageFormat>('mp4');
+  const [packing, setPacking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<RenderBatchPackageResult | null>(null);
+  const canPackage = fps >= 1 && fps <= 240;
+
+  const packageBatch = async () => {
+    if (!canPackage || packing) return;
+    setPacking(true);
+    setError(null);
+    try {
+      const request: RenderBatchPackageRequest = { fps, format, ffmpegPath };
+      const nextResult = await invoke<RenderBatchPackageResult>(
+        job ? 'package_render_job' : 'package_render_batch',
+        job
+          ? { projectPath, jobId: job.id, request }
+          : { projectPath, batchId: batch.id, request },
+      );
+      setResult(nextResult);
+      showToast({
+        title: job ? '任务视频已生成' : '批次视频已生成',
+        message: `${nextResult.outputs.length} 个视频已保存到 renders 目录`,
+        tone: 'success',
+      });
+    } catch (nextError) {
+      setError(String(nextError));
+    } finally {
+      setPacking(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/45 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget && !packing) onClose(); }}>
+      <div className="w-full max-w-[520px] overflow-hidden rounded border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-950">
+        <div className="flex min-h-[58px] items-center justify-between border-b border-gray-200 px-5 dark:border-gray-800">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2"><Film className="h-4 w-4 text-blue-600" /><h3 className="truncate text-sm font-semibold">{job ? '打包任务帧序列' : '打包批次帧序列'}</h3></div>
+            <p className="mt-1 truncate text-xs text-gray-500" title={job ? job.name : batch.name}>{job ? `${job.name} · ${job.frameStart}-${job.frameEnd}` : `${batch.name} · ${batch.jobs.length} 个作业`}</p>
+          </div>
+          <button type="button" title="关闭" disabled={packing} onClick={onClose} className="h-8 w-8 p-0 disabled:opacity-40"><X className="mx-auto h-4 w-4" /></button>
+        </div>
+        <div className="space-y-4 p-5">
+          <p className="text-xs leading-5 text-gray-600 dark:text-gray-300">{job ? '仅按当前任务的帧范围生成视频。' : '按每个作业当前的帧范围分别生成视频，不会把不同场景或分辨率直接拼接。'} 打包会直接检查磁盘中的图像，不依赖任务的渲染状态；找不到或无法读取的图像会自动使用黑帧补位，并在完成后列出帧号。结果会保存到项目 <span className="font-medium text-gray-900 dark:text-gray-100">renders</span> 目录。</p>
+          <div className="grid grid-cols-[minmax(140px,1fr)_minmax(160px,1fr)] gap-3 max-[460px]:grid-cols-1">
+            <label className="block"><span className="mb-1 block text-[11px] font-medium text-gray-600 dark:text-gray-400">帧率</span><input type="number" min={1} max={240} step={0.001} value={fps} onChange={(event) => setFps(Number(event.target.value))} disabled={packing} className="h-9 w-full rounded border border-gray-300 bg-transparent px-2 text-xs outline-none disabled:opacity-50 dark:border-gray-700" /></label>
+            <label className="block"><span className="mb-1 block text-[11px] font-medium text-gray-600 dark:text-gray-400">输出格式</span><select value={format} onChange={(event) => setFormat(event.target.value as RenderVideoPackageFormat)} disabled={packing} className="h-9 w-full rounded border border-gray-300 bg-transparent px-2 text-xs outline-none disabled:opacity-50 dark:border-gray-700"><option value="mp4">MP4 · H.264</option><option value="mov">MOV · H.264</option><option value="webm">WebM · VP9</option></select></label>
+          </div>
+          {!ffmpegPath?.trim() && <p className="text-[11px] text-gray-500">将使用全局工具路径中自动检测到的 FFmpeg；也可在设置中手动指定固定版本。</p>}
+          {error && <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-200">{error}</div>}
+          {result && <div className="rounded border border-emerald-200 bg-emerald-50 px-3 py-3 text-xs text-emerald-800 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-200"><p className="font-medium">已生成 {result.outputs.length} 个视频</p><p className="mt-1 break-all text-emerald-700 dark:text-emerald-300">{result.outputDir}</p><ul className="mt-2 space-y-1 text-emerald-700 dark:text-emerald-300">{result.outputs.map((output) => <li key={output.jobId}><p className="truncate" title={output.outputPath}>{output.jobName} · {fileName(output.outputPath)}</p>{output.missingFrames.length > 0 && <p className="mt-1 break-words text-amber-700 dark:text-amber-300">黑帧补位 {output.missingFrames.length} 帧：{output.missingFrames.join('、')}</p>}</li>)}</ul><button type="button" onClick={() => void invoke('open_render_output', { path: result.outputDir })} className="mt-3 inline-flex h-8 items-center gap-1.5 rounded border border-emerald-300 bg-white px-2.5 text-xs font-medium text-emerald-800 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"><FolderOpen className="h-3.5 w-3.5" />打开视频目录</button></div>}
+        </div>
+        <div className="flex min-h-[58px] items-center justify-end gap-2 border-t border-gray-200 px-5 dark:border-gray-800">
+          <button type="button" onClick={onClose} disabled={packing} className="h-9 rounded px-3 text-xs disabled:opacity-40">{result ? '关闭' : '取消'}</button>
+          {!result && <button type="button" onClick={() => void packageBatch()} disabled={!canPackage || packing} className="flex h-9 items-center gap-1.5 rounded bg-gray-900 px-3 text-xs font-medium text-white disabled:opacity-40 dark:bg-white dark:text-gray-900">{packing ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Film className="h-4 w-4" />}{packing ? '正在打包…' : '开始打包'}</button>}
+        </div>
+      </div>
     </div>
   );
 }
@@ -621,6 +814,7 @@ function JobRow({
   isDragging,
   isDropTarget,
   onClick,
+  onContextMenu,
   onDragStart,
   onDragOver,
   onDrop,
@@ -632,6 +826,7 @@ function JobRow({
   isDragging: boolean;
   isDropTarget: boolean;
   onClick: () => void;
+  onContextMenu: (event: React.MouseEvent<HTMLButtonElement>) => void;
   onDragStart: React.DragEventHandler<HTMLButtonElement>;
   onDragOver: React.DragEventHandler<HTMLButtonElement>;
   onDrop: React.DragEventHandler<HTMLButtonElement>;
@@ -643,6 +838,7 @@ function JobRow({
     <button
       draggable={draggable}
       onClick={onClick}
+      onContextMenu={onContextMenu}
       onDragStart={onDragStart}
       onDragOver={onDragOver}
       onDrop={onDrop}
@@ -687,6 +883,7 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
   const canPause = ['pending', 'starting', 'running'].includes(job.status);
   const canResume = ['paused', 'failed', 'cancelled'].includes(job.status);
   const canEdit = !['starting', 'running', 'pausing', 'cancelling', 'attention'].includes(job.status);
+  const runtimeWarning = job.error?.includes('已自动降为单 Worker') ?? false;
   const failedFrames = frames.filter((frame) => frame.status === 'failed').map((frame) => frame.frame);
   const runningFrames = frames.filter((frame) => frame.status === 'running').map((frame) => frame.frame);
   const previewableFrames = useMemo(
@@ -887,7 +1084,7 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
           {!['running','pausing','cancelling'].includes(job.status) && <IconAction title={job.archived ? '取消归档' : '归档'} icon={<Archive />} disabled={busy} onClick={() => onAction('归档作业', 'archive_render_job', { archived: !job.archived })} />}
           </div>
         </div>
-        {job.error && <p className="mt-1.5 flex items-start gap-1.5 text-[11px] text-red-600"><AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />{job.error}</p>}
+        {job.error && <p className={`mt-1.5 flex items-start gap-1.5 text-[11px] ${runtimeWarning ? 'text-amber-700 dark:text-amber-400' : 'text-red-600'}`}><AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />{job.error}</p>}
       </div>
       {job.status === 'attention' && (
         <div className="border-b border-amber-200 bg-amber-50 px-3 py-3 dark:border-amber-900/60 dark:bg-amber-950/25">
@@ -916,8 +1113,9 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
           <span className="font-medium text-gray-700 dark:text-gray-300">{job.executionMode === 'persistent' ? '常驻 Worker' : '逐帧兼容模式'}</span>
           <span>·</span>
           <span>{job.frameOrderMode === 'strict' ? '严格顺序（固定 1 开）' : '动态领取'}</span>
+          {job.executionMode === 'persistent' && job.frameOrderMode === 'dynamic' && job.parallelism > 1 && !runtimeWarning && <><span>·</span><span>渐进启动</span></>}
           {startup.averageStartupMs !== null && <><span>·</span><span>文件加载平均 {formatDuration(startup.averageStartupMs)}</span></>}
-          <HelpAssistant title="Worker 状态" text={['常驻模式下每个 Worker 只加载一次 .blend，后续帧直接复用内存中的场景。', '严格顺序会固定单 Worker 按帧号渲染，但不能替代流体、布料等模拟烘焙。', '逐帧兼容模式会为每帧重新启动 Blender，仅建议不兼容常驻模式的插件使用。']} placement="bottom-start" width={350} />
+          <HelpAssistant title="Worker 状态" text={['常驻模式下每个 Worker 只加载一次 .blend，后续帧直接复用内存中的场景。', '动态多开采用渐进启动：第 2 个 Worker 等第 1 个稳定完成 3 帧，后续 Worker 继续逐个等待前序 Worker 就绪。', '如果显卡驱动无法稳定运行多个 Blender 进程，当前任务会自动降为单 Worker；被中断帧会重新排队，不计失败次数。', '严格顺序会固定单 Worker 按帧号渲染，但不能替代流体、布料等模拟烘焙。', '逐帧兼容模式会为每帧重新启动 Blender，仅建议不兼容常驻模式的插件使用。']} placement="bottom-start" width={350} />
         </div>
         {job.status === 'starting' && job.readyWorkers < job.effectiveParallelism && <p className="mt-1 text-[11px] text-blue-600">正在加载项目 {job.readyWorkers}/{job.effectiveParallelism}</p>}
         {workers.length > 0 && (

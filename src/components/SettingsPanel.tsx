@@ -60,7 +60,7 @@ interface SettingsPanelProps {
 }
 
 interface ToolStatus {
-  id: 'ffprobe';
+  id: 'ffprobe' | 'ffmpeg';
   label: string;
   configuredPath: string | null;
   detectedPath: string | null;
@@ -456,7 +456,11 @@ export function SettingsPanel({
       const selected = await open({
         directory: false,
         multiple: false,
-        title: tool === 'ffprobe' ? '选择 ffprobe 可执行文件' : '选择 Blender 可执行文件',
+        title: tool === 'ffprobe'
+          ? '选择 ffprobe 可执行文件'
+          : tool === 'ffmpeg'
+            ? '选择 ffmpeg 可执行文件'
+            : '选择 Blender 可执行文件',
         filters: [
           {
             name: 'Executable',
@@ -1728,7 +1732,7 @@ export function SettingsPanel({
           <Wrench className="w-4 h-4 text-blue-500" />
           <div className="flex-1">
             <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">工具路径</h4>
-            <p className="text-xs text-gray-500 mt-1">视频分析依赖 `ffprobe`，Blender 版本用于 `.blend` 兼容解析兜底。</p>
+            <p className="text-xs text-gray-500 mt-1">视频分析依赖 `ffprobe`，批次帧序列打包依赖 `ffmpeg`，Blender 版本用于 `.blend` 兼容解析兜底。</p>
           </div>
           <button
             onClick={() => void loadToolStatuses()}
@@ -1781,7 +1785,7 @@ export function SettingsPanel({
 
                 <div className="flex flex-col gap-2">
                   <button
-                    onClick={() => void handleSelectToolPath('ffprobe')}
+                    onClick={() => void handleSelectToolPath(tool.id)}
                     className="px-3 py-2 text-sm rounded-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
                   >
                     指定路径
@@ -1797,7 +1801,7 @@ export function SettingsPanel({
 
                   {tool.configuredPath && (
                     <button
-                      onClick={() => void handleClearToolPath('ffprobe')}
+                      onClick={() => void handleClearToolPath(tool.id)}
                       className="px-3 py-2 text-sm rounded-lg text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
                     >
                       清除指定

@@ -15,6 +15,7 @@ export interface RecentProject {
 
 export interface ToolPaths {
   ffprobe: string | null;
+  ffmpeg: string | null;
   blender: string | null;
 }
 
@@ -89,6 +90,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   ignoredProjects: [],
   toolPaths: {
     ffprobe: null,
+    ffmpeg: null,
     blender: null,
   },
   blenderInstallations: [],
@@ -129,6 +131,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
       const nextToolPaths = {
         ffprobe: toolPaths?.ffprobe ?? null,
+        ffmpeg: toolPaths?.ffmpeg ?? null,
         blender: toolPaths?.blender ?? null,
       };
       const nextBlenderInstallations = sanitizeBlenderInstallations(blenderInstallations);
