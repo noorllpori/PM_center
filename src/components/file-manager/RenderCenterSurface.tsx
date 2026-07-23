@@ -46,12 +46,15 @@ import { ProjectFilePickerDialog, type ProjectFilePickerTarget } from './Project
 import type {
   CreateRenderBatchRequest,
   RenderEta,
+  RenderExecutionMode,
   RenderFrame,
+  RenderFrameOrderMode,
   RenderJob,
   RenderJobDetail,
   RenderPerformanceSample,
   RenderPreset,
   RenderSceneInfo,
+  RenderSchedulerSettings,
   RenderSourceInfo,
   UpdateRenderJobRequest,
 } from '../../types/render';
@@ -81,12 +84,13 @@ const EMPTY_RENDER_JOBS: RenderJob[] = [];
 const EMPTY_SOURCE_PATHS: string[] = [];
 
 const STATUS_LABELS: Record<string, string> = {
-  pending: '等待中', starting: '正在启动', running: '渲染中', pausing: '正在暂停', paused: '已暂停',
+  queued: '等待中', pending: '等待中', starting: '正在启动', running: '渲染中', pausing: '正在暂停', paused: '已暂停',
   cancelling: '正在取消', cancelled: '已取消', completed: '已完成', failed: '失败',
-  skipped: '已跳过',
+  skipped: '已跳过', committing: '正在提交', attention: '需要处理',
 };
 
 const STATUS_TONES: Record<string, string> = {
+  queued: 'text-amber-600 bg-amber-50 dark:bg-amber-950/30',
   pending: 'text-amber-600 bg-amber-50 dark:bg-amber-950/30',
   starting: 'text-blue-600 bg-blue-50 dark:bg-blue-950/30',
   running: 'text-blue-600 bg-blue-50 dark:bg-blue-950/30',
@@ -96,7 +100,16 @@ const STATUS_TONES: Record<string, string> = {
   cancelled: 'text-gray-600 bg-gray-100 dark:text-gray-300 dark:bg-gray-800',
   completed: 'text-emerald-600 bg-emerald-50 dark:bg-emerald-950/30',
   failed: 'text-red-600 bg-red-50 dark:bg-red-950/30',
+  attention: 'text-amber-700 bg-amber-100 dark:text-amber-300 dark:bg-amber-950/40',
 };
+
+interface RenderBatchGroup {
+  id: string;
+  name: string;
+  status: string;
+  position: number;
+  jobs: RenderJob[];
+}
 
 function fileName(path: string) {
   return path.split(/[\\/]/).pop() || path;
@@ -231,13 +244,33 @@ export function RenderCenterSurface({ isActive }: { isActive: boolean }) {
   const [initialSources, setInitialSources] = useState<string[]>([]);
   const [presets, setPresets] = useState<RenderPreset[]>([]);
   const [concurrency, setConcurrency] = useState(1);
+  const [maxBlenderProcesses, setMaxBlenderProcesses] = useState(1);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [draggedJobId, setDraggedJobId] = useState<string | null>(null);
   const [dragOverJobId, setDragOverJobId] = useState<string | null>(null);
+  const [draggedBatchId, setDraggedBatchId] = useState<string | null>(null);
+  const [dragOverBatchId, setDragOverBatchId] = useState<string | null>(null);
 
   const visibleJobs = useMemo(() => jobs.filter((job) =>
     view === 'results' ? ['completed', 'failed', 'cancelled'].includes(job.status) : !job.archived,
   ), [jobs, view]);
+  const visibleBatches = useMemo(() => {
+    const grouped = new Map<string, RenderBatchGroup>();
+    for (const job of visibleJobs) {
+      const existing = grouped.get(job.batchId);
+      if (existing) existing.jobs.push(job);
+      else grouped.set(job.batchId, {
+        id: job.batchId,
+        name: job.batchName,
+        status: job.batchStatus,
+        position: job.batchPosition,
+        jobs: [job],
+      });
+    }
+    return [...grouped.values()]
+      .sort((left, right) => left.position - right.position)
+      .map((batch) => ({ ...batch, jobs: [...batch.jobs].sort((left, right) => left.position - right.position) }));
+  }, [visibleJobs]);
   const activeCount = jobs.filter((job) => ['pending', 'starting', 'running', 'pausing', 'cancelling'].includes(job.status)).length;
   const completedCount = jobs.filter((job) => job.status === 'completed').length;
   const failedCount = jobs.filter((job) => job.status === 'failed').length;
@@ -246,10 +279,11 @@ export function RenderCenterSurface({ isActive }: { isActive: boolean }) {
     if (!projectPath) return;
     await refreshProject(projectPath, view === 'results');
     const [settings, nextPresets] = await Promise.all([
-      invoke<{ concurrency: number }>('get_render_scheduler_settings', { projectPath }),
+      invoke<RenderSchedulerSettings>('get_render_scheduler_settings', { projectPath }),
       invoke<RenderPreset[]>('list_render_presets', { projectPath }),
     ]);
     setConcurrency(settings.concurrency);
+    setMaxBlenderProcesses(settings.maxBlenderProcesses);
     setPresets(nextPresets);
   }, [projectPath, refreshProject, view]);
 
@@ -286,6 +320,17 @@ export function RenderCenterSurface({ isActive }: { isActive: boolean }) {
     return () => { void unlisten.then((dispose) => dispose()); };
   }, [loadDetail, selectedJobId]);
 
+  const updateSchedulerSettings = async (settings: RenderSchedulerSettings) => {
+    try {
+      const saved = await invoke<RenderSchedulerSettings>('set_render_scheduler_settings', { projectPath, settings });
+      setConcurrency(saved.concurrency);
+      setMaxBlenderProcesses(saved.maxBlenderProcesses);
+    } catch (error) {
+      showToast({ title: '更新调度设置失败', message: String(error), tone: 'error' });
+      await refresh();
+    }
+  };
+
   const runAction = async (label: string, command: string, payload: Record<string, unknown>) => {
     if (!projectPath) return false;
     setBusyAction(label);
@@ -314,11 +359,29 @@ export function RenderCenterSurface({ isActive }: { isActive: boolean }) {
     setDragOverJobId(null);
     setDraggedJobId(null);
     if (!draggedJob || !targetJob) return;
+    if (draggedJob.batchId !== targetJob.batchId) {
+      showToast({ title: '任务不能跨批次移动', message: '请拖动批次标题来调整整个批次的顺序。', tone: 'warning' });
+      return;
+    }
     try {
       await invoke('reorder_render_job', { projectPath, jobId: draggedJobId, beforeJobId });
       await refresh();
     } catch (error) {
       showToast({ title: '调整队列顺序失败', message: String(error), tone: 'error' });
+    }
+  };
+
+  const reorderBatch = async (beforeBatchId: string) => {
+    if (!projectPath || !draggedBatchId || draggedBatchId === beforeBatchId) return;
+    setDragOverBatchId(null);
+    const batchId = draggedBatchId;
+    setDraggedBatchId(null);
+    try {
+      await invoke('reorder_render_batch', { projectPath, batchId, beforeBatchId });
+      await refresh();
+    } catch (error) {
+      showToast({ title: '调整批次顺序失败', message: String(error), tone: 'error' });
+      await refresh();
     }
   };
 
@@ -338,15 +401,15 @@ export function RenderCenterSurface({ isActive }: { isActive: boolean }) {
               text={[
                 '先点击“新建批次”，选择 Blender 版本并添加一个或多个 .blend 文件。每个文件会成为独立作业。',
                 '在作业中设置场景、帧范围、帧多开、分辨率和格式后加入队列；新批次不会自动开始，点击左侧“开始/继续队列”才会启动或继续暂停/取消的批次。',
-                '任务创建后可用右上角铅笔修改设置；正在渲染时先暂停，当前运行帧结束后再编辑。',
-                '在队列中可拖拽任务卡片排序：同批次内调整作业顺序，拖到另一批次的任务前会调整整个批次顺序。排序不会开始或暂停渲染。',
+                '任务创建后可用右上角铅笔修改设置；暂停会立即终止 Worker，并把中断帧恢复为等待状态。',
+                '拖动批次标题调整批次顺序；任务卡片只能在所属批次内排序。排序不会开始或暂停渲染。',
               ]}
               placement="bottom-start"
               width={360}
             />
             <span className="truncate text-xs text-gray-500">{projectName}</span>
           </div>
-          <p className="mt-0.5 truncate text-xs text-gray-500">本机队列 · {activeCount} 个活动作业 · 作业并发 {concurrency}</p>
+          <p className="mt-0.5 truncate text-xs text-gray-500">本机队列 · {activeCount} 个活动作业 · 作业并发 {concurrency} · Blender 上限 {maxBlenderProcesses}</p>
         </div>
         <div className="flex items-center gap-1.5">
           <label className="flex h-8 items-center gap-2 rounded border border-gray-200 px-2 text-xs dark:border-gray-700" title="同时运行的渲染作业数；每个作业内的帧多开单独设置">
@@ -357,7 +420,7 @@ export function RenderCenterSurface({ isActive }: { isActive: boolean }) {
               text={[
                 '作业并发表示同时启动多少个独立渲染任务。',
                 '帧多开在每个任务内另行设置，表示该任务同时启动多少个 Blender 进程来渲染不同帧。',
-                '实际 Blender 进程数量可能接近“作业并发 × 帧多开”。显存紧张或大场景建议先保持 1 开。',
+                '所有项目共享右侧的 Blender 进程上限，实际进程数不会再按“作业并发 × 帧多开”无限增长。',
               ]}
               placement="bottom-end"
               width={350}
@@ -367,11 +430,35 @@ export function RenderCenterSurface({ isActive }: { isActive: boolean }) {
               onChange={async (event) => {
                 const value = Number(event.target.value);
                 setConcurrency(value);
-                await invoke('set_render_scheduler_settings', { projectPath, settings: { concurrency: value } });
+                await updateSchedulerSettings({ concurrency: value, maxBlenderProcesses });
               }}
               className="bg-transparent text-xs outline-none"
             >
               {[1,2,3,4,5,6,7,8].map((value) => <option key={value} value={value}>{value}</option>)}
+            </select>
+          </label>
+          <label className="flex h-8 items-center gap-2 rounded border border-gray-200 px-2 text-xs dark:border-gray-700" title="所有项目共享的 Blender 进程总上限">
+            <Cpu className="h-3.5 w-3.5 text-gray-500" />
+            <span>进程上限</span>
+            <HelpAssistant
+              title="Blender 进程上限"
+              text={[
+                '这是所有项目共享的 Blender 进程总数上限，取值 1-16。调度器先给每个活动作业一个 Worker，再按队列轮询分配余量。',
+                '调低上限不会中断正在写出的帧；多余 Worker 完成当前帧后退出。显存不足时建议设为 1。',
+              ]}
+              placement="bottom-end"
+              width={350}
+            />
+            <select
+              value={maxBlenderProcesses}
+              onChange={async (event) => {
+                const value = Number(event.target.value);
+                setMaxBlenderProcesses(value);
+                await updateSchedulerSettings({ concurrency, maxBlenderProcesses: value });
+              }}
+              className="bg-transparent text-xs outline-none"
+            >
+              {Array.from({ length: 16 }, (_, index) => index + 1).map((value) => <option key={value} value={value}>{value}</option>)}
             </select>
           </label>
           <button className="icon-button h-8 w-8 p-0" onClick={() => void refresh()} title="刷新">
@@ -403,8 +490,8 @@ export function RenderCenterSurface({ isActive }: { isActive: boolean }) {
 
         <main
           className="min-h-0 overflow-auto border-r border-gray-200 dark:border-gray-800"
-          onDragOver={(event) => { if (draggedJobId) event.preventDefault(); }}
-          onDragLeave={(event) => { if (event.currentTarget === event.target) setDragOverJobId(null); }}
+          onDragOver={(event) => { if (draggedJobId || draggedBatchId) event.preventDefault(); }}
+          onDragLeave={(event) => { if (event.currentTarget === event.target) { setDragOverJobId(null); setDragOverBatchId(null); } }}
         >
           {view === 'presets' ? (
             <PresetList presets={presets} projectPath={projectPath} onChanged={refresh} />
@@ -419,35 +506,72 @@ export function RenderCenterSurface({ isActive }: { isActive: boolean }) {
               {view === 'queue' && (
                 <div className="sticky top-0 z-10 flex min-h-8 items-center gap-1.5 border-b border-gray-100 bg-white/95 px-3 text-[11px] text-gray-500 backdrop-blur dark:border-gray-800 dark:bg-gray-950/95">
                   <GripVertical className="h-3.5 w-3.5" />
-                  <span>拖动任务卡片调整顺序</span>
-                  <span className="ml-auto text-[10px] text-gray-400">跨批次会整体移动</span>
+                  <span>拖动批次标题排序；任务只能在本批次内排序</span>
+                  <span className="ml-auto text-[10px] text-gray-400">排序不会启动任务</span>
                 </div>
               )}
-              {visibleJobs.map((job) => (
-                <JobRow
-                  key={job.id}
-                  job={job}
-                  selected={job.id === selectedJobId}
-                  draggable={view === 'queue'}
-                  isDragging={job.id === draggedJobId}
-                  isDropTarget={job.id === dragOverJobId && job.id !== draggedJobId}
-                  onClick={() => selectJob(job)}
-                  onDragStart={(event) => {
-                    event.dataTransfer.effectAllowed = 'move';
-                    event.dataTransfer.setData('text/plain', job.id);
-                    setDraggedJobId(job.id);
-                  }}
-                  onDragOver={(event) => {
-                    if (draggedJobId && draggedJobId !== job.id) {
-                      event.preventDefault();
-                      event.dataTransfer.dropEffect = 'move';
-                      setDragOverJobId(job.id);
-                    }
-                  }}
-                  onDrop={(event) => { event.preventDefault(); void reorderJob(job.id); }}
-                  onDragEnd={() => { setDraggedJobId(null); setDragOverJobId(null); }}
-                />
-              ))}
+              {visibleBatches.map((batch) => {
+                const batchDraggable = view === 'queue' && batch.status === 'queued';
+                return (
+                  <section key={batch.id} className={`${batch.id === dragOverBatchId && batch.id !== draggedBatchId ? 'border-t-2 border-t-blue-500' : ''}`}>
+                    <div
+                      draggable={batchDraggable}
+                      onDragStart={(event) => {
+                        event.dataTransfer.effectAllowed = 'move';
+                        event.dataTransfer.setData('text/plain', batch.id);
+                        setDraggedBatchId(batch.id);
+                      }}
+                      onDragOver={(event) => {
+                        if (draggedBatchId && draggedBatchId !== batch.id) {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          setDragOverBatchId(batch.id);
+                        }
+                      }}
+                      onDrop={(event) => { if (draggedBatchId) { event.preventDefault(); event.stopPropagation(); void reorderBatch(batch.id); } }}
+                      onDragEnd={() => { setDraggedBatchId(null); setDragOverBatchId(null); }}
+                      title={batchDraggable ? '拖动调整批次顺序' : batch.status === 'running' ? '运行中的批次不可排序' : undefined}
+                      className={`flex h-9 items-center gap-2 border-b border-gray-100 bg-gray-50 px-3 text-[11px] font-medium dark:border-gray-800 dark:bg-gray-900/60 ${batchDraggable ? 'cursor-grab active:cursor-grabbing' : ''} ${batch.id === draggedBatchId ? 'opacity-50' : ''}`}
+                    >
+                      <GripVertical className={`h-3.5 w-3.5 ${batchDraggable ? 'text-gray-400' : 'text-gray-200 dark:text-gray-700'}`} />
+                      <span className="min-w-0 flex-1 truncate">{batch.name}</span>
+                      <span className="text-gray-500">{batch.jobs.length} 个任务</span>
+                      <StatusBadge status={batch.status} />
+                    </div>
+                    {batch.jobs.map((job) => {
+                      const jobDraggable = view === 'queue' && ['pending', 'paused'].includes(job.status) && batch.status !== 'running';
+                      return (
+                        <JobRow
+                          key={job.id}
+                          job={job}
+                          selected={job.id === selectedJobId}
+                          draggable={jobDraggable}
+                          isDragging={job.id === draggedJobId}
+                          isDropTarget={job.id === dragOverJobId && job.id !== draggedJobId}
+                          onClick={() => selectJob(job)}
+                          onDragStart={(event) => {
+                            event.stopPropagation();
+                            event.dataTransfer.effectAllowed = 'move';
+                            event.dataTransfer.setData('text/plain', job.id);
+                            setDraggedJobId(job.id);
+                          }}
+                          onDragOver={(event) => {
+                            const draggedJob = jobs.find((item) => item.id === draggedJobId);
+                            if (draggedJob && draggedJob.id !== job.id && draggedJob.batchId === job.batchId) {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              event.dataTransfer.dropEffect = 'move';
+                              setDragOverJobId(job.id);
+                            }
+                          }}
+                          onDrop={(event) => { if (draggedJobId) { event.preventDefault(); event.stopPropagation(); void reorderJob(job.id); } }}
+                          onDragEnd={() => { setDraggedJobId(null); setDragOverJobId(null); }}
+                        />
+                      );
+                    })}
+                  </section>
+                );
+              })}
             </>
           )}
         </main>
@@ -531,7 +655,10 @@ function JobRow({
         {draggable && <GripVertical className="mt-0.5 h-4 w-4 shrink-0 text-gray-300 transition-colors group-hover:text-gray-500 dark:text-gray-700" aria-hidden="true" />}
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2"><p className="truncate text-sm font-medium">{job.name}</p><StatusBadge status={job.status} /></div>
-          <p className="mt-1 truncate text-xs text-gray-500">{fileName(job.blendPath)} · {job.frameStart}-{job.frameEnd} · {job.parallelism} 开</p>
+          <p className="mt-1 truncate text-xs text-gray-500">
+            {fileName(job.blendPath)} · {job.frameStart}-{job.frameEnd} · {job.executionMode === 'persistent' ? '常驻' : '兼容'} · {job.parallelism} 开
+            {job.effectiveParallelism !== job.parallelism ? ` / 实际 ${job.effectiveParallelism}` : ''}
+          </p>
         </div>
         <ChevronRight className="mt-1 h-4 w-4 text-gray-400" />
       </div>
@@ -543,7 +670,7 @@ function JobRow({
 }
 
 function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; busy: boolean; onAction: (label: string, command: string, payload?: Record<string, unknown>) => Promise<boolean> }) {
-  const { job, frames, logTail } = detail;
+  const { job, frames, logTail, workers, startup } = detail;
   const performanceSamples = detail.performanceSamples || [];
   const showToast = useUiStore((state) => state.showToast);
   const [logExpanded, setLogExpanded] = useState(false);
@@ -559,7 +686,7 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
   const [showSettingsEditor, setShowSettingsEditor] = useState(false);
   const canPause = ['pending', 'starting', 'running'].includes(job.status);
   const canResume = ['paused', 'failed', 'cancelled'].includes(job.status);
-  const canEdit = !['starting', 'running', 'pausing', 'cancelling'].includes(job.status);
+  const canEdit = !['starting', 'running', 'pausing', 'cancelling', 'attention'].includes(job.status);
   const failedFrames = frames.filter((frame) => frame.status === 'failed').map((frame) => frame.frame);
   const runningFrames = frames.filter((frame) => frame.status === 'running').map((frame) => frame.frame);
   const previewableFrames = useMemo(
@@ -581,7 +708,7 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
     { label: '完成', value: job.completedFrames, detail: '' },
     { label: '失败', value: job.failedFrames, detail: '' },
     { label: '当前', value: runningFrames.length > 3 ? `${runningFrames[0]} 等 ${runningFrames.length} 帧` : runningFrames.join(', ') || job.currentFrame || '-', detail: runningFrames.join(', ') },
-    { label: '多开', value: `${job.parallelism} 开`, detail: '' },
+    { label: 'Worker', value: job.status === 'starting' ? `${job.readyWorkers}/${job.effectiveParallelism}` : `${job.readyWorkers} 就绪`, detail: `设置 ${job.parallelism} · 实际 ${job.effectiveParallelism}` },
     { label: '预计完成', value: completionEstimate.value, detail: completionEstimate.detail },
   ];
 
@@ -703,7 +830,7 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
     const frameNumbers = rerenderConfirmation?.frameNumbers;
     if (!frameNumbers?.length) return;
     setRerenderConfirmation(null);
-    await onAction('重新渲染所选帧', 'retry_render_frames', { frames: frameNumbers });
+    await onAction('重新渲染所选帧', 'queue_render_frames', { frames: frameNumbers, mode: 'rerender' });
   }, [onAction, rerenderConfirmation]);
 
   const requestSkipSelectedFrames = useCallback((frameNumbers: number[]) => {
@@ -753,8 +880,8 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
           <div className="flex shrink-0 items-center gap-1">
           {canPause && <IconAction title="暂停" icon={<CirclePause />} disabled={busy} onClick={() => onAction('暂停作业', 'pause_render_job')} />}
           {canResume && <IconAction title="继续" icon={<CirclePlay />} disabled={busy} onClick={() => onAction('继续作业', 'resume_render_job')} />}
-          {!['completed','cancelled'].includes(job.status) && <IconAction title="取消" icon={<Square />} disabled={busy} onClick={() => onAction('取消作业', 'cancel_render_job')} />}
-          {failedFrames.length > 0 && <IconAction title={canEdit ? '重试失败帧（等待开始）' : '请先暂停任务再重试失败帧'} icon={<RotateCcw />} disabled={busy || !canEdit} onClick={() => onAction('重试失败帧', 'retry_render_frames', { frames: failedFrames })} />}
+          {!['completed','cancelled','attention'].includes(job.status) && <IconAction title="取消" icon={<Square />} disabled={busy} onClick={() => onAction('取消作业', 'cancel_render_job')} />}
+          {failedFrames.length > 0 && <IconAction title={canEdit ? '重试失败帧（等待开始）' : '请先暂停任务再重试失败帧'} icon={<RotateCcw />} disabled={busy || !canEdit} onClick={() => onAction('重试失败帧', 'queue_render_frames', { frames: failedFrames, mode: 'retry' })} />}
           <IconAction title={canEdit ? '编辑任务设置' : '请先暂停任务再修改设置'} icon={<Pencil />} disabled={busy || !canEdit} onClick={() => setShowSettingsEditor(true)} />
           <IconAction title="打开输出目录" icon={<FolderOpen />} disabled={busy} onClick={() => onAction('打开输出目录', 'open_render_output', { path: job.outputDir })} />
           {!['running','pausing','cancelling'].includes(job.status) && <IconAction title={job.archived ? '取消归档' : '归档'} icon={<Archive />} disabled={busy} onClick={() => onAction('归档作业', 'archive_render_job', { archived: !job.archived })} />}
@@ -762,8 +889,47 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
         </div>
         {job.error && <p className="mt-1.5 flex items-start gap-1.5 text-[11px] text-red-600"><AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />{job.error}</p>}
       </div>
+      {job.status === 'attention' && (
+        <div className="border-b border-amber-200 bg-amber-50 px-3 py-3 dark:border-amber-900/60 dark:bg-amber-950/25">
+          <div className="flex items-start gap-2">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold text-amber-900 dark:text-amber-200">源 Blender 文件发生变化</p>
+              <p className="mt-1 text-[11px] leading-5 text-amber-800 dark:text-amber-300">为避免同一任务混用两个场景版本，任务已停止。重新检查只在文件恢复为原版本后通过；接受新源会把全部帧加入强制重渲染队列，并保持暂停。</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button type="button" disabled={busy} onClick={() => void onAction('重新检查源文件', 'resolve_render_source_change', { action: 'recheck' })} className="flex h-8 items-center gap-1.5 rounded border border-amber-300 px-3 text-xs text-amber-900 disabled:opacity-40 dark:border-amber-800 dark:text-amber-200"><RefreshCw className="h-3.5 w-3.5" />重新检查</button>
+                <button type="button" disabled={busy} onClick={() => {
+                  if (confirm('接受当前源文件后，所有帧都会进入强制重新渲染队列。任务仍保持暂停，确定继续吗？')) {
+                    void onAction('接受新源并重排全部帧', 'resolve_render_source_change', { action: 'acceptAndRerenderAll' });
+                  }
+                }} className="h-8 rounded bg-amber-700 px-3 text-xs font-medium text-white disabled:opacity-40">接受新源并全部重排</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="grid grid-cols-6 border-b border-gray-200 dark:border-gray-800">
         {summaryItems.map(({ label, value, detail: detailText }) => <div key={label} className="min-w-0 border-r border-gray-100 px-2.5 py-1.5 last:border-r-0 dark:border-gray-800"><div className="text-[9px] text-gray-500">{label}</div><div className="truncate text-xs font-semibold tabular-nums" title={detailText || String(value)}>{value}</div>{detailText && <div className="truncate text-[9px] text-gray-500" title={detailText}>{detailText}</div>}</div>)}
+      </div>
+      <div className="border-b border-gray-200 bg-white px-3 py-2 dark:border-gray-800 dark:bg-gray-950">
+        <div className="flex items-center gap-2 text-[10px] text-gray-500">
+          <span className="font-medium text-gray-700 dark:text-gray-300">{job.executionMode === 'persistent' ? '常驻 Worker' : '逐帧兼容模式'}</span>
+          <span>·</span>
+          <span>{job.frameOrderMode === 'strict' ? '严格顺序（固定 1 开）' : '动态领取'}</span>
+          {startup.averageStartupMs !== null && <><span>·</span><span>文件加载平均 {formatDuration(startup.averageStartupMs)}</span></>}
+          <HelpAssistant title="Worker 状态" text={['常驻模式下每个 Worker 只加载一次 .blend，后续帧直接复用内存中的场景。', '严格顺序会固定单 Worker 按帧号渲染，但不能替代流体、布料等模拟烘焙。', '逐帧兼容模式会为每帧重新启动 Blender，仅建议不兼容常驻模式的插件使用。']} placement="bottom-start" width={350} />
+        </div>
+        {job.status === 'starting' && job.readyWorkers < job.effectiveParallelism && <p className="mt-1 text-[11px] text-blue-600">正在加载项目 {job.readyWorkers}/{job.effectiveParallelism}</p>}
+        {workers.length > 0 && (
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {workers.map((worker) => (
+              <span key={worker.workerId} title={worker.error || worker.workerId} className={`inline-flex h-6 items-center gap-1 rounded border px-2 text-[10px] ${worker.state === 'failed' ? 'border-red-200 text-red-600 dark:border-red-900' : 'border-gray-200 text-gray-600 dark:border-gray-700 dark:text-gray-300'}`}>
+                W{worker.ordinal + 1} · {worker.state === 'starting' ? '加载中' : worker.state === 'rendering' ? `帧 ${worker.currentFrame}` : worker.state === 'ready' ? '就绪' : worker.state}
+                {worker.pid !== null && <span className="text-gray-400">PID {worker.pid}</span>}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
       <div className="grid grid-cols-[minmax(96px,1.2fr)_repeat(4,minmax(58px,1fr))] border-b border-gray-200 bg-gray-50/70 dark:border-gray-800 dark:bg-gray-900/50">
         <div className="min-w-0 px-2.5 py-1.5 text-[9px] text-gray-500">
@@ -939,6 +1105,20 @@ function EditRenderJobDialog({ detail, onClose, onSave }: { detail: RenderJobDet
           <button type="button" onClick={onClose} disabled={saving} title="关闭" className="flex h-8 w-8 items-center justify-center rounded hover:bg-gray-100 disabled:opacity-40 dark:hover:bg-gray-800"><X className="h-4 w-4" /></button>
         </div>
         <div className="p-4">
+          <div className="mb-3 grid grid-cols-2 gap-3 max-[560px]:grid-cols-1">
+            <Field label={<span className="inline-flex items-center gap-1">执行模式<HelpAssistant title="执行模式" text={['常驻 Worker：每个 Blender 进程只加载一次文件，连续渲染多帧，默认且速度更快。', '逐帧兼容：每帧重新启动 Blender，适合少数依赖启动流程、无法在常驻模式工作的插件。', '切换执行模式不会重渲已有有效帧，只影响后续领取。']} placement="top-start" width={350} /></span>}>
+              <select value={form.executionMode} onChange={(event) => setForm((current) => ({ ...current, executionMode: event.target.value as RenderExecutionMode }))}>
+                <option value="persistent">常驻 Worker（推荐）</option>
+                <option value="isolated">逐帧独立进程（兼容）</option>
+              </select>
+            </Field>
+            <Field label={<span className="inline-flex items-center gap-1">帧顺序<HelpAssistant title="帧顺序" text={['动态领取：多个 Worker 各自领取最小未完成帧，交付顺序可能不同。', '严格顺序：固定一个 Worker 按帧号串行渲染。它不能替代流体、布料等模拟烘焙。', '切换顺序模式不会重渲已有有效帧。']} placement="top-end" width={350} /></span>}>
+              <select value={form.frameOrderMode} onChange={(event) => setForm((current) => ({ ...current, frameOrderMode: event.target.value as RenderFrameOrderMode }))}>
+                <option value="dynamic">动态领取（允许多开）</option>
+                <option value="strict">严格顺序（固定 1 开）</option>
+              </select>
+            </Field>
+          </div>
           <div className="grid grid-cols-[minmax(150px,1fr)_74px_74px_64px_82px_94px_100px] gap-2 max-[720px]:grid-cols-3">
             <Field label={<span className="inline-flex items-center gap-1">场景{inspecting && <LoaderCircle className="h-3 w-3 animate-spin" />}<HelpAssistant title="切换场景" text={['列表由当前 .blend 文件读取。切换场景会带入该场景默认的起止帧、渲染引擎和格式。', '保存后会把现有帧重新排队。']} placement="top-start" /></span>}>
               <select
@@ -961,7 +1141,7 @@ function EditRenderJobDialog({ detail, onClose, onSave }: { detail: RenderJobDet
             <Field label={<span className="inline-flex items-center gap-1">起始<HelpAssistant title="帧范围与步长" text={['起始和结束决定要渲染的帧号；步长为 2 时会渲染 1、3、5 等帧。', '调整范围会保留范围内已完成的帧，只把缺失帧从小到大补入队列；移出范围的记录会移除，但已有输出文件会保留。']} placement="top-start" /></span>}><input type="number" value={form.frameStart} onChange={(event) => setForm((current) => ({ ...current, frameStart: Number(event.target.value) }))} /></Field>
             <Field label="结束"><input type="number" value={form.frameEnd} onChange={(event) => setForm((current) => ({ ...current, frameEnd: Number(event.target.value) }))} /></Field>
             <Field label="步长"><input type="number" min={1} value={form.frameStep} onChange={(event) => setForm((current) => ({ ...current, frameStep: Math.max(1, Number(event.target.value)) }))} /></Field>
-            <Field label={<span className="inline-flex items-center gap-1">帧多开<HelpAssistant title="帧多开" text={["为当前任务同时启动多个 Blender 进程，每个进程领取不同帧。", "大场景或显存紧张时建议设为 1。"]} placement="top" /></span>}><select value={form.parallelism} onChange={(event) => setForm((current) => ({ ...current, parallelism: Number(event.target.value) }))}>{[1,2,3,4,5,6,7,8].map((value) => <option key={value} value={value}>{value} 开</option>)}</select></Field>
+            <Field label={<span className="inline-flex items-center gap-1">帧多开<HelpAssistant title="帧多开" text={["这是当前任务期望的 Worker 数，实际数量还受全局 Blender 进程上限约束。", "严格顺序模式固定只使用 1 个 Worker；切回动态领取后会恢复这里的设置。"]} placement="top" /></span>}><select disabled={form.frameOrderMode === 'strict'} value={form.parallelism} onChange={(event) => setForm((current) => ({ ...current, parallelism: Number(event.target.value) }))}>{[1,2,3,4,5,6,7,8].map((value) => <option key={value} value={value}>{value} 开</option>)}</select></Field>
             <Field label={<span className="inline-flex items-center gap-1">分辨率 %<HelpAssistant title="分辨率比例" text={['按场景原始分辨率的百分比渲染。100% 为正式输出，较低比例可用于快速预览。', '改变比例会重新渲染已有帧。']} placement="top" /></span>}><input type="number" min={1} max={100} value={form.resolutionPercentage} onChange={(event) => setForm((current) => ({ ...current, resolutionPercentage: Number(event.target.value) }))} /></Field>
             <Field label={<span className="inline-flex items-center gap-1">格式<HelpAssistant title="输出格式" text={['PNG 适合常规交付；JPEG 文件更小；OPEN_EXR 常用于后期合成。', '切换格式会生成新的输出扩展名，并重新渲染受影响帧。']} placement="top-end" /></span>}><select value={form.outputFormat} onChange={(event) => setForm((current) => ({ ...current, outputFormat: event.target.value }))}><option>PNG</option><option>JPEG</option><option>OPEN_EXR</option><option>TIFF</option><option>WEBP</option></select></Field>
           </div>
@@ -1085,7 +1265,7 @@ function FrameRow({ frame, selected, previewable, onPointerDown, onContextMenu, 
     >
       <span className="font-medium tabular-nums">{frame.frame}</span>
       <span className={frame.status === 'failed' ? 'text-red-600' : frame.status === 'completed' ? 'text-emerald-600 dark:text-emerald-400' : selected ? 'text-blue-700 dark:text-blue-300' : 'text-gray-500'}>{STATUS_LABELS[frame.status] || frame.status}</span>
-      <span className={selected ? 'text-blue-700 dark:text-blue-300' : 'text-gray-500'}>{formatDuration(frame.durationMs)}</span>
+      <span className={selected ? 'text-blue-700 dark:text-blue-300' : 'text-gray-500'}>{formatDuration(frame.renderDurationMs ?? frame.durationMs)}</span>
       <span className={`flex min-w-0 items-center gap-1.5 ${selected ? 'text-blue-800 dark:text-blue-200' : 'text-gray-500'}`}>
         {previewable && <ImageIcon className="h-3 w-3 shrink-0" />}
         <span className="truncate" title={frame.outputPath}>{fileName(frame.outputPath)}</span>
@@ -1258,6 +1438,8 @@ interface EditableJob {
   frameEnd: number;
   frameStep: number;
   parallelism: number;
+  executionMode: RenderExecutionMode;
+  frameOrderMode: RenderFrameOrderMode;
   resolutionPercentage: number;
   engine: string;
   outputFormat: string;
@@ -1334,10 +1516,12 @@ function CreateBatchDialog({ projectPath, presets, initialSources, onClose, onCr
     if (typeof settings.outputFormat === 'string') setJobs((items) => items.map((item) => ({ ...item, outputFormat: settings.outputFormat as string })));
     if (typeof settings.resolutionPercentage === 'number') setJobs((items) => items.map((item) => ({ ...item, resolutionPercentage: settings.resolutionPercentage as number })));
     if (typeof settings.parallelism === 'number') setJobs((items) => items.map((item) => ({ ...item, parallelism: Math.min(8, Math.max(1, settings.parallelism as number)) })));
+    if (settings.executionMode === 'persistent' || settings.executionMode === 'isolated') setJobs((items) => items.map((item) => ({ ...item, executionMode: settings.executionMode as RenderExecutionMode })));
+    if (settings.frameOrderMode === 'dynamic' || settings.frameOrderMode === 'strict') setJobs((items) => items.map((item) => ({ ...item, frameOrderMode: settings.frameOrderMode as RenderFrameOrderMode })));
   };
   const savePreset = async () => {
     if (!presetName.trim()) return;
-    await invoke('save_render_preset', { projectPath, name: presetName.trim(), scope: presetScope, settings: { outputRoot, forceOverwrite, maxRetries, outputFormat: jobs[0]?.outputFormat || 'PNG', resolutionPercentage: jobs[0]?.resolutionPercentage || 100, parallelism: jobs[0]?.parallelism || 1 } });
+    await invoke('save_render_preset', { projectPath, name: presetName.trim(), scope: presetScope, settings: { outputRoot, forceOverwrite, maxRetries, outputFormat: jobs[0]?.outputFormat || 'PNG', resolutionPercentage: jobs[0]?.resolutionPercentage || 100, parallelism: jobs[0]?.parallelism || 1, executionMode: jobs[0]?.executionMode || 'persistent', frameOrderMode: jobs[0]?.frameOrderMode || 'dynamic' } });
     setPresetName('');
     showToast({ title: '预设已保存', message: presetScope === 'global' ? '所有项目均可使用' : '仅当前项目使用', tone: 'success' });
   };
@@ -1346,7 +1530,7 @@ function CreateBatchDialog({ projectPath, presets, initialSources, onClose, onCr
     if (!namePrefix.trim() || !blenderPath || !validJobs.length) return;
     setSubmitting(true);
     try {
-      const request: CreateRenderBatchRequest = { name: `${namePrefix.trim()} ${batchTimestamp}`, blenderPath, outputRoot: outputRoot || null, preHook: preHook || null, postHook: postHook || null, forceOverwrite, maxRetries, jobs: validJobs.map((job) => ({ blendPath: job.path, sceneName: job.sceneName, frameStart: job.frameStart, frameEnd: job.frameEnd, frameStep: job.frameStep, parallelism: job.parallelism, resolutionPercentage: job.resolutionPercentage, engine: job.engine || null, outputFormat: job.outputFormat })) };
+      const request: CreateRenderBatchRequest = { name: `${namePrefix.trim()} ${batchTimestamp}`, blenderPath, outputRoot: outputRoot || null, preHook: preHook || null, postHook: postHook || null, forceOverwrite, maxRetries, jobs: validJobs.map((job) => ({ blendPath: job.path, sceneName: job.sceneName, frameStart: job.frameStart, frameEnd: job.frameEnd, frameStep: job.frameStep, parallelism: job.parallelism, executionMode: job.executionMode, frameOrderMode: job.frameOrderMode, resolutionX: job.scenes.find((scene) => scene.name === job.sceneName)?.resolutionX || null, resolutionY: job.scenes.find((scene) => scene.name === job.sceneName)?.resolutionY || null, resolutionPercentage: job.resolutionPercentage, engine: job.engine || null, outputFormat: job.outputFormat })) };
       await invoke('create_render_batch', { projectPath, request });
       showToast({ title: '渲染批次已加入队列', message: `${validJobs.length} 个作业，等待手动开始`, tone: 'success' });
       await onCreated();
@@ -1411,12 +1595,44 @@ function CreateBatchDialog({ projectPath, presets, initialSources, onClose, onCr
 
 function toEditableJob(source: RenderSourceInfo): EditableJob {
   const scene = source.scenes[0];
-  return { path: source.path, scenes: source.scenes, sceneName: scene?.name || '', frameStart: scene?.frameStart ?? 1, frameEnd: scene?.frameEnd ?? 250, frameStep: 1, parallelism: 1, resolutionPercentage: 100, engine: scene?.engine || '', outputFormat: scene?.outputFormat || 'PNG', error: source.error };
+  return { path: source.path, scenes: source.scenes, sceneName: scene?.name || '', frameStart: scene?.frameStart ?? 1, frameEnd: scene?.frameEnd ?? 250, frameStep: 1, parallelism: 1, executionMode: 'persistent', frameOrderMode: 'dynamic', resolutionPercentage: 100, engine: scene?.engine || '', outputFormat: scene?.outputFormat || 'PNG', error: source.error };
 }
 
 function EditableJobRow({ job, onChange, onRemove }: { job: EditableJob; onChange: (patch: Partial<EditableJob>) => void; onRemove: () => void }) {
   const scene = job.scenes.find((item) => item.name === job.sceneName);
-  return <div className="border-b border-gray-100 py-3 dark:border-gray-800"><div className="flex items-center gap-2"><span className="min-w-0 flex-1 truncate text-xs font-medium" title={job.path}>{fileName(job.path)}</span>{job.error && <span className="text-xs text-red-600">读取失败</span>}<button title="移除" onClick={onRemove} className="h-7 w-7 p-0 text-gray-400 hover:text-red-600"><X className="mx-auto h-3.5 w-3.5" /></button></div>{job.error ? <p className="mt-1 text-xs text-red-600">{job.error}</p> : <div className="mt-2 grid grid-cols-[minmax(116px,1fr)_68px_68px_56px_72px_88px_90px] gap-2 max-[680px]:grid-cols-3"><Field label="场景"><select value={job.sceneName} onChange={(e) => { const next=job.scenes.find((item)=>item.name===e.target.value); onChange({ sceneName:e.target.value, frameStart:next?.frameStart ?? job.frameStart, frameEnd:next?.frameEnd ?? job.frameEnd, engine:next?.engine ?? job.engine, outputFormat:next?.outputFormat ?? job.outputFormat }); }}>{job.scenes.map((item)=><option key={item.name}>{item.name}</option>)}</select></Field><Field label="起始"><input type="number" value={job.frameStart} onChange={(e)=>onChange({frameStart:Number(e.target.value)})} /></Field><Field label="结束"><input type="number" value={job.frameEnd} onChange={(e)=>onChange({frameEnd:Number(e.target.value)})} /></Field><Field label="步长"><input type="number" min={1} value={job.frameStep} onChange={(e)=>onChange({frameStep:Math.max(1,Number(e.target.value))})} /></Field><Field label={<span className="inline-flex items-center gap-1">帧多开<HelpAssistant title="帧多开" text={["为当前作业同时启动多个 Blender 进程，每个进程领取不同帧。", "大场景或显存紧张时建议设为 1；较小场景可逐步增加。"]} placement="top" /></span>}><select value={job.parallelism} onChange={(e)=>onChange({parallelism:Number(e.target.value)})}>{[1,2,3,4,5,6,7,8].map((value)=><option key={value} value={value}>{value} 开</option>)}</select></Field><Field label={<span className="inline-flex items-center gap-1">分辨率 %<HelpAssistant title="渲染分辨率比例" text={["按场景原始分辨率的百分比渲染。", '降低比例可以加快预览渲染，正式输出通常使用 100%。']} images={[{ src: '/help_media/渲染像素比.jpg', alt: '不同渲染清晰度的对比' }]} placement="top" /></span>}><input type="number" min={1} max={100} value={job.resolutionPercentage} onChange={(e)=>onChange({resolutionPercentage:Number(e.target.value)})} /></Field><Field label="格式"><select value={job.outputFormat} onChange={(e)=>onChange({outputFormat:e.target.value})}><option>PNG</option><option>JPEG</option><option>OPEN_EXR</option><option>TIFF</option><option>WEBP</option></select></Field><div className="col-span-full text-[10px] text-gray-500">{scene?.resolutionX} × {scene?.resolutionY} · {scene?.fps} fps · {job.engine}</div></div>}</div>;
+  return (
+    <div className="border-b border-gray-100 py-3 dark:border-gray-800">
+      <div className="flex items-center gap-2">
+        <span className="min-w-0 flex-1 truncate text-xs font-medium" title={job.path}>{fileName(job.path)}</span>
+        {job.error && <span className="text-xs text-red-600">读取失败</span>}
+        <button title="移除" onClick={onRemove} className="h-7 w-7 p-0 text-gray-400 hover:text-red-600"><X className="mx-auto h-3.5 w-3.5" /></button>
+      </div>
+      {job.error ? <p className="mt-1 text-xs text-red-600">{job.error}</p> : (
+        <>
+          <div className="mt-2 grid grid-cols-[minmax(130px,1fr)_minmax(130px,1fr)_82px] gap-2 max-[620px]:grid-cols-1">
+            <Field label={<span className="inline-flex items-center gap-1">执行模式<HelpAssistant title="执行模式" text={['常驻 Worker 只加载一次文件，适合绝大多数批量渲染。', '逐帧兼容会为每帧重启 Blender，仅在插件不兼容时使用。']} placement="top-start" /></span>}>
+              <select value={job.executionMode} onChange={(event) => onChange({ executionMode: event.target.value as RenderExecutionMode })}><option value="persistent">常驻 Worker（推荐）</option><option value="isolated">逐帧兼容</option></select>
+            </Field>
+            <Field label={<span className="inline-flex items-center gap-1">帧顺序<HelpAssistant title="帧顺序" text={['动态领取允许多个 Worker 并行领取帧。', '严格顺序固定 1 开按帧号处理，不能替代模拟烘焙。']} placement="top" /></span>}>
+              <select value={job.frameOrderMode} onChange={(event) => onChange({ frameOrderMode: event.target.value as RenderFrameOrderMode })}><option value="dynamic">动态领取</option><option value="strict">严格顺序（1 开）</option></select>
+            </Field>
+            <Field label={<span className="inline-flex items-center gap-1">帧多开<HelpAssistant title="帧多开" text={['当前作业期望的 Worker 数，实际还受全局进程上限约束。', '严格顺序模式固定使用 1 个 Worker。']} placement="top" /></span>}>
+              <select disabled={job.frameOrderMode === 'strict'} value={job.parallelism} onChange={(event) => onChange({ parallelism: Number(event.target.value) })}>{[1,2,3,4,5,6,7,8].map((value) => <option key={value} value={value}>{value} 开</option>)}</select>
+            </Field>
+          </div>
+          <div className="mt-2 grid grid-cols-[minmax(116px,1fr)_68px_68px_56px_88px_90px] gap-2 max-[680px]:grid-cols-3">
+            <Field label="场景"><select value={job.sceneName} onChange={(event) => { const next = job.scenes.find((item) => item.name === event.target.value); onChange({ sceneName: event.target.value, frameStart: next?.frameStart ?? job.frameStart, frameEnd: next?.frameEnd ?? job.frameEnd, engine: next?.engine ?? job.engine, outputFormat: next?.outputFormat ?? job.outputFormat }); }}>{job.scenes.map((item) => <option key={item.name}>{item.name}</option>)}</select></Field>
+            <Field label="起始"><input type="number" value={job.frameStart} onChange={(event) => onChange({ frameStart: Number(event.target.value) })} /></Field>
+            <Field label="结束"><input type="number" value={job.frameEnd} onChange={(event) => onChange({ frameEnd: Number(event.target.value) })} /></Field>
+            <Field label="步长"><input type="number" min={1} value={job.frameStep} onChange={(event) => onChange({ frameStep: Math.max(1, Number(event.target.value)) })} /></Field>
+            <Field label={<span className="inline-flex items-center gap-1">分辨率 %<HelpAssistant title="渲染分辨率比例" text={['按场景原始分辨率的百分比渲染。', '降低比例可以加快预览渲染，正式输出通常使用 100%。']} images={[{ src: '/help_media/渲染像素比.jpg', alt: '不同渲染清晰度的对比' }]} placement="top" /></span>}><input type="number" min={1} max={100} value={job.resolutionPercentage} onChange={(event) => onChange({ resolutionPercentage: Number(event.target.value) })} /></Field>
+            <Field label="格式"><select value={job.outputFormat} onChange={(event) => onChange({ outputFormat: event.target.value })}><option>PNG</option><option>JPEG</option><option>OPEN_EXR</option><option>TIFF</option><option>WEBP</option></select></Field>
+          </div>
+          <div className="mt-1 text-[10px] text-gray-500">{scene?.resolutionX} × {scene?.resolutionY} · {scene?.fps} fps · {job.engine}</div>
+        </>
+      )}
+    </div>
+  );
 }
 
 function Field({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {

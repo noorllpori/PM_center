@@ -7,7 +7,11 @@ export type RenderJobStatus =
   | 'cancelling'
   | 'cancelled'
   | 'completed'
-  | 'failed';
+  | 'failed'
+  | 'attention';
+
+export type RenderExecutionMode = 'persistent' | 'isolated';
+export type RenderFrameOrderMode = 'dynamic' | 'strict';
 
 export interface RenderSceneInfo {
   name: string;
@@ -38,6 +42,10 @@ export interface RenderJob {
   frameEnd: number;
   frameStep: number;
   parallelism: number;
+  effectiveParallelism: number;
+  readyWorkers: number;
+  executionMode: RenderExecutionMode;
+  frameOrderMode: RenderFrameOrderMode;
   totalFrames: number;
   completedFrames: number;
   failedFrames: number;
@@ -56,6 +64,11 @@ export interface RenderJob {
   peakCpuUsage: number;
   peakMemoryBytes: number;
   performanceUpdatedAt: number | null;
+  position: number;
+  batchName: string;
+  batchStatus: string;
+  batchPosition: number;
+  attentionCode: string | null;
 }
 
 export interface RenderFrame {
@@ -66,7 +79,27 @@ export interface RenderFrame {
   outputPath: string;
   error: string | null;
   durationMs: number | null;
+  renderDurationMs: number | null;
+  workerId: string | null;
+  claimToken: string | null;
   updatedAt: number;
+}
+
+export interface RenderWorkerState {
+  workerId: string;
+  ordinal: number;
+  pid: number | null;
+  state: 'starting' | 'ready' | 'rendering' | 'failed' | 'stopped' | string;
+  currentFrame: number | null;
+  startupMs: number | null;
+  error: string | null;
+  updatedAt: number;
+}
+
+export interface RenderStartupStats {
+  requestedWorkers: number;
+  readyWorkers: number;
+  averageStartupMs: number | null;
 }
 
 export interface RenderEta {
@@ -90,6 +123,8 @@ export interface RenderJobDetail {
   logTail: string[];
   performanceSamples: RenderPerformanceSample[];
   eta: RenderEta;
+  workers: RenderWorkerState[];
+  startup: RenderStartupStats;
 }
 
 export interface RenderJobSettings {
@@ -98,12 +133,19 @@ export interface RenderJobSettings {
   frameEnd: number;
   frameStep: number;
   parallelism: number;
+  executionMode: RenderExecutionMode;
+  frameOrderMode: RenderFrameOrderMode;
   resolutionPercentage: number;
   engine: string | null;
   outputFormat: string;
 }
 
 export type UpdateRenderJobRequest = RenderJobSettings;
+
+export interface RenderSchedulerSettings {
+  concurrency: number;
+  maxBlenderProcesses: number;
+}
 
 export interface RenderPreset {
   id: string;
@@ -129,6 +171,8 @@ export interface CreateRenderBatchRequest {
     frameEnd: number;
     frameStep: number;
     parallelism: number;
+    executionMode: RenderExecutionMode;
+    frameOrderMode: RenderFrameOrderMode;
     resolutionX?: number | null;
     resolutionY?: number | null;
     resolutionPercentage?: number | null;

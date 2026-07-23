@@ -4,13 +4,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use sysinfo::{Pid, System};
 use tauri::{Emitter, Manager};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use uuid::Uuid;
 
 const EVENT_PREFIX: &str = "PM_RENDER_EVENT ";
@@ -76,6 +77,10 @@ pub struct CreateRenderJobRequest {
     pub frame_step: i64,
     #[serde(default = "default_parallelism")]
     pub parallelism: i64,
+    #[serde(default = "default_execution_mode")]
+    pub execution_mode: String,
+    #[serde(default = "default_frame_order_mode")]
+    pub frame_order_mode: String,
     pub resolution_x: Option<i64>,
     pub resolution_y: Option<i64>,
     pub resolution_percentage: Option<i64>,
@@ -93,6 +98,10 @@ pub struct UpdateRenderJobRequest {
     pub frame_step: i64,
     #[serde(default = "default_parallelism")]
     pub parallelism: i64,
+    #[serde(default = "default_execution_mode")]
+    pub execution_mode: String,
+    #[serde(default = "default_frame_order_mode")]
+    pub frame_order_mode: String,
     pub resolution_percentage: i64,
     pub engine: Option<String>,
     pub output_format: String,
@@ -104,6 +113,14 @@ fn default_frame_step() -> i64 {
 
 fn default_parallelism() -> i64 {
     1
+}
+
+fn default_execution_mode() -> String {
+    "persistent".into()
+}
+
+fn default_frame_order_mode() -> String {
+    "dynamic".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,6 +144,10 @@ pub struct RenderJob {
     pub frame_end: i64,
     pub frame_step: i64,
     pub parallelism: i64,
+    pub effective_parallelism: i64,
+    pub ready_workers: i64,
+    pub execution_mode: String,
+    pub frame_order_mode: String,
     pub total_frames: i64,
     pub completed_frames: i64,
     pub failed_frames: i64,
@@ -145,6 +166,11 @@ pub struct RenderJob {
     pub peak_cpu_usage: f64,
     pub peak_memory_bytes: i64,
     pub performance_updated_at: Option<i64>,
+    pub position: i64,
+    pub batch_name: String,
+    pub batch_status: String,
+    pub batch_position: i64,
+    pub attention_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,7 +183,31 @@ pub struct RenderFrame {
     pub output_path: String,
     pub error: Option<String>,
     pub duration_ms: Option<i64>,
+    pub render_duration_ms: Option<i64>,
+    pub worker_id: Option<String>,
+    pub claim_token: Option<String>,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderWorkerState {
+    pub worker_id: String,
+    pub ordinal: i64,
+    pub pid: Option<u32>,
+    pub state: String,
+    pub current_frame: Option<i64>,
+    pub startup_ms: Option<i64>,
+    pub error: Option<String>,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderStartupStats {
+    pub requested_workers: i64,
+    pub ready_workers: i64,
+    pub average_startup_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,6 +237,8 @@ pub struct RenderJobDetail {
     pub log_tail: Vec<String>,
     pub performance_samples: Vec<RenderPerformanceSample>,
     pub eta: RenderEta,
+    pub workers: Vec<RenderWorkerState>,
+    pub startup: RenderStartupStats,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -197,6 +249,8 @@ pub struct RenderJobSettings {
     pub frame_end: i64,
     pub frame_step: i64,
     pub parallelism: i64,
+    pub execution_mode: String,
+    pub frame_order_mode: String,
     pub resolution_percentage: i64,
     pub engine: Option<String>,
     pub output_format: String,
@@ -217,30 +271,167 @@ pub struct RenderPreset {
 #[serde(rename_all = "camelCase")]
 pub struct SchedulerSettings {
     pub concurrency: i64,
+    #[serde(default = "default_max_blender_processes")]
+    pub max_blender_processes: i64,
+}
+
+fn default_max_blender_processes() -> i64 {
+    std::thread::available_parallelism()
+        .map(|value| value.get() as i64)
+        .unwrap_or(1)
+        .clamp(1, 4)
 }
 
 #[derive(Default)]
 struct JobControl {
     cancel: bool,
     pause: bool,
+    attention: bool,
     pids: HashSet<u32>,
     metrics: HashMap<u32, RenderProcessMetrics>,
+    workers: HashMap<String, RenderWorkerState>,
+    verified_source: Option<SourceFingerprint>,
 }
 
 #[derive(Default)]
 struct RuntimeState {
     running: HashMap<String, Arc<Mutex<JobControl>>>,
     projects: HashSet<String>,
+    project_order: Vec<String>,
+    project_cursor: usize,
+    active_worker_slots: usize,
 }
 
 lazy_static::lazy_static! {
     static ref RUNTIME: Mutex<RuntimeState> = Mutex::new(RuntimeState::default());
     static ref RECOVERED_PROJECTS: Mutex<HashSet<String>> = Mutex::new(HashSet::new());
     static ref SCHEDULER_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::new(());
+    static ref PROCESS_BUDGET_NOTIFY: tokio::sync::Notify = tokio::sync::Notify::new();
+    static ref SOURCE_VERIFY_LOCK: Mutex<()> = Mutex::new(());
+}
+
+struct ProcessSlotPermit {
+    released: bool,
+}
+
+impl ProcessSlotPermit {
+    fn retire_if_over_limit(&mut self, app: &tauri::AppHandle) -> bool {
+        if self.released {
+            return true;
+        }
+        let limit = load_scheduler_settings(app)
+            .max_blender_processes
+            .clamp(1, 16) as usize;
+        let mut runtime = RUNTIME.lock().unwrap();
+        if runtime.active_worker_slots <= limit {
+            return false;
+        }
+        runtime.active_worker_slots = runtime.active_worker_slots.saturating_sub(1);
+        self.released = true;
+        drop(runtime);
+        PROCESS_BUDGET_NOTIFY.notify_waiters();
+        true
+    }
+}
+
+impl Drop for ProcessSlotPermit {
+    fn drop(&mut self) {
+        if self.released {
+            return;
+        }
+        let mut runtime = RUNTIME.lock().unwrap();
+        runtime.active_worker_slots = runtime.active_worker_slots.saturating_sub(1);
+        drop(runtime);
+        PROCESS_BUDGET_NOTIFY.notify_waiters();
+    }
+}
+
+async fn acquire_process_slot(
+    app: &tauri::AppHandle,
+    control: &Arc<Mutex<JobControl>>,
+) -> Option<ProcessSlotPermit> {
+    loop {
+        let interrupted = {
+            let value = control.lock().unwrap();
+            value.cancel || value.pause || value.attention
+        };
+        if interrupted {
+            return None;
+        }
+        let limit = load_scheduler_settings(app)
+            .max_blender_processes
+            .clamp(1, 16) as usize;
+        {
+            let mut runtime = RUNTIME.lock().unwrap();
+            if runtime.active_worker_slots < limit {
+                runtime.active_worker_slots += 1;
+                return Some(ProcessSlotPermit { released: false });
+            }
+        }
+        tokio::select! {
+            _ = PROCESS_BUDGET_NOTIFY.notified() => {},
+            _ = tokio::time::sleep(Duration::from_millis(150)) => {},
+        }
+    }
 }
 
 fn now() -> i64 {
     chrono::Utc::now().timestamp_millis()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SourceFingerprint {
+    hash: String,
+    size: i64,
+    modified_at: i64,
+}
+
+fn source_fingerprint(path: &Path) -> Result<SourceFingerprint, String> {
+    let metadata = fs::metadata(path)
+        .map_err(|error| format!("读取源文件信息失败 {}: {error}", path.display()))?;
+    if !metadata.is_file() {
+        return Err(format!("源文件不存在: {}", path.display()));
+    }
+    let modified_at = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|value| value.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or(0);
+    let mut file = fs::File::open(path)
+        .map_err(|error| format!("打开源文件失败 {}: {error}", path.display()))?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0_u8; 1024 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("校验源文件失败 {}: {error}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(SourceFingerprint {
+        hash: hasher.finalize().to_hex().to_string(),
+        size: metadata.len().min(i64::MAX as u64) as i64,
+        modified_at,
+    })
+}
+
+fn normalize_execution_mode(value: &str) -> Result<&'static str, String> {
+    match value {
+        "persistent" => Ok("persistent"),
+        "isolated" => Ok("isolated"),
+        _ => Err("执行模式必须是 persistent 或 isolated".into()),
+    }
+}
+
+fn normalize_frame_order_mode(value: &str) -> Result<&'static str, String> {
+    match value {
+        "dynamic" => Ok("dynamic"),
+        "strict" => Ok("strict"),
+        _ => Err("帧顺序必须是 dynamic 或 strict".into()),
+    }
 }
 
 fn open_db(project_path: &str) -> Result<Connection, String> {
@@ -281,6 +472,8 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             frame_end INTEGER NOT NULL,
             frame_step INTEGER NOT NULL,
             parallelism INTEGER NOT NULL DEFAULT 1,
+            execution_mode TEXT NOT NULL DEFAULT 'persistent',
+            frame_order_mode TEXT NOT NULL DEFAULT 'dynamic',
             output_dir TEXT NOT NULL,
             blender_path TEXT NOT NULL,
             python_path TEXT,
@@ -291,6 +484,10 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             spec_json TEXT NOT NULL,
             current_frame INTEGER,
             error TEXT,
+            attention_code TEXT,
+            source_hash TEXT,
+            source_size INTEGER,
+            source_modified_at INTEGER,
             archived INTEGER NOT NULL DEFAULT 0,
             position INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL,
@@ -306,7 +503,12 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             output_path TEXT NOT NULL,
             error TEXT,
             duration_ms INTEGER,
+            render_duration_ms INTEGER,
             force_render INTEGER NOT NULL DEFAULT 0,
+            worker_id TEXT,
+            claim_token TEXT,
+            claimed_at INTEGER,
+            temp_output_path TEXT,
             updated_at INTEGER NOT NULL,
             PRIMARY KEY(job_id, frame),
             FOREIGN KEY(job_id) REFERENCES render_jobs(id) ON DELETE CASCADE
@@ -320,7 +522,11 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             started_at INTEGER NOT NULL,
             finished_at INTEGER,
             exit_code INTEGER,
-            error TEXT
+            error TEXT,
+            worker_id TEXT,
+            claim_token TEXT,
+            temp_output_path TEXT,
+            render_duration_ms INTEGER
         );
         CREATE TABLE IF NOT EXISTS render_artifacts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -338,6 +544,18 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             memory_bytes INTEGER NOT NULL,
             FOREIGN KEY(job_id) REFERENCES render_jobs(id) ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS render_workers (
+            worker_id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            ordinal INTEGER NOT NULL,
+            pid INTEGER,
+            state TEXT NOT NULL,
+            current_frame INTEGER,
+            startup_ms INTEGER,
+            error TEXT,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY(job_id) REFERENCES render_jobs(id) ON DELETE CASCADE
+        );
         CREATE TABLE IF NOT EXISTS render_presets (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
@@ -353,6 +571,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
         INSERT OR IGNORE INTO render_scheduler_settings(id, concurrency) VALUES(1, 1);
         CREATE INDEX IF NOT EXISTS idx_render_jobs_queue ON render_jobs(status, archived, position, created_at);
         CREATE INDEX IF NOT EXISTS idx_render_frames_job_status ON render_frames(job_id, status, frame);
+        CREATE INDEX IF NOT EXISTS idx_render_workers_job_state ON render_workers(job_id, state);
         CREATE INDEX IF NOT EXISTS idx_render_performance_samples_job_time ON render_performance_samples(job_id, sampled_at DESC);
         "#,
     )?;
@@ -384,9 +603,37 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     )?;
     ensure_column(
         conn,
+        "render_jobs",
+        "execution_mode",
+        "TEXT NOT NULL DEFAULT 'persistent'",
+    )?;
+    ensure_column(
+        conn,
+        "render_jobs",
+        "frame_order_mode",
+        "TEXT NOT NULL DEFAULT 'dynamic'",
+    )?;
+    ensure_column(conn, "render_jobs", "attention_code", "TEXT")?;
+    ensure_column(conn, "render_jobs", "source_hash", "TEXT")?;
+    ensure_column(conn, "render_jobs", "source_size", "INTEGER")?;
+    ensure_column(conn, "render_jobs", "source_modified_at", "INTEGER")?;
+    ensure_column(
+        conn,
         "render_frames",
         "force_render",
         "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(conn, "render_frames", "render_duration_ms", "INTEGER")?;
+    ensure_column(conn, "render_frames", "worker_id", "TEXT")?;
+    ensure_column(conn, "render_frames", "claim_token", "TEXT")?;
+    ensure_column(conn, "render_frames", "claimed_at", "INTEGER")?;
+    ensure_column(conn, "render_frames", "temp_output_path", "TEXT")?;
+    ensure_column(conn, "render_attempts", "worker_id", "TEXT")?;
+    ensure_column(conn, "render_attempts", "claim_token", "TEXT")?;
+    ensure_column(conn, "render_attempts", "temp_output_path", "TEXT")?;
+    ensure_column(conn, "render_attempts", "render_duration_ms", "INTEGER")?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_render_frames_claim ON render_frames(job_id, claim_token);",
     )?;
     ensure_column(
         conn,
@@ -436,15 +683,77 @@ pub fn init_project_storage(project_path: &str) -> Result<(), String> {
     if !RECOVERED_PROJECTS.lock().unwrap().insert(project_key) {
         return Ok(());
     }
+    recover_interrupted_frames(&conn)?;
     conn.execute(
         "UPDATE render_jobs SET status = 'paused', error = '应用上次退出时任务仍在运行，请手动继续', cpu_usage=0, memory_bytes=0 WHERE status IN ('starting', 'running', 'pausing', 'cancelling')",
         [],
     ).map_err(|error| error.to_string())?;
-    conn.execute(
-        "UPDATE render_frames SET status = 'pending', error = NULL WHERE status = 'running'",
-        [],
-    )
-    .map_err(|error| error.to_string())?;
+    conn.execute("DELETE FROM render_workers", [])
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn recover_interrupted_frames(conn: &Connection) -> Result<(), String> {
+    let interrupted = {
+        let mut statement = conn
+            .prepare("SELECT job_id,frame,status,output_path,temp_output_path,claim_token FROM render_frames WHERE status IN ('running','committing')")
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                ))
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        rows
+    };
+    for (job_id, frame, status, output_path, temp_output_path, claim_token) in interrupted {
+        let recovered = if status == "committing" {
+            if let Some(temp) = temp_output_path
+                .as_deref()
+                .filter(|path| valid_output(Path::new(path)))
+            {
+                atomic_replace_output(Path::new(temp), Path::new(&output_path)).is_ok()
+            } else {
+                valid_output(Path::new(&output_path))
+            }
+        } else {
+            false
+        };
+        if recovered {
+            conn.execute(
+                "UPDATE render_frames SET status='completed',attempts=MAX(attempts,COALESCE((SELECT MAX(attempt) FROM render_attempts WHERE job_id=?1 AND frame=?2),attempts)),error=NULL,force_render=0,worker_id=NULL,claim_token=NULL,claimed_at=NULL,temp_output_path=NULL,updated_at=?3 WHERE job_id=?1 AND frame=?2",
+                params![job_id, frame, now()],
+            ).map_err(|error| error.to_string())?;
+            if let Some(token) = claim_token.as_deref() {
+                conn.execute(
+                    "UPDATE render_attempts SET status='completed',finished_at=?4,exit_code=0 WHERE job_id=?1 AND frame=?2 AND claim_token=?3",
+                    params![job_id, frame, token, now()],
+                ).map_err(|error| error.to_string())?;
+            }
+        } else {
+            if let Some(temp) = temp_output_path.as_deref() {
+                let _ = fs::remove_file(temp);
+            }
+            if let Some(token) = claim_token.as_deref() {
+                conn.execute(
+                    "DELETE FROM render_attempts WHERE job_id=?1 AND frame=?2 AND claim_token=?3 AND status='running'",
+                    params![job_id, frame, token],
+                ).map_err(|error| error.to_string())?;
+            }
+            conn.execute(
+                "UPDATE render_frames SET status='pending',error=NULL,worker_id=NULL,claim_token=NULL,claimed_at=NULL,temp_output_path=NULL,updated_at=?3 WHERE job_id=?1 AND frame=?2",
+                params![job_id, frame, now()],
+            ).map_err(|error| error.to_string())?;
+        }
+    }
     Ok(())
 }
 
@@ -506,13 +815,78 @@ except Exception as exc:
 "#
 }
 
+fn persistent_worker_script() -> &'static str {
+    r#"import bpy, json, os, sys, time, traceback
+
+PREFIX = 'PM_RENDER_EVENT '
+
+def emit(kind, **payload):
+    payload['type'] = kind
+    print(PREFIX + json.dumps(payload, ensure_ascii=False), flush=True)
+
+separator = sys.argv.index('--')
+worker_id = sys.argv[separator + 2] if sys.argv[separator + 1] == '--worker-id' else 'worker'
+emit('worker-ready', workerId=worker_id)
+
+for raw_line in sys.stdin:
+    raw_line = raw_line.strip()
+    if not raw_line:
+        continue
+    try:
+        command = json.loads(raw_line)
+    except Exception as exc:
+        emit('protocol-error', workerId=worker_id, error=str(exc))
+        continue
+    command_type = command.get('type')
+    if command_type == 'shutdown':
+        emit('worker-stopped', workerId=worker_id)
+        break
+    if command_type != 'render':
+        emit('protocol-error', workerId=worker_id, error='Unknown command: ' + str(command_type))
+        continue
+    frame = int(command['frame'])
+    claim_token = command['claimToken']
+    temp_output_path = command['tempOutputPath']
+    try:
+        scene = bpy.data.scenes.get(command['sceneName'])
+        if scene is None:
+            raise RuntimeError('Scene not found: ' + command['sceneName'])
+        scene.frame_set(frame)
+        if command.get('engine'):
+            scene.render.engine = command['engine']
+        if command.get('resolutionX'):
+            scene.render.resolution_x = int(command['resolutionX'])
+        if command.get('resolutionY'):
+            scene.render.resolution_y = int(command['resolutionY'])
+        if command.get('resolutionPercentage'):
+            scene.render.resolution_percentage = int(command['resolutionPercentage'])
+        scene.render.image_settings.file_format = command.get('outputFormat') or 'PNG'
+        scene.render.filepath = temp_output_path
+        scene.render.use_file_extension = False
+        os.makedirs(os.path.dirname(temp_output_path), exist_ok=True)
+        emit('frame-started', workerId=worker_id, frame=frame, claimToken=claim_token)
+        started = time.time()
+        bpy.ops.render.render(write_still=True, scene=scene.name)
+        emit('frame-completed', workerId=worker_id, frame=frame, claimToken=claim_token,
+             renderDurationMs=int((time.time() - started) * 1000), tempOutputPath=temp_output_path)
+    except Exception as exc:
+        emit('frame-failed', workerId=worker_id, frame=frame, claimToken=claim_token,
+             error=str(exc), traceback=traceback.format_exc())
+"#
+}
+
 fn write_runtime_scripts(job_dir: &Path) -> Result<PathBuf, String> {
     fs::create_dir_all(job_dir).map_err(|error| error.to_string())?;
     let bootstrap = job_dir.join("bootstrap.py");
-    if !bootstrap.exists() {
-        fs::write(&bootstrap, bootstrap_script()).map_err(|error| error.to_string())?;
-    }
+    fs::write(&bootstrap, bootstrap_script()).map_err(|error| error.to_string())?;
     Ok(bootstrap)
+}
+
+fn write_persistent_worker_script(job_dir: &Path) -> Result<PathBuf, String> {
+    fs::create_dir_all(job_dir).map_err(|error| error.to_string())?;
+    let worker = job_dir.join("worker.py");
+    fs::write(&worker, persistent_worker_script()).map_err(|error| error.to_string())?;
+    Ok(worker)
 }
 
 #[tauri::command]
@@ -669,6 +1043,9 @@ pub async fn create_render_batch(
             return Err(format!("{} 的帧范围无效", job.blend_path));
         }
         let job_id = Uuid::new_v4().to_string();
+        let execution_mode = normalize_execution_mode(&job.execution_mode)?;
+        let frame_order_mode = normalize_frame_order_mode(&job.frame_order_mode)?;
+        let fingerprint = source_fingerprint(Path::new(&job.blend_path))?;
         let short_id = &job_id[..8];
         let blend_stem = Path::new(&job.blend_path)
             .file_stem()
@@ -686,6 +1063,8 @@ pub async fn create_render_batch(
             "frameEnd": job.frame_end,
             "frameStep": job.frame_step,
             "parallelism": job.parallelism.clamp(1, 8),
+            "executionMode": execution_mode,
+            "frameOrderMode": frame_order_mode,
             "resolutionX": job.resolution_x,
             "resolutionY": job.resolution_y,
             "resolutionPercentage": job.resolution_percentage.unwrap_or(100),
@@ -694,8 +1073,8 @@ pub async fn create_render_batch(
         });
         let name = format!("{} · {}", blend_stem, job.scene_name);
         tx.execute(
-            "INSERT INTO render_jobs(id,batch_id,project_path,name,blend_path,scene_name,status,frame_start,frame_end,frame_step,parallelism,output_dir,blender_path,python_path,pre_hook,post_hook,force_overwrite,max_retries,spec_json,position,created_at) VALUES(?1,?2,?3,?4,?5,?6,'paused',?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
-            params![job_id,batch_id,project_path,name,job.blend_path,job.scene_name,job.frame_start,job.frame_end,job.frame_step,job.parallelism.clamp(1,8),output_dir.to_string_lossy(),request.blender_path,rusqlite::types::Null,request.pre_hook,request.post_hook,request.force_overwrite as i64,request.max_retries.max(0),spec.to_string(),position as i64,created],
+            "INSERT INTO render_jobs(id,batch_id,project_path,name,blend_path,scene_name,status,frame_start,frame_end,frame_step,parallelism,execution_mode,frame_order_mode,output_dir,blender_path,python_path,pre_hook,post_hook,force_overwrite,max_retries,spec_json,position,created_at,source_hash,source_size,source_modified_at) VALUES(?1,?2,?3,?4,?5,?6,'paused',?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25)",
+            params![job_id,batch_id,project_path,name,job.blend_path,job.scene_name,job.frame_start,job.frame_end,job.frame_step,job.parallelism.clamp(1,8),execution_mode,frame_order_mode,output_dir.to_string_lossy(),request.blender_path,rusqlite::types::Null,request.pre_hook,request.post_hook,request.force_overwrite as i64,request.max_retries.max(0),spec.to_string(),position as i64,created,fingerprint.hash,fingerprint.size,fingerprint.modified_at],
         ).map_err(|error| error.to_string())?;
         for frame in (job.frame_start..=job.frame_end).step_by(job.frame_step as usize) {
             let output_path =
@@ -726,6 +1105,10 @@ fn row_to_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<RenderJob> {
     let completed: i64 = row.get(20)?;
     let failed: i64 = row.get(21)?;
     let skipped: i64 = row.get(22)?;
+    let frame_order_mode: String = row.get(34)?;
+    let ready_workers: i64 = row.get(35)?;
+    let active_workers: i64 = row.get(36)?;
+    let configured_parallelism: i64 = row.get(28)?;
     let progress = if total > 0 {
         ((completed + failed + skipped) as f64 / total as f64) * 100.0
     } else {
@@ -742,7 +1125,17 @@ fn row_to_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<RenderJob> {
         frame_start: row.get(7)?,
         frame_end: row.get(8)?,
         frame_step: row.get(9)?,
-        parallelism: row.get(28)?,
+        parallelism: configured_parallelism,
+        effective_parallelism: if frame_order_mode == "strict" {
+            1
+        } else if active_workers > 0 {
+            active_workers
+        } else {
+            configured_parallelism
+        },
+        ready_workers,
+        execution_mode: row.get(33)?,
+        frame_order_mode,
         output_dir: row.get(10)?,
         blender_path: row.get(11)?,
         current_frame: row.get(12)?,
@@ -761,6 +1154,11 @@ fn row_to_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<RenderJob> {
         peak_cpu_usage: row.get(25)?,
         peak_memory_bytes: row.get(26)?,
         performance_updated_at: row.get(27)?,
+        position: row.get(18)?,
+        batch_name: row.get(29)?,
+        batch_status: row.get(30)?,
+        batch_position: row.get(31)?,
+        attention_code: row.get(32)?,
     })
 }
 
@@ -771,6 +1169,8 @@ fn render_job_settings(job: &RenderJob, spec: &Value) -> RenderJobSettings {
         frame_end: job.frame_end,
         frame_step: job.frame_step,
         parallelism: job.parallelism,
+        execution_mode: job.execution_mode.clone(),
+        frame_order_mode: job.frame_order_mode.clone(),
         resolution_percentage: spec
             .get("resolutionPercentage")
             .and_then(Value::as_i64)
@@ -792,8 +1192,11 @@ const JOB_SELECT: &str = r#"SELECT j.id,j.batch_id,j.project_path,j.name,j.blend
     (SELECT COUNT(*) FROM render_frames f WHERE f.job_id=j.id AND f.status='completed'),
     (SELECT COUNT(*) FROM render_frames f WHERE f.job_id=j.id AND f.status='failed'),
     (SELECT COUNT(*) FROM render_frames f WHERE f.job_id=j.id AND f.status='skipped'),
-    j.cpu_usage,j.memory_bytes,j.peak_cpu_usage,j.peak_memory_bytes,j.performance_updated_at,j.parallelism
-    FROM render_jobs j"#;
+    j.cpu_usage,j.memory_bytes,j.peak_cpu_usage,j.peak_memory_bytes,j.performance_updated_at,j.parallelism,
+    b.name,b.status,b.position,j.attention_code,j.execution_mode,j.frame_order_mode,
+    (SELECT COUNT(*) FROM render_workers w WHERE w.job_id=j.id AND w.state IN ('ready','rendering')),
+    (SELECT COUNT(*) FROM render_workers w WHERE w.job_id=j.id AND w.state IN ('starting','ready','rendering'))
+    FROM render_jobs j JOIN render_batches b ON b.id=j.batch_id"#;
 
 fn median(values: &[f64]) -> f64 {
     let mut sorted = values.to_vec();
@@ -831,7 +1234,7 @@ fn estimate_render_eta(job: &RenderJob, frames: &[RenderFrame], now_ms: i64) -> 
         .enumerate()
         .filter_map(|(index, frame)| {
             (frame.status == "completed")
-                .then_some(frame.duration_ms)
+                .then_some(frame.render_duration_ms.or(frame.duration_ms))
                 .flatten()
                 .filter(|duration| *duration > 0)
                 .map(|duration| (index, duration as f64))
@@ -842,7 +1245,7 @@ fn estimate_render_eta(job: &RenderJob, frames: &[RenderFrame], now_ms: i64) -> 
     let state = match job.status.as_str() {
         "completed" => Some(("completed", Some(0))),
         "paused" => Some(("paused", None)),
-        "failed" | "cancelled" => Some(("unavailable", None)),
+        "failed" | "cancelled" | "attention" => Some(("unavailable", None)),
         _ => None,
     };
     if let Some((status, remaining_ms)) = state {
@@ -933,7 +1336,7 @@ fn estimate_render_eta(job: &RenderJob, frames: &[RenderFrame], now_ms: i64) -> 
         .unwrap_or(mean_x);
     const TREND_FORECAST_HORIZON: f64 = 8.0;
 
-    let mut worker_loads = vec![0.0_f64; job.parallelism.clamp(1, 8) as usize];
+    let mut worker_loads = vec![0.0_f64; job.effective_parallelism.clamp(1, 8) as usize];
     for (index, frame) in frames.iter().enumerate() {
         if !matches!(frame.status.as_str(), "pending" | "running") {
             continue;
@@ -1004,7 +1407,7 @@ pub async fn list_render_jobs(
     init_project_storage(&project_path)?;
     let conn = open_db(&project_path)?;
     let sql = format!(
-        "{} JOIN render_batches b ON b.id=j.batch_id WHERE (?1=1 OR j.archived=0) ORDER BY b.position ASC, j.position ASC, j.created_at ASC",
+        "{} WHERE (?1=1 OR j.archived=0) ORDER BY b.position ASC, j.position ASC, j.created_at ASC",
         JOB_SELECT
     );
     let mut stmt = conn.prepare(&sql).map_err(|error| error.to_string())?;
@@ -1038,7 +1441,7 @@ pub async fn get_render_job(
         .map_err(|error| error.to_string())?;
     let spec = serde_json::from_str(&spec_json).unwrap_or(Value::Null);
     let settings = render_job_settings(&job, &spec);
-    let mut stmt = conn.prepare("SELECT job_id,frame,status,attempts,output_path,error,duration_ms,updated_at FROM render_frames WHERE job_id=?1 ORDER BY frame")
+    let mut stmt = conn.prepare("SELECT job_id,frame,status,attempts,output_path,error,duration_ms,updated_at,render_duration_ms,worker_id,claim_token FROM render_frames WHERE job_id=?1 ORDER BY frame")
         .map_err(|error| error.to_string())?;
     let frames = stmt
         .query_map(params![job.id], |row| {
@@ -1051,6 +1454,9 @@ pub async fn get_render_job(
                 error: row.get(5)?,
                 duration_ms: row.get(6)?,
                 updated_at: row.get(7)?,
+                render_duration_ms: row.get(8)?,
+                worker_id: row.get(9)?,
+                claim_token: row.get(10)?,
             })
         })
         .map_err(|error| error.to_string())?
@@ -1093,6 +1499,40 @@ pub async fn get_render_job(
         .map_err(|error| error.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
+    let mut worker_stmt = conn
+        .prepare("SELECT worker_id,ordinal,pid,state,current_frame,startup_ms,error,updated_at FROM render_workers WHERE job_id=?1 ORDER BY ordinal")
+        .map_err(|error| error.to_string())?;
+    let workers = worker_stmt
+        .query_map(params![job.id], |row| {
+            Ok(RenderWorkerState {
+                worker_id: row.get(0)?,
+                ordinal: row.get(1)?,
+                pid: row
+                    .get::<_, Option<i64>>(2)?
+                    .map(|value| value.max(0) as u32),
+                state: row.get(3)?,
+                current_frame: row.get(4)?,
+                startup_ms: row.get(5)?,
+                error: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    let startup_values: Vec<i64> = workers
+        .iter()
+        .filter_map(|worker| worker.startup_ms)
+        .collect();
+    let startup = RenderStartupStats {
+        requested_workers: job.effective_parallelism,
+        ready_workers: workers
+            .iter()
+            .filter(|worker| matches!(worker.state.as_str(), "ready" | "rendering"))
+            .count() as i64,
+        average_startup_ms: (!startup_values.is_empty())
+            .then(|| startup_values.iter().sum::<i64>() / startup_values.len() as i64),
+    };
     Ok(RenderJobDetail {
         job,
         settings,
@@ -1100,6 +1540,8 @@ pub async fn get_render_job(
         log_tail,
         performance_samples,
         eta,
+        workers,
+        startup,
     })
 }
 
@@ -1120,6 +1562,8 @@ fn update_render_job_settings(
     if !(1..=100).contains(&request.resolution_percentage) {
         return Err("分辨率比例必须在 1 到 100 之间".into());
     }
+    let execution_mode = normalize_execution_mode(&request.execution_mode)?;
+    let frame_order_mode = normalize_frame_order_mode(&request.frame_order_mode)?;
     let output_format = normalize_output_format(&request.output_format)?;
     let transaction = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -1179,6 +1623,8 @@ fn update_render_job_settings(
     spec["frameEnd"] = json!(request.frame_end);
     spec["frameStep"] = json!(request.frame_step);
     spec["parallelism"] = json!(request.parallelism);
+    spec["executionMode"] = json!(execution_mode);
+    spec["frameOrderMode"] = json!(frame_order_mode);
     spec["resolutionPercentage"] = json!(request.resolution_percentage);
     spec["engine"] = json!(request.engine);
     spec["outputFormat"] = json!(output_format);
@@ -1254,7 +1700,7 @@ fn update_render_job_settings(
                 }
                 transaction
                     .execute(
-                        "UPDATE render_frames SET status='pending',attempts=0,error=NULL,duration_ms=NULL,force_render=0,updated_at=?3 WHERE job_id=?1 AND frame=?2",
+                    "UPDATE render_frames SET status='pending',attempts=0,error=NULL,duration_ms=NULL,render_duration_ms=NULL,force_render=0,worker_id=NULL,claim_token=NULL,claimed_at=NULL,temp_output_path=NULL,updated_at=?3 WHERE job_id=?1 AND frame=?2",
                         params![job_id, frame, now()],
                     )
                     .map_err(|error| error.to_string())?;
@@ -1274,7 +1720,7 @@ fn update_render_job_settings(
                 .map_err(|error| error.to_string())?;
             transaction
                 .execute(
-                    "UPDATE render_frames SET status='pending',attempts=0,output_path=?3,error=NULL,duration_ms=NULL,force_render=1,updated_at=?4 WHERE job_id=?1 AND frame=?2",
+                    "UPDATE render_frames SET status='pending',attempts=0,output_path=?3,error=NULL,duration_ms=NULL,render_duration_ms=NULL,force_render=1,worker_id=NULL,claim_token=NULL,claimed_at=NULL,temp_output_path=NULL,updated_at=?4 WHERE job_id=?1 AND frame=?2",
                     params![job_id, frame, output_path, now()],
                 )
                 .map_err(|error| error.to_string())?;
@@ -1318,8 +1764,8 @@ fn update_render_job_settings(
     let name = format!("{} · {}", blend_stem, request.scene_name);
     transaction
         .execute(
-            "UPDATE render_jobs SET name=?2,scene_name=?3,frame_start=?4,frame_end=?5,frame_step=?6,parallelism=?7,spec_json=?8,status=?9,current_frame=NULL,error=CASE WHEN ?10 THEN NULL ELSE error END,finished_at=CASE WHEN ?11 THEN NULL ELSE finished_at END WHERE id=?1",
-            params![job_id,name,request.scene_name,request.frame_start,request.frame_end,request.frame_step,request.parallelism,spec.to_string(),next_status,clear_error,requires_more_work],
+            "UPDATE render_jobs SET name=?2,scene_name=?3,frame_start=?4,frame_end=?5,frame_step=?6,parallelism=?7,execution_mode=?8,frame_order_mode=?9,spec_json=?10,status=?11,current_frame=NULL,error=CASE WHEN ?12 THEN NULL ELSE error END,attention_code=NULL,finished_at=CASE WHEN ?13 THEN NULL ELSE finished_at END WHERE id=?1",
+            params![job_id,name,request.scene_name,request.frame_start,request.frame_end,request.frame_step,request.parallelism,execution_mode,frame_order_mode,spec.to_string(),next_status,clear_error,requires_more_work],
         )
         .map_err(|error| error.to_string())?;
     transaction.commit().map_err(|error| error.to_string())?;
@@ -1378,17 +1824,71 @@ fn emit_progress(
     );
 }
 
-fn kick_scheduler(app: tauri::AppHandle, project_path: String) {
-    RUNTIME
+fn register_runtime_project(project_path: &str) {
+    let mut runtime = RUNTIME.lock().unwrap();
+    if runtime.projects.insert(project_path.to_string()) {
+        runtime.project_order.push(project_path.to_string());
+    }
+}
+
+fn publish_worker_state(
+    app: &tauri::AppHandle,
+    project_path: &str,
+    job_id: &str,
+    control: &Arc<Mutex<JobControl>>,
+    worker: RenderWorkerState,
+) {
+    if let Ok(conn) = open_db(project_path) {
+        let _ = conn.execute(
+            "INSERT INTO render_workers(worker_id,job_id,ordinal,pid,state,current_frame,startup_ms,error,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(worker_id) DO UPDATE SET pid=excluded.pid,state=excluded.state,current_frame=excluded.current_frame,startup_ms=excluded.startup_ms,error=excluded.error,updated_at=excluded.updated_at",
+            params![worker.worker_id, job_id, worker.ordinal, worker.pid.map(i64::from), worker.state, worker.current_frame, worker.startup_ms, worker.error, worker.updated_at],
+        );
+    }
+    control
         .lock()
         .unwrap()
-        .projects
-        .insert(project_path.clone());
+        .workers
+        .insert(worker.worker_id.clone(), worker.clone());
+    let _ = app.emit(
+        "pm-center:render-worker-progress",
+        json!({
+            "projectPath": project_path,
+            "jobId": job_id,
+            "worker": worker,
+        }),
+    );
+    emit_progress(app, project_path, job_id, worker.current_frame, "worker");
+}
+
+fn worker_state(
+    worker_id: &str,
+    ordinal: i64,
+    pid: Option<u32>,
+    state: &str,
+    current_frame: Option<i64>,
+    startup_ms: Option<i64>,
+    error: Option<String>,
+) -> RenderWorkerState {
+    RenderWorkerState {
+        worker_id: worker_id.to_string(),
+        ordinal,
+        pid,
+        state: state.to_string(),
+        current_frame,
+        startup_ms,
+        error,
+        updated_at: now(),
+    }
+}
+
+fn kick_scheduler(app: tauri::AppHandle, project_path: String) {
+    register_runtime_project(&project_path);
     tauri::async_runtime::spawn(async move {
         let _scheduler_guard = SCHEDULER_LOCK.lock().await;
+        let mut started_job = false;
+        let concurrency = load_scheduler_settings(&app).concurrency.clamp(1, 8) as usize;
         loop {
             let _ = advance_batch_queue(&project_path);
-            let concurrency = load_scheduler_settings(&app).concurrency.clamp(1, 8) as usize;
             let running_total = RUNTIME.lock().unwrap().running.len();
             if running_total >= concurrency {
                 break;
@@ -1428,6 +1928,11 @@ fn kick_scheduler(app: tauri::AppHandle, project_path: String) {
                 emit_queue(&app_clone, &project_clone);
                 kick_all_schedulers(app_clone);
             });
+            started_job = true;
+            break;
+        }
+        if started_job && RUNTIME.lock().unwrap().running.len() < concurrency {
+            kick_all_schedulers(app.clone());
         }
     });
 }
@@ -1435,7 +1940,7 @@ fn kick_scheduler(app: tauri::AppHandle, project_path: String) {
 fn advance_batch_queue(project_path: &str) -> Result<(), String> {
     let conn = open_db(project_path)?;
     conn.execute(
-        "UPDATE render_batches SET status=CASE WHEN EXISTS (SELECT 1 FROM render_jobs WHERE render_jobs.batch_id=render_batches.id AND render_jobs.status='failed') THEN 'failed' WHEN EXISTS (SELECT 1 FROM render_jobs WHERE render_jobs.batch_id=render_batches.id AND render_jobs.status='cancelled') THEN 'cancelled' ELSE 'completed' END,updated_at=?2 WHERE project_path=?1 AND status='running' AND NOT EXISTS (SELECT 1 FROM render_jobs WHERE render_jobs.batch_id=render_batches.id AND render_jobs.status IN ('pending','starting','running','pausing','paused'))",
+        "UPDATE render_batches SET status=CASE WHEN EXISTS (SELECT 1 FROM render_jobs WHERE render_jobs.batch_id=render_batches.id AND render_jobs.status='failed') THEN 'failed' WHEN EXISTS (SELECT 1 FROM render_jobs WHERE render_jobs.batch_id=render_batches.id AND render_jobs.status='cancelled') THEN 'cancelled' ELSE 'completed' END,updated_at=?2 WHERE project_path=?1 AND status='running' AND NOT EXISTS (SELECT 1 FROM render_jobs WHERE render_jobs.batch_id=render_batches.id AND render_jobs.status IN ('pending','starting','running','pausing','paused','attention'))",
         params![project_path, now()],
     )
     .map_err(|error| error.to_string())?;
@@ -1466,15 +1971,43 @@ fn advance_batch_queue(project_path: &str) -> Result<(), String> {
     )
     .map_err(|error| error.to_string())?;
     conn.execute(
-        "UPDATE render_jobs SET status='pending',error=NULL,finished_at=NULL WHERE batch_id=?1 AND status IN ('paused','cancelled') AND archived=0",
+        "UPDATE render_jobs SET status='pending',error=NULL,finished_at=NULL WHERE batch_id=?1 AND status='paused' AND archived=0",
         params![batch_id],
     )
     .map_err(|error| error.to_string())?;
+    let live_jobs: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM render_jobs WHERE batch_id=?1 AND archived=0 AND status IN ('pending','starting','running','pausing','paused','attention')",
+            params![batch_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if live_jobs == 0 {
+        conn.execute(
+            "UPDATE render_batches SET status=CASE WHEN EXISTS (SELECT 1 FROM render_jobs WHERE batch_id=?1 AND status='failed') THEN 'failed' WHEN EXISTS (SELECT 1 FROM render_jobs WHERE batch_id=?1 AND status='cancelled') THEN 'cancelled' ELSE 'completed' END,updated_at=?2 WHERE id=?1",
+            params![batch_id, now()],
+        )
+        .map_err(|error| error.to_string())?;
+        drop(conn);
+        return advance_batch_queue(project_path);
+    }
     Ok(())
 }
 
 fn kick_all_schedulers(app: tauri::AppHandle) {
-    let projects: Vec<String> = RUNTIME.lock().unwrap().projects.iter().cloned().collect();
+    let projects = {
+        let mut runtime = RUNTIME.lock().unwrap();
+        if runtime.project_order.is_empty() {
+            Vec::new()
+        } else {
+            let len = runtime.project_order.len();
+            let start = runtime.project_cursor % len;
+            runtime.project_cursor = (start + 1) % len;
+            (0..len)
+                .map(|offset| runtime.project_order[(start + offset) % len].clone())
+                .collect::<Vec<_>>()
+        }
+    };
     for project_path in projects {
         kick_scheduler(app.clone(), project_path);
     }
@@ -1490,14 +2023,76 @@ struct JobExecutionSpec {
     force_overwrite: bool,
     max_retries: i64,
     parallelism: i64,
+    execution_mode: String,
+    frame_order_mode: String,
     spec: Value,
 }
 
 fn load_execution_spec(conn: &Connection, job_id: &str) -> Result<JobExecutionSpec, String> {
-    conn.query_row("SELECT blend_path,scene_name,blender_path,pre_hook,post_hook,force_overwrite,max_retries,spec_json,parallelism FROM render_jobs WHERE id=?1", params![job_id], |row| {
+    conn.query_row("SELECT blend_path,scene_name,blender_path,pre_hook,post_hook,force_overwrite,max_retries,spec_json,parallelism,execution_mode,frame_order_mode FROM render_jobs WHERE id=?1", params![job_id], |row| {
         let spec_json: String = row.get(7)?;
-        Ok(JobExecutionSpec { blend_path: row.get(0)?, scene_name: row.get(1)?, blender_path: row.get(2)?, pre_hook: row.get(3)?, post_hook: row.get(4)?, force_overwrite: row.get::<_,i64>(5)? != 0, max_retries: row.get(6)?, spec: serde_json::from_str(&spec_json).unwrap_or(Value::Null), parallelism: row.get::<_,i64>(8)?.clamp(1,8) })
+        Ok(JobExecutionSpec { blend_path: row.get(0)?, scene_name: row.get(1)?, blender_path: row.get(2)?, pre_hook: row.get(3)?, post_hook: row.get(4)?, force_overwrite: row.get::<_,i64>(5)? != 0, max_retries: row.get(6)?, spec: serde_json::from_str(&spec_json).unwrap_or(Value::Null), parallelism: row.get::<_,i64>(8)?.clamp(1,8), execution_mode: row.get(9)?, frame_order_mode: row.get(10)? })
     }).map_err(|error| error.to_string())
+}
+
+fn verify_job_source(
+    app: &tauri::AppHandle,
+    project_path: &str,
+    job_id: &str,
+    blend_path: &str,
+    control: &Arc<Mutex<JobControl>>,
+) -> Result<(), String> {
+    let _verification_guard = SOURCE_VERIFY_LOCK.lock().unwrap();
+    if let Ok(metadata) = fs::metadata(blend_path) {
+        let modified_at = metadata
+            .modified()
+            .ok()
+            .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|value| value.as_millis().min(i64::MAX as u128) as i64)
+            .unwrap_or(0);
+        if control
+            .lock()
+            .unwrap()
+            .verified_source
+            .as_ref()
+            .is_some_and(|value| {
+                value.size == metadata.len().min(i64::MAX as u64) as i64
+                    && value.modified_at == modified_at
+            })
+        {
+            return Ok(());
+        }
+    }
+    let fingerprint = source_fingerprint(Path::new(blend_path))?;
+    let conn = open_db(project_path)?;
+    let (stored_hash, completed): (Option<String>, i64) = conn
+        .query_row(
+            "SELECT source_hash,(SELECT COUNT(*) FROM render_frames WHERE job_id=?1 AND status IN ('completed','skipped')) FROM render_jobs WHERE id=?1",
+            params![job_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|error| error.to_string())?;
+    if stored_hash
+        .as_deref()
+        .is_none_or(|value| value == fingerprint.hash)
+        || completed == 0
+    {
+        conn.execute(
+            "UPDATE render_jobs SET source_hash=?2,source_size=?3,source_modified_at=?4,attention_code=NULL,error=CASE WHEN attention_code='source_changed' THEN NULL ELSE error END WHERE id=?1",
+            params![job_id, fingerprint.hash, fingerprint.size, fingerprint.modified_at],
+        )
+        .map_err(|error| error.to_string())?;
+        control.lock().unwrap().verified_source = Some(fingerprint);
+        return Ok(());
+    }
+    conn.execute(
+        "UPDATE render_jobs SET status='attention',attention_code='source_changed',error='源 Blender 文件已变化，请确认全部重新渲染后再继续',current_frame=NULL WHERE id=?1",
+        params![job_id],
+    )
+    .map_err(|error| error.to_string())?;
+    control.lock().unwrap().attention = true;
+    emit_progress(app, project_path, job_id, None, "source-changed");
+    Err("源 Blender 文件已变化".into())
 }
 
 async fn run_hook(
@@ -1543,7 +2138,12 @@ async fn run_job(
 ) -> Result<(), String> {
     let conn = open_db(project_path)?;
     let spec = load_execution_spec(&conn, job_id)?;
-    conn.execute("UPDATE render_jobs SET status='running',started_at=COALESCE(started_at,?2),finished_at=NULL,error=NULL WHERE id=?1 AND status IN ('pending','starting')", params![job_id, now()]).map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM render_workers WHERE job_id=?1",
+        params![job_id],
+    )
+    .map_err(|error| error.to_string())?;
+    conn.execute("UPDATE render_jobs SET status='starting',started_at=COALESCE(started_at,?2),finished_at=NULL,error=NULL,attention_code=NULL WHERE id=?1 AND status IN ('pending','starting')", params![job_id, now()]).map_err(|e| e.to_string())?;
     emit_progress(app, project_path, job_id, None, "starting");
     if let Err(error) = run_hook(app, project_path, job_id, spec.pre_hook.as_deref(), "前置").await
     {
@@ -1554,23 +2154,35 @@ async fn run_job(
         .join(".pm_center/render_jobs")
         .join(job_id);
     let bootstrap = write_runtime_scripts(&job_dir)?;
+    let persistent_worker = write_persistent_worker_script(&job_dir)?;
     let mut workers = Vec::new();
-    for _ in 0..spec.parallelism {
+    let desired_workers = if spec.frame_order_mode == "strict" {
+        1
+    } else {
+        spec.parallelism
+    };
+    for ordinal in 0..desired_workers {
         let app = app.clone();
         let project_path = project_path.to_string();
         let job_id = job_id.to_string();
         let spec = spec.clone();
         let bootstrap = bootstrap.clone();
+        let persistent_worker = persistent_worker.clone();
         let job_dir = job_dir.clone();
         let control = control.clone();
         workers.push(tauri::async_runtime::spawn(async move {
+            if ordinal > 0 {
+                tokio::time::sleep(Duration::from_millis((ordinal as u64) * 75)).await;
+            }
             run_job_worker(
                 &app,
                 &project_path,
                 &job_id,
                 &spec,
                 &bootstrap,
+                &persistent_worker,
                 &job_dir,
+                ordinal,
                 control,
             )
             .await
@@ -1588,13 +2200,29 @@ async fn run_job(
             }
         };
     }
-    let (cancel, pause) = {
+    let (cancel, pause, attention) = {
         let value = control.lock().unwrap();
-        (value.cancel, value.pause)
+        (value.cancel, value.pause, value.attention)
     };
+    let temp_outputs = conn
+        .prepare("SELECT temp_output_path FROM render_frames WHERE job_id=?1 AND status='running' AND temp_output_path IS NOT NULL")
+        .and_then(|mut statement| {
+            statement
+                .query_map(params![job_id], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .unwrap_or_default();
+    for path in temp_outputs {
+        let _ = fs::remove_file(path);
+    }
     conn.execute(
-        "UPDATE render_frames SET status='pending',error=NULL WHERE job_id=?1 AND status='running'",
+        "DELETE FROM render_attempts WHERE job_id=?1 AND status='running'",
         params![job_id],
+    )
+    .map_err(|error| error.to_string())?;
+    conn.execute(
+        "UPDATE render_frames SET status='pending',error=NULL,worker_id=NULL,claim_token=NULL,claimed_at=NULL,temp_output_path=NULL,updated_at=?2 WHERE job_id=?1 AND status='running'",
+        params![job_id, now()],
     )
     .map_err(|error| error.to_string())?;
     if cancel {
@@ -1609,6 +2237,9 @@ async fn run_job(
         )
         .map_err(|error| error.to_string())?;
         emit_progress(app, project_path, job_id, None, "paused");
+        return Ok(());
+    }
+    if attention {
         return Ok(());
     }
     if let Some(error) = worker_error {
@@ -1642,11 +2273,42 @@ async fn run_job(
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+struct ClaimedFrame {
+    frame: i64,
+    output_path: String,
+    attempts: i64,
+    force_render: bool,
+    worker_id: String,
+    claim_token: String,
+    temp_output_path: String,
+}
+
+fn temporary_output_path(output_path: &str, claim_token: &str) -> Result<String, String> {
+    let output = Path::new(output_path);
+    let parent = output
+        .parent()
+        .ok_or_else(|| format!("输出路径没有父目录: {output_path}"))?;
+    let file_name = output
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| format!("输出文件名无效: {output_path}"))?;
+    let extension = output
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("tmp");
+    Ok(parent
+        .join(format!(".{file_name}.{claim_token}.pm-part.{extension}"))
+        .to_string_lossy()
+        .to_string())
+}
+
 fn claim_next_frame(
     conn: &mut Connection,
     job_id: &str,
     max_retries: i64,
-) -> Result<Option<(i64, String, i64, bool)>, String> {
+    worker_id: &str,
+) -> Result<Option<ClaimedFrame>, String> {
     let transaction = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| error.to_string())?;
@@ -1658,16 +2320,196 @@ fn claim_next_frame(
         )
         .optional()
         .map_err(|error| error.to_string())?;
-    if let Some((frame, _, _, _)) = &next {
+    let claimed = if let Some((frame, output_path, attempts, force_render)) = next {
+        let claim_token = Uuid::new_v4().to_string();
+        let temp_output_path = temporary_output_path(&output_path, &claim_token)?;
+        let updated = transaction
+            .execute(
+                "UPDATE render_frames SET status='running',error=NULL,worker_id=?3,claim_token=?4,claimed_at=?5,temp_output_path=?6,updated_at=?5 WHERE job_id=?1 AND frame=?2 AND status IN ('pending','failed') AND claim_token IS NULL",
+                params![job_id, frame, worker_id, claim_token, now(), temp_output_path],
+            )
+            .map_err(|error| error.to_string())?;
+        (updated == 1).then_some(ClaimedFrame {
+            frame,
+            output_path,
+            attempts,
+            force_render,
+            worker_id: worker_id.to_string(),
+            claim_token,
+            temp_output_path,
+        })
+    } else {
+        None
+    };
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(claimed)
+}
+
+fn begin_frame_attempt(
+    conn: &Connection,
+    job_id: &str,
+    claim: &ClaimedFrame,
+) -> Result<i64, String> {
+    let attempt = claim.attempts + 1;
+    conn.execute(
+        "INSERT INTO render_attempts(job_id,frame,attempt,status,started_at,worker_id,claim_token,temp_output_path) VALUES(?1,?2,?3,'running',?4,?5,?6,?7)",
+        params![job_id, claim.frame, attempt, now(), claim.worker_id, claim.claim_token, claim.temp_output_path],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(attempt)
+}
+
+fn release_frame_claim(
+    conn: &Connection,
+    job_id: &str,
+    claim: &ClaimedFrame,
+) -> Result<(), String> {
+    let _ = fs::remove_file(&claim.temp_output_path);
+    conn.execute(
+        "DELETE FROM render_attempts WHERE job_id=?1 AND frame=?2 AND claim_token=?3 AND status='running'",
+        params![job_id, claim.frame, claim.claim_token],
+    )
+    .map_err(|error| error.to_string())?;
+    conn.execute(
+        "UPDATE render_frames SET status='pending',error=NULL,worker_id=NULL,claim_token=NULL,claimed_at=NULL,temp_output_path=NULL,updated_at=?4 WHERE job_id=?1 AND frame=?2 AND claim_token=?3",
+        params![job_id, claim.frame, claim.claim_token, now()],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn mark_claim_skipped(conn: &Connection, job_id: &str, claim: &ClaimedFrame) -> Result<(), String> {
+    conn.execute(
+        "UPDATE render_frames SET status='skipped',error=NULL,worker_id=NULL,claim_token=NULL,claimed_at=NULL,temp_output_path=NULL,updated_at=?4 WHERE job_id=?1 AND frame=?2 AND claim_token=?3",
+        params![job_id, claim.frame, claim.claim_token, now()],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn atomic_replace_output(temp_path: &Path, output_path: &Path) -> Result<(), String> {
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::PCWSTR;
+        use windows::Win32::Storage::FileSystem::{
+            MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        };
+        let from: Vec<u16> = temp_path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let to: Vec<u16> = output_path
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        unsafe {
+            MoveFileExW(
+                PCWSTR(from.as_ptr()),
+                PCWSTR(to.as_ptr()),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+            .map_err(|error| format!("提交渲染输出失败: {error}"))?;
+        }
+        return Ok(());
+    }
+    #[cfg(not(windows))]
+    {
+        fs::rename(temp_path, output_path).map_err(|error| format!("提交渲染输出失败: {error}"))
+    }
+}
+
+fn complete_frame_claim(
+    conn: &mut Connection,
+    job_id: &str,
+    claim: &ClaimedFrame,
+    attempt: i64,
+    render_duration_ms: i64,
+    wall_duration_ms: i64,
+    expected_dimensions: Option<(u32, u32)>,
+) -> Result<bool, String> {
+    if !valid_output_with_dimensions(Path::new(&claim.temp_output_path), expected_dimensions) {
+        return Err("Blender 未生成有效输出文件".into());
+    }
+    let transaction = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    let changed = transaction
+        .execute(
+            "UPDATE render_frames SET status='committing',updated_at=?4 WHERE job_id=?1 AND frame=?2 AND claim_token=?3 AND status='running'",
+            params![job_id, claim.frame, claim.claim_token, now()],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    if changed == 0 {
+        let _ = fs::remove_file(&claim.temp_output_path);
+        return Ok(false);
+    }
+    if let Err(error) = atomic_replace_output(
+        Path::new(&claim.temp_output_path),
+        Path::new(&claim.output_path),
+    ) {
+        conn.execute(
+            "UPDATE render_frames SET status='running',updated_at=?4 WHERE job_id=?1 AND frame=?2 AND claim_token=?3 AND status='committing'",
+            params![job_id, claim.frame, claim.claim_token, now()],
+        )
+        .map_err(|db_error| db_error.to_string())?;
+        return Err(error);
+    }
+    let size = fs::metadata(&claim.output_path)
+        .map(|metadata| metadata.len() as i64)
+        .unwrap_or(0);
+    let transaction = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    let committed = transaction
+        .execute(
+            "UPDATE render_frames SET status='completed',attempts=?4,duration_ms=?5,render_duration_ms=?6,error=NULL,force_render=0,worker_id=NULL,claim_token=NULL,claimed_at=NULL,temp_output_path=NULL,updated_at=?7 WHERE job_id=?1 AND frame=?2 AND claim_token=?3 AND status='committing'",
+            params![job_id, claim.frame, claim.claim_token, attempt, wall_duration_ms, render_duration_ms, now()],
+        )
+        .map_err(|error| error.to_string())?;
+    if committed == 1 {
         transaction
             .execute(
-                "UPDATE render_frames SET status='running',error=NULL,updated_at=?3 WHERE job_id=?1 AND frame=?2",
-                params![job_id, frame, now()],
+                "UPDATE render_attempts SET status='completed',finished_at=?4,exit_code=0,render_duration_ms=?5 WHERE job_id=?1 AND frame=?2 AND claim_token=?3",
+                params![job_id, claim.frame, claim.claim_token, now(), render_duration_ms],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "INSERT INTO render_artifacts(job_id,frame,path,size_bytes,created_at) VALUES(?1,?2,?3,?4,?5)",
+                params![job_id, claim.frame, claim.output_path, size, now()],
             )
             .map_err(|error| error.to_string())?;
     }
     transaction.commit().map_err(|error| error.to_string())?;
-    Ok(next)
+    Ok(committed == 1)
+}
+
+fn fail_frame_claim(
+    conn: &Connection,
+    job_id: &str,
+    claim: &ClaimedFrame,
+    attempt: i64,
+    max_retries: i64,
+    wall_duration_ms: i64,
+    render_duration_ms: Option<i64>,
+    error: &str,
+) -> Result<bool, String> {
+    let _ = fs::remove_file(&claim.temp_output_path);
+    let final_failure = attempt > max_retries;
+    conn.execute(
+        "UPDATE render_frames SET status=?4,attempts=?5,duration_ms=?6,render_duration_ms=?7,error=?8,worker_id=NULL,claim_token=NULL,claimed_at=NULL,temp_output_path=NULL,updated_at=?9 WHERE job_id=?1 AND frame=?2 AND claim_token=?3",
+        params![job_id, claim.frame, claim.claim_token, if final_failure { "failed" } else { "pending" }, attempt, wall_duration_ms, render_duration_ms, error, now()],
+    )
+    .map_err(|db_error| db_error.to_string())?;
+    conn.execute(
+        "UPDATE render_attempts SET status='failed',finished_at=?4,exit_code=-1,error=?5,render_duration_ms=?6 WHERE job_id=?1 AND frame=?2 AND claim_token=?3",
+        params![job_id, claim.frame, claim.claim_token, now(), error, render_duration_ms],
+    )
+    .map_err(|db_error| db_error.to_string())?;
+    Ok(final_failure)
 }
 
 fn refresh_current_frame(conn: &Connection, job_id: &str) -> Result<(), String> {
@@ -1685,52 +2527,156 @@ async fn run_job_worker(
     job_id: &str,
     spec: &JobExecutionSpec,
     bootstrap: &Path,
+    persistent_script: &Path,
     job_dir: &Path,
+    ordinal: i64,
+    control: Arc<Mutex<JobControl>>,
+) -> Result<(), String> {
+    let Some(mut slot) = acquire_process_slot(app, &control).await else {
+        return Ok(());
+    };
+    let worker_id = format!(
+        "{}-{}-{}",
+        &job_id[..job_id.len().min(8)],
+        ordinal + 1,
+        &Uuid::new_v4().to_string()[..8]
+    );
+    if spec.execution_mode == "isolated" {
+        return run_isolated_worker(
+            app,
+            project_path,
+            job_id,
+            spec,
+            bootstrap,
+            job_dir,
+            &worker_id,
+            ordinal,
+            &mut slot,
+            control,
+        )
+        .await;
+    }
+    let mut startup_failures = 0_i64;
+    loop {
+        let interrupted = {
+            let value = control.lock().unwrap();
+            value.cancel || value.pause || value.attention
+        };
+        if interrupted {
+            return Ok(());
+        }
+        verify_job_source(app, project_path, job_id, &spec.blend_path, &control)?;
+        match run_persistent_worker_process(
+            app,
+            project_path,
+            job_id,
+            spec,
+            persistent_script,
+            job_dir,
+            &worker_id,
+            ordinal,
+            &mut slot,
+            control.clone(),
+        )
+        .await?
+        {
+            PersistentWorkerOutcome::Complete => return Ok(()),
+            PersistentWorkerOutcome::Restart => startup_failures = 0,
+            PersistentWorkerOutcome::StartupFailed(error) => {
+                startup_failures += 1;
+                if startup_failures > 2 {
+                    return Err(format!("Blender Worker 连续启动失败: {error}"));
+                }
+                tokio::time::sleep(Duration::from_secs(if startup_failures == 1 {
+                    5
+                } else {
+                    15
+                }))
+                .await;
+            }
+        }
+    }
+}
+
+async fn run_isolated_worker(
+    app: &tauri::AppHandle,
+    project_path: &str,
+    job_id: &str,
+    spec: &JobExecutionSpec,
+    bootstrap: &Path,
+    job_dir: &Path,
+    worker_id: &str,
+    ordinal: i64,
+    slot: &mut ProcessSlotPermit,
     control: Arc<Mutex<JobControl>>,
 ) -> Result<(), String> {
     let mut conn = open_db(project_path)?;
     loop {
-        let (cancel, pause) = {
+        let (cancel, pause, attention) = {
             let value = control.lock().unwrap();
-            (value.cancel, value.pause)
+            (value.cancel, value.pause, value.attention)
         };
-        if cancel || pause {
+        if cancel || pause || attention {
             return Ok(());
         }
-        let Some((frame, output_path, attempts, force_render)) =
-            claim_next_frame(&mut conn, job_id, spec.max_retries)?
-        else {
+        if slot.retire_if_over_limit(app) {
+            return Ok(());
+        }
+        verify_job_source(app, project_path, job_id, &spec.blend_path, &control)?;
+        let Some(claim) = claim_next_frame(&mut conn, job_id, spec.max_retries, worker_id)? else {
             return Ok(());
         };
         refresh_current_frame(&conn, job_id)?;
-        if !spec.force_overwrite && !force_render && valid_output(Path::new(&output_path)) {
-            conn.execute("UPDATE render_frames SET status='skipped',error=NULL,updated_at=?3 WHERE job_id=?1 AND frame=?2", params![job_id, frame, now()]).map_err(|error| error.to_string())?;
+        if !spec.force_overwrite
+            && !claim.force_render
+            && valid_output(Path::new(&claim.output_path))
+        {
+            mark_claim_skipped(&conn, job_id, &claim)?;
             refresh_current_frame(&conn, job_id)?;
-            emit_progress(app, project_path, job_id, Some(frame), "skipped");
+            emit_progress(app, project_path, job_id, Some(claim.frame), "skipped");
             continue;
         }
-        if attempts > 0 {
-            tokio::time::sleep(Duration::from_secs(if attempts == 1 { 5 } else { 15 })).await;
+        if claim.attempts > 0 {
+            tokio::time::sleep(Duration::from_secs(if claim.attempts == 1 {
+                5
+            } else {
+                15
+            }))
+            .await;
         }
         let interrupted = {
             let value = control.lock().unwrap();
-            value.cancel || value.pause
+            value.cancel || value.pause || value.attention
         };
         if interrupted {
-            conn.execute("UPDATE render_frames SET status='pending',error=NULL,updated_at=?3 WHERE job_id=?1 AND frame=?2", params![job_id,frame,now()]).map_err(|error| error.to_string())?;
+            release_frame_claim(&conn, job_id, &claim)?;
             refresh_current_frame(&conn, job_id)?;
             return Ok(());
         }
         let started = now();
-        let attempt = attempts + 1;
-        conn.execute("UPDATE render_frames SET attempts=?3,error=NULL,updated_at=?4 WHERE job_id=?1 AND frame=?2", params![job_id, frame, attempt, started]).map_err(|error| error.to_string())?;
-        conn.execute("INSERT INTO render_attempts(job_id,frame,attempt,status,started_at) VALUES(?1,?2,?3,'running',?4)", params![job_id,frame,attempt,started]).map_err(|error| error.to_string())?;
-        emit_progress(app, project_path, job_id, Some(frame), "rendering");
+        let attempt = begin_frame_attempt(&conn, job_id, &claim)?;
+        emit_progress(app, project_path, job_id, Some(claim.frame), "rendering");
+        publish_worker_state(
+            app,
+            project_path,
+            job_id,
+            &control,
+            worker_state(
+                worker_id,
+                ordinal,
+                None,
+                "rendering",
+                Some(claim.frame),
+                None,
+                None,
+            ),
+        );
         let mut frame_spec = spec.spec.clone();
-        frame_spec["frame"] = json!(frame);
-        frame_spec["outputPath"] = json!(output_path);
+        frame_spec["frame"] = json!(claim.frame);
+        frame_spec["outputPath"] = json!(claim.temp_output_path);
         frame_spec["sceneName"] = json!(spec.scene_name);
-        let frame_spec_path = job_dir.join(format!("frame-{frame}.json"));
+        let frame_spec_path =
+            job_dir.join(format!("frame-{}-{}.json", claim.frame, claim.claim_token));
         fs::write(
             &frame_spec_path,
             serde_json::to_vec_pretty(&frame_spec).unwrap(),
@@ -1740,7 +2686,7 @@ async fn run_job_worker(
             app,
             project_path,
             job_id,
-            frame,
+            claim.frame,
             &spec.blender_path,
             &spec.blend_path,
             bootstrap,
@@ -1751,28 +2697,80 @@ async fn run_job_worker(
         .await;
         let duration = now() - started;
         let _ = fs::remove_file(frame_spec_path);
+        let interrupted = {
+            let value = control.lock().unwrap();
+            value.cancel || value.pause || value.attention
+        };
+        if interrupted {
+            release_frame_claim(&conn, job_id, &claim)?;
+            refresh_current_frame(&conn, job_id)?;
+            return Ok(());
+        }
         match result {
-            Ok(()) if valid_output(Path::new(&output_path)) => {
-                let size = fs::metadata(&output_path)
-                    .map(|metadata| metadata.len() as i64)
-                    .unwrap_or(0);
-                conn.execute("UPDATE render_frames SET status='completed',duration_ms=?3,error=NULL,force_render=0,updated_at=?4 WHERE job_id=?1 AND frame=?2", params![job_id,frame,duration,now()]).map_err(|error| error.to_string())?;
-                conn.execute("UPDATE render_attempts SET status='completed',finished_at=?4,exit_code=0 WHERE job_id=?1 AND frame=?2 AND attempt=?3", params![job_id,frame,attempt,now()]).map_err(|error| error.to_string())?;
-                conn.execute("INSERT INTO render_artifacts(job_id,frame,path,size_bytes,created_at) VALUES(?1,?2,?3,?4,?5)", params![job_id,frame,output_path,size,now()]).map_err(|error| error.to_string())?;
-                emit_progress(app, project_path, job_id, Some(frame), "completed-frame");
+            Ok(render_duration_ms) => {
+                match complete_frame_claim(
+                    &mut conn,
+                    job_id,
+                    &claim,
+                    attempt,
+                    render_duration_ms,
+                    duration,
+                    expected_output_dimensions(spec),
+                ) {
+                    Ok(true) => emit_progress(
+                        app,
+                        project_path,
+                        job_id,
+                        Some(claim.frame),
+                        "completed-frame",
+                    ),
+                    Ok(false) => {
+                        emit_progress(app, project_path, job_id, Some(claim.frame), "stale-result")
+                    }
+                    Err(error) => {
+                        let final_failure = fail_frame_claim(
+                            &conn,
+                            job_id,
+                            &claim,
+                            attempt,
+                            spec.max_retries,
+                            duration,
+                            Some(render_duration_ms),
+                            &error,
+                        )?;
+                        emit_progress(
+                            app,
+                            project_path,
+                            job_id,
+                            Some(claim.frame),
+                            if final_failure {
+                                "failed-frame"
+                            } else {
+                                "retrying"
+                            },
+                        );
+                    }
+                }
             }
             result => {
                 let error = result
                     .err()
                     .unwrap_or_else(|| "Blender 未生成有效输出文件".into());
-                let final_failure = attempt > spec.max_retries;
-                conn.execute("UPDATE render_frames SET status=?3,duration_ms=?4,error=?5,updated_at=?6 WHERE job_id=?1 AND frame=?2", params![job_id,frame,if final_failure{"failed"}else{"pending"},duration,error,now()]).map_err(|db_error| db_error.to_string())?;
-                conn.execute("UPDATE render_attempts SET status='failed',finished_at=?4,exit_code=-1,error=?5 WHERE job_id=?1 AND frame=?2 AND attempt=?3", params![job_id,frame,attempt,now(),error]).map_err(|db_error| db_error.to_string())?;
+                let final_failure = fail_frame_claim(
+                    &conn,
+                    job_id,
+                    &claim,
+                    attempt,
+                    spec.max_retries,
+                    duration,
+                    None,
+                    &error,
+                )?;
                 emit_progress(
                     app,
                     project_path,
                     job_id,
-                    Some(frame),
+                    Some(claim.frame),
                     if final_failure {
                         "failed-frame"
                     } else {
@@ -1781,7 +2779,552 @@ async fn run_job_worker(
                 );
             }
         }
+        publish_worker_state(
+            app,
+            project_path,
+            job_id,
+            &control,
+            worker_state(worker_id, ordinal, None, "ready", None, None, None),
+        );
         refresh_current_frame(&conn, job_id)?;
+    }
+}
+
+enum PersistentWorkerOutcome {
+    Complete,
+    Restart,
+    StartupFailed(String),
+}
+
+fn append_rotating_render_log(path: &Path, prefix: &str, line: &str) {
+    const LIMIT: u64 = 10 * 1024 * 1024;
+    if fs::metadata(path)
+        .map(|value| value.len() >= LIMIT)
+        .unwrap_or(false)
+    {
+        let third = path.with_extension("log.3");
+        let second = path.with_extension("log.2");
+        let first = path.with_extension("log.1");
+        let _ = fs::remove_file(&third);
+        let _ = fs::rename(&second, &third);
+        let _ = fs::rename(&first, &second);
+        let _ = fs::rename(path, &first);
+    }
+    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "[{prefix}] {line}");
+    }
+}
+
+async fn run_persistent_worker_process(
+    app: &tauri::AppHandle,
+    project_path: &str,
+    job_id: &str,
+    spec: &JobExecutionSpec,
+    worker_script: &Path,
+    job_dir: &Path,
+    worker_id: &str,
+    ordinal: i64,
+    slot: &mut ProcessSlotPermit,
+    control: Arc<Mutex<JobControl>>,
+) -> Result<PersistentWorkerOutcome, String> {
+    let startup_started = Instant::now();
+    publish_worker_state(
+        app,
+        project_path,
+        job_id,
+        &control,
+        worker_state(worker_id, ordinal, None, "starting", None, None, None),
+    );
+    let mut child = match tokio_command(&spec.blender_path)
+        .arg("-b")
+        .arg(&spec.blend_path)
+        .arg("--python")
+        .arg(worker_script)
+        .arg("--")
+        .arg("--worker-id")
+        .arg(worker_id)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            return Ok(PersistentWorkerOutcome::StartupFailed(format!(
+                "启动 Blender 失败: {error}"
+            )))
+        }
+    };
+    let pid = child.id();
+    if let Some(pid) = pid {
+        control.lock().unwrap().pids.insert(pid);
+    }
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "无法连接 Blender Worker 标准输入".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "无法连接 Blender Worker 标准输出".to_string())?;
+    let stderr = child.stderr.take();
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+    let log_path = job_dir.join("render.log");
+    let stdout_log = log_path.clone();
+    let worker_label = format!("Worker {}", ordinal + 1);
+    let worker_label_out = worker_label.clone();
+    let app_out = app.clone();
+    let project_out = project_path.to_string();
+    let job_out = job_id.to_string();
+    let stdout_task = tauri::async_runtime::spawn(async move {
+        let mut lines = BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            append_rotating_render_log(&stdout_log, &worker_label_out, &line);
+            let structured = line
+                .strip_prefix(EVENT_PREFIX)
+                .and_then(|value| serde_json::from_str::<Value>(value).ok());
+            if let Some(event) = structured.clone() {
+                let _ = event_tx.send(event);
+            }
+            let _ = app_out.emit(
+                "pm-center:render-log",
+                json!({"projectPath":project_out,"jobId":job_out,"line":line,"event":structured}),
+            );
+        }
+    });
+    let stderr_task = stderr.map(|stderr| {
+        let stderr_log = log_path.clone();
+        let worker_label = worker_label.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                append_rotating_render_log(&stderr_log, &worker_label, &format!("[stderr] {line}"));
+            }
+        })
+    });
+    let mut sampler = RenderProcessSampler::new();
+    let mut next_sample = Instant::now() + Duration::from_secs(1);
+    let startup_ms = 'startup: loop {
+        let interrupted = {
+            let value = control.lock().unwrap();
+            value.cancel || value.pause || value.attention
+        };
+        if interrupted {
+            terminate_child_process_tree(&mut child, pid).await;
+            cleanup_worker_process(app, project_path, job_id, &control, pid);
+            publish_worker_state(
+                app,
+                project_path,
+                job_id,
+                &control,
+                worker_state(worker_id, ordinal, pid, "stopped", None, None, None),
+            );
+            return Ok(PersistentWorkerOutcome::Complete);
+        }
+        if slot.retire_if_over_limit(app) {
+            terminate_child_process_tree(&mut child, pid).await;
+            cleanup_worker_process(app, project_path, job_id, &control, pid);
+            publish_worker_state(
+                app,
+                project_path,
+                job_id,
+                &control,
+                worker_state(worker_id, ordinal, pid, "stopped", None, None, None),
+            );
+            return Ok(PersistentWorkerOutcome::Complete);
+        }
+        if startup_started.elapsed() >= Duration::from_secs(600) {
+            terminate_child_process_tree(&mut child, pid).await;
+            cleanup_worker_process(app, project_path, job_id, &control, pid);
+            return Ok(PersistentWorkerOutcome::StartupFailed(
+                "加载项目超过 10 分钟".into(),
+            ));
+        }
+        while let Ok(event) = event_rx.try_recv() {
+            if event.get("type").and_then(Value::as_str) == Some("worker-ready") {
+                break 'startup startup_started.elapsed().as_millis().min(i64::MAX as u128) as i64;
+            }
+        }
+        if let Ok(Some(status)) = child.try_wait() {
+            cleanup_worker_process(app, project_path, job_id, &control, pid);
+            return Ok(PersistentWorkerOutcome::StartupFailed(format!(
+                "Blender 提前退出，退出码 {}",
+                status.code().unwrap_or(-1)
+            )));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    let startup_ms = if startup_ms == 0 {
+        startup_started.elapsed().as_millis().min(i64::MAX as u128) as i64
+    } else {
+        startup_ms
+    };
+    open_db(project_path)?
+        .execute(
+            "UPDATE render_jobs SET status='running' WHERE id=?1 AND status='starting'",
+            params![job_id],
+        )
+        .map_err(|error| error.to_string())?;
+    publish_worker_state(
+        app,
+        project_path,
+        job_id,
+        &control,
+        worker_state(
+            worker_id,
+            ordinal,
+            pid,
+            "ready",
+            None,
+            Some(startup_ms),
+            None,
+        ),
+    );
+
+    let mut conn = open_db(project_path)?;
+    loop {
+        let interrupted = {
+            let value = control.lock().unwrap();
+            value.cancel || value.pause || value.attention
+        };
+        if interrupted {
+            terminate_child_process_tree(&mut child, pid).await;
+            cleanup_worker_process(app, project_path, job_id, &control, pid);
+            publish_worker_state(
+                app,
+                project_path,
+                job_id,
+                &control,
+                worker_state(
+                    worker_id,
+                    ordinal,
+                    pid,
+                    "stopped",
+                    None,
+                    Some(startup_ms),
+                    None,
+                ),
+            );
+            return Ok(PersistentWorkerOutcome::Complete);
+        }
+        if slot.retire_if_over_limit(app) {
+            let _ = stdin.write_all(b"{\"type\":\"shutdown\"}\n").await;
+            let _ = stdin.flush().await;
+            wait_or_terminate_child(&mut child, pid, Duration::from_secs(5)).await;
+            cleanup_worker_process(app, project_path, job_id, &control, pid);
+            publish_worker_state(
+                app,
+                project_path,
+                job_id,
+                &control,
+                worker_state(
+                    worker_id,
+                    ordinal,
+                    pid,
+                    "stopped",
+                    None,
+                    Some(startup_ms),
+                    None,
+                ),
+            );
+            return Ok(PersistentWorkerOutcome::Complete);
+        }
+        let Some(claim) = claim_next_frame(&mut conn, job_id, spec.max_retries, worker_id)? else {
+            let _ = stdin.write_all(b"{\"type\":\"shutdown\"}\n").await;
+            let _ = stdin.flush().await;
+            wait_or_terminate_child(&mut child, pid, Duration::from_secs(5)).await;
+            cleanup_worker_process(app, project_path, job_id, &control, pid);
+            publish_worker_state(
+                app,
+                project_path,
+                job_id,
+                &control,
+                worker_state(
+                    worker_id,
+                    ordinal,
+                    pid,
+                    "stopped",
+                    None,
+                    Some(startup_ms),
+                    None,
+                ),
+            );
+            let _ = stdout_task.await;
+            if let Some(task) = stderr_task {
+                let _ = task.await;
+            }
+            return Ok(PersistentWorkerOutcome::Complete);
+        };
+        refresh_current_frame(&conn, job_id)?;
+        if !spec.force_overwrite
+            && !claim.force_render
+            && valid_output(Path::new(&claim.output_path))
+        {
+            mark_claim_skipped(&conn, job_id, &claim)?;
+            refresh_current_frame(&conn, job_id)?;
+            emit_progress(app, project_path, job_id, Some(claim.frame), "skipped");
+            continue;
+        }
+        if claim.attempts > 0 {
+            tokio::time::sleep(Duration::from_secs(if claim.attempts == 1 {
+                5
+            } else {
+                15
+            }))
+            .await;
+        }
+        let interrupted = {
+            let value = control.lock().unwrap();
+            value.cancel || value.pause || value.attention
+        };
+        if interrupted {
+            release_frame_claim(&conn, job_id, &claim)?;
+            terminate_child_process_tree(&mut child, pid).await;
+            cleanup_worker_process(app, project_path, job_id, &control, pid);
+            return Ok(PersistentWorkerOutcome::Complete);
+        }
+        let attempt = begin_frame_attempt(&conn, job_id, &claim)?;
+        let wall_started = now();
+        let mut command = spec.spec.clone();
+        command["type"] = json!("render");
+        command["frame"] = json!(claim.frame);
+        command["sceneName"] = json!(spec.scene_name);
+        command["claimToken"] = json!(claim.claim_token);
+        command["tempOutputPath"] = json!(claim.temp_output_path);
+        let mut encoded = serde_json::to_vec(&command).map_err(|error| error.to_string())?;
+        encoded.push(b'\n');
+        let write_result = async {
+            stdin.write_all(&encoded).await?;
+            stdin.flush().await
+        }
+        .await;
+        if let Err(error) = write_result {
+            let message = format!("向 Blender Worker 发送任务失败: {error}");
+            fail_frame_claim(
+                &conn,
+                job_id,
+                &claim,
+                attempt,
+                spec.max_retries,
+                now() - wall_started,
+                None,
+                &message,
+            )?;
+            terminate_child_process_tree(&mut child, pid).await;
+            cleanup_worker_process(app, project_path, job_id, &control, pid);
+            return Ok(PersistentWorkerOutcome::Restart);
+        }
+        publish_worker_state(
+            app,
+            project_path,
+            job_id,
+            &control,
+            worker_state(
+                worker_id,
+                ordinal,
+                pid,
+                "rendering",
+                Some(claim.frame),
+                Some(startup_ms),
+                None,
+            ),
+        );
+        emit_progress(app, project_path, job_id, Some(claim.frame), "rendering");
+        let frame_result: Result<i64, String> = 'frame_wait: loop {
+            let interrupted = {
+                let value = control.lock().unwrap();
+                value.cancel || value.pause || value.attention
+            };
+            if interrupted {
+                terminate_child_process_tree(&mut child, pid).await;
+                release_frame_claim(&conn, job_id, &claim)?;
+                cleanup_worker_process(app, project_path, job_id, &control, pid);
+                return Ok(PersistentWorkerOutcome::Complete);
+            }
+            while let Ok(event) = event_rx.try_recv() {
+                if event.get("claimToken").and_then(Value::as_str)
+                    != Some(claim.claim_token.as_str())
+                {
+                    continue;
+                }
+                match event.get("type").and_then(Value::as_str) {
+                    Some("frame-completed") => {
+                        break 'frame_wait Ok(event
+                            .get("renderDurationMs")
+                            .and_then(Value::as_i64)
+                            .unwrap_or_else(|| now() - wall_started))
+                    }
+                    Some("frame-failed") => {
+                        break 'frame_wait Err(event
+                            .get("error")
+                            .and_then(Value::as_str)
+                            .unwrap_or("Blender 渲染失败")
+                            .to_string())
+                    }
+                    _ => {}
+                }
+            }
+            if let Ok(Some(status)) = child.try_wait() {
+                break 'frame_wait Err(format!(
+                    "Blender Worker 异常退出，退出码 {}",
+                    status.code().unwrap_or(-1)
+                ));
+            }
+            if Instant::now() >= next_sample {
+                if let Some(pid) = pid {
+                    if let Some(metrics) = sampler.sample(pid) {
+                        let aggregate = update_worker_metrics(&control, pid, Some(metrics));
+                        record_render_performance(
+                            app,
+                            project_path,
+                            job_id,
+                            claim.frame,
+                            aggregate,
+                        );
+                    }
+                }
+                next_sample = Instant::now() + Duration::from_secs(2);
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        match frame_result {
+            Ok(render_duration_ms) => {
+                match complete_frame_claim(
+                    &mut conn,
+                    job_id,
+                    &claim,
+                    attempt,
+                    render_duration_ms,
+                    now() - wall_started,
+                    expected_output_dimensions(spec),
+                ) {
+                    Ok(true) => {
+                        emit_progress(
+                            app,
+                            project_path,
+                            job_id,
+                            Some(claim.frame),
+                            "completed-frame",
+                        );
+                        publish_worker_state(
+                            app,
+                            project_path,
+                            job_id,
+                            &control,
+                            worker_state(
+                                worker_id,
+                                ordinal,
+                                pid,
+                                "ready",
+                                None,
+                                Some(startup_ms),
+                                None,
+                            ),
+                        );
+                        refresh_current_frame(&conn, job_id)?;
+                    }
+                    Ok(false) => {
+                        emit_progress(app, project_path, job_id, Some(claim.frame), "stale-result");
+                        refresh_current_frame(&conn, job_id)?;
+                    }
+                    Err(error) => {
+                        let final_failure = fail_frame_claim(
+                            &conn,
+                            job_id,
+                            &claim,
+                            attempt,
+                            spec.max_retries,
+                            now() - wall_started,
+                            Some(render_duration_ms),
+                            &error,
+                        )?;
+                        emit_progress(
+                            app,
+                            project_path,
+                            job_id,
+                            Some(claim.frame),
+                            if final_failure {
+                                "failed-frame"
+                            } else {
+                                "retrying"
+                            },
+                        );
+                        terminate_child_process_tree(&mut child, pid).await;
+                        cleanup_worker_process(app, project_path, job_id, &control, pid);
+                        publish_worker_state(
+                            app,
+                            project_path,
+                            job_id,
+                            &control,
+                            worker_state(
+                                worker_id,
+                                ordinal,
+                                pid,
+                                "failed",
+                                None,
+                                Some(startup_ms),
+                                Some(error),
+                            ),
+                        );
+                        return Ok(PersistentWorkerOutcome::Restart);
+                    }
+                }
+            }
+            Err(error) => {
+                let final_failure = fail_frame_claim(
+                    &conn,
+                    job_id,
+                    &claim,
+                    attempt,
+                    spec.max_retries,
+                    now() - wall_started,
+                    None,
+                    &error,
+                )?;
+                emit_progress(
+                    app,
+                    project_path,
+                    job_id,
+                    Some(claim.frame),
+                    if final_failure {
+                        "failed-frame"
+                    } else {
+                        "retrying"
+                    },
+                );
+                terminate_child_process_tree(&mut child, pid).await;
+                cleanup_worker_process(app, project_path, job_id, &control, pid);
+                publish_worker_state(
+                    app,
+                    project_path,
+                    job_id,
+                    &control,
+                    worker_state(
+                        worker_id,
+                        ordinal,
+                        pid,
+                        "failed",
+                        None,
+                        Some(startup_ms),
+                        Some(error),
+                    ),
+                );
+                return Ok(PersistentWorkerOutcome::Restart);
+            }
+        }
+    }
+}
+
+fn cleanup_worker_process(
+    app: &tauri::AppHandle,
+    project_path: &str,
+    job_id: &str,
+    control: &Arc<Mutex<JobControl>>,
+    pid: Option<u32>,
+) {
+    if let Some(pid) = pid {
+        let aggregate = update_worker_metrics(control, pid, None);
+        record_render_performance(app, project_path, job_id, 0, aggregate);
     }
 }
 
@@ -1790,7 +3333,25 @@ fn fail_job(conn: &Connection, job_id: &str, error: &str) -> Result<(), String> 
     Ok(())
 }
 
+fn expected_output_dimensions(spec: &JobExecutionSpec) -> Option<(u32, u32)> {
+    let width = spec.spec.get("resolutionX")?.as_u64()?;
+    let height = spec.spec.get("resolutionY")?.as_u64()?;
+    let percentage = spec
+        .spec
+        .get("resolutionPercentage")
+        .and_then(Value::as_u64)
+        .unwrap_or(100)
+        .clamp(1, 100);
+    let width = (width.saturating_mul(percentage) / 100).max(1);
+    let height = (height.saturating_mul(percentage) / 100).max(1);
+    Some((u32::try_from(width).ok()?, u32::try_from(height).ok()?))
+}
+
 fn valid_output(path: &Path) -> bool {
+    valid_output_with_dimensions(path, None)
+}
+
+fn valid_output_with_dimensions(path: &Path, expected_dimensions: Option<(u32, u32)>) -> bool {
     let metadata_valid = fs::metadata(path)
         .map(|metadata| metadata.is_file() && metadata.len() > 32)
         .unwrap_or(false);
@@ -1803,9 +3364,20 @@ fn valid_output(path: &Path) -> bool {
     let Ok(reader) = reader.with_guessed_format() else {
         return false;
     };
+    if let (Some(extension), Some(actual_format)) = (path.extension(), reader.format()) {
+        if image::ImageFormat::from_extension(extension)
+            .is_some_and(|expected| expected != actual_format)
+        {
+            return false;
+        }
+    }
     reader
         .into_dimensions()
-        .map(|(width, height)| width > 0 && height > 0)
+        .map(|dimensions| {
+            dimensions.0 > 0
+                && dimensions.1 > 0
+                && expected_dimensions.is_none_or(|expected| expected == dimensions)
+        })
         .unwrap_or(false)
 }
 
@@ -1910,8 +3482,8 @@ async fn execute_frame(
     frame_spec: &Path,
     job_dir: &Path,
     control: Arc<Mutex<JobControl>>,
-) -> Result<(), String> {
-    use std::io::Write;
+) -> Result<i64, String> {
+    let execution_started = Instant::now();
     let mut child = tokio_command(blender)
         .arg("-b")
         .arg(blend_path)
@@ -1935,6 +3507,8 @@ async fn execute_frame(
     let project_out = project_path.to_string();
     let job_out = job_id.to_string();
     let log_out = log_path.clone();
+    let render_duration = Arc::new(Mutex::new(None::<i64>));
+    let render_duration_out = render_duration.clone();
     let stdout_task = tauri::async_runtime::spawn(async move {
         if let Some(stdout) = stdout {
             let mut lines = BufReader::new(stdout).lines();
@@ -1949,6 +3523,15 @@ async fn execute_frame(
                 let structured = line
                     .strip_prefix(EVENT_PREFIX)
                     .and_then(|value| serde_json::from_str::<Value>(value).ok());
+                if let Some(duration) = structured
+                    .as_ref()
+                    .filter(|event| {
+                        event.get("type").and_then(Value::as_str) == Some("frame-completed")
+                    })
+                    .and_then(|event| event.get("durationMs").and_then(Value::as_i64))
+                {
+                    *render_duration_out.lock().unwrap() = Some(duration);
+                }
                 let _ = app_out.emit("pm-center:render-log", json!({"projectPath":project_out,"jobId":job_out,"frame":frame,"line":line,"event":structured}));
             }
         }
@@ -1971,7 +3554,14 @@ async fn execute_frame(
     let mut sampler = RenderProcessSampler::new();
     let mut next_performance_sample = Instant::now() + Duration::from_secs(1);
     let status = loop {
-        if control.lock().unwrap().cancel {
+        let interrupted = {
+            let value = control.lock().unwrap();
+            value.cancel || value.pause || value.attention
+        };
+        if interrupted {
+            if let Some(pid) = child_pid {
+                terminate_pid_tree(pid);
+            }
             let _ = child.kill().await;
             break child.wait().await.map_err(|e| e.to_string())?;
         }
@@ -1996,7 +3586,12 @@ async fn execute_frame(
     let _ = stdout_task.await;
     let _ = stderr_task.await;
     if status.success() {
-        Ok(())
+        Ok(render_duration.lock().unwrap().unwrap_or_else(|| {
+            execution_started
+                .elapsed()
+                .as_millis()
+                .min(i64::MAX as u128) as i64
+        }))
     } else {
         Err(format!("Blender 退出码 {}", status.code().unwrap_or(-1)))
     }
@@ -2029,11 +3624,53 @@ fn control_for(project_path: &str, job_id: &str) -> Option<Arc<Mutex<JobControl>
         .cloned()
 }
 
+fn terminate_pid_tree(pid: u32) {
+    #[cfg(windows)]
+    {
+        let _ = std_command("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .output();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = std_command("kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .output();
+    }
+}
+
+async fn terminate_child_process_tree(child: &mut tokio::process::Child, pid: Option<u32>) {
+    if let Some(pid) = pid {
+        terminate_pid_tree(pid);
+    }
+    let _ = child.kill().await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
+}
+
+async fn wait_or_terminate_child(
+    child: &mut tokio::process::Child,
+    pid: Option<u32>,
+    timeout: Duration,
+) {
+    if tokio::time::timeout(timeout, child.wait()).await.is_err() {
+        terminate_child_process_tree(child, pid).await;
+    }
+}
+
+fn terminate_control_processes(control: &Arc<Mutex<JobControl>>) {
+    let pids: Vec<u32> = control.lock().unwrap().pids.iter().copied().collect();
+    for pid in pids {
+        terminate_pid_tree(pid);
+    }
+}
+
 #[tauri::command]
 pub async fn pause_render_job(project_path: String, job_id: String) -> Result<(), String> {
     let conn = open_db(&project_path)?;
     if let Some(control) = control_for(&project_path, &job_id) {
         control.lock().unwrap().pause = true;
+        terminate_control_processes(&control);
         conn.execute(
             "UPDATE render_jobs SET status='pausing' WHERE id=?1",
             params![job_id],
@@ -2056,17 +3693,42 @@ pub async fn resume_render_job(
     job_id: String,
 ) -> Result<(), String> {
     let conn = open_db(&project_path)?;
+    let (status, batch_id, batch_status): (String, String, String) = conn
+        .query_row(
+            "SELECT j.status,j.batch_id,b.status FROM render_jobs j JOIN render_batches b ON b.id=j.batch_id WHERE j.id=?1 AND j.project_path=?2",
+            params![job_id, project_path],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|_| "找不到渲染任务".to_string())?;
+    if status == "attention" {
+        return Err("源 Blender 文件已变化，请先处理后再继续".into());
+    }
+    if !matches!(status.as_str(), "paused" | "failed" | "cancelled") {
+        return Ok(());
+    }
     conn.execute(
         "UPDATE render_frames SET status='pending',attempts=0,error=NULL WHERE job_id=?1 AND status='failed'",
         params![job_id],
     )
     .map_err(|e| e.to_string())?;
-    conn.execute("UPDATE render_jobs SET status='pending',error=NULL,finished_at=NULL WHERE id=?1 AND status IN ('paused','failed','cancelled')", params![job_id]).map_err(|e| e.to_string())?;
-    conn.execute(
-        "UPDATE render_batches SET status='running',updated_at=?2 WHERE id=(SELECT batch_id FROM render_jobs WHERE id=?1) AND status IN ('queued','paused','completed','failed','cancelled')",
-        params![job_id, now()],
-    )
-    .map_err(|e| e.to_string())?;
+    if batch_status == "running" {
+        conn.execute(
+            "UPDATE render_jobs SET status='pending',error=NULL,finished_at=NULL WHERE id=?1",
+            params![job_id],
+        )
+        .map_err(|e| e.to_string())?;
+    } else {
+        conn.execute(
+            "UPDATE render_jobs SET status='paused',error=NULL,finished_at=NULL WHERE id=?1",
+            params![job_id],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE render_batches SET status='queued',updated_at=?2 WHERE id=?1",
+            params![batch_id, now()],
+        )
+        .map_err(|e| e.to_string())?;
+    }
     kick_scheduler(app_handle, project_path);
     Ok(())
 }
@@ -2076,13 +3738,14 @@ pub async fn cancel_render_job(project_path: String, job_id: String) -> Result<(
     let conn = open_db(&project_path)?;
     if let Some(control) = control_for(&project_path, &job_id) {
         control.lock().unwrap().cancel = true;
+        terminate_control_processes(&control);
         conn.execute(
             "UPDATE render_jobs SET status='cancelling' WHERE id=?1",
             params![job_id],
         )
         .map_err(|e| e.to_string())?;
     } else {
-        conn.execute("UPDATE render_jobs SET status='cancelled',finished_at=?2,error='用户取消' WHERE id=?1 AND status IN ('pending','paused','failed')", params![job_id,now()]).map_err(|e| e.to_string())?;
+        conn.execute("UPDATE render_jobs SET status='cancelled',finished_at=?2,error='用户取消' WHERE id=?1 AND status IN ('pending','paused','failed','attention')", params![job_id,now()]).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -2105,6 +3768,7 @@ pub async fn pause_render_queue(project_path: String) -> Result<(), String> {
         .collect();
     for control in controls {
         control.lock().unwrap().pause = true;
+        terminate_control_processes(&control);
     }
     Ok(())
 }
@@ -2116,11 +3780,140 @@ pub async fn resume_render_queue(
 ) -> Result<(), String> {
     let conn = open_db(&project_path)?;
     conn.execute(
-        "UPDATE render_jobs SET status='pending',error=NULL,finished_at=NULL WHERE status IN ('paused','cancelled') AND archived=0 AND batch_id IN (SELECT id FROM render_batches WHERE project_path=?1 AND status='running')",
+        "UPDATE render_jobs SET status='pending',error=NULL,finished_at=NULL WHERE status='paused' AND archived=0 AND batch_id IN (SELECT id FROM render_batches WHERE project_path=?1 AND status='running')",
         params![project_path],
     )
     .map_err(|e| e.to_string())?;
     kick_scheduler(app_handle, project_path);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn queue_render_frames(
+    project_path: String,
+    job_id: String,
+    frames: Vec<i64>,
+    mode: String,
+) -> Result<(), String> {
+    if frames.is_empty() {
+        return Err("请选择要处理的帧".into());
+    }
+    if !matches!(mode.as_str(), "retry" | "rerender") {
+        return Err("帧操作模式必须是 retry 或 rerender".into());
+    }
+    queue_frames_for_render(&project_path, &job_id, &frames, &mode)
+}
+
+#[tauri::command]
+pub async fn resolve_render_source_change(
+    app_handle: tauri::AppHandle,
+    project_path: String,
+    job_id: String,
+    action: String,
+) -> Result<(), String> {
+    if !matches!(action.as_str(), "recheck" | "acceptAndRerenderAll") {
+        return Err("源文件处理方式无效".into());
+    }
+    let mut conn = open_db(&project_path)?;
+    let (blend_path, stored_hash): (String, Option<String>) = conn
+        .query_row(
+            "SELECT blend_path,source_hash FROM render_jobs WHERE id=?1",
+            params![job_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|error| error.to_string())?;
+    let fingerprint = source_fingerprint(Path::new(&blend_path))?;
+    if action == "recheck" {
+        if stored_hash.as_deref() != Some(fingerprint.hash.as_str()) {
+            return Err("源 Blender 文件仍与任务记录不一致".into());
+        }
+        conn.execute(
+            "UPDATE render_jobs SET status='paused',attention_code=NULL,error=NULL WHERE id=?1 AND status='attention'",
+            params![job_id],
+        )
+        .map_err(|error| error.to_string())?;
+    } else {
+        let transaction = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| error.to_string())?;
+        transaction.execute(
+            "UPDATE render_frames SET status='pending',attempts=0,error=NULL,duration_ms=NULL,render_duration_ms=NULL,force_render=1,worker_id=NULL,claim_token=NULL,claimed_at=NULL,temp_output_path=NULL,updated_at=?2 WHERE job_id=?1",
+            params![job_id, now()],
+        ).map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "DELETE FROM render_attempts WHERE job_id=?1",
+                params![job_id],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "DELETE FROM render_artifacts WHERE job_id=?1",
+                params![job_id],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction.execute(
+            "UPDATE render_jobs SET status='paused',source_hash=?2,source_size=?3,source_modified_at=?4,attention_code=NULL,error=NULL,current_frame=NULL,finished_at=NULL WHERE id=?1",
+            params![job_id, fingerprint.hash, fingerprint.size, fingerprint.modified_at],
+        ).map_err(|error| error.to_string())?;
+        transaction.commit().map_err(|error| error.to_string())?;
+    }
+    emit_queue(&app_handle, &project_path);
+    emit_progress(&app_handle, &project_path, &job_id, None, "source-resolved");
+    Ok(())
+}
+
+fn queue_frames_for_render(
+    project_path: &str,
+    job_id: &str,
+    frames: &[i64],
+    mode: &str,
+) -> Result<(), String> {
+    let mut conn = open_db(project_path)?;
+    let transaction = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    let status: String = transaction
+        .query_row(
+            "SELECT status FROM render_jobs WHERE id=?1",
+            params![job_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if matches!(
+        status.as_str(),
+        "starting" | "running" | "pausing" | "cancelling"
+    ) {
+        return Err("任务正在运行，请先暂停后再操作帧".into());
+    }
+    for frame in frames {
+        if mode == "retry" {
+            transaction.execute(
+                "UPDATE render_frames SET status='pending',attempts=0,error=NULL,force_render=0,render_duration_ms=NULL,worker_id=NULL,claim_token=NULL,claimed_at=NULL,temp_output_path=NULL,updated_at=?3 WHERE job_id=?1 AND frame=?2 AND status='failed'",
+                params![job_id, frame, now()],
+            ).map_err(|error| error.to_string())?;
+        } else {
+            transaction.execute(
+                "UPDATE render_frames SET status='pending',attempts=0,error=NULL,force_render=1,render_duration_ms=NULL,worker_id=NULL,claim_token=NULL,claimed_at=NULL,temp_output_path=NULL,updated_at=?3 WHERE job_id=?1 AND frame=?2",
+                params![job_id, frame, now()],
+            ).map_err(|error| error.to_string())?;
+        }
+        transaction
+            .execute(
+                "DELETE FROM render_attempts WHERE job_id=?1 AND frame=?2",
+                params![job_id, frame],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    transaction.execute(
+        "UPDATE render_jobs SET status='paused',error=NULL,attention_code=NULL,finished_at=NULL WHERE id=?1",
+        params![job_id],
+    ).map_err(|error| error.to_string())?;
+    transaction.execute(
+        "UPDATE render_batches SET status=CASE WHEN status='running' THEN 'running' ELSE 'queued' END,updated_at=?2 WHERE id=(SELECT batch_id FROM render_jobs WHERE id=?1)",
+        params![job_id, now()],
+    ).map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -2131,37 +3924,21 @@ pub async fn retry_render_frames(
     frames: Option<Vec<i64>>,
 ) -> Result<(), String> {
     let conn = open_db(&project_path)?;
-    let status: String = conn
-        .query_row(
-            "SELECT status FROM render_jobs WHERE id=?1",
-            params![job_id],
-            |row| row.get(0),
-        )
-        .map_err(|error| error.to_string())?;
-    if matches!(status.as_str(), "starting" | "running" | "pausing" | "cancelling") {
-        return Err("任务正在运行，请先暂停后再重新渲染帧".into());
+    let selected = match frames.filter(|items| !items.is_empty()) {
+        Some(frames) => frames,
+        None => conn
+            .prepare("SELECT frame FROM render_frames WHERE job_id=?1 AND status='failed'")
+            .map_err(|error| error.to_string())?
+            .query_map(params![job_id], |row| row.get(0))
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<i64>, _>>()
+            .map_err(|error| error.to_string())?,
+    };
+    drop(conn);
+    if selected.is_empty() {
+        return Ok(());
     }
-    match frames.filter(|items| !items.is_empty()) {
-        Some(frames) => {
-            for frame in frames {
-                conn.execute("UPDATE render_frames SET status='pending',attempts=0,error=NULL,force_render=1,updated_at=?3 WHERE job_id=?1 AND frame=?2", params![job_id,frame,now()]).map_err(|e|e.to_string())?;
-            }
-        }
-        None => {
-            conn.execute("UPDATE render_frames SET status='pending',attempts=0,error=NULL,force_render=1,updated_at=?2 WHERE job_id=?1 AND status='failed'", params![job_id,now()]).map_err(|e|e.to_string())?;
-        }
-    }
-    conn.execute(
-        "UPDATE render_jobs SET status='paused',error=NULL,finished_at=NULL WHERE id=?1",
-        params![job_id],
-    )
-    .map_err(|e| e.to_string())?;
-    conn.execute(
-        "UPDATE render_batches SET status=CASE WHEN status='running' THEN 'running' ELSE 'queued' END,updated_at=?2 WHERE id=(SELECT batch_id FROM render_jobs WHERE id=?1)",
-        params![job_id, now()],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    queue_frames_for_render(&project_path, &job_id, &selected, "rerender")
 }
 
 #[tauri::command]
@@ -2184,7 +3961,10 @@ pub async fn skip_render_frames(
             |row| row.get(0),
         )
         .map_err(|error| error.to_string())?;
-    if matches!(status.as_str(), "starting" | "running" | "pausing" | "cancelling") {
+    if matches!(
+        status.as_str(),
+        "starting" | "running" | "pausing" | "cancelling"
+    ) {
         return Err("任务正在运行，请先暂停后再跳过帧".into());
     }
     for frame in frames {
@@ -2235,17 +4015,26 @@ fn reorder_render_job_in_db(
     job_id: &str,
     before_job_id: Option<&str>,
 ) -> Result<(), String> {
+    if before_job_id == Some(job_id) {
+        return Ok(());
+    }
     let mut conn = open_db(project_path)?;
     let transaction = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| error.to_string())?;
-    let (source_batch_id, source_batch_status): (String, String) = transaction
+    let (source_batch_id, source_status): (String, String) = transaction
         .query_row(
-            "SELECT j.batch_id,b.status FROM render_jobs j JOIN render_batches b ON b.id=j.batch_id WHERE j.id=?1 AND j.project_path=?2",
+            "SELECT j.batch_id,j.status FROM render_jobs j WHERE j.id=?1 AND j.project_path=?2",
             params![job_id, project_path],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(|_| "找不到要排序的渲染任务".to_string())?;
+    if matches!(
+        source_status.as_str(),
+        "starting" | "running" | "pausing" | "cancelling"
+    ) {
+        return Err("正在运行的任务不可排序".into());
+    }
 
     let target = before_job_id
         .as_deref()
@@ -2253,7 +4042,7 @@ fn reorder_render_job_in_db(
         .map(|target_job_id| {
             transaction
                 .query_row(
-                    "SELECT j.batch_id,b.status FROM render_jobs j JOIN render_batches b ON b.id=j.batch_id WHERE j.id=?1 AND j.project_path=?2",
+                    "SELECT j.batch_id,j.status FROM render_jobs j WHERE j.id=?1 AND j.project_path=?2",
                     params![target_job_id, project_path],
                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                 )
@@ -2261,43 +4050,104 @@ fn reorder_render_job_in_db(
         })
         .transpose()?;
 
-    if let Some((target_batch_id, target_batch_status)) = target {
-        if source_batch_id == target_batch_id {
-            let mut jobs = transaction
-                .prepare("SELECT id FROM render_jobs WHERE batch_id=?1 ORDER BY position ASC, created_at ASC, id ASC")
-                .map_err(|error| error.to_string())?
-                .query_map(params![source_batch_id], |row| row.get::<_, String>(0))
-                .map_err(|error| error.to_string())?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|error| error.to_string())?;
-            jobs.retain(|id| id != job_id);
-            let insert_at = jobs.iter().position(|id| id == before_job_id.unwrap()).unwrap_or(jobs.len());
-            jobs.insert(insert_at, job_id.to_string());
-            for (position, id) in jobs.iter().enumerate() {
-                transaction
-                    .execute("UPDATE render_jobs SET position=?2 WHERE id=?1", params![id, position as i64])
-                    .map_err(|error| error.to_string())?;
-            }
-        } else {
-            if source_batch_status == "running" || target_batch_status == "running" {
-                return Err("运行中的批次不可调整到其他批次位置".into());
-            }
-            let mut batches = transaction
-                .prepare("SELECT id FROM render_batches WHERE project_path=?1 ORDER BY position ASC, created_at ASC, id ASC")
-                .map_err(|error| error.to_string())?
-                .query_map(params![project_path], |row| row.get::<_, String>(0))
-                .map_err(|error| error.to_string())?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|error| error.to_string())?;
-            batches.retain(|id| id != &source_batch_id);
-            let insert_at = batches.iter().position(|id| id == &target_batch_id).unwrap_or(batches.len());
-            batches.insert(insert_at, source_batch_id);
-            for (position, id) in batches.iter().enumerate() {
-                transaction
-                    .execute("UPDATE render_batches SET position=?2,updated_at=?3 WHERE id=?1", params![id, position as i64, now()])
-                    .map_err(|error| error.to_string())?;
-            }
+    if let Some((target_batch_id, target_status)) = target.as_ref() {
+        if source_batch_id != *target_batch_id {
+            return Err("任务只能在所属批次内排序，请拖动批次标题调整批次顺序".into());
         }
+        if matches!(
+            target_status.as_str(),
+            "starting" | "running" | "pausing" | "cancelling"
+        ) {
+            return Err("不能把任务插入正在运行的任务位置".into());
+        }
+    }
+    let mut jobs = transaction
+        .prepare("SELECT id FROM render_jobs WHERE batch_id=?1 ORDER BY position ASC, created_at ASC, id ASC")
+        .map_err(|error| error.to_string())?
+        .query_map(params![source_batch_id], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    jobs.retain(|id| id != job_id);
+    let insert_at = before_job_id
+        .and_then(|target_id| jobs.iter().position(|id| id == target_id))
+        .unwrap_or(jobs.len());
+    jobs.insert(insert_at, job_id.to_string());
+    for (position, id) in jobs.iter().enumerate() {
+        transaction
+            .execute(
+                "UPDATE render_jobs SET position=?2 WHERE id=?1",
+                params![id, position as i64],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn reorder_render_batch(
+    project_path: String,
+    batch_id: String,
+    before_batch_id: Option<String>,
+) -> Result<(), String> {
+    reorder_render_batch_in_db(&project_path, &batch_id, before_batch_id.as_deref())
+}
+
+fn reorder_render_batch_in_db(
+    project_path: &str,
+    batch_id: &str,
+    before_batch_id: Option<&str>,
+) -> Result<(), String> {
+    if before_batch_id == Some(batch_id) {
+        return Ok(());
+    }
+    let mut conn = open_db(project_path)?;
+    let transaction = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    let source_status: String = transaction
+        .query_row(
+            "SELECT status FROM render_batches WHERE id=?1 AND project_path=?2",
+            params![batch_id, project_path],
+            |row| row.get(0),
+        )
+        .map_err(|_| "找不到要排序的批次".to_string())?;
+    if source_status != "queued" {
+        return Err("只有等待中的批次可以排序".into());
+    }
+    let target_id = before_batch_id.filter(|id| *id != batch_id);
+    if let Some(target_id) = target_id {
+        let target_status: String = transaction
+            .query_row(
+                "SELECT status FROM render_batches WHERE id=?1 AND project_path=?2",
+                params![target_id, project_path],
+                |row| row.get(0),
+            )
+            .map_err(|_| "找不到目标批次".to_string())?;
+        if target_status != "queued" {
+            return Err("不能把等待批次插入正在运行或已完成批次的位置".into());
+        }
+    }
+    let mut batches = transaction
+        .prepare("SELECT id FROM render_batches WHERE project_path=?1 ORDER BY position ASC,created_at ASC,id ASC")
+        .map_err(|error| error.to_string())?
+        .query_map(params![project_path], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    batches.retain(|id| id != batch_id);
+    let insert_at = target_id
+        .and_then(|target| batches.iter().position(|id| id == target))
+        .unwrap_or(batches.len());
+    batches.insert(insert_at, batch_id.to_string());
+    for (position, id) in batches.iter().enumerate() {
+        transaction
+            .execute(
+                "UPDATE render_batches SET position=?2,updated_at=?3 WHERE id=?1",
+                params![id, position as i64, now()],
+            )
+            .map_err(|error| error.to_string())?;
     }
     transaction.commit().map_err(|error| error.to_string())?;
     Ok(())
@@ -2456,9 +4306,11 @@ pub async fn set_render_scheduler_settings(
 ) -> Result<SchedulerSettings, String> {
     let settings = SchedulerSettings {
         concurrency: settings.concurrency.clamp(1, 8),
+        max_blender_processes: settings.max_blender_processes.clamp(1, 16),
     };
     save_scheduler_settings(&app_handle, &settings)?;
-    RUNTIME.lock().unwrap().projects.insert(project_path);
+    register_runtime_project(&project_path);
+    PROCESS_BUDGET_NOTIFY.notify_waiters();
     kick_all_schedulers(app_handle);
     Ok(settings)
 }
@@ -2479,8 +4331,12 @@ fn load_scheduler_settings(app_handle: &tauri::AppHandle) -> SchedulerSettings {
         .and_then(|data| serde_json::from_slice::<SchedulerSettings>(&data).ok())
         .map(|settings| SchedulerSettings {
             concurrency: settings.concurrency.clamp(1, 8),
+            max_blender_processes: settings.max_blender_processes.clamp(1, 16),
         })
-        .unwrap_or(SchedulerSettings { concurrency: 1 })
+        .unwrap_or(SchedulerSettings {
+            concurrency: 1,
+            max_blender_processes: default_max_blender_processes(),
+        })
 }
 
 fn save_scheduler_settings(
@@ -2517,19 +4373,7 @@ pub fn shutdown_all() {
         })
         .collect();
     for pid in pids {
-        #[cfg(windows)]
-        {
-            let _ = std_command("taskkill")
-                .args(["/PID", &pid.to_string(), "/T", "/F"])
-                .output();
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = std_command("kill")
-                .arg("-TERM")
-                .arg(pid.to_string())
-                .output();
-        }
+        terminate_pid_tree(pid);
     }
 }
 
@@ -2550,6 +4394,10 @@ mod tests {
             frame_end: 20,
             frame_step: 1,
             parallelism: 1,
+            effective_parallelism: 1,
+            ready_workers: 0,
+            execution_mode: "persistent".to_string(),
+            frame_order_mode: "dynamic".to_string(),
             total_frames: 20,
             completed_frames: 0,
             failed_frames: 0,
@@ -2568,6 +4416,11 @@ mod tests {
             peak_cpu_usage: 0.0,
             peak_memory_bytes: 0,
             performance_updated_at: None,
+            position: 0,
+            batch_name: "ETA batch".to_string(),
+            batch_status: "running".to_string(),
+            batch_position: 0,
+            attention_code: None,
         }
     }
 
@@ -2586,6 +4439,9 @@ mod tests {
             output_path: format!("frame-{frame}.png"),
             error: None,
             duration_ms,
+            render_duration_ms: duration_ms,
+            worker_id: None,
+            claim_token: None,
             updated_at,
         }
     }
@@ -2679,6 +4535,7 @@ mod tests {
             .unwrap();
         let mut parallel_job = eta_job("running");
         parallel_job.parallelism = 3;
+        parallel_job.effective_parallelism = 3;
         let parallel = estimate_render_eta(&parallel_job, &frames, 1_000_000)
             .remaining_ms
             .unwrap();
@@ -2717,7 +4574,7 @@ mod tests {
     }
 
     #[test]
-    fn reorders_jobs_within_a_batch_and_moves_batches_as_a_unit() {
+    fn reorders_jobs_and_batches_with_separate_operations() {
         let root = std::env::temp_dir().join(format!("pm-render-reorder-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let project_path = root.to_string_lossy().to_string();
@@ -2754,7 +4611,10 @@ mod tests {
         assert_eq!(same_batch, ["job-a-2", "job-a-1"]);
         drop(conn);
 
-        reorder_render_job_in_db(&project_path, "job-b-1", Some("job-a-1")).unwrap();
+        let cross_batch_error =
+            reorder_render_job_in_db(&project_path, "job-b-1", Some("job-a-1")).unwrap_err();
+        assert!(cross_batch_error.contains("只能在所属批次内"));
+        reorder_render_batch_in_db(&project_path, "batch-b", Some("batch-a")).unwrap();
         let conn = open_db(&project_path).unwrap();
         let batch_order: Vec<String> = conn
             .prepare("SELECT id FROM render_batches ORDER BY position")
@@ -2872,6 +4732,8 @@ mod tests {
             frame_end: 2,
             frame_step: 1,
             parallelism: 2,
+            execution_mode: "persistent".into(),
+            frame_order_mode: "dynamic".into(),
             resolution_percentage: 100,
             engine: Some("CYCLES".into()),
             output_format: "PNG".into(),
@@ -2904,7 +4766,10 @@ mod tests {
         assert_eq!(range_update[0].0, 1);
         assert_eq!(range_update[0].1, "completed");
         assert_eq!(range_update[0].2, 0);
-        assert_eq!(range_update[0].3, frame_output_path(&output_dir, "Scene", 1, 2, "PNG").to_string_lossy());
+        assert_eq!(
+            range_update[0].3,
+            frame_output_path(&output_dir, "Scene", 1, 2, "PNG").to_string_lossy()
+        );
         assert_eq!(range_update[1].1, "completed");
         assert_eq!(range_update[2].1, "pending");
         assert_eq!(range_update[2].2, 0);
@@ -2960,8 +4825,11 @@ mod tests {
             )
             .unwrap();
         }
-        conn.execute("UPDATE render_jobs SET status='cancelled' WHERE id='job-batch-a'", [])
-            .unwrap();
+        conn.execute(
+            "UPDATE render_jobs SET status='cancelled' WHERE id='job-batch-a'",
+            [],
+        )
+        .unwrap();
 
         advance_batch_queue(root.to_str().unwrap()).unwrap();
         let first: (String, String, String, String) = conn
@@ -2971,10 +4839,21 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .unwrap();
-        assert_eq!(first, ("running".into(), "pending".into(), "queued".into(), "paused".into()));
+        assert_eq!(
+            first,
+            (
+                "cancelled".into(),
+                "cancelled".into(),
+                "running".into(),
+                "pending".into()
+            )
+        );
 
-        conn.execute("UPDATE render_jobs SET status='completed' WHERE id='job-batch-a'", [])
-            .unwrap();
+        conn.execute(
+            "UPDATE render_jobs SET status='completed' WHERE id='job-batch-b'",
+            [],
+        )
+        .unwrap();
         advance_batch_queue(root.to_str().unwrap()).unwrap();
         let second: (String, String, String, String) = conn
             .query_row(
@@ -2983,7 +4862,15 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .unwrap();
-        assert_eq!(second, ("completed".into(), "completed".into(), "running".into(), "pending".into()));
+        assert_eq!(
+            second,
+            (
+                "cancelled".into(),
+                "cancelled".into(),
+                "completed".into(),
+                "completed".into()
+            )
+        );
         drop(conn);
         let _ = fs::remove_dir_all(root);
     }
@@ -3010,10 +4897,11 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        tauri::async_runtime::block_on(retry_render_frames(
+        tauri::async_runtime::block_on(queue_render_frames(
             root.to_string_lossy().to_string(),
             "retry-job".into(),
-            Some(vec![1]),
+            vec![1],
+            "rerender".into(),
         ))
         .unwrap();
 
@@ -3025,7 +4913,10 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .unwrap();
-        assert_eq!(state, ("queued".into(), "paused".into(), "pending".into(), 1));
+        assert_eq!(
+            state,
+            ("queued".into(), "paused".into(), "pending".into(), 1)
+        );
         drop(conn);
         let _ = fs::remove_dir_all(root);
     }
@@ -3053,10 +4944,17 @@ mod tests {
             .unwrap();
         }
 
-        let first = claim_next_frame(&mut conn, "job", 2).unwrap().unwrap();
-        let second = claim_next_frame(&mut conn, "job", 2).unwrap().unwrap();
-        assert_eq!(first.0, 1);
-        assert_eq!(second.0, 2);
+        let first = claim_next_frame(&mut conn, "job", 2, "worker-a")
+            .unwrap()
+            .unwrap();
+        let second = claim_next_frame(&mut conn, "job", 2, "worker-b")
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.frame, 1);
+        assert_eq!(second.frame, 2);
+        assert_ne!(first.claim_token, second.claim_token);
+        assert_eq!(first.worker_id, "worker-a");
+        assert_eq!(second.worker_id, "worker-b");
         let running: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM render_frames WHERE job_id='job' AND status='running'",
@@ -3068,24 +4966,132 @@ mod tests {
         drop(conn);
         let _ = fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn stale_worker_token_cannot_commit_or_replace_output() {
+        let root = std::env::temp_dir().join(format!("pm-render-stale-claim-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let project_path = root.to_string_lossy().to_string();
+        let mut conn = open_db(&project_path).unwrap();
+        conn.execute(
+            "INSERT INTO render_batches(id,project_path,name,status,created_at,updated_at) VALUES('batch',?1,'Batch','running',0,0)",
+            params![project_path],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO render_jobs(id,batch_id,project_path,name,blend_path,scene_name,status,frame_start,frame_end,frame_step,output_dir,blender_path,spec_json,position,created_at) VALUES('job','batch',?1,'Job','test.blend','Scene','running',1,1,1,?1,'blender','{}',0,0)",
+            params![project_path],
+        ).unwrap();
+        let output = root.join("frame-1.png");
+        conn.execute(
+            "INSERT INTO render_frames(job_id,frame,status,output_path,updated_at) VALUES('job',1,'pending',?1,0)",
+            params![output.to_string_lossy()],
+        ).unwrap();
+        let claim = claim_next_frame(&mut conn, "job", 2, "old-worker")
+            .unwrap()
+            .unwrap();
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([10, 20, 30, 255]))
+            .save(&claim.temp_output_path)
+            .unwrap();
+        conn.execute(
+            "UPDATE render_frames SET claim_token='new-token',worker_id='new-worker' WHERE job_id='job' AND frame=1",
+            [],
+        ).unwrap();
+
+        let committed =
+            complete_frame_claim(&mut conn, "job", &claim, 1, 100, 120, Some((2, 2))).unwrap();
+        assert!(!committed);
+        assert!(!output.exists());
+        assert!(!Path::new(&claim.temp_output_path).exists());
+        let owner: (String, String, String) = conn.query_row(
+            "SELECT status,worker_id,claim_token FROM render_frames WHERE job_id='job' AND frame=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        assert_eq!(
+            owner,
+            ("running".into(), "new-worker".into(), "new-token".into())
+        );
+        drop(conn);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn crash_recovery_commits_valid_temp_and_releases_running_frame() {
+        let root = std::env::temp_dir().join(format!("pm-render-recovery-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let project_path = root.to_string_lossy().to_string();
+        let conn = open_db(&project_path).unwrap();
+        conn.execute(
+            "INSERT INTO render_batches(id,project_path,name,status,created_at,updated_at) VALUES('batch',?1,'Batch','running',0,0)",
+            params![project_path],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO render_jobs(id,batch_id,project_path,name,blend_path,scene_name,status,frame_start,frame_end,frame_step,output_dir,blender_path,spec_json,position,created_at) VALUES('job','batch',?1,'Job','test.blend','Scene','running',1,2,1,?1,'blender','{}',0,0)",
+            params![project_path],
+        ).unwrap();
+        let committed_output = root.join("frame-1.png");
+        let committing_temp = root.join(".frame-1.part.png");
+        let running_output = root.join("frame-2.png");
+        let running_temp = root.join(".frame-2.part.png");
+        for path in [&committing_temp, &running_temp] {
+            image::RgbaImage::from_pixel(2, 2, image::Rgba([20, 30, 40, 255]))
+                .save(path)
+                .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO render_frames(job_id,frame,status,output_path,worker_id,claim_token,temp_output_path,updated_at) VALUES('job',1,'committing',?1,'worker-a','token-a',?2,0)",
+            params![committed_output.to_string_lossy(), committing_temp.to_string_lossy()],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO render_frames(job_id,frame,status,output_path,worker_id,claim_token,temp_output_path,updated_at) VALUES('job',2,'running',?1,'worker-b','token-b',?2,0)",
+            params![running_output.to_string_lossy(), running_temp.to_string_lossy()],
+        ).unwrap();
+
+        recover_interrupted_frames(&conn).unwrap();
+        let states: Vec<String> = conn
+            .prepare("SELECT status FROM render_frames WHERE job_id='job' ORDER BY frame")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(states, ["completed", "pending"]);
+        assert!(valid_output_with_dimensions(
+            &committed_output,
+            Some((2, 2))
+        ));
+        assert!(!committing_temp.exists());
+        assert!(!running_temp.exists());
+        assert!(!running_output.exists());
+        drop(conn);
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn maps_formats_and_sanitizes_names() {
         assert_eq!(format_extension("OPEN_EXR"), "exr");
         assert_eq!(safe_name("Scene 01/主"), "Scene_01__");
+        let root = std::env::temp_dir().join(format!("pm-render-image-check-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let output = root.join("frame.png");
+        image::RgbaImage::from_pixel(2, 3, image::Rgba([0, 0, 0, 255]))
+            .save(&output)
+            .unwrap();
+        assert!(valid_output_with_dimensions(&output, Some((2, 3))));
+        assert!(!valid_output_with_dimensions(&output, Some((3, 2))));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn renders_one_frame_with_real_blender_when_configured() {
+    fn persistent_worker_renders_ten_frames_with_one_blend_load_when_configured() {
         let Ok(blender) = std::env::var("PM_CENTER_BLENDER_TEST") else {
             return;
         };
         let root = std::env::temp_dir().join(format!("pm-render-smoke-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let blend_path = root.join("source.blend");
-        let bootstrap = root.join("bootstrap.py");
-        let spec_path = root.join("spec.json");
-        let output_path = root.join("frame.png");
-        fs::write(&bootstrap, bootstrap_script()).unwrap();
+        let worker_script = root.join("worker.py");
+        fs::write(&worker_script, persistent_worker_script()).unwrap();
 
         let create_code = format!(
             "import bpy; s=bpy.context.scene; s.render.resolution_x=64; s.render.resolution_y=64; s.render.resolution_percentage=100; bpy.ops.wm.save_as_mainfile(filepath=r'{}')",
@@ -3103,33 +5109,74 @@ mod tests {
         assert!(create_status.success());
         let source_before = fs::read(&blend_path).unwrap();
 
-        fs::write(
-            &spec_path,
-            serde_json::to_vec(&json!({
-                "sceneName": "Scene",
-                "frame": 1,
-                "outputPath": output_path,
-                "outputFormat": "PNG",
-                "resolutionX": 64,
-                "resolutionY": 64,
-                "resolutionPercentage": 100,
-                "engine": null
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-        let render_status = std_command(&blender)
+        let mut child = std_command(&blender)
             .arg("-b")
             .arg(&blend_path)
             .arg("--python")
-            .arg(&bootstrap)
+            .arg(&worker_script)
             .arg("--")
-            .arg("--spec")
-            .arg(&spec_path)
-            .status()
+            .arg("--worker-id")
+            .arg("smoke-worker")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let stdout_reader = std::thread::spawn(move || {
+            use std::io::Read;
+            let mut output = String::new();
+            let mut reader = std::io::BufReader::new(stdout);
+            reader.read_to_string(&mut output).unwrap();
+            output
+        });
+        let stderr_reader = std::thread::spawn(move || {
+            use std::io::Read;
+            let mut output = String::new();
+            let mut reader = std::io::BufReader::new(stderr);
+            reader.read_to_string(&mut output).unwrap();
+            output
+        });
+        let mut stdin = child.stdin.take().unwrap();
+        let output_paths = (1..=10)
+            .map(|frame| {
+                let output = root.join(format!("frame-{frame:04}.png"));
+                writeln!(
+                    stdin,
+                    "{}",
+                    json!({
+                        "type": "render",
+                        "frame": frame,
+                        "claimToken": format!("token-{frame}"),
+                        "tempOutputPath": output,
+                        "sceneName": "Scene",
+                        "outputFormat": "PNG",
+                        "resolutionX": 64,
+                        "resolutionY": 64,
+                        "resolutionPercentage": 100,
+                        "engine": null
+                    })
+                )
+                .unwrap();
+                output
+            })
+            .collect::<Vec<_>>();
+        writeln!(stdin, "{}", json!({ "type": "shutdown" })).unwrap();
+        drop(stdin);
+        let render_status = child.wait().unwrap();
+        let stdout = stdout_reader.join().unwrap();
+        let stderr = stderr_reader.join().unwrap();
         assert!(render_status.success());
-        assert!(valid_output(&output_path));
+        assert_eq!(
+            stdout.matches("Read blend:").count() + stderr.matches("Read blend:").count(),
+            1
+        );
+        assert_eq!(stdout.matches("\"type\": \"worker-ready\"").count(), 1);
+        assert_eq!(stdout.matches("\"type\": \"frame-completed\"").count(), 10);
+        assert!(output_paths
+            .iter()
+            .all(|path| valid_output_with_dimensions(path, Some((64, 64)))));
         assert_eq!(source_before, fs::read(&blend_path).unwrap());
         let _ = fs::remove_dir_all(root);
     }
