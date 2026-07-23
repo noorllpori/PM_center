@@ -7,7 +7,7 @@ interface DialogProps {
   title: string;
   children: React.ReactNode;
   footer?: React.ReactNode;
-  size?: 'sm' | 'md' | 'lg' | 'xl';
+  size?: 'sm' | 'md' | 'lg' | 'xl' | '2xl';
 }
 
 export function Dialog({ 
@@ -58,6 +58,7 @@ export function Dialog({
     md: 'w-[420px]',
     lg: 'w-[560px]',
     xl: 'w-[760px]',
+    '2xl': 'w-[1040px]',
   };
 
   return (
@@ -210,7 +211,7 @@ interface InputDialogProps {
   cancelText?: string;
   disabled?: boolean;
   description?: string;
-  size?: 'sm' | 'md' | 'lg' | 'xl';
+  size?: 'sm' | 'md' | 'lg' | 'xl' | '2xl';
   selectOnOpen?: boolean;
 }
 

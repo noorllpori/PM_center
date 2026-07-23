@@ -3183,7 +3183,7 @@ dependencies = [
 
 [[package]]
 name = "pm_center"
-version = "2.3.2"
+version = "2.3.5"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

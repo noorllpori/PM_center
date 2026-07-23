@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { open } from '@tauri-apps/plugin-dialog';
 import {
   AlertCircle,
   Archive,
@@ -31,6 +30,7 @@ import { useRenderStore, initRenderEventListeners } from '../../stores/renderSto
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useUiStore } from '../../stores/uiStore';
 import { HelpAssistant } from '../ui/HelpAssistant';
+import { ProjectFilePickerDialog, type ProjectFilePickerTarget } from './ProjectFilePickerDialog';
 import type {
   CreateRenderBatchRequest,
   RenderFrame,
@@ -369,6 +369,8 @@ interface EditableJob {
   error: string | null;
 }
 
+type RenderFilePickerTarget = 'blend' | 'outputRoot' | 'preHook' | 'postHook';
+
 function CreateBatchDialog({ projectPath, presets, initialSources, onClose, onCreated }: { projectPath: string; presets: RenderPreset[]; initialSources: string[]; onClose: () => void; onCreated: () => Promise<void> }) {
   const blenderDefault = useSettingsStore((state) => state.toolPaths.blender) || '';
   const blenderInstallations = useSettingsStore((state) => state.blenderInstallations);
@@ -394,6 +396,7 @@ function CreateBatchDialog({ projectPath, presets, initialSources, onClose, onCr
   const [submitting, setSubmitting] = useState(false);
   const [presetName, setPresetName] = useState('');
   const [presetScope, setPresetScope] = useState<'project' | 'global'>('project');
+  const [filePickerTarget, setFilePickerTarget] = useState<RenderFilePickerTarget | null>(null);
 
   useEffect(() => {
     if (availableBlenders.some((installation) => installation.path === blenderPath)) return;
@@ -413,18 +416,20 @@ function CreateBatchDialog({ projectPath, presets, initialSources, onClose, onCr
     } finally { setInspecting(false); }
   }, [blenderPath, showToast]);
 
-  const chooseBlendFiles = async () => {
-    const selected = await open({ multiple: true, filters: [{ name: 'Blender', extensions: ['blend'] }] });
-    const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
-    await inspectPaths(paths);
-  };
-
   useEffect(() => {
     if (initialSources.length > 0) void inspectPaths(initialSources);
   }, [initialSources, inspectPaths]);
 
   const updateJob = (index: number, patch: Partial<EditableJob>) => setJobs((items) => items.map((item, current) => current === index ? { ...item, ...patch } : item));
-  const chooseFile = async (setter: (path: string) => void, extensions: string[]) => { const selected = await open({ multiple: false, filters: [{ name: '文件', extensions }] }); if (typeof selected === 'string') setter(selected); };
+  const handleFilePickerSelection = async (paths: string[]) => {
+    if (filePickerTarget === 'blend') await inspectPaths(paths);
+    if (filePickerTarget === 'outputRoot') setOutputRoot(paths[0] || '');
+    if (filePickerTarget === 'preHook') setPreHook(paths[0] || '');
+    if (filePickerTarget === 'postHook') setPostHook(paths[0] || '');
+  };
+  const projectFilePickerTarget: ProjectFilePickerTarget = filePickerTarget === 'outputRoot' ? 'directory' : 'file';
+  const filePickerExtensions = filePickerTarget === 'blend' ? ['blend'] : filePickerTarget === 'preHook' || filePickerTarget === 'postHook' ? ['py'] : [];
+  const filePickerTitle = filePickerTarget === 'blend' ? '选择 Blender 文件' : filePickerTarget === 'outputRoot' ? '选择输出目录' : filePickerTarget === 'preHook' ? '选择前置脚本' : '选择后置脚本';
   const applyPreset = (presetId: string) => {
     const settings = presets.find((preset) => preset.id === presetId)?.settings;
     if (!settings) return;
@@ -483,17 +488,27 @@ function CreateBatchDialog({ projectPath, presets, initialSources, onClose, onCr
                 ))}
               </select>
             </Field>
-            <PathField label="输出根目录（默认项目 renders）" value={outputRoot} onChange={setOutputRoot} onBrowse={async () => { const selected = await open({ directory: true }); if (typeof selected === 'string') setOutputRoot(selected); }} />
+            <PathField label="输出根目录（默认项目 renders）" value={outputRoot} onChange={setOutputRoot} onBrowse={() => setFilePickerTarget('outputRoot')} />
             <div className="grid grid-cols-2 gap-3"><Field label="失败重试"><input type="number" min={0} max={10} value={maxRetries} onChange={(e) => setMaxRetries(Number(e.target.value))} /></Field><label className="mt-6 flex h-9 items-center gap-2 text-xs"><input type="checkbox" checked={forceOverwrite} onChange={(e) => setForceOverwrite(e.target.checked)} className="h-4 w-4" />强制覆盖已有帧</label></div>
-            <PathField label="前置脚本（PMC Python）" value={preHook} onChange={setPreHook} onBrowse={() => void chooseFile(setPreHook, ['py'])} />
-            <PathField label="后置脚本（PMC Python）" value={postHook} onChange={setPostHook} onBrowse={() => void chooseFile(setPostHook, ['py'])} />
+            <PathField label="前置脚本（PMC Python）" value={preHook} onChange={setPreHook} onBrowse={() => setFilePickerTarget('preHook')} />
+            <PathField label="后置脚本（PMC Python）" value={postHook} onChange={setPostHook} onBrowse={() => setFilePickerTarget('postHook')} />
           </div>
-          <div className="mt-5 flex items-center justify-between border-b border-gray-200 pb-2 dark:border-gray-800"><div><h4 className="text-sm font-semibold">源文件与场景</h4><p className="text-xs text-gray-500">每个文件选择一个场景并生成独立作业</p></div><button disabled={inspecting || !blenderPath} onClick={() => void chooseBlendFiles()} className="flex h-8 items-center gap-1.5 rounded border border-gray-300 px-3 text-xs disabled:opacity-50 dark:border-gray-700">{inspecting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}添加 .blend</button></div>
+          <div className="mt-5 flex items-center justify-between border-b border-gray-200 pb-2 dark:border-gray-800"><div><h4 className="text-sm font-semibold">源文件与场景</h4><p className="text-xs text-gray-500">每个文件选择一个场景并生成独立作业</p></div><button disabled={inspecting || !blenderPath} onClick={() => setFilePickerTarget('blend')} className="flex h-8 items-center gap-1.5 rounded border border-gray-300 px-3 text-xs disabled:opacity-50 dark:border-gray-700">{inspecting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}添加 .blend</button></div>
           {jobs.length === 0 ? <div className="flex h-32 items-center justify-center text-sm text-gray-500">选择一个或多个 Blender 文件开始</div> : <div>{jobs.map((job,index) => <EditableJobRow key={job.path} job={job} onChange={(patch) => updateJob(index, patch)} onRemove={() => setJobs((items) => items.filter((_,current) => current !== index))} />)}</div>}
           <div className="mt-5 border-t border-gray-200 pt-4 dark:border-gray-800"><div className="flex flex-wrap items-end gap-2"><Field label="保存当前通用设置为预设"><input value={presetName} onChange={(e) => setPresetName(e.target.value)} placeholder="预设名称" /></Field><select value={presetScope} onChange={(e) => setPresetScope(e.target.value as 'project'|'global')} className="h-9"><option value="project">项目</option><option value="global">全局</option></select><button disabled={!presetName.trim()} onClick={() => void savePreset()} className="flex h-9 items-center gap-1.5 rounded border border-gray-300 px-3 text-xs disabled:opacity-40 dark:border-gray-700"><Save className="h-4 w-4" />保存预设</button></div></div>
         </div>
         <div className="flex min-h-[60px] items-center justify-between border-t border-gray-200 px-5 dark:border-gray-800"><span className="text-xs text-gray-500">{jobs.filter((job) => !job.error).length} 个有效作业</span><div className="flex gap-2"><button className="h-9 rounded px-4 text-xs" onClick={onClose}>取消</button><button disabled={submitting || !jobs.some((job) => !job.error) || !blenderPath} onClick={() => void submit()} className="flex h-9 items-center gap-1.5 rounded bg-gray-900 px-4 text-xs font-medium text-white disabled:opacity-40 dark:bg-white dark:text-gray-900">{submitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}加入队列</button></div></div>
       </div>
+      <ProjectFilePickerDialog
+        isOpen={filePickerTarget !== null}
+        projectPath={projectPath}
+        title={filePickerTitle}
+        target={projectFilePickerTarget}
+        selectionMode={filePickerTarget === 'blend' ? 'multiple' : 'single'}
+        extensions={filePickerExtensions}
+        onClose={() => setFilePickerTarget(null)}
+        onSelect={handleFilePickerSelection}
+      />
     </div>
   );
 }
