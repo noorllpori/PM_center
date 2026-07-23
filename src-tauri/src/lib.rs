@@ -1000,6 +1000,7 @@ pub fn run() {
             render_center::pause_render_queue,
             render_center::resume_render_queue,
             render_center::retry_render_frames,
+            render_center::skip_render_frames,
             render_center::reorder_render_job,
             render_center::archive_render_job,
             render_center::list_render_presets,

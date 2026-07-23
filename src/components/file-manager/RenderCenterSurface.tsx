@@ -466,6 +466,7 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
   const [frameContextMenu, setFrameContextMenu] = useState<FrameContextMenu | null>(null);
   const [frameMarquee, setFrameMarquee] = useState<FrameMarquee | null>(null);
   const [rerenderConfirmation, setRerenderConfirmation] = useState<RerenderConfirmation | null>(null);
+  const [skipConfirmation, setSkipConfirmation] = useState<number[] | null>(null);
   const frameListRef = useRef<HTMLDivElement>(null);
   const [previewFrameNumber, setPreviewFrameNumber] = useState<number | null>(null);
   const [showSettingsEditor, setShowSettingsEditor] = useState(false);
@@ -481,6 +482,10 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
   const previewableFrameNumbers = useMemo(
     () => new Set(previewableFrames.map((frame) => frame.frame)),
     [previewableFrames],
+  );
+  const skippableFrameNumbers = useMemo(
+    () => new Set(frames.filter((frame) => ['pending', 'failed'].includes(frame.status)).map((frame) => frame.frame)),
+    [frames],
   );
   const smoothedEta = useSmoothedEta(job, detail.eta);
   const completionEstimate = formatCompletionEstimate(smoothedEta);
@@ -501,6 +506,7 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
     setFrameContextMenu(null);
     setFrameMarquee(null);
     setRerenderConfirmation(null);
+    setSkipConfirmation(null);
     setPreviewFrameNumber(null);
     setShowSettingsEditor(false);
   }, [job.id]);
@@ -613,6 +619,20 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
     await onAction('重新渲染所选帧', 'retry_render_frames', { frames: frameNumbers });
   }, [onAction, rerenderConfirmation]);
 
+  const requestSkipSelectedFrames = useCallback((frameNumbers: number[]) => {
+    const skippableFrames = frameNumbers.filter((frameNumber) => skippableFrameNumbers.has(frameNumber));
+    if (!skippableFrames.length) return;
+    setFrameContextMenu(null);
+    setSkipConfirmation(skippableFrames);
+  }, [skippableFrameNumbers]);
+
+  const confirmSkipSelectedFrames = useCallback(async () => {
+    if (!skipConfirmation?.length) return;
+    const frameNumbers = skipConfirmation;
+    setSkipConfirmation(null);
+    await onAction('跳过所选帧', 'skip_render_frames', { frames: frameNumbers });
+  }, [onAction, skipConfirmation]);
+
   const copySelectedPaths = useCallback(async (frameNumbers: number[]) => {
     const paths = frames.filter((frame) => frameNumbers.includes(frame.frame)).map((frame) => frame.outputPath).filter(Boolean);
     if (!paths.length) return;
@@ -642,7 +662,7 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
     <div className="flex h-full min-h-0 flex-col">
       <div className="border-b border-gray-200 px-3 py-2 dark:border-gray-800">
         <div className="flex items-center gap-2">
-          <div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h3 className="truncate text-sm font-semibold">{job.name}</h3><StatusBadge status={job.status} /><HelpAssistant title="管理这个任务" text={['单击帧行可选中；按 Ctrl/Cmd 多选，按 Shift 选择连续范围，也可拖拽框选。右键显示批量操作。', '双击已完成帧可预览；铅笔按钮用于修改场景、帧范围、帧多开、分辨率和格式。运行中的任务需先暂停。', '重新渲染所选帧必须先暂停任务，确认后才会提交；取消只关闭确认窗口，不会修改队列。']} placement="bottom-start" width={340} /></div><p className="mt-0.5 truncate text-[11px] text-gray-500" title={job.outputDir}>{job.outputDir}</p></div>
+          <div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h3 className="truncate text-sm font-semibold">{job.name}</h3><StatusBadge status={job.status} /><HelpAssistant title="管理这个任务" text={['单击帧行可选中；按 Ctrl/Cmd 多选，按 Shift 选择连续范围，也可拖拽框选。右键显示批量操作。', '双击已完成帧可预览；铅笔按钮用于修改场景、帧范围、帧多开、分辨率和格式。运行中的任务需先暂停。', '右键可重新渲染或跳过所选帧，均需先暂停并确认；跳过只标记等待中/失败帧，不删除已有输出。']} placement="bottom-start" width={340} /></div><p className="mt-0.5 truncate text-[11px] text-gray-500" title={job.outputDir}>{job.outputDir}</p></div>
           <div className="flex shrink-0 items-center gap-1">
           {canPause && <IconAction title="暂停" icon={<CirclePause />} disabled={busy} onClick={() => onAction('暂停作业', 'pause_render_job')} />}
           {canResume && <IconAction title="继续" icon={<CirclePlay />} disabled={busy} onClick={() => onAction('继续作业', 'resume_render_job')} />}
@@ -731,6 +751,7 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
             setFrameContextMenu(null);
           }} className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-gray-800"><ImageIcon className="h-3.5 w-3.5" />预览所选帧</button>
           <button type="button" role="menuitem" disabled={busy || !canEdit} title={canEdit ? '强制重新渲染所选帧' : '请先暂停任务再重新渲染'} onClick={() => requestRerenderSelectedFrames(frameContextMenu.frameNumbers)} className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-gray-800"><RotateCcw className="h-3.5 w-3.5" />重新渲染所选帧</button>
+          <button type="button" role="menuitem" disabled={busy || !canEdit || !frameContextMenu.frameNumbers.some((frameNumber) => skippableFrameNumbers.has(frameNumber))} title={canEdit ? '跳过等待中或失败的所选帧' : '请先暂停任务再跳过帧'} onClick={() => requestSkipSelectedFrames(frameContextMenu.frameNumbers)} className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-gray-800"><CirclePause className="h-3.5 w-3.5" />跳过所选帧</button>
           <button type="button" role="menuitem" onClick={() => void onAction('打开输出目录', 'open_render_output', { path: job.outputDir }).then(() => setFrameContextMenu(null))} className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs hover:bg-gray-100 dark:hover:bg-gray-800"><FolderOpen className="h-3.5 w-3.5" />打开输出目录</button>
           <button type="button" role="menuitem" onClick={() => void copySelectedPaths(frameContextMenu.frameNumbers)} className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs hover:bg-gray-100 dark:hover:bg-gray-800"><Copy className="h-3.5 w-3.5" />复制输出路径</button>
           <button type="button" role="menuitem" onClick={() => { setSelectedFrameNumbers(new Set()); setFrameSelectionAnchor(null); setFrameContextMenu(null); }} className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"><X className="h-3.5 w-3.5" />取消选择</button>
@@ -741,6 +762,14 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
           <div className="w-full max-w-md overflow-hidden rounded-md border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-950">
             <div className="flex items-center gap-3 border-b border-gray-200 px-4 py-3 dark:border-gray-800"><AlertCircle className="h-5 w-5 text-amber-500" /><div><h4 className="text-sm font-semibold">确认重新渲染</h4><p className="mt-0.5 text-xs text-gray-500">将强制重新渲染所选的 {rerenderConfirmation.frameNumbers.length} 帧，现有输出会被覆盖。</p></div></div>
             <div className="flex justify-end gap-2 px-4 py-3"><button type="button" onClick={() => setRerenderConfirmation(null)} className="h-8 rounded px-3 text-xs hover:bg-gray-100 dark:hover:bg-gray-800">取消</button><button type="button" onClick={() => void confirmRerenderSelectedFrames()} className="h-8 rounded bg-red-600 px-3 text-xs font-medium text-white hover:bg-red-500">确认重新渲染</button></div>
+          </div>
+        </div>
+      )}
+      {skipConfirmation && (
+        <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-label="确认跳过帧">
+          <div className="w-full max-w-md overflow-hidden rounded-md border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-950">
+            <div className="flex items-center gap-3 border-b border-gray-200 px-4 py-3 dark:border-gray-800"><CirclePause className="h-5 w-5 text-amber-500" /><div><h4 className="text-sm font-semibold">确认跳过帧</h4><p className="mt-0.5 text-xs text-gray-500">将把所选的 {skipConfirmation.length} 帧标记为已跳过，不会删除已有输出文件。</p></div></div>
+            <div className="flex justify-end gap-2 px-4 py-3"><button type="button" onClick={() => setSkipConfirmation(null)} className="h-8 rounded px-3 text-xs hover:bg-gray-100 dark:hover:bg-gray-800">取消</button><button type="button" onClick={() => void confirmSkipSelectedFrames()} className="h-8 rounded bg-amber-600 px-3 text-xs font-medium text-white hover:bg-amber-500">确认跳过</button></div>
           </div>
         </div>
       )}

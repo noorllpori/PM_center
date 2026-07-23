@@ -2080,6 +2080,63 @@ pub async fn retry_render_frames(
 }
 
 #[tauri::command]
+pub async fn skip_render_frames(
+    project_path: String,
+    job_id: String,
+    frames: Vec<i64>,
+) -> Result<(), String> {
+    if frames.is_empty() {
+        return Err("请选择要跳过的帧".into());
+    }
+    let mut conn = open_db(&project_path)?;
+    let transaction = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    let status: String = transaction
+        .query_row(
+            "SELECT status FROM render_jobs WHERE id=?1",
+            params![job_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if matches!(status.as_str(), "starting" | "running" | "pausing" | "cancelling") {
+        return Err("任务正在运行，请先暂停后再跳过帧".into());
+    }
+    for frame in frames {
+        transaction
+            .execute(
+                "UPDATE render_frames SET status='skipped',error=NULL,updated_at=?3 WHERE job_id=?1 AND frame=?2 AND status IN ('pending','failed')",
+                params![job_id, frame, now()],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    let (pending_count, failed_count, completed_count, total_count): (i64, i64, i64, i64) = transaction
+        .query_row(
+            "SELECT SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END),SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END),SUM(CASE WHEN status IN ('completed','skipped') THEN 1 ELSE 0 END),COUNT(*) FROM render_frames WHERE job_id=?1",
+            params![job_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .map_err(|error| error.to_string())?;
+    let next_status = if pending_count > 0 {
+        "paused"
+    } else if failed_count > 0 {
+        "failed"
+    } else if total_count > 0 && completed_count == total_count {
+        "completed"
+    } else {
+        status.as_str()
+    };
+    transaction
+        .execute(
+            "UPDATE render_jobs SET status=?2,current_frame=NULL,error=NULL,finished_at=CASE WHEN ?2='completed' THEN ?3 ELSE finished_at END WHERE id=?1",
+            params![job_id, next_status, now()],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn reorder_render_job(
     project_path: String,
     job_id: String,
