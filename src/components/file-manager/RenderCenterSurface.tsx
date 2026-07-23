@@ -27,10 +27,10 @@ import {
   X,
 } from 'lucide-react';
 import { useProjectStoreShallow } from '../../stores/projectStore';
-import { usePythonEnvStore } from '../../stores/pythonEnvStore';
 import { useRenderStore, initRenderEventListeners } from '../../stores/renderStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useUiStore } from '../../stores/uiStore';
+import { HelpAssistant } from '../ui/HelpAssistant';
 import type {
   CreateRenderBatchRequest,
   RenderFrame,
@@ -376,8 +376,6 @@ function CreateBatchDialog({ projectPath, presets, initialSources, onClose, onCr
     () => blenderInstallations.filter((installation) => installation.status === 'ready'),
     [blenderInstallations],
   );
-  const envs = usePythonEnvStore((state) => state.envs);
-  const selectedEnvId = usePythonEnvStore((state) => state.selectedEnvId);
   const showToast = useUiStore((state) => state.showToast);
   const [namePrefix, setNamePrefix] = useState('渲染批次');
   const [batchTimestamp] = useState(() => formatBatchTimestamp(new Date()));
@@ -386,7 +384,6 @@ function CreateBatchDialog({ projectPath, presets, initialSources, onClose, onCr
       ? blenderDefault
       : availableBlenders[0]?.path || ''
   ));
-  const [pythonPath, setPythonPath] = useState(envs.find((env) => env.id === selectedEnvId)?.path || '');
   const [outputRoot, setOutputRoot] = useState('');
   const [preHook, setPreHook] = useState('');
   const [postHook, setPostHook] = useState('');
@@ -448,7 +445,7 @@ function CreateBatchDialog({ projectPath, presets, initialSources, onClose, onCr
     if (!namePrefix.trim() || !blenderPath || !validJobs.length) return;
     setSubmitting(true);
     try {
-      const request: CreateRenderBatchRequest = { name: `${namePrefix.trim()} ${batchTimestamp}`, blenderPath, pythonPath: pythonPath || null, outputRoot: outputRoot || null, preHook: preHook || null, postHook: postHook || null, forceOverwrite, maxRetries, jobs: validJobs.map((job) => ({ blendPath: job.path, sceneName: job.sceneName, frameStart: job.frameStart, frameEnd: job.frameEnd, frameStep: job.frameStep, resolutionPercentage: job.resolutionPercentage, engine: job.engine || null, outputFormat: job.outputFormat })) };
+      const request: CreateRenderBatchRequest = { name: `${namePrefix.trim()} ${batchTimestamp}`, blenderPath, outputRoot: outputRoot || null, preHook: preHook || null, postHook: postHook || null, forceOverwrite, maxRetries, jobs: validJobs.map((job) => ({ blendPath: job.path, sceneName: job.sceneName, frameStart: job.frameStart, frameEnd: job.frameEnd, frameStep: job.frameStep, resolutionPercentage: job.resolutionPercentage, engine: job.engine || null, outputFormat: job.outputFormat })) };
       await invoke('create_render_batch', { projectPath, request });
       showToast({ title: '渲染批次已加入队列', message: `${validJobs.length} 个作业`, tone: 'success' });
       await onCreated();
@@ -476,7 +473,7 @@ function CreateBatchDialog({ projectPath, presets, initialSources, onClose, onCr
               </span>
             </Field>
             <Field label="套用预设"><select defaultValue="" onChange={(e) => applyPreset(e.target.value)}><option value="">不使用预设</option>{presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name} · {preset.scope === 'global' ? '全局' : '项目'}</option>)}</select></Field>
-            <Field label="Blender 版本 *">
+            <Field label={<span className="inline-flex items-center gap-1">Blender 版本 *<HelpAssistant title="Blender 版本" text={["版本来自“设置 > Blender 版本管理”。", '场景读取和队列渲染都会使用当前选中的可执行文件。']} placement="right" /></span>}>
               <select value={blenderPath} onChange={(event) => setBlenderPath(event.target.value)}>
                 {availableBlenders.length === 0 && <option value="">请先在设置中添加可用 Blender</option>}
                 {availableBlenders.map((installation) => (
@@ -486,11 +483,10 @@ function CreateBatchDialog({ projectPath, presets, initialSources, onClose, onCr
                 ))}
               </select>
             </Field>
-            <Field label="Python 环境（钩子）"><select value={pythonPath} onChange={(e) => setPythonPath(e.target.value)}><option value="">系统 Python</option>{envs.map((env) => <option key={env.id} value={env.path}>{env.name}</option>)}</select></Field>
             <PathField label="输出根目录（默认项目 renders）" value={outputRoot} onChange={setOutputRoot} onBrowse={async () => { const selected = await open({ directory: true }); if (typeof selected === 'string') setOutputRoot(selected); }} />
             <div className="grid grid-cols-2 gap-3"><Field label="失败重试"><input type="number" min={0} max={10} value={maxRetries} onChange={(e) => setMaxRetries(Number(e.target.value))} /></Field><label className="mt-6 flex h-9 items-center gap-2 text-xs"><input type="checkbox" checked={forceOverwrite} onChange={(e) => setForceOverwrite(e.target.checked)} className="h-4 w-4" />强制覆盖已有帧</label></div>
-            <PathField label="前置 Python 脚本" value={preHook} onChange={setPreHook} onBrowse={() => void chooseFile(setPreHook, ['py'])} />
-            <PathField label="后置 Python 脚本" value={postHook} onChange={setPostHook} onBrowse={() => void chooseFile(setPostHook, ['py'])} />
+            <PathField label="前置脚本（PMC Python）" value={preHook} onChange={setPreHook} onBrowse={() => void chooseFile(setPreHook, ['py'])} />
+            <PathField label="后置脚本（PMC Python）" value={postHook} onChange={setPostHook} onBrowse={() => void chooseFile(setPostHook, ['py'])} />
           </div>
           <div className="mt-5 flex items-center justify-between border-b border-gray-200 pb-2 dark:border-gray-800"><div><h4 className="text-sm font-semibold">源文件与场景</h4><p className="text-xs text-gray-500">每个文件选择一个场景并生成独立作业</p></div><button disabled={inspecting || !blenderPath} onClick={() => void chooseBlendFiles()} className="flex h-8 items-center gap-1.5 rounded border border-gray-300 px-3 text-xs disabled:opacity-50 dark:border-gray-700">{inspecting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}添加 .blend</button></div>
           {jobs.length === 0 ? <div className="flex h-32 items-center justify-center text-sm text-gray-500">选择一个或多个 Blender 文件开始</div> : <div>{jobs.map((job,index) => <EditableJobRow key={job.path} job={job} onChange={(patch) => updateJob(index, patch)} onRemove={() => setJobs((items) => items.filter((_,current) => current !== index))} />)}</div>}
@@ -509,11 +505,11 @@ function toEditableJob(source: RenderSourceInfo): EditableJob {
 
 function EditableJobRow({ job, onChange, onRemove }: { job: EditableJob; onChange: (patch: Partial<EditableJob>) => void; onRemove: () => void }) {
   const scene = job.scenes.find((item) => item.name === job.sceneName);
-  return <div className="border-b border-gray-100 py-3 dark:border-gray-800"><div className="flex items-center gap-2"><span className="min-w-0 flex-1 truncate text-xs font-medium" title={job.path}>{fileName(job.path)}</span>{job.error && <span className="text-xs text-red-600">读取失败</span>}<button title="移除" onClick={onRemove} className="h-7 w-7 p-0 text-gray-400 hover:text-red-600"><X className="mx-auto h-3.5 w-3.5" /></button></div>{job.error ? <p className="mt-1 text-xs text-red-600">{job.error}</p> : <div className="mt-2 grid grid-cols-[minmax(120px,1fr)_80px_80px_62px_90px_100px] gap-2 max-[680px]:grid-cols-3"><Field label="场景"><select value={job.sceneName} onChange={(e) => { const next=job.scenes.find((item)=>item.name===e.target.value); onChange({ sceneName:e.target.value, frameStart:next?.frameStart ?? job.frameStart, frameEnd:next?.frameEnd ?? job.frameEnd, engine:next?.engine ?? job.engine, outputFormat:next?.outputFormat ?? job.outputFormat }); }}>{job.scenes.map((item)=><option key={item.name}>{item.name}</option>)}</select></Field><Field label="起始"><input type="number" value={job.frameStart} onChange={(e)=>onChange({frameStart:Number(e.target.value)})} /></Field><Field label="结束"><input type="number" value={job.frameEnd} onChange={(e)=>onChange({frameEnd:Number(e.target.value)})} /></Field><Field label="步长"><input type="number" min={1} value={job.frameStep} onChange={(e)=>onChange({frameStep:Math.max(1,Number(e.target.value))})} /></Field><Field label="分辨率 %"><input type="number" min={1} max={100} value={job.resolutionPercentage} onChange={(e)=>onChange({resolutionPercentage:Number(e.target.value)})} /></Field><Field label="格式"><select value={job.outputFormat} onChange={(e)=>onChange({outputFormat:e.target.value})}><option>PNG</option><option>JPEG</option><option>OPEN_EXR</option><option>TIFF</option><option>WEBP</option></select></Field><div className="col-span-full text-[10px] text-gray-500">{scene?.resolutionX} × {scene?.resolutionY} · {scene?.fps} fps · {job.engine}</div></div>}</div>;
+  return <div className="border-b border-gray-100 py-3 dark:border-gray-800"><div className="flex items-center gap-2"><span className="min-w-0 flex-1 truncate text-xs font-medium" title={job.path}>{fileName(job.path)}</span>{job.error && <span className="text-xs text-red-600">读取失败</span>}<button title="移除" onClick={onRemove} className="h-7 w-7 p-0 text-gray-400 hover:text-red-600"><X className="mx-auto h-3.5 w-3.5" /></button></div>{job.error ? <p className="mt-1 text-xs text-red-600">{job.error}</p> : <div className="mt-2 grid grid-cols-[minmax(120px,1fr)_80px_80px_62px_90px_100px] gap-2 max-[680px]:grid-cols-3"><Field label="场景"><select value={job.sceneName} onChange={(e) => { const next=job.scenes.find((item)=>item.name===e.target.value); onChange({ sceneName:e.target.value, frameStart:next?.frameStart ?? job.frameStart, frameEnd:next?.frameEnd ?? job.frameEnd, engine:next?.engine ?? job.engine, outputFormat:next?.outputFormat ?? job.outputFormat }); }}>{job.scenes.map((item)=><option key={item.name}>{item.name}</option>)}</select></Field><Field label="起始"><input type="number" value={job.frameStart} onChange={(e)=>onChange({frameStart:Number(e.target.value)})} /></Field><Field label="结束"><input type="number" value={job.frameEnd} onChange={(e)=>onChange({frameEnd:Number(e.target.value)})} /></Field><Field label="步长"><input type="number" min={1} value={job.frameStep} onChange={(e)=>onChange({frameStep:Math.max(1,Number(e.target.value))})} /></Field><Field label={<span className="inline-flex items-center gap-1">分辨率 %<HelpAssistant title="渲染分辨率比例" text={["按场景原始分辨率的百分比渲染。", '降低比例可以加快预览渲染，正式输出通常使用 100%。']} images={[{ src: '/help_media/渲染像素比.jpg', alt: '不同渲染清晰度的对比' }]} placement="top" /></span>}><input type="number" min={1} max={100} value={job.resolutionPercentage} onChange={(e)=>onChange({resolutionPercentage:Number(e.target.value)})} /></Field><Field label="格式"><select value={job.outputFormat} onChange={(e)=>onChange({outputFormat:e.target.value})}><option>PNG</option><option>JPEG</option><option>OPEN_EXR</option><option>TIFF</option><option>WEBP</option></select></Field><div className="col-span-full text-[10px] text-gray-500">{scene?.resolutionX} × {scene?.resolutionY} · {scene?.fps} fps · {job.engine}</div></div>}</div>;
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return <label className="block min-w-0"><span className="mb-1 block truncate text-[11px] font-medium text-gray-600 dark:text-gray-400">{label}</span><span className="block [&>input]:h-9 [&>input]:w-full [&>input]:rounded [&>input]:border [&>input]:border-gray-300 [&>input]:bg-transparent [&>input]:px-2 [&>input]:text-xs [&>select]:h-9 [&>select]:w-full [&>select]:rounded [&>select]:border [&>select]:border-gray-300 [&>select]:bg-transparent [&>select]:px-2 [&>select]:text-xs dark:[&>input]:border-gray-700 dark:[&>select]:border-gray-700">{children}</span></label>;
+function Field({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
+  return <label className="block min-w-0"><span className="mb-1 flex h-4 min-w-0 items-center text-[11px] font-medium text-gray-600 dark:text-gray-400">{label}</span><span className="block [&>input]:h-9 [&>input]:w-full [&>input]:rounded [&>input]:border [&>input]:border-gray-300 [&>input]:bg-transparent [&>input]:px-2 [&>input]:text-xs [&>select]:h-9 [&>select]:w-full [&>select]:rounded [&>select]:border [&>select]:border-gray-300 [&>select]:bg-transparent [&>select]:px-2 [&>select]:text-xs dark:[&>input]:border-gray-700 dark:[&>select]:border-gray-700">{children}</span></label>;
 }
 
 function PathField({ label, value, onChange, onBrowse, required = false }: { label: string; value: string; onChange: (value: string) => void; onBrowse: () => void; required?: boolean }) {

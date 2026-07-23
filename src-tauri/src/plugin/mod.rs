@@ -264,6 +264,11 @@ pub struct PreparedPluginExecution {
     pub cleanup_paths: Vec<PathBuf>,
 }
 
+pub struct PreparedPmcPythonRuntime {
+    pub program: String,
+    pub env_vars: HashMap<String, String>,
+}
+
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct PluginManifest {
@@ -2069,6 +2074,26 @@ fn build_embedded_python_env(
     );
 
     Ok(env_vars)
+}
+
+pub fn prepare_pmc_python_runtime(
+    app_handle: &AppHandle,
+) -> Result<PreparedPmcPythonRuntime, String> {
+    let runtime = resolve_plugin_runtime(app_handle);
+    if runtime.status != "ready" || runtime.source != "embedded" {
+        return Err(runtime.message.unwrap_or_else(|| {
+            "PMC 内置 Python 不可用，请重新安装应用或准备内置运行时。".to_string()
+        }));
+    }
+
+    let program = runtime
+        .resolved_path
+        .ok_or_else(|| "无法解析 PMC 内置 Python 路径。".to_string())?;
+    let mut env_vars = build_embedded_python_env(Path::new(&program), &[])?;
+    env_vars.insert("PYTHONIOENCODING".to_string(), "utf-8".to_string());
+    env_vars.insert("PYTHONUTF8".to_string(), "1".to_string());
+
+    Ok(PreparedPmcPythonRuntime { program, env_vars })
 }
 
 fn ensure_embedded_plugin_pip(app_handle: &AppHandle) -> Result<PathBuf, String> {

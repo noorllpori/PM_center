@@ -48,7 +48,6 @@ pub struct RenderSceneInfo {
 pub struct CreateRenderBatchRequest {
     pub name: String,
     pub blender_path: String,
-    pub python_path: Option<String>,
     pub output_root: Option<String>,
     #[serde(default)]
     pub pre_hook: Option<String>,
@@ -512,7 +511,7 @@ pub async fn create_render_batch(
         let name = format!("{} · {}", blend_stem, job.scene_name);
         tx.execute(
             "INSERT INTO render_jobs(id,batch_id,project_path,name,blend_path,scene_name,status,frame_start,frame_end,frame_step,output_dir,blender_path,python_path,pre_hook,post_hook,force_overwrite,max_retries,spec_json,position,created_at) VALUES(?1,?2,?3,?4,?5,?6,'pending',?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
-            params![job_id,batch_id,project_path,name,job.blend_path,job.scene_name,job.frame_start,job.frame_end,job.frame_step,output_dir.to_string_lossy(),request.blender_path,request.python_path,request.pre_hook,request.post_hook,request.force_overwrite as i64,request.max_retries.max(0),spec.to_string(),position as i64,created],
+            params![job_id,batch_id,project_path,name,job.blend_path,job.scene_name,job.frame_start,job.frame_end,job.frame_step,output_dir.to_string_lossy(),request.blender_path,rusqlite::types::Null,request.pre_hook,request.post_hook,request.force_overwrite as i64,request.max_retries.max(0),spec.to_string(),position as i64,created],
         ).map_err(|error| error.to_string())?;
         let extension = format_extension(&format);
         let padding = job.frame_end.abs().to_string().len().max(4);
@@ -746,7 +745,6 @@ struct JobExecutionSpec {
     blend_path: String,
     scene_name: String,
     blender_path: String,
-    python_path: Option<String>,
     pre_hook: Option<String>,
     post_hook: Option<String>,
     force_overwrite: bool,
@@ -755,27 +753,34 @@ struct JobExecutionSpec {
 }
 
 fn load_execution_spec(conn: &Connection, job_id: &str) -> Result<JobExecutionSpec, String> {
-    conn.query_row("SELECT blend_path,scene_name,blender_path,python_path,pre_hook,post_hook,force_overwrite,max_retries,spec_json FROM render_jobs WHERE id=?1", params![job_id], |row| {
-        let spec_json: String = row.get(8)?;
-        Ok(JobExecutionSpec { blend_path: row.get(0)?, scene_name: row.get(1)?, blender_path: row.get(2)?, python_path: row.get(3)?, pre_hook: row.get(4)?, post_hook: row.get(5)?, force_overwrite: row.get::<_,i64>(6)? != 0, max_retries: row.get(7)?, spec: serde_json::from_str(&spec_json).unwrap_or(Value::Null) })
+    conn.query_row("SELECT blend_path,scene_name,blender_path,pre_hook,post_hook,force_overwrite,max_retries,spec_json FROM render_jobs WHERE id=?1", params![job_id], |row| {
+        let spec_json: String = row.get(7)?;
+        Ok(JobExecutionSpec { blend_path: row.get(0)?, scene_name: row.get(1)?, blender_path: row.get(2)?, pre_hook: row.get(3)?, post_hook: row.get(4)?, force_overwrite: row.get::<_,i64>(5)? != 0, max_retries: row.get(6)?, spec: serde_json::from_str(&spec_json).unwrap_or(Value::Null) })
     }).map_err(|error| error.to_string())
 }
 
 async fn run_hook(
+    app_handle: &tauri::AppHandle,
     project_path: &str,
     job_id: &str,
-    python: Option<&str>,
     script: Option<&str>,
     phase: &str,
 ) -> Result<(), String> {
     let Some(script) = script.filter(|value| !value.trim().is_empty()) else {
         return Ok(());
     };
-    let python = python.unwrap_or("python");
-    let output = tokio_command(python)
+    let runtime = crate::plugin::prepare_pmc_python_runtime(app_handle)
+        .map_err(|error| format!("{phase}脚本无法使用 PMC 内置 Python: {error}"))?;
+    let mut command = tokio_command(&runtime.program);
+    command
         .arg(script)
         .current_dir(project_path)
         .env("PM_RENDER_JOB_ID", job_id)
+        .env("PMC_PROJECT_PATH", project_path);
+    for (key, value) in runtime.env_vars {
+        command.env(key, value);
+    }
+    let output = command
         .output()
         .await
         .map_err(|error| format!("{phase}脚本启动失败: {error}"))?;
@@ -799,14 +804,7 @@ async fn run_job(
     let spec = load_execution_spec(&conn, job_id)?;
     conn.execute("UPDATE render_jobs SET status='running',started_at=COALESCE(started_at,?2),finished_at=NULL,error=NULL WHERE id=?1 AND status IN ('pending','starting')", params![job_id, now()]).map_err(|e| e.to_string())?;
     emit_progress(app, project_path, job_id, None, "starting");
-    if let Err(error) = run_hook(
-        project_path,
-        job_id,
-        spec.python_path.as_deref(),
-        spec.pre_hook.as_deref(),
-        "前置",
-    )
-    .await
+    if let Err(error) = run_hook(app, project_path, job_id, spec.pre_hook.as_deref(), "前置").await
     {
         fail_job(&conn, job_id, &error)?;
         return Err(error);
@@ -919,14 +917,7 @@ async fn run_job(
             |row| row.get(0),
         )
         .unwrap_or(0);
-    if let Err(error) = run_hook(
-        project_path,
-        job_id,
-        spec.python_path.as_deref(),
-        spec.post_hook.as_deref(),
-        "后置",
-    )
-    .await
+    if let Err(error) = run_hook(app, project_path, job_id, spec.post_hook.as_deref(), "后置").await
     {
         fail_job(&conn, job_id, &error)?;
         return Err(error);

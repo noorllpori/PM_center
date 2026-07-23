@@ -80,7 +80,6 @@ export interface RenderPreset {
 export interface CreateRenderBatchRequest {
   name: string;
   blenderPath: string;
-  pythonPath?: string | null;
   outputRoot?: string | null;
   preHook?: string | null;
   postHook?: string | null;
