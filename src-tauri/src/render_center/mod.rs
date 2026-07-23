@@ -1218,9 +1218,21 @@ fn update_render_job_settings(
             &output_format,
         );
         let output_path = output_path.to_string_lossy().to_string();
-        if let Some((_, old_output_path)) = existing_by_frame.get(&frame) {
-            let invalidated = render_settings_changed || old_output_path != &output_path;
-            if !invalidated {
+        if let Some((old_status, old_output_path)) = existing_by_frame.get(&frame) {
+            if !render_settings_changed {
+                // Extending or narrowing a frame range must not renumber existing outputs
+                // or rerender valid work. Only revive a completed record whose file vanished.
+                let output_missing = matches!(old_status.as_str(), "completed" | "skipped")
+                    && !valid_output(Path::new(old_output_path));
+                if !output_missing {
+                    continue;
+                }
+                transaction
+                    .execute(
+                        "UPDATE render_frames SET status='pending',attempts=0,error=NULL,duration_ms=NULL,force_render=0,updated_at=?3 WHERE job_id=?1 AND frame=?2",
+                        params![job_id, frame, now()],
+                    )
+                    .map_err(|error| error.to_string())?;
                 continue;
             }
             transaction
@@ -1244,8 +1256,8 @@ fn update_render_job_settings(
         } else {
             transaction
                 .execute(
-                    "INSERT INTO render_frames(job_id,frame,status,output_path,force_render,updated_at) VALUES(?1,?2,'pending',?3,1,?4)",
-                    params![job_id, frame, output_path, now()],
+                    "INSERT INTO render_frames(job_id,frame,status,output_path,force_render,updated_at) VALUES(?1,?2,'pending',?3,?4,?5)",
+                    params![job_id, frame, output_path, if render_settings_changed { 1 } else { 0 }, now()],
                 )
                 .map_err(|error| error.to_string())?;
         }
@@ -2051,11 +2063,11 @@ pub async fn retry_render_frames(
     match frames.filter(|items| !items.is_empty()) {
         Some(frames) => {
             for frame in frames {
-                conn.execute("UPDATE render_frames SET status='pending',attempts=0,error=NULL WHERE job_id=?1 AND frame=?2", params![job_id,frame]).map_err(|e|e.to_string())?;
+                conn.execute("UPDATE render_frames SET status='pending',attempts=0,error=NULL,force_render=1,updated_at=?3 WHERE job_id=?1 AND frame=?2", params![job_id,frame,now()]).map_err(|e|e.to_string())?;
             }
         }
         None => {
-            conn.execute("UPDATE render_frames SET status='pending',attempts=0,error=NULL WHERE job_id=?1 AND status='failed'", params![job_id]).map_err(|e|e.to_string())?;
+            conn.execute("UPDATE render_frames SET status='pending',attempts=0,error=NULL,force_render=1,updated_at=?2 WHERE job_id=?1 AND status='failed'", params![job_id,now()]).map_err(|e|e.to_string())?;
         }
     }
     conn.execute(
@@ -2574,6 +2586,10 @@ mod tests {
         .unwrap();
         for frame in 1..=2 {
             let output_path = frame_output_path(&output_dir, "Scene", frame, 2, "PNG");
+            fs::create_dir_all(&output_dir).unwrap();
+            image::RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 0, 255]))
+                .save(&output_path)
+                .unwrap();
             conn.execute(
                 "INSERT INTO render_frames(job_id,frame,status,attempts,output_path,duration_ms,updated_at) VALUES('edit-job',?1,'completed',1,?2,1000,0)",
                 params![frame, output_path.to_string_lossy()],
@@ -2602,6 +2618,27 @@ mod tests {
             )
             .unwrap();
         assert_eq!(preserved, ("completed".into(), 2, 0, 123));
+
+        let extended = UpdateRenderJobRequest {
+            frame_end: 3,
+            ..parallel_only.clone()
+        };
+        update_render_job_settings(&mut conn, "edit-job", &extended).unwrap();
+        let range_update: Vec<(i64, String, i64, String)> = conn
+            .prepare("SELECT frame,status,force_render,output_path FROM render_frames WHERE job_id='edit-job' ORDER BY frame")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(range_update.len(), 3);
+        assert_eq!(range_update[0].0, 1);
+        assert_eq!(range_update[0].1, "completed");
+        assert_eq!(range_update[0].2, 0);
+        assert_eq!(range_update[0].3, frame_output_path(&output_dir, "Scene", 1, 2, "PNG").to_string_lossy());
+        assert_eq!(range_update[1].1, "completed");
+        assert_eq!(range_update[2].1, "pending");
+        assert_eq!(range_update[2].2, 0);
 
         let changed = UpdateRenderJobRequest {
             frame_end: 3,

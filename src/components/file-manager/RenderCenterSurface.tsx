@@ -12,6 +12,7 @@ import {
   CirclePause,
   CirclePlay,
   Clock3,
+  Copy,
   Cpu,
   FolderOpen,
   Gauge,
@@ -55,6 +56,25 @@ import type {
 } from '../../types/render';
 
 type CenterView = 'queue' | 'results' | 'presets';
+
+type FrameContextMenu = {
+  x: number;
+  y: number;
+  frameNumbers: number[];
+};
+
+type FrameMarquee = {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  currentX: number;
+  currentY: number;
+  baseSelection: Set<number>;
+};
+
+type RerenderConfirmation = {
+  frameNumbers: number[];
+};
 
 const EMPTY_RENDER_JOBS: RenderJob[] = [];
 const EMPTY_SOURCE_PATHS: string[] = [];
@@ -289,7 +309,7 @@ export function RenderCenterSurface({ isActive }: { isActive: boolean }) {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-white text-gray-900 dark:bg-gray-950 dark:text-gray-100">
+    <div onContextMenu={(event) => event.preventDefault()} className="flex h-full min-h-0 flex-col bg-white text-gray-900 dark:bg-gray-950 dark:text-gray-100">
       <header className="flex min-h-[64px] flex-wrap items-center gap-3 border-b border-gray-200 px-4 py-3 dark:border-gray-800">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
@@ -438,9 +458,15 @@ function JobRow({ job, selected, onClick }: { job: RenderJob; selected: boolean;
 function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; busy: boolean; onAction: (label: string, command: string, payload?: Record<string, unknown>) => Promise<boolean> }) {
   const { job, frames, logTail } = detail;
   const performanceSamples = detail.performanceSamples || [];
+  const showToast = useUiStore((state) => state.showToast);
   const [logExpanded, setLogExpanded] = useState(false);
   const [showPerformance, setShowPerformance] = useState(false);
-  const [selectedFrameNumber, setSelectedFrameNumber] = useState<number | null>(null);
+  const [selectedFrameNumbers, setSelectedFrameNumbers] = useState<Set<number>>(() => new Set());
+  const [frameSelectionAnchor, setFrameSelectionAnchor] = useState<number | null>(null);
+  const [frameContextMenu, setFrameContextMenu] = useState<FrameContextMenu | null>(null);
+  const [frameMarquee, setFrameMarquee] = useState<FrameMarquee | null>(null);
+  const [rerenderConfirmation, setRerenderConfirmation] = useState<RerenderConfirmation | null>(null);
+  const frameListRef = useRef<HTMLDivElement>(null);
   const [previewFrameNumber, setPreviewFrameNumber] = useState<number | null>(null);
   const [showSettingsEditor, setShowSettingsEditor] = useState(false);
   const canPause = ['pending', 'starting', 'running'].includes(job.status);
@@ -470,25 +496,153 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
   useEffect(() => {
     setLogExpanded(false);
     setShowPerformance(false);
-    setSelectedFrameNumber(null);
+    setSelectedFrameNumbers(new Set());
+    setFrameSelectionAnchor(null);
+    setFrameContextMenu(null);
+    setFrameMarquee(null);
+    setRerenderConfirmation(null);
     setPreviewFrameNumber(null);
     setShowSettingsEditor(false);
   }, [job.id]);
 
   useEffect(() => {
-    if (selectedFrameNumber !== null && !frames.some((frame) => frame.frame === selectedFrameNumber)) {
-      setSelectedFrameNumber(null);
-    }
+    setSelectedFrameNumbers((current) => {
+      const next = new Set([...current].filter((frameNumber) => frames.some((frame) => frame.frame === frameNumber)));
+      return next.size === current.size ? current : next;
+    });
     if (previewFrameNumber !== null && !previewableFrames.some((frame) => frame.frame === previewFrameNumber)) {
       setPreviewFrameNumber(null);
     }
-  }, [frames, previewFrameNumber, previewableFrames, selectedFrameNumber]);
+  }, [frames, previewFrameNumber, previewableFrames]);
+
+  useEffect(() => {
+    if (!frameContextMenu) return;
+    const closeMenu = (event: PointerEvent) => {
+      if ((event.target as HTMLElement).closest('[data-frame-context-menu]')) return;
+      setFrameContextMenu(null);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setFrameContextMenu(null); };
+    window.addEventListener('pointerdown', closeMenu);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('pointerdown', closeMenu);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [frameContextMenu]);
+
+  const selectFrame = useCallback((frameNumber: number, event: React.PointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0) return;
+    const frameIndex = frames.findIndex((frame) => frame.frame === frameNumber);
+    const additive = event.ctrlKey || event.metaKey;
+    if (event.shiftKey && frameSelectionAnchor !== null) {
+      const anchorIndex = frames.findIndex((frame) => frame.frame === frameSelectionAnchor);
+      if (anchorIndex >= 0 && frameIndex >= 0) {
+        const [from, to] = anchorIndex < frameIndex ? [anchorIndex, frameIndex] : [frameIndex, anchorIndex];
+        setSelectedFrameNumbers(new Set(frames.slice(from, to + 1).map((frame) => frame.frame)));
+      }
+      return;
+    }
+    const nextSelection = additive ? new Set(selectedFrameNumbers) : new Set<number>();
+    if (additive && nextSelection.has(frameNumber)) nextSelection.delete(frameNumber);
+    else nextSelection.add(frameNumber);
+    setSelectedFrameNumbers(nextSelection);
+    setFrameSelectionAnchor(frameNumber);
+    setFrameContextMenu(null);
+    if (!event.shiftKey) {
+      setFrameMarquee({
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        currentX: event.clientX,
+        currentY: event.clientY,
+        baseSelection: additive ? nextSelection : new Set(),
+      });
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
+  }, [frameSelectionAnchor, frames, selectedFrameNumbers]);
+
+  const updateMarquee = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (!frameMarquee || event.pointerId !== frameMarquee.pointerId) return;
+    const currentX = event.clientX;
+    const currentY = event.clientY;
+    setFrameMarquee((current) => current ? { ...current, currentX, currentY } : current);
+    if (Math.abs(currentX - frameMarquee.startX) < 4 && Math.abs(currentY - frameMarquee.startY) < 4) return;
+    const left = Math.min(frameMarquee.startX, currentX);
+    const right = Math.max(frameMarquee.startX, currentX);
+    const top = Math.min(frameMarquee.startY, currentY);
+    const bottom = Math.max(frameMarquee.startY, currentY);
+    const selected = new Set(frameMarquee.baseSelection);
+    frameListRef.current?.querySelectorAll<HTMLElement>('[data-render-frame]').forEach((element) => {
+      const bounds = element.getBoundingClientRect();
+      if (bounds.left < right && bounds.right > left && bounds.top < bottom && bounds.bottom > top) {
+        selected.add(Number(element.dataset.renderFrame));
+      }
+    });
+    setSelectedFrameNumbers(selected);
+  }, [frameMarquee]);
+
+  const finishMarquee = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (!frameMarquee || event.pointerId !== frameMarquee.pointerId) return;
+    setFrameMarquee(null);
+  }, [frameMarquee]);
+
+  const openFrameContextMenu = useCallback((frameNumber: number, event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    const frameNumbers = selectedFrameNumbers.has(frameNumber) ? [...selectedFrameNumbers] : [frameNumber];
+    if (!selectedFrameNumbers.has(frameNumber)) {
+      setSelectedFrameNumbers(new Set(frameNumbers));
+      setFrameSelectionAnchor(frameNumber);
+    }
+    setFrameContextMenu({
+      x: Math.max(8, Math.min(event.clientX, window.innerWidth - 210)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 220)),
+      frameNumbers,
+    });
+  }, [selectedFrameNumbers]);
+
+  const requestRerenderSelectedFrames = useCallback((frameNumbers: number[]) => {
+    if (!frameNumbers.length) return;
+    setFrameContextMenu(null);
+    setRerenderConfirmation({ frameNumbers });
+  }, []);
+
+  const confirmRerenderSelectedFrames = useCallback(async () => {
+    const frameNumbers = rerenderConfirmation?.frameNumbers;
+    if (!frameNumbers?.length) return;
+    setRerenderConfirmation(null);
+    await onAction('重新渲染所选帧', 'retry_render_frames', { frames: frameNumbers });
+  }, [onAction, rerenderConfirmation]);
+
+  const copySelectedPaths = useCallback(async (frameNumbers: number[]) => {
+    const paths = frames.filter((frame) => frameNumbers.includes(frame.frame)).map((frame) => frame.outputPath).filter(Boolean);
+    if (!paths.length) return;
+    try {
+      await navigator.clipboard.writeText(paths.join('\n'));
+      showToast({ title: '已复制输出路径', message: `${paths.length} 个路径已复制到剪贴板`, tone: 'success' });
+    } catch (error) {
+      showToast({ title: '复制输出路径失败', message: String(error), tone: 'error' });
+    }
+    setFrameContextMenu(null);
+  }, [frames, showToast]);
+
+  const marqueeStyle = useMemo(() => {
+    if (!frameMarquee || !frameListRef.current) return null;
+    const bounds = frameListRef.current.getBoundingClientRect();
+    const left = Math.min(frameMarquee.startX, frameMarquee.currentX) - bounds.left + frameListRef.current.scrollLeft;
+    const top = Math.min(frameMarquee.startY, frameMarquee.currentY) - bounds.top + frameListRef.current.scrollTop;
+    return {
+      left,
+      top,
+      width: Math.abs(frameMarquee.currentX - frameMarquee.startX),
+      height: Math.abs(frameMarquee.currentY - frameMarquee.startY),
+    };
+  }, [frameMarquee]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="border-b border-gray-200 px-3 py-2 dark:border-gray-800">
         <div className="flex items-center gap-2">
-          <div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h3 className="truncate text-sm font-semibold">{job.name}</h3><StatusBadge status={job.status} /><HelpAssistant title="管理这个任务" text={['单击帧行可选中；双击已完成帧可预览。', '铅笔按钮用于修改场景、帧范围、帧多开、分辨率和格式。运行中的任务需先暂停。', '改场景、分辨率或格式会让已有帧重新排队；只改帧多开不会影响已经完成的帧。']} placement="bottom-start" width={340} /></div><p className="mt-0.5 truncate text-[11px] text-gray-500" title={job.outputDir}>{job.outputDir}</p></div>
+          <div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h3 className="truncate text-sm font-semibold">{job.name}</h3><StatusBadge status={job.status} /><HelpAssistant title="管理这个任务" text={['单击帧行可选中；按 Ctrl/Cmd 多选，按 Shift 选择连续范围，也可拖拽框选。右键显示批量操作。', '双击已完成帧可预览；铅笔按钮用于修改场景、帧范围、帧多开、分辨率和格式。运行中的任务需先暂停。', '重新渲染所选帧必须先暂停任务，确认后才会提交；取消只关闭确认窗口，不会修改队列。']} placement="bottom-start" width={340} /></div><p className="mt-0.5 truncate text-[11px] text-gray-500" title={job.outputDir}>{job.outputDir}</p></div>
           <div className="flex shrink-0 items-center gap-1">
           {canPause && <IconAction title="暂停" icon={<CirclePause />} disabled={busy} onClick={() => onAction('暂停作业', 'pause_render_job')} />}
           {canResume && <IconAction title="继续" icon={<CirclePlay />} disabled={busy} onClick={() => onAction('继续作业', 'resume_render_job')} />}
@@ -514,24 +668,27 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
         <PerformanceValue icon={<Cpu />} label="峰值 CPU" value={job.performanceUpdatedAt ? `${job.peakCpuUsage.toFixed(1)}%` : '-'} />
         <PerformanceValue icon={<MemoryStick />} label="峰值内存" value={formatMemory(job.peakMemoryBytes)} />
       </div>
-      <div className="min-h-0 flex-1 overflow-auto">
-        <div className="sticky top-0 grid grid-cols-[64px_82px_64px_1fr] bg-gray-50 px-3 py-1.5 text-[10px] font-medium text-gray-500 dark:bg-gray-900"><span>帧</span><span>状态</span><span>耗时</span><span>输出</span></div>
+      <div ref={frameListRef} className="relative min-h-0 flex-1 overflow-auto" onPointerMove={updateMarquee} onPointerUp={finishMarquee} onPointerCancel={finishMarquee}>
+        <div className="sticky top-0 z-10 grid grid-cols-[64px_82px_64px_1fr] bg-gray-50 px-3 py-1.5 text-[10px] font-medium text-gray-500 dark:bg-gray-900"><span>帧{selectedFrameNumbers.size > 0 ? ` · 已选 ${selectedFrameNumbers.size}` : ''}</span><span>状态</span><span>耗时</span><span>输出</span></div>
         {frames.map((frame) => {
           const previewable = previewableFrameNumbers.has(frame.frame);
           return (
             <FrameRow
               key={frame.frame}
               frame={frame}
-              selected={selectedFrameNumber === frame.frame}
+              selected={selectedFrameNumbers.has(frame.frame)}
               previewable={previewable}
-              onSelect={() => setSelectedFrameNumber(frame.frame)}
+              onPointerDown={(event) => selectFrame(frame.frame, event)}
+              onContextMenu={(event) => openFrameContextMenu(frame.frame, event)}
               onPreview={() => {
-                setSelectedFrameNumber(frame.frame);
+                setSelectedFrameNumbers(new Set([frame.frame]));
+                setFrameSelectionAnchor(frame.frame);
                 if (previewable) setPreviewFrameNumber(frame.frame);
               }}
             />
           );
         })}
+        {marqueeStyle && <div aria-hidden="true" className="pointer-events-none absolute z-20 border border-blue-500 bg-blue-500/15" style={marqueeStyle} />}
       </div>
       <div className={`flex shrink-0 flex-col border-t border-gray-200 dark:border-gray-800 ${logExpanded ? 'h-[38%] min-h-[140px] max-h-[320px]' : 'h-8'}`}>
         <button type="button" onClick={() => setLogExpanded((expanded) => !expanded)} className="flex h-8 shrink-0 items-center gap-2 bg-gray-100 px-3 text-[10px] font-medium text-gray-600 hover:bg-gray-200 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800">
@@ -559,10 +716,33 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
           currentFrameNumber={previewFrameNumber}
           onFrameChange={(frameNumber) => {
             setPreviewFrameNumber(frameNumber);
-            setSelectedFrameNumber(frameNumber);
+            setSelectedFrameNumbers(new Set([frameNumber]));
+            setFrameSelectionAnchor(frameNumber);
           }}
           onClose={() => setPreviewFrameNumber(null)}
         />
+      )}
+      {frameContextMenu && (
+        <div data-frame-context-menu role="menu" className="fixed z-[120] w-52 overflow-hidden rounded border border-gray-200 bg-white py-1 shadow-xl dark:border-gray-700 dark:bg-gray-900" style={{ left: frameContextMenu.x, top: frameContextMenu.y }}>
+          <div className="border-b border-gray-100 px-3 py-1.5 text-[10px] text-gray-500 dark:border-gray-800">已选 {frameContextMenu.frameNumbers.length} 帧</div>
+          <button type="button" role="menuitem" disabled={!frameContextMenu.frameNumbers.some((frameNumber) => previewableFrameNumbers.has(frameNumber))} onClick={() => {
+            const frame = previewableFrames.find((item) => frameContextMenu.frameNumbers.includes(item.frame));
+            if (frame) setPreviewFrameNumber(frame.frame);
+            setFrameContextMenu(null);
+          }} className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-gray-800"><ImageIcon className="h-3.5 w-3.5" />预览所选帧</button>
+          <button type="button" role="menuitem" disabled={busy || !canEdit} title={canEdit ? '强制重新渲染所选帧' : '请先暂停任务再重新渲染'} onClick={() => requestRerenderSelectedFrames(frameContextMenu.frameNumbers)} className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-gray-800"><RotateCcw className="h-3.5 w-3.5" />重新渲染所选帧</button>
+          <button type="button" role="menuitem" onClick={() => void onAction('打开输出目录', 'open_render_output', { path: job.outputDir }).then(() => setFrameContextMenu(null))} className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs hover:bg-gray-100 dark:hover:bg-gray-800"><FolderOpen className="h-3.5 w-3.5" />打开输出目录</button>
+          <button type="button" role="menuitem" onClick={() => void copySelectedPaths(frameContextMenu.frameNumbers)} className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs hover:bg-gray-100 dark:hover:bg-gray-800"><Copy className="h-3.5 w-3.5" />复制输出路径</button>
+          <button type="button" role="menuitem" onClick={() => { setSelectedFrameNumbers(new Set()); setFrameSelectionAnchor(null); setFrameContextMenu(null); }} className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"><X className="h-3.5 w-3.5" />取消选择</button>
+        </div>
+      )}
+      {rerenderConfirmation && (
+        <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-label="确认重新渲染">
+          <div className="w-full max-w-md overflow-hidden rounded-md border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-950">
+            <div className="flex items-center gap-3 border-b border-gray-200 px-4 py-3 dark:border-gray-800"><AlertCircle className="h-5 w-5 text-amber-500" /><div><h4 className="text-sm font-semibold">确认重新渲染</h4><p className="mt-0.5 text-xs text-gray-500">将强制重新渲染所选的 {rerenderConfirmation.frameNumbers.length} 帧，现有输出会被覆盖。</p></div></div>
+            <div className="flex justify-end gap-2 px-4 py-3"><button type="button" onClick={() => setRerenderConfirmation(null)} className="h-8 rounded px-3 text-xs hover:bg-gray-100 dark:hover:bg-gray-800">取消</button><button type="button" onClick={() => void confirmRerenderSelectedFrames()} className="h-8 rounded bg-red-600 px-3 text-xs font-medium text-white hover:bg-red-500">确认重新渲染</button></div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -624,8 +804,8 @@ function EditRenderJobDialog({ detail, onClose, onSave }: { detail: RenderJobDet
 
   const save = async () => {
     if (!valid || saving) return;
-    if ((imageSettingsChanged || frameLayoutChanged) && job.completedFrames > 0
-      && !confirm('修改会重新计算任务帧并可能重新渲染已有结果，确定继续吗？')) return;
+    if (imageSettingsChanged && job.completedFrames > 0
+      && !confirm('画面设置已修改，范围内已完成的帧会按新设置重新渲染；仅修改帧范围不会重渲染已有结果。确定继续吗？')) return;
     setSaving(true);
     try {
       if (await onSave(form)) onClose();
@@ -639,7 +819,7 @@ function EditRenderJobDialog({ detail, onClose, onSave }: { detail: RenderJobDet
       <div role="dialog" aria-modal="true" aria-label="编辑渲染任务设置" className="flex w-full max-w-3xl flex-col overflow-hidden rounded-md border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-950">
         <div className="flex items-center gap-3 border-b border-gray-200 px-4 py-3 dark:border-gray-800">
           <Pencil className="h-4 w-4 text-blue-600" />
-          <div className="min-w-0 flex-1"><div className="flex items-center gap-1.5"><h3 className="truncate text-sm font-semibold">编辑任务设置</h3><HelpAssistant title="修改已有任务" text={['保存后会自动刷新任务的帧列表。', '只调整帧多开会保留已完成帧；修改场景、分辨率、格式或帧范围时，受影响帧会重新排队。', '旧输出文件不会自动删除；需要继续渲染时点击任务工具栏的继续按钮。']} placement="bottom-start" width={340} /></div><p className="truncate text-[11px] text-gray-500" title={job.blendPath}>{fileName(job.blendPath)}</p></div>
+          <div className="min-w-0 flex-1"><div className="flex items-center gap-1.5"><h3 className="truncate text-sm font-semibold">编辑任务设置</h3><HelpAssistant title="修改已有任务" text={['保存后会自动刷新任务的帧列表。', '只调整帧范围、步长或帧多开时，会保留范围内已有结果，只把缺失帧按帧号加入队列。', '修改场景、渲染引擎、分辨率或格式会改变画面内容，因此会重新渲染范围内的帧；旧输出文件不会自动删除。']} placement="bottom-start" width={340} /></div><p className="truncate text-[11px] text-gray-500" title={job.blendPath}>{fileName(job.blendPath)}</p></div>
           <button type="button" onClick={onClose} disabled={saving} title="关闭" className="flex h-8 w-8 items-center justify-center rounded hover:bg-gray-100 disabled:opacity-40 dark:hover:bg-gray-800"><X className="h-4 w-4" /></button>
         </div>
         <div className="p-4">
@@ -662,7 +842,7 @@ function EditRenderJobDialog({ detail, onClose, onSave }: { detail: RenderJobDet
                 {sceneOptions.map((scene) => <option key={scene.name} value={scene.name}>{scene.name}</option>)}
               </select>
             </Field>
-            <Field label={<span className="inline-flex items-center gap-1">起始<HelpAssistant title="帧范围与步长" text={['起始和结束决定要渲染的帧号；步长为 2 时会渲染 1、3、5 等帧。', '新增帧会进入待渲染队列，移出范围的帧记录会从任务中移除，但已有输出文件会保留。']} placement="top-start" /></span>}><input type="number" value={form.frameStart} onChange={(event) => setForm((current) => ({ ...current, frameStart: Number(event.target.value) }))} /></Field>
+            <Field label={<span className="inline-flex items-center gap-1">起始<HelpAssistant title="帧范围与步长" text={['起始和结束决定要渲染的帧号；步长为 2 时会渲染 1、3、5 等帧。', '调整范围会保留范围内已完成的帧，只把缺失帧从小到大补入队列；移出范围的记录会移除，但已有输出文件会保留。']} placement="top-start" /></span>}><input type="number" value={form.frameStart} onChange={(event) => setForm((current) => ({ ...current, frameStart: Number(event.target.value) }))} /></Field>
             <Field label="结束"><input type="number" value={form.frameEnd} onChange={(event) => setForm((current) => ({ ...current, frameEnd: Number(event.target.value) }))} /></Field>
             <Field label="步长"><input type="number" min={1} value={form.frameStep} onChange={(event) => setForm((current) => ({ ...current, frameStep: Math.max(1, Number(event.target.value)) }))} /></Field>
             <Field label={<span className="inline-flex items-center gap-1">帧多开<HelpAssistant title="帧多开" text={["为当前任务同时启动多个 Blender 进程，每个进程领取不同帧。", "大场景或显存紧张时建议设为 1。"]} placement="top" /></span>}><select value={form.parallelism} onChange={(event) => setForm((current) => ({ ...current, parallelism: Number(event.target.value) }))}>{[1,2,3,4,5,6,7,8].map((value) => <option key={value} value={value}>{value} 开</option>)}</select></Field>
@@ -672,6 +852,7 @@ function EditRenderJobDialog({ detail, onClose, onSave }: { detail: RenderJobDet
           <div className="mt-2 flex min-h-5 items-center gap-2 text-[11px] text-gray-500">
             {selectedScene && selectedScene.resolutionX > 0 && <span>{selectedScene.resolutionX} × {selectedScene.resolutionY} · {selectedScene.fps} fps · {form.engine || '-'}</span>}
             {imageSettingsChanged && <span className="ml-auto text-amber-600">画面设置已变化，现有帧将重新排队</span>}
+            {!imageSettingsChanged && frameLayoutChanged && <span className="ml-auto text-blue-600">保留已有结果，补充新范围内缺失帧</span>}
           </div>
         </div>
         <div className="flex min-h-[58px] items-center justify-end gap-2 border-t border-gray-200 px-4 dark:border-gray-800">
@@ -770,12 +951,14 @@ function WaveformChart({ title, color, samples, value, maxValue, formatValue }: 
   );
 }
 
-function FrameRow({ frame, selected, previewable, onSelect, onPreview }: { frame: RenderFrame; selected: boolean; previewable: boolean; onSelect: () => void; onPreview: () => void }) {
+function FrameRow({ frame, selected, previewable, onPointerDown, onContextMenu, onPreview }: { frame: RenderFrame; selected: boolean; previewable: boolean; onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => void; onContextMenu: (event: React.MouseEvent<HTMLButtonElement>) => void; onPreview: () => void }) {
   return (
     <button
       type="button"
+      data-render-frame={frame.frame}
       aria-pressed={selected}
-      onClick={onSelect}
+      onPointerDown={onPointerDown}
+      onContextMenu={onContextMenu}
       onDoubleClick={onPreview}
       title={previewable ? `双击预览帧 ${frame.frame}` : `帧 ${frame.frame} 暂无可预览输出`}
       className={`grid h-8 w-full grid-cols-[62px_82px_64px_1fr] items-center border-l-2 border-t px-2.5 text-left text-[11px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500 dark:border-t-gray-900 ${
