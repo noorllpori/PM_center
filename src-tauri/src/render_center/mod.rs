@@ -802,13 +802,21 @@ fn estimate_render_eta(job: &RenderJob, frames: &[RenderFrame], now_ms: i64) -> 
     let minimum_prediction = baseline * 0.45;
     let maximum_prediction = baseline * 2.2;
     let percentile_80 = weighted_quantile(&durations, &weights, 0.8);
+    let last_completed_index = completed
+        .last()
+        .map(|(index, _)| *index as f64)
+        .unwrap_or(mean_x);
+    const TREND_FORECAST_HORIZON: f64 = 8.0;
 
     let mut remaining = 0.0;
     for (index, frame) in frames.iter().enumerate() {
         if !matches!(frame.status.as_str(), "pending" | "running") {
             continue;
         }
-        let predicted_total = (baseline + slope * (index as f64 - mean_x))
+        // A small measured slope becomes implausibly large when projected across a long job.
+        // Keep learning the direction, but let its effect converge after a short horizon.
+        let projected_index = (index as f64).min(last_completed_index + TREND_FORECAST_HORIZON);
+        let predicted_total = (baseline + slope * (projected_index - mean_x))
             .clamp(minimum_prediction, maximum_prediction);
         if frame.status == "running" {
             let elapsed = now_ms.saturating_sub(frame.updated_at).max(0) as f64;
@@ -1933,6 +1941,23 @@ mod tests {
             1_000_000,
         );
         assert!(outlier.remaining_ms.unwrap() < 5 * 35_000);
+    }
+
+    #[test]
+    fn eta_does_not_amplify_small_trend_across_a_long_job() {
+        let job = eta_job("running");
+        let eta = estimate_render_eta(
+            &job,
+            &frames_with_durations(
+                &[12_000, 12_000, 12_000, 13_000, 13_000, 13_000, 13_000, 13_000],
+                148,
+            ),
+            1_000_000,
+        );
+
+        let remaining = eta.remaining_ms.unwrap();
+        assert!(remaining > 148 * 11_000);
+        assert!(remaining < 148 * 18_000);
     }
 
     #[test]
