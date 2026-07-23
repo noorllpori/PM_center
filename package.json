@@ -1,7 +1,7 @@
 {
   "name": "pm_center",
   "private": true,
-  "version": "2.3.5",
+  "version": "2.3.9",
   "license": "GPL-2.0-only",
   "type": "module",
   "scripts": {

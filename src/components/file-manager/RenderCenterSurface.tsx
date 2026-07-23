@@ -1,19 +1,23 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import {
   AlertCircle,
+  Activity,
   Archive,
   Check,
+  ChevronDown,
   ChevronRight,
   CirclePause,
   CirclePlay,
   Clock3,
+  Cpu,
   FolderOpen,
   Gauge,
   Layers3,
   ListRestart,
   LoaderCircle,
+  MemoryStick,
   Pause,
   Play,
   Plus,
@@ -22,6 +26,7 @@ import {
   Save,
   Settings2,
   Square,
+  Terminal,
   Trash2,
   X,
 } from 'lucide-react';
@@ -33,9 +38,11 @@ import { HelpAssistant } from '../ui/HelpAssistant';
 import { ProjectFilePickerDialog, type ProjectFilePickerTarget } from './ProjectFilePickerDialog';
 import type {
   CreateRenderBatchRequest,
+  RenderEta,
   RenderFrame,
   RenderJob,
   RenderJobDetail,
+  RenderPerformanceSample,
   RenderPreset,
   RenderSceneInfo,
   RenderSourceInfo,
@@ -79,6 +86,94 @@ function formatDuration(ms: number | null) {
   const seconds = Math.round(ms / 1000);
   if (seconds < 60) return `${seconds} 秒`;
   return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+}
+
+function formatMemory(bytes: number) {
+  if (!bytes) return '-';
+  if (bytes < 1024 * 1024 * 1024) return `${Math.round(bytes / (1024 * 1024))} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function formatRemainingDuration(ms: number) {
+  if (ms < 60_000) return `${Math.max(1, Math.ceil(ms / 1000))} 秒`;
+  const minutes = Math.max(1, Math.round(ms / 60_000));
+  if (minutes < 60) return `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder ? `${hours} 小时 ${remainder} 分` : `${hours} 小时`;
+}
+
+interface SmoothedEta extends RenderEta {
+  jobId: string;
+}
+
+function useSmoothedEta(job: RenderJob, rawEta?: RenderEta) {
+  const previousRef = useRef<SmoothedEta | null>(null);
+  const inputKeyRef = useRef('');
+  const fallback: RenderEta = {
+    status: job.status === 'completed' ? 'completed' : job.status === 'paused' ? 'paused' : ['failed', 'cancelled'].includes(job.status) ? 'unavailable' : 'calibrating',
+    estimatedFinishAt: null,
+    remainingMs: null,
+    sampleCount: job.completedFrames,
+    confidence: 'none',
+  };
+  const next = rawEta || fallback;
+  const inputKey = `${job.id}:${next.status}:${next.estimatedFinishAt}:${next.remainingMs}:${next.sampleCount}:${next.confidence}`;
+  const previous = previousRef.current;
+
+  if (inputKeyRef.current === inputKey && previous) {
+    return previous.status === 'estimating' && previous.estimatedFinishAt !== null
+      ? { ...previous, remainingMs: Math.max(0, previous.estimatedFinishAt - Date.now()) }
+      : previous;
+  }
+  inputKeyRef.current = inputKey;
+
+  if (next.status !== 'estimating' || next.estimatedFinishAt === null) {
+    const resolved = { ...next, jobId: job.id };
+    previousRef.current = resolved;
+    return resolved;
+  }
+  if (!previous || previous.jobId !== job.id || previous.status !== 'estimating' || previous.estimatedFinishAt === null) {
+    const resolved = { ...next, jobId: job.id };
+    previousRef.current = resolved;
+    return resolved;
+  }
+
+  const rawDelta = next.estimatedFinishAt - previous.estimatedFinishAt;
+  const alpha = next.confidence === 'high' ? 0.2 : next.confidence === 'medium' ? 0.35 : 0.55;
+  const maxShift = Math.max(30_000, (next.remainingMs || 0) * 0.2);
+  let shift = Math.max(-maxShift, Math.min(maxShift, rawDelta * alpha));
+  if (next.sampleCount === previous.sampleCount && rawDelta <= 0) shift = 0;
+  let estimatedFinishAt = previous.estimatedFinishAt + shift;
+  if (estimatedFinishAt <= Date.now()) {
+    estimatedFinishAt = Math.max(
+      Date.now() + 5_000,
+      Date.now() + (next.remainingMs || 0) * 0.75,
+      previous.estimatedFinishAt + Math.max(1_000, rawDelta * 0.12),
+    );
+  }
+  const resolved: SmoothedEta = {
+    ...next,
+    jobId: job.id,
+    estimatedFinishAt,
+    remainingMs: Math.max(0, estimatedFinishAt - Date.now()),
+  };
+  previousRef.current = resolved;
+  return resolved;
+}
+
+function formatCompletionEstimate(eta: RenderEta) {
+  if (eta.status === 'completed') return { value: '已完成', detail: '' };
+  if (eta.status === 'paused') return { value: '已暂停', detail: '' };
+  if (eta.status === 'unavailable') return { value: '-', detail: '' };
+  if (eta.status !== 'estimating' || eta.estimatedFinishAt === null || eta.remainingMs === null) {
+    return { value: '校准中', detail: eta.sampleCount === 1 ? '还需 1 帧' : '等待样本' };
+  }
+  const confidenceLabel = eta.confidence === 'high' ? '稳定' : eta.confidence === 'medium' ? '校准中' : '初步';
+  return {
+    value: new Date(eta.estimatedFinishAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    detail: `约剩 ${formatRemainingDuration(eta.remainingMs)} · ${confidenceLabel}`,
+  };
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -294,6 +389,8 @@ function NavButton({ icon, label, count, active, onClick }: { icon: React.ReactE
 }
 
 function JobRow({ job, selected, onClick }: { job: RenderJob; selected: boolean; onClick: () => void }) {
+  const showLivePerformance = ['starting', 'running', 'pausing', 'cancelling'].includes(job.status)
+    && job.performanceUpdatedAt !== null;
   return (
     <button onClick={onClick} className={`block w-full border-b border-gray-100 px-4 py-3 text-left transition-colors dark:border-gray-800 ${selected ? 'bg-blue-50 dark:bg-blue-950/20' : 'hover:bg-gray-50 dark:hover:bg-gray-900/60'}`}>
       <div className="flex items-start gap-3">
@@ -304,43 +401,168 @@ function JobRow({ job, selected, onClick }: { job: RenderJob; selected: boolean;
         <ChevronRight className="mt-1 h-4 w-4 text-gray-400" />
       </div>
       <div className="mt-3 h-1.5 overflow-hidden rounded bg-gray-200 dark:bg-gray-800"><div className={`h-full ${job.status === 'failed' ? 'bg-red-500' : 'bg-blue-500'}`} style={{ width: `${Math.min(100, job.progress)}%` }} /></div>
-      <div className="mt-1.5 flex justify-between text-[11px] text-gray-500"><span>{job.completedFrames} 完成 · {job.failedFrames} 失败 · {job.skippedFrames} 跳过</span><span>{Math.round(job.progress)}%</span></div>
+      <div className="mt-1.5 flex justify-between gap-3 text-[11px] text-gray-500"><span>{job.completedFrames} 完成 · {job.failedFrames} 失败 · {job.skippedFrames} 跳过</span><span>{Math.round(job.progress)}%</span></div>
+      {showLivePerformance && <div className="mt-1.5 flex items-center gap-3 text-[10px] tabular-nums text-gray-500"><span className="inline-flex items-center gap-1"><Cpu className="h-3 w-3" />{job.cpuUsage.toFixed(1)}%</span><span className="inline-flex items-center gap-1"><MemoryStick className="h-3 w-3" />{formatMemory(job.memoryBytes)}</span></div>}
     </button>
   );
 }
 
 function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; busy: boolean; onAction: (label: string, command: string, payload?: Record<string, unknown>) => Promise<void> }) {
   const { job, frames, logTail } = detail;
+  const performanceSamples = detail.performanceSamples || [];
+  const [logExpanded, setLogExpanded] = useState(false);
+  const [showPerformance, setShowPerformance] = useState(false);
   const canPause = ['pending', 'starting', 'running'].includes(job.status);
   const canResume = ['paused', 'failed', 'cancelled'].includes(job.status);
   const failedFrames = frames.filter((frame) => frame.status === 'failed').map((frame) => frame.frame);
+  const smoothedEta = useSmoothedEta(job, detail.eta);
+  const completionEstimate = formatCompletionEstimate(smoothedEta);
+  const summaryItems: Array<{ label: string; value: string | number; detail: string }> = [
+    { label: '总帧', value: job.totalFrames, detail: '' },
+    { label: '完成', value: job.completedFrames, detail: '' },
+    { label: '失败', value: job.failedFrames, detail: '' },
+    { label: '当前', value: job.currentFrame ?? '-', detail: '' },
+    { label: '预计完成', value: completionEstimate.value, detail: completionEstimate.detail },
+  ];
+
+  useEffect(() => {
+    setLogExpanded(false);
+    setShowPerformance(false);
+  }, [job.id]);
+
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="border-b border-gray-200 px-4 py-3 dark:border-gray-800">
-        <div className="flex items-start justify-between gap-3"><div className="min-w-0"><h3 className="truncate text-sm font-semibold">{job.name}</h3><p className="mt-1 truncate text-xs text-gray-500">{job.outputDir}</p></div><StatusBadge status={job.status} /></div>
-        <div className="mt-3 flex flex-wrap gap-1.5">
+      <div className="border-b border-gray-200 px-3 py-2 dark:border-gray-800">
+        <div className="flex items-center gap-2">
+          <div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h3 className="truncate text-sm font-semibold">{job.name}</h3><StatusBadge status={job.status} /></div><p className="mt-0.5 truncate text-[11px] text-gray-500" title={job.outputDir}>{job.outputDir}</p></div>
+          <div className="flex shrink-0 items-center gap-1">
           {canPause && <IconAction title="暂停" icon={<CirclePause />} disabled={busy} onClick={() => onAction('暂停作业', 'pause_render_job')} />}
           {canResume && <IconAction title="继续" icon={<CirclePlay />} disabled={busy} onClick={() => onAction('继续作业', 'resume_render_job')} />}
           {!['completed','cancelled'].includes(job.status) && <IconAction title="取消" icon={<Square />} disabled={busy} onClick={() => onAction('取消作业', 'cancel_render_job')} />}
           {failedFrames.length > 0 && <IconAction title="重试失败帧" icon={<RotateCcw />} disabled={busy} onClick={() => onAction('重试失败帧', 'retry_render_frames', { frames: failedFrames })} />}
           <IconAction title="打开输出目录" icon={<FolderOpen />} disabled={busy} onClick={() => onAction('打开输出目录', 'open_render_output', { path: job.outputDir })} />
           {!['running','pausing','cancelling'].includes(job.status) && <IconAction title={job.archived ? '取消归档' : '归档'} icon={<Archive />} disabled={busy} onClick={() => onAction('归档作业', 'archive_render_job', { archived: !job.archived })} />}
+          </div>
         </div>
-        {job.error && <p className="mt-2 flex items-start gap-1.5 text-xs text-red-600"><AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />{job.error}</p>}
+        {job.error && <p className="mt-1.5 flex items-start gap-1.5 text-[11px] text-red-600"><AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />{job.error}</p>}
       </div>
-      <div className="grid grid-cols-4 border-b border-gray-200 dark:border-gray-800">
-        {[['总帧', job.totalFrames], ['完成', job.completedFrames], ['失败', job.failedFrames], ['当前', job.currentFrame ?? '-']].map(([label,value]) => <div key={label} className="border-r border-gray-100 px-3 py-2 last:border-r-0 dark:border-gray-800"><div className="text-[10px] text-gray-500">{label}</div><div className="mt-0.5 text-sm font-semibold tabular-nums">{value}</div></div>)}
+      <div className="grid grid-cols-5 border-b border-gray-200 dark:border-gray-800">
+        {summaryItems.map(({ label, value, detail: detailText }) => <div key={label} className="min-w-0 border-r border-gray-100 px-2.5 py-1.5 last:border-r-0 dark:border-gray-800"><div className="text-[9px] text-gray-500">{label}</div><div className="truncate text-xs font-semibold tabular-nums" title={detailText || String(value)}>{value}</div>{detailText && <div className="truncate text-[9px] text-gray-500" title={detailText}>{detailText}</div>}</div>)}
       </div>
-      <div className="grid min-h-0 flex-1 grid-rows-[minmax(150px,0.9fr)_minmax(160px,1.1fr)]">
-        <div className="min-h-0 overflow-auto border-b border-gray-200 dark:border-gray-800">
-          <div className="sticky top-0 grid grid-cols-[64px_82px_64px_1fr] bg-gray-50 px-3 py-1.5 text-[10px] font-medium text-gray-500 dark:bg-gray-900"><span>帧</span><span>状态</span><span>耗时</span><span>输出</span></div>
-          {frames.map((frame) => <FrameRow key={frame.frame} frame={frame} />)}
+      <div className="grid grid-cols-[minmax(96px,1.2fr)_repeat(4,minmax(58px,1fr))] border-b border-gray-200 bg-gray-50/70 dark:border-gray-800 dark:bg-gray-900/50">
+        <div className="min-w-0 px-2.5 py-1.5 text-[9px] text-gray-500">
+          <div className="truncate font-medium">性能监测 · Blender</div>
+          <div className="truncate">{job.performanceUpdatedAt ? new Date(job.performanceUpdatedAt).toLocaleTimeString() : '等待采样'}</div>
         </div>
-        <div className="min-h-0 overflow-auto bg-gray-950 p-3 font-mono text-[11px] leading-5 text-gray-300">
+        <PerformanceValue icon={<Cpu />} label="CPU" value={job.performanceUpdatedAt ? `${job.cpuUsage.toFixed(1)}%` : '-'} onClick={() => setShowPerformance(true)} />
+        <PerformanceValue icon={<MemoryStick />} label="内存" value={formatMemory(job.memoryBytes)} onClick={() => setShowPerformance(true)} />
+        <PerformanceValue icon={<Cpu />} label="峰值 CPU" value={job.performanceUpdatedAt ? `${job.peakCpuUsage.toFixed(1)}%` : '-'} />
+        <PerformanceValue icon={<MemoryStick />} label="峰值内存" value={formatMemory(job.peakMemoryBytes)} />
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto">
+        <div className="sticky top-0 grid grid-cols-[64px_82px_64px_1fr] bg-gray-50 px-3 py-1.5 text-[10px] font-medium text-gray-500 dark:bg-gray-900"><span>帧</span><span>状态</span><span>耗时</span><span>输出</span></div>
+        {frames.map((frame) => <FrameRow key={frame.frame} frame={frame} />)}
+      </div>
+      <div className={`flex shrink-0 flex-col border-t border-gray-200 dark:border-gray-800 ${logExpanded ? 'h-[38%] min-h-[140px] max-h-[320px]' : 'h-8'}`}>
+        <button type="button" onClick={() => setLogExpanded((expanded) => !expanded)} className="flex h-8 shrink-0 items-center gap-2 bg-gray-100 px-3 text-[10px] font-medium text-gray-600 hover:bg-gray-200 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800">
+          <Terminal className="h-3.5 w-3.5" />
+          <span>任务日志</span>
+          <span className="text-gray-400">{logTail.length} 行</span>
+          <ChevronDown className={`ml-auto h-3.5 w-3.5 transition-transform ${logExpanded ? 'rotate-180' : ''}`} />
+        </button>
+        {logExpanded && <div className="min-h-0 flex-1 overflow-auto bg-gray-950 p-3 font-mono text-[11px] leading-5 text-gray-300">
           {logTail.length ? logTail.map((line,index) => <div key={`${index}-${line}`} className="break-all">{line}</div>) : <span className="text-gray-600">尚无日志</span>}
+        </div>}
+      </div>
+      {showPerformance && <PerformanceChartDialog job={job} samples={performanceSamples} onClose={() => setShowPerformance(false)} />}
+    </div>
+  );
+}
+
+function PerformanceValue({ icon, label, value, onClick }: { icon: React.ReactElement; label: string; value: string; onClick?: () => void }) {
+  const content = <><div className="flex items-center gap-1 text-[9px] text-gray-500 [&>svg]:h-3 [&>svg]:w-3">{icon}{label}{onClick && <Activity className="ml-auto opacity-50" />}</div><div className="truncate text-xs font-semibold tabular-nums" title={value}>{value}</div></>;
+  if (onClick) return <button type="button" onClick={onClick} title={`查看${label}曲线`} className="min-w-0 border-l border-gray-200 px-2 py-1.5 text-left hover:bg-gray-100 dark:border-gray-800 dark:hover:bg-gray-800">{content}</button>;
+  return <div className="min-w-0 border-l border-gray-200 px-2 py-1.5 dark:border-gray-800">{content}</div>;
+}
+
+function PerformanceChartDialog({ job, samples, onClose }: { job: RenderJob; samples: RenderPerformanceSample[]; onClose: () => void }) {
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  const latest = samples[samples.length - 1];
+  const memoryMax = Math.max(job.peakMemoryBytes, ...samples.map((sample) => sample.memoryBytes), 1);
+  const timeRange = samples.length > 1
+    ? `${new Date(samples[0].sampledAt).toLocaleTimeString()} - ${new Date(samples[samples.length - 1].sampledAt).toLocaleTimeString()}`
+    : '等待采样';
+
+  return (
+    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/50 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <div role="dialog" aria-modal="true" aria-label="任务性能曲线" className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-md border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-950">
+        <div className="flex items-center gap-3 border-b border-gray-200 px-4 py-3 dark:border-gray-800">
+          <Activity className="h-5 w-5 text-blue-600" />
+          <div className="min-w-0 flex-1"><h3 className="truncate text-sm font-semibold">任务性能曲线</h3><p className="truncate text-[11px] text-gray-500">{job.name} · 最近 {samples.length} 个采样 · {timeRange}</p></div>
+          <button type="button" onClick={onClose} title="关闭" className="flex h-8 w-8 items-center justify-center rounded hover:bg-gray-100 dark:hover:bg-gray-800"><X className="h-4 w-4" /></button>
+        </div>
+        <div className="min-h-0 overflow-auto p-4">
+          <div className="mb-4 grid grid-cols-4 border border-gray-200 dark:border-gray-800">
+            <ChartSummary label="当前 CPU" value={latest ? `${latest.cpuUsage.toFixed(1)}%` : '-'} />
+            <ChartSummary label="峰值 CPU" value={`${job.peakCpuUsage.toFixed(1)}%`} />
+            <ChartSummary label="当前内存" value={latest ? formatMemory(latest.memoryBytes) : '-'} />
+            <ChartSummary label="峰值内存" value={formatMemory(job.peakMemoryBytes)} />
+          </div>
+          <WaveformChart title="CPU 使用率" color="#2563eb" samples={samples} value={(sample) => sample.cpuUsage} maxValue={100} formatValue={(value) => `${value.toFixed(0)}%`} />
+          <div className="mt-5"><WaveformChart title="内存占用" color="#059669" samples={samples} value={(sample) => sample.memoryBytes} maxValue={memoryMax} formatValue={(value) => formatMemory(value)} /></div>
         </div>
       </div>
     </div>
+  );
+}
+
+function ChartSummary({ label, value }: { label: string; value: string }) {
+  return <div className="min-w-0 border-r border-gray-200 px-3 py-2 last:border-r-0 dark:border-gray-800"><div className="text-[10px] text-gray-500">{label}</div><div className="truncate text-sm font-semibold tabular-nums" title={value}>{value}</div></div>;
+}
+
+function WaveformChart({ title, color, samples, value, maxValue, formatValue }: { title: string; color: string; samples: RenderPerformanceSample[]; value: (sample: RenderPerformanceSample) => number; maxValue: number; formatValue: (value: number) => string }) {
+  const width = 720;
+  const height = 176;
+  const left = 48;
+  const right = 12;
+  const top = 12;
+  const bottom = 24;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const safeMax = Math.max(maxValue, 1);
+  const points = samples.map((sample, index) => ({
+    x: left + (samples.length === 1 ? plotWidth / 2 : (index / (samples.length - 1)) * plotWidth),
+    y: top + plotHeight - (Math.min(value(sample), safeMax) / safeMax) * plotHeight,
+    sample,
+  }));
+  const linePath = points.map((point, index) => `${index ? 'L' : 'M'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(' ');
+  const areaPath = points.length ? `${linePath} L ${points[points.length - 1].x.toFixed(2)} ${top + plotHeight} L ${points[0].x.toFixed(2)} ${top + plotHeight} Z` : '';
+
+  return (
+    <section>
+      <div className="mb-2 flex items-center justify-between"><h4 className="text-xs font-medium">{title}</h4><span className="text-[10px] text-gray-500">2 秒采样 · 最近 10 分钟</span></div>
+      <div className="relative h-44 w-full overflow-hidden border border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-gray-900/50">
+        {samples.length === 0 ? <div className="flex h-full items-center justify-center text-xs text-gray-500">暂无性能采样</div> : (
+          <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="h-full w-full" aria-label={`${title}波形图`}>
+            {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+              const y = top + plotHeight * ratio;
+              const tickValue = safeMax * (1 - ratio);
+              return <g key={ratio}><line x1={left} y1={y} x2={width - right} y2={y} stroke="currentColor" strokeOpacity="0.12" vectorEffect="non-scaling-stroke" /><text x={left - 6} y={y + 3} textAnchor="end" className="fill-gray-400 text-[9px]">{formatValue(tickValue)}</text></g>;
+            })}
+            <path d={areaPath} fill={color} opacity="0.1" />
+            <path d={linePath} fill="none" stroke={color} strokeWidth="2" vectorEffect="non-scaling-stroke" />
+            {points.map((point) => <circle key={point.sample.sampledAt} cx={point.x} cy={point.y} r="2" fill={color}><title>{`${new Date(point.sample.sampledAt).toLocaleTimeString()} · ${formatValue(value(point.sample))}`}</title></circle>)}
+            <text x={left} y={height - 7} className="fill-gray-400 text-[9px]">{new Date(samples[0].sampledAt).toLocaleTimeString()}</text>
+            <text x={width - right} y={height - 7} textAnchor="end" className="fill-gray-400 text-[9px]">{new Date(samples[samples.length - 1].sampledAt).toLocaleTimeString()}</text>
+          </svg>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -349,7 +571,7 @@ function FrameRow({ frame }: { frame: RenderFrame }) {
 }
 
 function IconAction({ title, icon, disabled, onClick }: { title: string; icon: React.ReactElement; disabled: boolean; onClick: () => void }) {
-  return <button title={title} disabled={disabled} onClick={onClick} className="flex h-8 w-8 items-center justify-center rounded border border-gray-200 text-gray-600 hover:bg-gray-100 disabled:opacity-40 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800 [&>svg]:h-4 [&>svg]:w-4">{icon}</button>;
+  return <button title={title} disabled={disabled} onClick={onClick} className="flex h-7 w-7 items-center justify-center rounded border border-gray-200 text-gray-600 hover:bg-gray-100 disabled:opacity-40 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800 [&>svg]:h-3.5 [&>svg]:w-3.5">{icon}</button>;
 }
 
 function PresetList({ presets, projectPath, onChanged }: { presets: RenderPreset[]; projectPath: string; onChanged: () => Promise<void> }) {

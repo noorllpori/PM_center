@@ -7,7 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use sysinfo::{Pid, System};
 use tauri::{Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use uuid::Uuid;
@@ -117,6 +118,11 @@ pub struct RenderJob {
     pub finished_at: Option<i64>,
     pub error: Option<String>,
     pub archived: bool,
+    pub cpu_usage: f64,
+    pub memory_bytes: i64,
+    pub peak_cpu_usage: f64,
+    pub peak_memory_bytes: i64,
+    pub performance_updated_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,6 +135,25 @@ pub struct RenderFrame {
     pub output_path: String,
     pub error: Option<String>,
     pub duration_ms: Option<i64>,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderEta {
+    pub status: String,
+    pub estimated_finish_at: Option<i64>,
+    pub remaining_ms: Option<i64>,
+    pub sample_count: usize,
+    pub confidence: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderPerformanceSample {
+    pub sampled_at: i64,
+    pub cpu_usage: f64,
+    pub memory_bytes: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,6 +162,8 @@ pub struct RenderJobDetail {
     pub job: RenderJob,
     pub frames: Vec<RenderFrame>,
     pub log_tail: Vec<String>,
+    pub performance_samples: Vec<RenderPerformanceSample>,
+    pub eta: RenderEta,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -261,6 +288,14 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             size_bytes INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS render_performance_samples (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL,
+            sampled_at INTEGER NOT NULL,
+            cpu_usage REAL NOT NULL,
+            memory_bytes INTEGER NOT NULL,
+            FOREIGN KEY(job_id) REFERENCES render_jobs(id) ON DELETE CASCADE
+        );
         CREATE TABLE IF NOT EXISTS render_presets (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
@@ -276,8 +311,48 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
         INSERT OR IGNORE INTO render_scheduler_settings(id, concurrency) VALUES(1, 1);
         CREATE INDEX IF NOT EXISTS idx_render_jobs_queue ON render_jobs(status, archived, position, created_at);
         CREATE INDEX IF NOT EXISTS idx_render_frames_job_status ON render_frames(job_id, status, frame);
+        CREATE INDEX IF NOT EXISTS idx_render_performance_samples_job_time ON render_performance_samples(job_id, sampled_at DESC);
         "#,
-    )
+    )?;
+    ensure_column(conn, "render_jobs", "cpu_usage", "REAL NOT NULL DEFAULT 0")?;
+    ensure_column(
+        conn,
+        "render_jobs",
+        "memory_bytes",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(
+        conn,
+        "render_jobs",
+        "peak_cpu_usage",
+        "REAL NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(
+        conn,
+        "render_jobs",
+        "peak_memory_bytes",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(conn, "render_jobs", "performance_updated_at", "INTEGER")?;
+    Ok(())
+}
+
+fn ensure_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> rusqlite::Result<()> {
+    let mut statement = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if !columns.iter().any(|value| value == column) {
+        conn.execute_batch(&format!(
+            "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+        ))?;
+    }
+    Ok(())
 }
 
 pub fn init_project_storage(project_path: &str) -> Result<(), String> {
@@ -290,7 +365,7 @@ pub fn init_project_storage(project_path: &str) -> Result<(), String> {
         return Ok(());
     }
     conn.execute(
-        "UPDATE render_jobs SET status = 'paused', error = '应用上次退出时任务仍在运行，请手动继续' WHERE status IN ('starting', 'running', 'pausing', 'cancelling')",
+        "UPDATE render_jobs SET status = 'paused', error = '应用上次退出时任务仍在运行，请手动继续', cpu_usage=0, memory_bytes=0 WHERE status IN ('starting', 'running', 'pausing', 'cancelling')",
         [],
     ).map_err(|error| error.to_string())?;
     conn.execute(
@@ -579,6 +654,11 @@ fn row_to_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<RenderJob> {
         failed_frames: failed,
         skipped_frames: skipped,
         progress,
+        cpu_usage: row.get(23)?,
+        memory_bytes: row.get(24)?,
+        peak_cpu_usage: row.get(25)?,
+        peak_memory_bytes: row.get(26)?,
+        performance_updated_at: row.get(27)?,
     })
 }
 
@@ -586,8 +666,190 @@ const JOB_SELECT: &str = r#"SELECT j.id,j.batch_id,j.project_path,j.name,j.blend
     (SELECT COUNT(*) FROM render_frames f WHERE f.job_id=j.id) AS total,
     (SELECT COUNT(*) FROM render_frames f WHERE f.job_id=j.id AND f.status='completed'),
     (SELECT COUNT(*) FROM render_frames f WHERE f.job_id=j.id AND f.status='failed'),
-    (SELECT COUNT(*) FROM render_frames f WHERE f.job_id=j.id AND f.status='skipped')
+    (SELECT COUNT(*) FROM render_frames f WHERE f.job_id=j.id AND f.status='skipped'),
+    j.cpu_usage,j.memory_bytes,j.peak_cpu_usage,j.peak_memory_bytes,j.performance_updated_at
     FROM render_jobs j"#;
+
+fn median(values: &[f64]) -> f64 {
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|left, right| left.total_cmp(right));
+    let middle = sorted.len() / 2;
+    if sorted.len() % 2 == 0 {
+        (sorted[middle - 1] + sorted[middle]) / 2.0
+    } else {
+        sorted[middle]
+    }
+}
+
+fn weighted_quantile(values: &[f64], weights: &[f64], quantile: f64) -> f64 {
+    let mut ordered: Vec<(f64, f64)> = values
+        .iter()
+        .copied()
+        .zip(weights.iter().copied())
+        .collect();
+    ordered.sort_by(|left, right| left.0.total_cmp(&right.0));
+    let total_weight: f64 = ordered.iter().map(|(_, weight)| weight).sum();
+    let target = total_weight * quantile.clamp(0.0, 1.0);
+    let mut accumulated = 0.0;
+    for (value, weight) in &ordered {
+        accumulated += weight;
+        if accumulated >= target {
+            return *value;
+        }
+    }
+    ordered.last().map(|(value, _)| *value).unwrap_or(0.0)
+}
+
+fn estimate_render_eta(job: &RenderJob, frames: &[RenderFrame], now_ms: i64) -> RenderEta {
+    let completed: Vec<(usize, f64)> = frames
+        .iter()
+        .enumerate()
+        .filter_map(|(index, frame)| {
+            (frame.status == "completed")
+                .then_some(frame.duration_ms)
+                .flatten()
+                .filter(|duration| *duration > 0)
+                .map(|duration| (index, duration as f64))
+        })
+        .collect();
+    let sample_count = completed.len();
+
+    let state = match job.status.as_str() {
+        "completed" => Some(("completed", Some(0))),
+        "paused" => Some(("paused", None)),
+        "failed" | "cancelled" => Some(("unavailable", None)),
+        _ => None,
+    };
+    if let Some((status, remaining_ms)) = state {
+        return RenderEta {
+            status: status.to_string(),
+            estimated_finish_at: remaining_ms.map(|_| job.finished_at.unwrap_or(now_ms)),
+            remaining_ms,
+            sample_count,
+            confidence: "none".to_string(),
+        };
+    }
+
+    if sample_count < 2 {
+        return RenderEta {
+            status: "calibrating".to_string(),
+            estimated_finish_at: None,
+            remaining_ms: None,
+            sample_count,
+            confidence: "low".to_string(),
+        };
+    }
+
+    let durations: Vec<f64> = completed.iter().map(|(_, duration)| *duration).collect();
+    let center = median(&durations);
+    let deviations: Vec<f64> = durations
+        .iter()
+        .map(|duration| (duration - center).abs())
+        .collect();
+    let mad = median(&deviations);
+    let huber_threshold = (mad * 1.5).max(center * 0.25).max(1_000.0);
+    let later_center = median(&durations[1..]);
+    let cold_start = durations[0] > later_center * 2.0;
+
+    let weights: Vec<f64> = durations
+        .iter()
+        .enumerate()
+        .map(|(index, duration)| {
+            let age = sample_count - 1 - index;
+            let mut weight = 0.78_f64.powf(age as f64);
+            if cold_start && index == 0 {
+                weight *= 0.15;
+            }
+            let residual = (duration - center).abs();
+            if residual > huber_threshold {
+                weight *= huber_threshold / residual;
+            }
+            weight.max(0.000_001)
+        })
+        .collect();
+    let total_weight: f64 = weights.iter().sum();
+    let baseline = durations
+        .iter()
+        .zip(&weights)
+        .map(|(duration, weight)| duration * weight)
+        .sum::<f64>()
+        / total_weight;
+    let mean_x = completed
+        .iter()
+        .zip(&weights)
+        .map(|((index, _), weight)| *index as f64 * weight)
+        .sum::<f64>()
+        / total_weight;
+    let regression_numerator = completed
+        .iter()
+        .zip(&weights)
+        .map(|((index, duration), weight)| {
+            weight * (*index as f64 - mean_x) * (duration - baseline)
+        })
+        .sum::<f64>();
+    let regression_denominator = completed
+        .iter()
+        .zip(&weights)
+        .map(|((index, _), weight)| weight * (*index as f64 - mean_x).powi(2))
+        .sum::<f64>();
+    let raw_slope = if regression_denominator > f64::EPSILON {
+        regression_numerator / regression_denominator
+    } else {
+        0.0
+    };
+    let slope_limit = baseline * 0.12;
+    let slope = raw_slope.clamp(-slope_limit, slope_limit);
+    let minimum_prediction = baseline * 0.45;
+    let maximum_prediction = baseline * 2.2;
+    let percentile_80 = weighted_quantile(&durations, &weights, 0.8);
+
+    let mut remaining = 0.0;
+    for (index, frame) in frames.iter().enumerate() {
+        if !matches!(frame.status.as_str(), "pending" | "running") {
+            continue;
+        }
+        let predicted_total = (baseline + slope * (index as f64 - mean_x))
+            .clamp(minimum_prediction, maximum_prediction);
+        if frame.status == "running" {
+            let elapsed = now_ms.saturating_sub(frame.updated_at).max(0) as f64;
+            let conditional_total = predicted_total.max(percentile_80).max(elapsed * 1.08);
+            remaining += (conditional_total - elapsed).max(0.0);
+        } else {
+            remaining += predicted_total;
+            if frame.attempts > 0 {
+                remaining += if frame.attempts == 1 {
+                    5_000.0
+                } else {
+                    15_000.0
+                };
+            }
+        }
+    }
+
+    let weighted_variance = durations
+        .iter()
+        .zip(&weights)
+        .map(|(duration, weight)| weight * (duration - baseline).powi(2))
+        .sum::<f64>()
+        / total_weight;
+    let variation = weighted_variance.sqrt() / baseline.max(1.0);
+    let confidence = if sample_count >= 6 && variation <= 0.25 {
+        "high"
+    } else if sample_count >= 3 && variation <= 0.6 {
+        "medium"
+    } else {
+        "low"
+    };
+    let remaining_ms = remaining.ceil().clamp(0.0, i64::MAX as f64) as i64;
+
+    RenderEta {
+        status: "estimating".to_string(),
+        estimated_finish_at: Some(now_ms.saturating_add(remaining_ms)),
+        remaining_ms: Some(remaining_ms),
+        sample_count,
+        confidence: confidence.to_string(),
+    }
+}
 
 #[tauri::command]
 pub async fn list_render_jobs(
@@ -622,7 +884,7 @@ pub async fn get_render_job(
     let job = conn
         .query_row(&sql, params![job_id], row_to_job)
         .map_err(|error| error.to_string())?;
-    let mut stmt = conn.prepare("SELECT job_id,frame,status,attempts,output_path,error,duration_ms FROM render_frames WHERE job_id=?1 ORDER BY frame")
+    let mut stmt = conn.prepare("SELECT job_id,frame,status,attempts,output_path,error,duration_ms,updated_at FROM render_frames WHERE job_id=?1 ORDER BY frame")
         .map_err(|error| error.to_string())?;
     let frames = stmt
         .query_map(params![job.id], |row| {
@@ -634,11 +896,13 @@ pub async fn get_render_job(
                 output_path: row.get(4)?,
                 error: row.get(5)?,
                 duration_ms: row.get(6)?,
+                updated_at: row.get(7)?,
             })
         })
         .map_err(|error| error.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
+    let eta = estimate_render_eta(&job, &frames, now());
     let log_path = PathBuf::from(&project_path)
         .join(".pm_center/render_jobs")
         .join(&job.id)
@@ -653,10 +917,34 @@ pub async fn get_render_job(
         .into_iter()
         .rev()
         .collect();
+    let mut performance_stmt = conn
+        .prepare(
+            "SELECT sampled_at,cpu_usage,memory_bytes FROM (
+                SELECT sampled_at,cpu_usage,memory_bytes
+                FROM render_performance_samples
+                WHERE job_id=?1
+                ORDER BY sampled_at DESC
+                LIMIT 300
+            ) ORDER BY sampled_at ASC",
+        )
+        .map_err(|error| error.to_string())?;
+    let performance_samples = performance_stmt
+        .query_map(params![job.id], |row| {
+            Ok(RenderPerformanceSample {
+                sampled_at: row.get(0)?,
+                cpu_usage: row.get(1)?,
+                memory_bytes: row.get(2)?,
+            })
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
     Ok(RenderJobDetail {
         job,
         frames,
         log_tail,
+        performance_samples,
+        eta,
     })
 }
 
@@ -961,6 +1249,96 @@ fn valid_output(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RenderProcessMetrics {
+    cpu_usage: f64,
+    memory_bytes: i64,
+}
+
+struct RenderProcessSampler {
+    system: System,
+}
+
+impl RenderProcessSampler {
+    fn new() -> Self {
+        Self {
+            system: System::new_all(),
+        }
+    }
+
+    fn sample(&mut self, root_pid: u32) -> Option<RenderProcessMetrics> {
+        self.system.refresh_processes();
+        let root_pid = Pid::from_u32(root_pid);
+        if !self.system.processes().contains_key(&root_pid) {
+            return None;
+        }
+
+        let mut process_tree = HashSet::from([root_pid]);
+        loop {
+            let previous_count = process_tree.len();
+            for (pid, process) in self.system.processes() {
+                if process
+                    .parent()
+                    .is_some_and(|parent| process_tree.contains(&parent))
+                {
+                    process_tree.insert(*pid);
+                }
+            }
+            if process_tree.len() == previous_count {
+                break;
+            }
+        }
+
+        let mut raw_cpu = 0.0_f64;
+        let mut memory_bytes = 0_u64;
+        for pid in process_tree {
+            if let Some(process) = self.system.process(pid) {
+                raw_cpu += f64::from(process.cpu_usage());
+                memory_bytes = memory_bytes.saturating_add(process.memory());
+            }
+        }
+        let logical_cpu_count = self.system.cpus().len().max(1) as f64;
+        Some(RenderProcessMetrics {
+            cpu_usage: (raw_cpu / logical_cpu_count).clamp(0.0, 100.0),
+            memory_bytes: memory_bytes.min(i64::MAX as u64) as i64,
+        })
+    }
+}
+
+fn record_render_performance(
+    app: &tauri::AppHandle,
+    project_path: &str,
+    job_id: &str,
+    frame: i64,
+    metrics: RenderProcessMetrics,
+) {
+    let sampled_at = now();
+    if let Ok(conn) = open_db(project_path) {
+        let _ = conn.execute(
+            "UPDATE render_jobs SET cpu_usage=?2,memory_bytes=?3,peak_cpu_usage=MAX(peak_cpu_usage,?2),peak_memory_bytes=MAX(peak_memory_bytes,?3),performance_updated_at=?4 WHERE id=?1",
+            params![job_id, metrics.cpu_usage, metrics.memory_bytes, sampled_at],
+        );
+        if metrics.memory_bytes > 0 {
+            let _ = conn.execute(
+                "INSERT INTO render_performance_samples(job_id,sampled_at,cpu_usage,memory_bytes) VALUES(?1,?2,?3,?4)",
+                params![job_id, sampled_at, metrics.cpu_usage, metrics.memory_bytes],
+            );
+        }
+    }
+    let _ = app.emit(
+        "pm-center:render-performance",
+        json!({
+            "projectPath": project_path,
+            "jobId": job_id,
+            "frame": frame,
+            "cpuUsage": metrics.cpu_usage,
+            "memoryBytes": metrics.memory_bytes,
+            "sampledAt": sampled_at,
+        }),
+    );
+    emit_progress(app, project_path, job_id, Some(frame), "performance");
+}
+
 async fn execute_frame(
     app: &tauri::AppHandle,
     project_path: &str,
@@ -986,7 +1364,8 @@ async fn execute_frame(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("启动 Blender 失败: {e}"))?;
-    control.lock().unwrap().pid = child.id();
+    let child_pid = child.id();
+    control.lock().unwrap().pid = child_pid;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let log_path = job_dir.join("render.log");
@@ -1027,10 +1406,20 @@ async fn execute_frame(
             }
         }
     });
+    let mut sampler = RenderProcessSampler::new();
+    let mut next_performance_sample = Instant::now() + Duration::from_secs(1);
     let status = loop {
         if control.lock().unwrap().cancel {
             let _ = child.kill().await;
             break child.wait().await.map_err(|e| e.to_string())?;
+        }
+        if Instant::now() >= next_performance_sample {
+            if let Some(pid) = child_pid {
+                if let Some(metrics) = sampler.sample(pid) {
+                    record_render_performance(app, project_path, job_id, frame, metrics);
+                }
+            }
+            next_performance_sample = Instant::now() + Duration::from_secs(2);
         }
         match child.try_wait().map_err(|e| e.to_string())? {
             Some(status) => break status,
@@ -1038,6 +1427,16 @@ async fn execute_frame(
         }
     };
     control.lock().unwrap().pid = None;
+    record_render_performance(
+        app,
+        project_path,
+        job_id,
+        frame,
+        RenderProcessMetrics {
+            cpu_usage: 0.0,
+            memory_bytes: 0,
+        },
+    );
     let _ = stdout_task.await;
     let _ = stderr_task.await;
     if status.success() {
@@ -1421,6 +1820,150 @@ pub fn shutdown_all() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn eta_job(status: &str) -> RenderJob {
+        RenderJob {
+            id: "eta-job".to_string(),
+            batch_id: "eta-batch".to_string(),
+            project_path: "C:/project".to_string(),
+            name: "ETA test".to_string(),
+            blend_path: "C:/project/test.blend".to_string(),
+            scene_name: "Scene".to_string(),
+            status: status.to_string(),
+            frame_start: 1,
+            frame_end: 20,
+            frame_step: 1,
+            total_frames: 20,
+            completed_frames: 0,
+            failed_frames: 0,
+            skipped_frames: 0,
+            current_frame: None,
+            progress: 0.0,
+            output_dir: "C:/project/renders".to_string(),
+            blender_path: "C:/Blender/blender.exe".to_string(),
+            created_at: 0,
+            started_at: Some(0),
+            finished_at: None,
+            error: None,
+            archived: false,
+            cpu_usage: 0.0,
+            memory_bytes: 0,
+            peak_cpu_usage: 0.0,
+            peak_memory_bytes: 0,
+            performance_updated_at: None,
+        }
+    }
+
+    fn eta_frame(
+        frame: i64,
+        status: &str,
+        duration_ms: Option<i64>,
+        attempts: i64,
+        updated_at: i64,
+    ) -> RenderFrame {
+        RenderFrame {
+            job_id: "eta-job".to_string(),
+            frame,
+            status: status.to_string(),
+            attempts,
+            output_path: format!("frame-{frame}.png"),
+            error: None,
+            duration_ms,
+            updated_at,
+        }
+    }
+
+    fn frames_with_durations(durations: &[i64], pending: usize) -> Vec<RenderFrame> {
+        let mut frames: Vec<RenderFrame> = durations
+            .iter()
+            .enumerate()
+            .map(|(index, duration)| {
+                eta_frame(index as i64 + 1, "completed", Some(*duration), 1, 0)
+            })
+            .collect();
+        frames.extend((0..pending).map(|index| {
+            eta_frame(
+                durations.len() as i64 + index as i64 + 1,
+                "pending",
+                None,
+                0,
+                0,
+            )
+        }));
+        frames
+    }
+
+    #[test]
+    fn eta_waits_for_two_samples_and_downweights_cold_start() {
+        let job = eta_job("running");
+        let calibrating =
+            estimate_render_eta(&job, &frames_with_durations(&[147_000], 8), 1_000_000);
+        assert_eq!(calibrating.status, "calibrating");
+        assert!(calibrating.estimated_finish_at.is_none());
+
+        let estimated = estimate_render_eta(
+            &job,
+            &frames_with_durations(&[147_000, 19_000], 8),
+            1_000_000,
+        );
+        assert_eq!(estimated.status, "estimating");
+        let remaining = estimated.remaining_ms.unwrap();
+        assert!(remaining > 8 * 10_000);
+        assert!(remaining < 8 * 40_000);
+    }
+
+    #[test]
+    fn eta_tracks_trend_without_being_dominated_by_an_outlier() {
+        let job = eta_job("running");
+        let stable = estimate_render_eta(
+            &job,
+            &frames_with_durations(&[10_000, 10_000, 10_000, 10_000], 3),
+            1_000_000,
+        );
+        let rising = estimate_render_eta(
+            &job,
+            &frames_with_durations(&[10_000, 12_000, 14_000, 16_000], 3),
+            1_000_000,
+        );
+        assert!(rising.remaining_ms.unwrap() > stable.remaining_ms.unwrap());
+
+        let outlier = estimate_render_eta(
+            &job,
+            &frames_with_durations(&[20_000, 21_000, 120_000, 20_000, 21_000, 22_000], 5),
+            1_000_000,
+        );
+        assert!(outlier.remaining_ms.unwrap() < 5 * 35_000);
+    }
+
+    #[test]
+    fn eta_keeps_overtime_current_frame_in_the_future() {
+        let job = eta_job("running");
+        let now_ms = 1_000_000;
+        let mut frames = frames_with_durations(&[20_000, 21_000, 19_000], 0);
+        frames.push(eta_frame(4, "running", None, 1, now_ms - 60_000));
+        frames.push(eta_frame(5, "pending", None, 1, 0));
+        let eta = estimate_render_eta(&job, &frames, now_ms);
+        assert!(eta.estimated_finish_at.unwrap() > now_ms);
+        assert!(eta.remaining_ms.unwrap() >= 5_000);
+    }
+
+    #[test]
+    fn eta_reports_terminal_and_paused_states() {
+        let frames = frames_with_durations(&[20_000, 21_000], 2);
+        assert_eq!(
+            estimate_render_eta(&eta_job("paused"), &frames, 1_000_000).status,
+            "paused"
+        );
+        assert_eq!(
+            estimate_render_eta(&eta_job("cancelled"), &frames, 1_000_000).status,
+            "unavailable"
+        );
+        assert_eq!(
+            estimate_render_eta(&eta_job("completed"), &frames, 1_000_000).remaining_ms,
+            Some(0)
+        );
+    }
+
     #[test]
     fn initializes_render_schema_and_recovers_running_jobs() {
         let root = std::env::temp_dir().join(format!("pm-render-test-{}", Uuid::new_v4()));
@@ -1434,7 +1977,23 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(tables >= 7);
+        assert!(tables >= 8);
+        let performance_table: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='render_performance_samples'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(performance_table, 1);
+        let performance_columns: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('render_jobs') WHERE name IN ('cpu_usage','memory_bytes','peak_cpu_usage','peak_memory_bytes','performance_updated_at')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(performance_columns, 5);
         let _ = fs::remove_dir_all(root);
     }
     #[test]

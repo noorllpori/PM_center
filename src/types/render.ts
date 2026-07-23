@@ -50,6 +50,11 @@ export interface RenderJob {
   finishedAt: number | null;
   error: string | null;
   archived: boolean;
+  cpuUsage: number;
+  memoryBytes: number;
+  peakCpuUsage: number;
+  peakMemoryBytes: number;
+  performanceUpdatedAt: number | null;
 }
 
 export interface RenderFrame {
@@ -60,12 +65,29 @@ export interface RenderFrame {
   outputPath: string;
   error: string | null;
   durationMs: number | null;
+  updatedAt: number;
+}
+
+export interface RenderEta {
+  status: 'calibrating' | 'estimating' | 'paused' | 'unavailable' | 'completed' | string;
+  estimatedFinishAt: number | null;
+  remainingMs: number | null;
+  sampleCount: number;
+  confidence: 'none' | 'low' | 'medium' | 'high' | string;
+}
+
+export interface RenderPerformanceSample {
+  sampledAt: number;
+  cpuUsage: number;
+  memoryBytes: number;
 }
 
 export interface RenderJobDetail {
   job: RenderJob;
   frames: RenderFrame[];
   logTail: string[];
+  performanceSamples: RenderPerformanceSample[];
+  eta: RenderEta;
 }
 
 export interface RenderPreset {
