@@ -37,6 +37,7 @@ export interface RenderJob {
   frameStart: number;
   frameEnd: number;
   frameStep: number;
+  parallelism: number;
   totalFrames: number;
   completedFrames: number;
   failedFrames: number;
@@ -84,11 +85,25 @@ export interface RenderPerformanceSample {
 
 export interface RenderJobDetail {
   job: RenderJob;
+  settings: RenderJobSettings;
   frames: RenderFrame[];
   logTail: string[];
   performanceSamples: RenderPerformanceSample[];
   eta: RenderEta;
 }
+
+export interface RenderJobSettings {
+  sceneName: string;
+  frameStart: number;
+  frameEnd: number;
+  frameStep: number;
+  parallelism: number;
+  resolutionPercentage: number;
+  engine: string | null;
+  outputFormat: string;
+}
+
+export type UpdateRenderJobRequest = RenderJobSettings;
 
 export interface RenderPreset {
   id: string;
@@ -113,6 +128,7 @@ export interface CreateRenderBatchRequest {
     frameStart: number;
     frameEnd: number;
     frameStep: number;
+    parallelism: number;
     resolutionX?: number | null;
     resolutionY?: number | null;
     resolutionPercentage?: number | null;

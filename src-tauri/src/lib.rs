@@ -993,6 +993,7 @@ pub fn run() {
             render_center::create_render_batch,
             render_center::list_render_jobs,
             render_center::get_render_job,
+            render_center::update_render_job,
             render_center::pause_render_job,
             render_center::resume_render_job,
             render_center::cancel_render_job,

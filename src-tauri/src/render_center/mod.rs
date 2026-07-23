@@ -1,5 +1,5 @@
 use crate::process_utils::{std_command, tokio_command};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -74,6 +74,8 @@ pub struct CreateRenderJobRequest {
     pub frame_end: i64,
     #[serde(default = "default_frame_step")]
     pub frame_step: i64,
+    #[serde(default = "default_parallelism")]
+    pub parallelism: i64,
     pub resolution_x: Option<i64>,
     pub resolution_y: Option<i64>,
     pub resolution_percentage: Option<i64>,
@@ -81,7 +83,26 @@ pub struct CreateRenderJobRequest {
     pub output_format: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateRenderJobRequest {
+    pub scene_name: String,
+    pub frame_start: i64,
+    pub frame_end: i64,
+    #[serde(default = "default_frame_step")]
+    pub frame_step: i64,
+    #[serde(default = "default_parallelism")]
+    pub parallelism: i64,
+    pub resolution_percentage: i64,
+    pub engine: Option<String>,
+    pub output_format: String,
+}
+
 fn default_frame_step() -> i64 {
+    1
+}
+
+fn default_parallelism() -> i64 {
     1
 }
 
@@ -105,6 +126,7 @@ pub struct RenderJob {
     pub frame_start: i64,
     pub frame_end: i64,
     pub frame_step: i64,
+    pub parallelism: i64,
     pub total_frames: i64,
     pub completed_frames: i64,
     pub failed_frames: i64,
@@ -160,10 +182,24 @@ pub struct RenderPerformanceSample {
 #[serde(rename_all = "camelCase")]
 pub struct RenderJobDetail {
     pub job: RenderJob,
+    pub settings: RenderJobSettings,
     pub frames: Vec<RenderFrame>,
     pub log_tail: Vec<String>,
     pub performance_samples: Vec<RenderPerformanceSample>,
     pub eta: RenderEta,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderJobSettings {
+    pub scene_name: String,
+    pub frame_start: i64,
+    pub frame_end: i64,
+    pub frame_step: i64,
+    pub parallelism: i64,
+    pub resolution_percentage: i64,
+    pub engine: Option<String>,
+    pub output_format: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,7 +223,8 @@ pub struct SchedulerSettings {
 struct JobControl {
     cancel: bool,
     pause: bool,
-    pid: Option<u32>,
+    pids: HashSet<u32>,
+    metrics: HashMap<u32, RenderProcessMetrics>,
 }
 
 #[derive(Default)]
@@ -212,6 +249,8 @@ fn open_db(project_path: &str) -> Result<Connection, String> {
         .map_err(|error| format!("创建渲染任务目录失败: {error}"))?;
     let conn = Connection::open(root.join("data.db"))
         .map_err(|error| format!("打开项目数据库失败: {error}"))?;
+    conn.busy_timeout(Duration::from_secs(5))
+        .map_err(|error| format!("设置项目数据库等待时间失败: {error}"))?;
     conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")
         .map_err(|error| format!("初始化项目数据库失败: {error}"))?;
     init_schema(&conn).map_err(|error| format!("初始化渲染数据表失败: {error}"))?;
@@ -240,6 +279,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             frame_start INTEGER NOT NULL,
             frame_end INTEGER NOT NULL,
             frame_step INTEGER NOT NULL,
+            parallelism INTEGER NOT NULL DEFAULT 1,
             output_dir TEXT NOT NULL,
             blender_path TEXT NOT NULL,
             python_path TEXT,
@@ -265,6 +305,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             output_path TEXT NOT NULL,
             error TEXT,
             duration_ms INTEGER,
+            force_render INTEGER NOT NULL DEFAULT 0,
             updated_at INTEGER NOT NULL,
             PRIMARY KEY(job_id, frame),
             FOREIGN KEY(job_id) REFERENCES render_jobs(id) ON DELETE CASCADE
@@ -334,6 +375,18 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
         "INTEGER NOT NULL DEFAULT 0",
     )?;
     ensure_column(conn, "render_jobs", "performance_updated_at", "INTEGER")?;
+    ensure_column(
+        conn,
+        "render_jobs",
+        "parallelism",
+        "INTEGER NOT NULL DEFAULT 1",
+    )?;
+    ensure_column(
+        conn,
+        "render_frames",
+        "force_render",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
     Ok(())
 }
 
@@ -513,6 +566,35 @@ fn format_extension(format: &str) -> &'static str {
     }
 }
 
+fn normalize_output_format(format: &str) -> Result<String, String> {
+    let normalized = format.trim().to_ascii_uppercase();
+    if matches!(
+        normalized.as_str(),
+        "PNG" | "JPEG" | "OPEN_EXR" | "TIFF" | "WEBP"
+    ) {
+        Ok(normalized)
+    } else {
+        Err(format!("不支持的输出格式: {format}"))
+    }
+}
+
+fn frame_output_path(
+    output_dir: &Path,
+    scene_name: &str,
+    frame: i64,
+    frame_end: i64,
+    output_format: &str,
+) -> PathBuf {
+    let padding = frame_end.abs().to_string().len().max(4);
+    output_dir.join(format!(
+        "{}_{:0padding$}.{}",
+        safe_name(scene_name),
+        frame,
+        format_extension(output_format),
+        padding = padding
+    ))
+}
+
 fn safe_name(value: &str) -> String {
     let result: String = value
         .chars()
@@ -577,6 +659,7 @@ pub async fn create_render_batch(
             "frameStart": job.frame_start,
             "frameEnd": job.frame_end,
             "frameStep": job.frame_step,
+            "parallelism": job.parallelism.clamp(1, 8),
             "resolutionX": job.resolution_x,
             "resolutionY": job.resolution_y,
             "resolutionPercentage": job.resolution_percentage.unwrap_or(100),
@@ -585,19 +668,12 @@ pub async fn create_render_batch(
         });
         let name = format!("{} · {}", blend_stem, job.scene_name);
         tx.execute(
-            "INSERT INTO render_jobs(id,batch_id,project_path,name,blend_path,scene_name,status,frame_start,frame_end,frame_step,output_dir,blender_path,python_path,pre_hook,post_hook,force_overwrite,max_retries,spec_json,position,created_at) VALUES(?1,?2,?3,?4,?5,?6,'pending',?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
-            params![job_id,batch_id,project_path,name,job.blend_path,job.scene_name,job.frame_start,job.frame_end,job.frame_step,output_dir.to_string_lossy(),request.blender_path,rusqlite::types::Null,request.pre_hook,request.post_hook,request.force_overwrite as i64,request.max_retries.max(0),spec.to_string(),position as i64,created],
+            "INSERT INTO render_jobs(id,batch_id,project_path,name,blend_path,scene_name,status,frame_start,frame_end,frame_step,parallelism,output_dir,blender_path,python_path,pre_hook,post_hook,force_overwrite,max_retries,spec_json,position,created_at) VALUES(?1,?2,?3,?4,?5,?6,'pending',?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
+            params![job_id,batch_id,project_path,name,job.blend_path,job.scene_name,job.frame_start,job.frame_end,job.frame_step,job.parallelism.clamp(1,8),output_dir.to_string_lossy(),request.blender_path,rusqlite::types::Null,request.pre_hook,request.post_hook,request.force_overwrite as i64,request.max_retries.max(0),spec.to_string(),position as i64,created],
         ).map_err(|error| error.to_string())?;
-        let extension = format_extension(&format);
-        let padding = job.frame_end.abs().to_string().len().max(4);
         for frame in (job.frame_start..=job.frame_end).step_by(job.frame_step as usize) {
-            let output_path = output_dir.join(format!(
-                "{}_{:0padding$}.{}",
-                safe_name(&job.scene_name),
-                frame,
-                extension,
-                padding = padding
-            ));
+            let output_path =
+                frame_output_path(&output_dir, &job.scene_name, frame, job.frame_end, &format);
             tx.execute(
                 "INSERT INTO render_frames(job_id,frame,status,output_path,updated_at) VALUES(?1,?2,'pending',?3,?4)",
                 params![job_id, frame, output_path.to_string_lossy(), created],
@@ -641,6 +717,7 @@ fn row_to_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<RenderJob> {
         frame_start: row.get(7)?,
         frame_end: row.get(8)?,
         frame_step: row.get(9)?,
+        parallelism: row.get(28)?,
         output_dir: row.get(10)?,
         blender_path: row.get(11)?,
         current_frame: row.get(12)?,
@@ -662,12 +739,35 @@ fn row_to_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<RenderJob> {
     })
 }
 
+fn render_job_settings(job: &RenderJob, spec: &Value) -> RenderJobSettings {
+    RenderJobSettings {
+        scene_name: job.scene_name.clone(),
+        frame_start: job.frame_start,
+        frame_end: job.frame_end,
+        frame_step: job.frame_step,
+        parallelism: job.parallelism,
+        resolution_percentage: spec
+            .get("resolutionPercentage")
+            .and_then(Value::as_i64)
+            .unwrap_or(100),
+        engine: spec
+            .get("engine")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        output_format: spec
+            .get("outputFormat")
+            .and_then(Value::as_str)
+            .unwrap_or("PNG")
+            .to_string(),
+    }
+}
+
 const JOB_SELECT: &str = r#"SELECT j.id,j.batch_id,j.project_path,j.name,j.blend_path,j.scene_name,j.status,j.frame_start,j.frame_end,j.frame_step,j.output_dir,j.blender_path,j.current_frame,j.error,j.archived,j.created_at,j.started_at,j.finished_at,j.position,
     (SELECT COUNT(*) FROM render_frames f WHERE f.job_id=j.id) AS total,
     (SELECT COUNT(*) FROM render_frames f WHERE f.job_id=j.id AND f.status='completed'),
     (SELECT COUNT(*) FROM render_frames f WHERE f.job_id=j.id AND f.status='failed'),
     (SELECT COUNT(*) FROM render_frames f WHERE f.job_id=j.id AND f.status='skipped'),
-    j.cpu_usage,j.memory_bytes,j.peak_cpu_usage,j.peak_memory_bytes,j.performance_updated_at
+    j.cpu_usage,j.memory_bytes,j.peak_cpu_usage,j.peak_memory_bytes,j.performance_updated_at,j.parallelism
     FROM render_jobs j"#;
 
 fn median(values: &[f64]) -> f64 {
@@ -808,7 +908,7 @@ fn estimate_render_eta(job: &RenderJob, frames: &[RenderFrame], now_ms: i64) -> 
         .unwrap_or(mean_x);
     const TREND_FORECAST_HORIZON: f64 = 8.0;
 
-    let mut remaining = 0.0;
+    let mut worker_loads = vec![0.0_f64; job.parallelism.clamp(1, 8) as usize];
     for (index, frame) in frames.iter().enumerate() {
         if !matches!(frame.status.as_str(), "pending" | "running") {
             continue;
@@ -818,20 +918,31 @@ fn estimate_render_eta(job: &RenderJob, frames: &[RenderFrame], now_ms: i64) -> 
         let projected_index = (index as f64).min(last_completed_index + TREND_FORECAST_HORIZON);
         let predicted_total = (baseline + slope * (projected_index - mean_x))
             .clamp(minimum_prediction, maximum_prediction);
-        if frame.status == "running" {
+        let mut work = if frame.status == "running" {
             let elapsed = now_ms.saturating_sub(frame.updated_at).max(0) as f64;
             let conditional_total = predicted_total.max(percentile_80).max(elapsed * 1.08);
-            remaining += (conditional_total - elapsed).max(0.0);
+            (conditional_total - elapsed).max(0.0)
         } else {
-            remaining += predicted_total;
+            let mut pending_work = predicted_total;
             if frame.attempts > 0 {
-                remaining += if frame.attempts == 1 {
+                pending_work += if frame.attempts == 1 {
                     5_000.0
                 } else {
                     15_000.0
                 };
             }
+            pending_work
+        };
+        if !work.is_finite() {
+            work = baseline;
         }
+        let target = worker_loads
+            .iter()
+            .enumerate()
+            .min_by(|(_, left), (_, right)| left.total_cmp(right))
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        worker_loads[target] += work;
     }
 
     let weighted_variance = durations
@@ -848,6 +959,7 @@ fn estimate_render_eta(job: &RenderJob, frames: &[RenderFrame], now_ms: i64) -> 
     } else {
         "low"
     };
+    let remaining = worker_loads.into_iter().fold(0.0_f64, f64::max);
     let remaining_ms = remaining.ceil().clamp(0.0, i64::MAX as f64) as i64;
 
     RenderEta {
@@ -892,6 +1004,15 @@ pub async fn get_render_job(
     let job = conn
         .query_row(&sql, params![job_id], row_to_job)
         .map_err(|error| error.to_string())?;
+    let spec_json: String = conn
+        .query_row(
+            "SELECT spec_json FROM render_jobs WHERE id=?1",
+            params![job.id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let spec = serde_json::from_str(&spec_json).unwrap_or(Value::Null);
+    let settings = render_job_settings(&job, &spec);
     let mut stmt = conn.prepare("SELECT job_id,frame,status,attempts,output_path,error,duration_ms,updated_at FROM render_frames WHERE job_id=?1 ORDER BY frame")
         .map_err(|error| error.to_string())?;
     let frames = stmt
@@ -949,11 +1070,255 @@ pub async fn get_render_job(
         .map_err(|error| error.to_string())?;
     Ok(RenderJobDetail {
         job,
+        settings,
         frames,
         log_tail,
         performance_samples,
         eta,
     })
+}
+
+fn update_render_job_settings(
+    conn: &mut Connection,
+    job_id: &str,
+    request: &UpdateRenderJobRequest,
+) -> Result<(bool, Value), String> {
+    if request.scene_name.trim().is_empty() {
+        return Err("场景不能为空".into());
+    }
+    if request.frame_step <= 0 || request.frame_end < request.frame_start {
+        return Err("帧范围无效".into());
+    }
+    if !(1..=8).contains(&request.parallelism) {
+        return Err("帧多开必须在 1 到 8 之间".into());
+    }
+    if !(1..=100).contains(&request.resolution_percentage) {
+        return Err("分辨率比例必须在 1 到 100 之间".into());
+    }
+    let output_format = normalize_output_format(&request.output_format)?;
+    let transaction = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    let (status, output_dir, blend_path, spec_json, old_scene_name): (
+        String,
+        String,
+        String,
+        String,
+        String,
+    ) = transaction
+        .query_row(
+            "SELECT status,output_dir,blend_path,spec_json,scene_name FROM render_jobs WHERE id=?1",
+            params![job_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    if matches!(
+        status.as_str(),
+        "starting" | "running" | "pausing" | "cancelling"
+    ) {
+        return Err("任务正在运行，请先暂停并等待当前帧结束后再修改".into());
+    }
+
+    let mut spec = serde_json::from_str::<Value>(&spec_json).unwrap_or_else(|_| json!({}));
+    if !spec.is_object() {
+        spec = json!({});
+    }
+    let old_resolution_percentage = spec
+        .get("resolutionPercentage")
+        .and_then(Value::as_i64)
+        .unwrap_or(100);
+    let old_engine = spec
+        .get("engine")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let old_output_format = spec
+        .get("outputFormat")
+        .and_then(Value::as_str)
+        .unwrap_or("PNG")
+        .to_ascii_uppercase();
+    let render_settings_changed = old_scene_name != request.scene_name
+        || old_resolution_percentage != request.resolution_percentage
+        || old_engine != request.engine
+        || old_output_format != output_format;
+    spec["blendPath"] = json!(blend_path);
+    spec["sceneName"] = json!(request.scene_name);
+    spec["frameStart"] = json!(request.frame_start);
+    spec["frameEnd"] = json!(request.frame_end);
+    spec["frameStep"] = json!(request.frame_step);
+    spec["parallelism"] = json!(request.parallelism);
+    spec["resolutionPercentage"] = json!(request.resolution_percentage);
+    spec["engine"] = json!(request.engine);
+    spec["outputFormat"] = json!(output_format);
+
+    let existing_frames = {
+        let mut statement = transaction
+            .prepare("SELECT frame,status,output_path FROM render_frames WHERE job_id=?1")
+            .map_err(|error| error.to_string())?;
+        let frames = statement
+            .query_map(params![job_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        frames
+    };
+    let existing_by_frame: HashMap<i64, (String, String)> = existing_frames
+        .iter()
+        .map(|(frame, status, path)| (*frame, (status.clone(), path.clone())))
+        .collect();
+    let desired_frames: Vec<i64> = (request.frame_start..=request.frame_end)
+        .step_by(request.frame_step as usize)
+        .collect();
+    let desired_set: HashSet<i64> = desired_frames.iter().copied().collect();
+
+    for (frame, _, _) in &existing_frames {
+        if desired_set.contains(frame) {
+            continue;
+        }
+        transaction
+            .execute(
+                "DELETE FROM render_attempts WHERE job_id=?1 AND frame=?2",
+                params![job_id, frame],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "DELETE FROM render_artifacts WHERE job_id=?1 AND frame=?2",
+                params![job_id, frame],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "DELETE FROM render_frames WHERE job_id=?1 AND frame=?2",
+                params![job_id, frame],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+
+    let output_dir_path = Path::new(&output_dir);
+    for frame in desired_frames {
+        let output_path = frame_output_path(
+            output_dir_path,
+            &request.scene_name,
+            frame,
+            request.frame_end,
+            &output_format,
+        );
+        let output_path = output_path.to_string_lossy().to_string();
+        if let Some((_, old_output_path)) = existing_by_frame.get(&frame) {
+            let invalidated = render_settings_changed || old_output_path != &output_path;
+            if !invalidated {
+                continue;
+            }
+            transaction
+                .execute(
+                    "DELETE FROM render_attempts WHERE job_id=?1 AND frame=?2",
+                    params![job_id, frame],
+                )
+                .map_err(|error| error.to_string())?;
+            transaction
+                .execute(
+                    "DELETE FROM render_artifacts WHERE job_id=?1 AND frame=?2",
+                    params![job_id, frame],
+                )
+                .map_err(|error| error.to_string())?;
+            transaction
+                .execute(
+                    "UPDATE render_frames SET status='pending',attempts=0,output_path=?3,error=NULL,duration_ms=NULL,force_render=1,updated_at=?4 WHERE job_id=?1 AND frame=?2",
+                    params![job_id, frame, output_path, now()],
+                )
+                .map_err(|error| error.to_string())?;
+        } else {
+            transaction
+                .execute(
+                    "INSERT INTO render_frames(job_id,frame,status,output_path,force_render,updated_at) VALUES(?1,?2,'pending',?3,1,?4)",
+                    params![job_id, frame, output_path, now()],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+    }
+
+    let (pending_count, failed_count, completed_count, total_count): (i64, i64, i64, i64) =
+        transaction
+            .query_row(
+                "SELECT SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END),SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END),SUM(CASE WHEN status IN ('completed','skipped') THEN 1 ELSE 0 END),COUNT(*) FROM render_frames WHERE job_id=?1",
+                params![job_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .map_err(|error| error.to_string())?;
+    let next_status = if pending_count > 0 {
+        if status == "pending" {
+            "pending"
+        } else {
+            "paused"
+        }
+    } else if failed_count > 0 {
+        "failed"
+    } else if total_count > 0 && completed_count == total_count {
+        "completed"
+    } else {
+        status.as_str()
+    };
+    let requires_more_work = pending_count > 0;
+    let clear_error = requires_more_work || next_status != status;
+    let blend_stem = Path::new(&blend_path)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("blend");
+    let name = format!("{} · {}", blend_stem, request.scene_name);
+    transaction
+        .execute(
+            "UPDATE render_jobs SET name=?2,scene_name=?3,frame_start=?4,frame_end=?5,frame_step=?6,parallelism=?7,spec_json=?8,status=?9,current_frame=NULL,error=CASE WHEN ?10 THEN NULL ELSE error END,finished_at=CASE WHEN ?11 THEN NULL ELSE finished_at END WHERE id=?1",
+            params![job_id,name,request.scene_name,request.frame_start,request.frame_end,request.frame_step,request.parallelism,spec.to_string(),next_status,clear_error,requires_more_work],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok((next_status == "pending", spec))
+}
+
+#[tauri::command]
+pub async fn update_render_job(
+    app_handle: tauri::AppHandle,
+    project_path: String,
+    job_id: String,
+    request: UpdateRenderJobRequest,
+) -> Result<(), String> {
+    let mut conn = open_db(&project_path)?;
+    let (should_kick_scheduler, spec) = update_render_job_settings(&mut conn, &job_id, &request)?;
+    let job_dir = PathBuf::from(&project_path)
+        .join(".pm_center/render_jobs")
+        .join(&job_id);
+    fs::create_dir_all(&job_dir).map_err(|error| error.to_string())?;
+    fs::write(
+        job_dir.join("job.json"),
+        serde_json::to_vec_pretty(&spec).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    emit_queue(&app_handle, &project_path);
+    emit_progress(
+        &app_handle,
+        &project_path,
+        &job_id,
+        None,
+        "settings-updated",
+    );
+    if should_kick_scheduler {
+        kick_scheduler(app_handle, project_path);
+    }
+    Ok(())
 }
 
 fn emit_queue(app: &tauri::AppHandle, project_path: &str) {
@@ -1036,7 +1401,7 @@ fn kick_all_schedulers(app: tauri::AppHandle) {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct JobExecutionSpec {
     blend_path: String,
     scene_name: String,
@@ -1045,13 +1410,14 @@ struct JobExecutionSpec {
     post_hook: Option<String>,
     force_overwrite: bool,
     max_retries: i64,
+    parallelism: i64,
     spec: Value,
 }
 
 fn load_execution_spec(conn: &Connection, job_id: &str) -> Result<JobExecutionSpec, String> {
-    conn.query_row("SELECT blend_path,scene_name,blender_path,pre_hook,post_hook,force_overwrite,max_retries,spec_json FROM render_jobs WHERE id=?1", params![job_id], |row| {
+    conn.query_row("SELECT blend_path,scene_name,blender_path,pre_hook,post_hook,force_overwrite,max_retries,spec_json,parallelism FROM render_jobs WHERE id=?1", params![job_id], |row| {
         let spec_json: String = row.get(7)?;
-        Ok(JobExecutionSpec { blend_path: row.get(0)?, scene_name: row.get(1)?, blender_path: row.get(2)?, pre_hook: row.get(3)?, post_hook: row.get(4)?, force_overwrite: row.get::<_,i64>(5)? != 0, max_retries: row.get(6)?, spec: serde_json::from_str(&spec_json).unwrap_or(Value::Null) })
+        Ok(JobExecutionSpec { blend_path: row.get(0)?, scene_name: row.get(1)?, blender_path: row.get(2)?, pre_hook: row.get(3)?, post_hook: row.get(4)?, force_overwrite: row.get::<_,i64>(5)? != 0, max_retries: row.get(6)?, spec: serde_json::from_str(&spec_json).unwrap_or(Value::Null), parallelism: row.get::<_,i64>(8)?.clamp(1,8) })
     }).map_err(|error| error.to_string())
 }
 
@@ -1109,102 +1475,66 @@ async fn run_job(
         .join(".pm_center/render_jobs")
         .join(job_id);
     let bootstrap = write_runtime_scripts(&job_dir)?;
-    loop {
-        let (cancel, pause) = {
-            let value = control.lock().unwrap();
-            (value.cancel, value.pause)
-        };
-        if cancel {
-            conn.execute("UPDATE render_jobs SET status='cancelled',current_frame=NULL,finished_at=?2,error='用户取消' WHERE id=?1", params![job_id, now()]).map_err(|e| e.to_string())?;
-            emit_progress(app, project_path, job_id, None, "cancelled");
-            return Ok(());
-        }
-        if pause {
-            conn.execute(
-                "UPDATE render_jobs SET status='paused',current_frame=NULL WHERE id=?1",
-                params![job_id],
+    let mut workers = Vec::new();
+    for _ in 0..spec.parallelism {
+        let app = app.clone();
+        let project_path = project_path.to_string();
+        let job_id = job_id.to_string();
+        let spec = spec.clone();
+        let bootstrap = bootstrap.clone();
+        let job_dir = job_dir.clone();
+        let control = control.clone();
+        workers.push(tauri::async_runtime::spawn(async move {
+            run_job_worker(
+                &app,
+                &project_path,
+                &job_id,
+                &spec,
+                &bootstrap,
+                &job_dir,
+                control,
             )
-            .map_err(|e| e.to_string())?;
-            emit_progress(app, project_path, job_id, None, "paused");
-            return Ok(());
-        }
-        let next_frame = conn.query_row("SELECT frame,output_path,attempts FROM render_frames WHERE job_id=?1 AND status IN ('pending','failed') AND attempts<=?2 ORDER BY frame LIMIT 1", params![job_id, spec.max_retries], |row| Ok((row.get::<_,i64>(0)?, row.get::<_,String>(1)?, row.get::<_,i64>(2)?))).optional().map_err(|e| e.to_string())?;
-        let Some((frame, output_path, attempts)) = next_frame else {
-            break;
+            .await
+        }));
+    }
+    let mut worker_error = None;
+    for worker in workers {
+        match worker.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                worker_error.get_or_insert(error);
+            }
+            Err(error) => {
+                worker_error.get_or_insert_with(|| format!("渲染工作进程异常: {error}"));
+            }
         };
-        if !spec.force_overwrite && valid_output(Path::new(&output_path)) {
-            conn.execute("UPDATE render_frames SET status='skipped',error=NULL,updated_at=?3 WHERE job_id=?1 AND frame=?2", params![job_id, frame, now()]).map_err(|e| e.to_string())?;
-            emit_progress(app, project_path, job_id, Some(frame), "skipped");
-            continue;
-        }
-        if attempts > 0 {
-            tokio::time::sleep(Duration::from_secs(if attempts == 1 { 5 } else { 15 })).await;
-        }
-        let started = now();
-        let attempt = attempts + 1;
-        conn.execute("UPDATE render_frames SET status='running',attempts=?3,error=NULL,updated_at=?4 WHERE job_id=?1 AND frame=?2", params![job_id, frame, attempt, started]).map_err(|e| e.to_string())?;
+    }
+    let (cancel, pause) = {
+        let value = control.lock().unwrap();
+        (value.cancel, value.pause)
+    };
+    conn.execute(
+        "UPDATE render_frames SET status='pending',error=NULL WHERE job_id=?1 AND status='running'",
+        params![job_id],
+    )
+    .map_err(|error| error.to_string())?;
+    if cancel {
+        conn.execute("UPDATE render_jobs SET status='cancelled',current_frame=NULL,finished_at=?2,error='用户取消' WHERE id=?1", params![job_id, now()]).map_err(|error| error.to_string())?;
+        emit_progress(app, project_path, job_id, None, "cancelled");
+        return Ok(());
+    }
+    if pause {
         conn.execute(
-            "UPDATE render_jobs SET current_frame=?2 WHERE id=?1",
-            params![job_id, frame],
+            "UPDATE render_jobs SET status='paused',current_frame=NULL WHERE id=?1",
+            params![job_id],
         )
-        .map_err(|e| e.to_string())?;
-        conn.execute("INSERT INTO render_attempts(job_id,frame,attempt,status,started_at) VALUES(?1,?2,?3,'running',?4)", params![job_id,frame,attempt,started]).map_err(|e| e.to_string())?;
-        emit_progress(app, project_path, job_id, Some(frame), "rendering");
-        let mut frame_spec = spec.spec.clone();
-        frame_spec["frame"] = json!(frame);
-        frame_spec["outputPath"] = json!(output_path);
-        frame_spec["sceneName"] = json!(spec.scene_name);
-        let frame_spec_path = job_dir.join(format!("frame-{}.json", frame));
-        fs::write(
-            &frame_spec_path,
-            serde_json::to_vec_pretty(&frame_spec).unwrap(),
-        )
-        .map_err(|e| e.to_string())?;
-        let result = execute_frame(
-            app,
-            project_path,
-            job_id,
-            frame,
-            &spec.blender_path,
-            &spec.blend_path,
-            &bootstrap,
-            &frame_spec_path,
-            &job_dir,
-            control.clone(),
-        )
-        .await;
-        let duration = now() - started;
-        let _ = fs::remove_file(frame_spec_path);
-        match result {
-            Ok(()) if valid_output(Path::new(&output_path)) => {
-                let size = fs::metadata(&output_path)
-                    .map(|m| m.len() as i64)
-                    .unwrap_or(0);
-                conn.execute("UPDATE render_frames SET status='completed',duration_ms=?3,error=NULL,updated_at=?4 WHERE job_id=?1 AND frame=?2", params![job_id,frame,duration,now()]).map_err(|e| e.to_string())?;
-                conn.execute("UPDATE render_attempts SET status='completed',finished_at=?4,exit_code=0 WHERE job_id=?1 AND frame=?2 AND attempt=?3", params![job_id,frame,attempt,now()]).map_err(|e| e.to_string())?;
-                conn.execute("INSERT INTO render_artifacts(job_id,frame,path,size_bytes,created_at) VALUES(?1,?2,?3,?4,?5)", params![job_id,frame,output_path,size,now()]).map_err(|e| e.to_string())?;
-                emit_progress(app, project_path, job_id, Some(frame), "completed-frame");
-            }
-            result => {
-                let error = result
-                    .err()
-                    .unwrap_or_else(|| "Blender 未生成有效输出文件".into());
-                let final_failure = attempt > spec.max_retries;
-                conn.execute("UPDATE render_frames SET status=?3,duration_ms=?4,error=?5,updated_at=?6 WHERE job_id=?1 AND frame=?2", params![job_id,frame,if final_failure{"failed"}else{"pending"},duration,error,now()]).map_err(|e| e.to_string())?;
-                conn.execute("UPDATE render_attempts SET status='failed',finished_at=?4,exit_code=-1,error=?5 WHERE job_id=?1 AND frame=?2 AND attempt=?3", params![job_id,frame,attempt,now(),error]).map_err(|e| e.to_string())?;
-                emit_progress(
-                    app,
-                    project_path,
-                    job_id,
-                    Some(frame),
-                    if final_failure {
-                        "failed-frame"
-                    } else {
-                        "retrying"
-                    },
-                );
-            }
-        }
+        .map_err(|error| error.to_string())?;
+        emit_progress(app, project_path, job_id, None, "paused");
+        return Ok(());
+    }
+    if let Some(error) = worker_error {
+        fail_job(&conn, job_id, &error)?;
+        return Err(error);
     }
     let failed: i64 = conn
         .query_row(
@@ -1233,6 +1563,149 @@ async fn run_job(
     Ok(())
 }
 
+fn claim_next_frame(
+    conn: &mut Connection,
+    job_id: &str,
+    max_retries: i64,
+) -> Result<Option<(i64, String, i64, bool)>, String> {
+    let transaction = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    let next = transaction
+        .query_row(
+            "SELECT frame,output_path,attempts,force_render FROM render_frames WHERE job_id=?1 AND status IN ('pending','failed') AND attempts<=?2 ORDER BY frame LIMIT 1",
+            params![job_id, max_retries],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)? != 0)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    if let Some((frame, _, _, _)) = &next {
+        transaction
+            .execute(
+                "UPDATE render_frames SET status='running',error=NULL,updated_at=?3 WHERE job_id=?1 AND frame=?2",
+                params![job_id, frame, now()],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(next)
+}
+
+fn refresh_current_frame(conn: &Connection, job_id: &str) -> Result<(), String> {
+    conn.execute(
+        "UPDATE render_jobs SET current_frame=(SELECT MIN(frame) FROM render_frames WHERE job_id=?1 AND status='running') WHERE id=?1",
+        params![job_id],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+async fn run_job_worker(
+    app: &tauri::AppHandle,
+    project_path: &str,
+    job_id: &str,
+    spec: &JobExecutionSpec,
+    bootstrap: &Path,
+    job_dir: &Path,
+    control: Arc<Mutex<JobControl>>,
+) -> Result<(), String> {
+    let mut conn = open_db(project_path)?;
+    loop {
+        let (cancel, pause) = {
+            let value = control.lock().unwrap();
+            (value.cancel, value.pause)
+        };
+        if cancel || pause {
+            return Ok(());
+        }
+        let Some((frame, output_path, attempts, force_render)) =
+            claim_next_frame(&mut conn, job_id, spec.max_retries)?
+        else {
+            return Ok(());
+        };
+        refresh_current_frame(&conn, job_id)?;
+        if !spec.force_overwrite && !force_render && valid_output(Path::new(&output_path)) {
+            conn.execute("UPDATE render_frames SET status='skipped',error=NULL,updated_at=?3 WHERE job_id=?1 AND frame=?2", params![job_id, frame, now()]).map_err(|error| error.to_string())?;
+            refresh_current_frame(&conn, job_id)?;
+            emit_progress(app, project_path, job_id, Some(frame), "skipped");
+            continue;
+        }
+        if attempts > 0 {
+            tokio::time::sleep(Duration::from_secs(if attempts == 1 { 5 } else { 15 })).await;
+        }
+        let interrupted = {
+            let value = control.lock().unwrap();
+            value.cancel || value.pause
+        };
+        if interrupted {
+            conn.execute("UPDATE render_frames SET status='pending',error=NULL,updated_at=?3 WHERE job_id=?1 AND frame=?2", params![job_id,frame,now()]).map_err(|error| error.to_string())?;
+            refresh_current_frame(&conn, job_id)?;
+            return Ok(());
+        }
+        let started = now();
+        let attempt = attempts + 1;
+        conn.execute("UPDATE render_frames SET attempts=?3,error=NULL,updated_at=?4 WHERE job_id=?1 AND frame=?2", params![job_id, frame, attempt, started]).map_err(|error| error.to_string())?;
+        conn.execute("INSERT INTO render_attempts(job_id,frame,attempt,status,started_at) VALUES(?1,?2,?3,'running',?4)", params![job_id,frame,attempt,started]).map_err(|error| error.to_string())?;
+        emit_progress(app, project_path, job_id, Some(frame), "rendering");
+        let mut frame_spec = spec.spec.clone();
+        frame_spec["frame"] = json!(frame);
+        frame_spec["outputPath"] = json!(output_path);
+        frame_spec["sceneName"] = json!(spec.scene_name);
+        let frame_spec_path = job_dir.join(format!("frame-{frame}.json"));
+        fs::write(
+            &frame_spec_path,
+            serde_json::to_vec_pretty(&frame_spec).unwrap(),
+        )
+        .map_err(|error| error.to_string())?;
+        let result = execute_frame(
+            app,
+            project_path,
+            job_id,
+            frame,
+            &spec.blender_path,
+            &spec.blend_path,
+            bootstrap,
+            &frame_spec_path,
+            job_dir,
+            control.clone(),
+        )
+        .await;
+        let duration = now() - started;
+        let _ = fs::remove_file(frame_spec_path);
+        match result {
+            Ok(()) if valid_output(Path::new(&output_path)) => {
+                let size = fs::metadata(&output_path)
+                    .map(|metadata| metadata.len() as i64)
+                    .unwrap_or(0);
+                conn.execute("UPDATE render_frames SET status='completed',duration_ms=?3,error=NULL,force_render=0,updated_at=?4 WHERE job_id=?1 AND frame=?2", params![job_id,frame,duration,now()]).map_err(|error| error.to_string())?;
+                conn.execute("UPDATE render_attempts SET status='completed',finished_at=?4,exit_code=0 WHERE job_id=?1 AND frame=?2 AND attempt=?3", params![job_id,frame,attempt,now()]).map_err(|error| error.to_string())?;
+                conn.execute("INSERT INTO render_artifacts(job_id,frame,path,size_bytes,created_at) VALUES(?1,?2,?3,?4,?5)", params![job_id,frame,output_path,size,now()]).map_err(|error| error.to_string())?;
+                emit_progress(app, project_path, job_id, Some(frame), "completed-frame");
+            }
+            result => {
+                let error = result
+                    .err()
+                    .unwrap_or_else(|| "Blender 未生成有效输出文件".into());
+                let final_failure = attempt > spec.max_retries;
+                conn.execute("UPDATE render_frames SET status=?3,duration_ms=?4,error=?5,updated_at=?6 WHERE job_id=?1 AND frame=?2", params![job_id,frame,if final_failure{"failed"}else{"pending"},duration,error,now()]).map_err(|db_error| db_error.to_string())?;
+                conn.execute("UPDATE render_attempts SET status='failed',finished_at=?4,exit_code=-1,error=?5 WHERE job_id=?1 AND frame=?2 AND attempt=?3", params![job_id,frame,attempt,now(),error]).map_err(|db_error| db_error.to_string())?;
+                emit_progress(
+                    app,
+                    project_path,
+                    job_id,
+                    Some(frame),
+                    if final_failure {
+                        "failed-frame"
+                    } else {
+                        "retrying"
+                    },
+                );
+            }
+        }
+        refresh_current_frame(&conn, job_id)?;
+    }
+}
+
 fn fail_job(conn: &Connection, job_id: &str, error: &str) -> Result<(), String> {
     conn.execute("UPDATE render_jobs SET status='failed',current_frame=NULL,finished_at=?2,error=?3 WHERE id=?1", params![job_id,now(),error]).map_err(|e| e.to_string())?;
     Ok(())
@@ -1257,7 +1730,7 @@ fn valid_output(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 struct RenderProcessMetrics {
     cpu_usage: f64,
     memory_bytes: i64,
@@ -1373,7 +1846,9 @@ async fn execute_frame(
         .spawn()
         .map_err(|e| format!("启动 Blender 失败: {e}"))?;
     let child_pid = child.id();
-    control.lock().unwrap().pid = child_pid;
+    if let Some(pid) = child_pid {
+        control.lock().unwrap().pids.insert(pid);
+    }
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let log_path = job_dir.join("render.log");
@@ -1424,7 +1899,8 @@ async fn execute_frame(
         if Instant::now() >= next_performance_sample {
             if let Some(pid) = child_pid {
                 if let Some(metrics) = sampler.sample(pid) {
-                    record_render_performance(app, project_path, job_id, frame, metrics);
+                    let aggregate = update_worker_metrics(&control, pid, Some(metrics));
+                    record_render_performance(app, project_path, job_id, frame, aggregate);
                 }
             }
             next_performance_sample = Instant::now() + Duration::from_secs(2);
@@ -1434,23 +1910,34 @@ async fn execute_frame(
             None => tokio::time::sleep(Duration::from_millis(200)).await,
         }
     };
-    control.lock().unwrap().pid = None;
-    record_render_performance(
-        app,
-        project_path,
-        job_id,
-        frame,
-        RenderProcessMetrics {
-            cpu_usage: 0.0,
-            memory_bytes: 0,
-        },
-    );
+    let aggregate = child_pid
+        .map(|pid| update_worker_metrics(&control, pid, None))
+        .unwrap_or_default();
+    record_render_performance(app, project_path, job_id, frame, aggregate);
     let _ = stdout_task.await;
     let _ = stderr_task.await;
     if status.success() {
         Ok(())
     } else {
         Err(format!("Blender 退出码 {}", status.code().unwrap_or(-1)))
+    }
+}
+
+fn update_worker_metrics(
+    control: &Arc<Mutex<JobControl>>,
+    pid: u32,
+    metrics: Option<RenderProcessMetrics>,
+) -> RenderProcessMetrics {
+    let mut value = control.lock().unwrap();
+    if let Some(metrics) = metrics {
+        value.metrics.insert(pid, metrics);
+    } else {
+        value.metrics.remove(&pid);
+        value.pids.remove(&pid);
+    }
+    RenderProcessMetrics {
+        cpu_usage: value.metrics.values().map(|item| item.cpu_usage).sum(),
+        memory_bytes: value.metrics.values().map(|item| item.memory_bytes).sum(),
     }
 }
 
@@ -1802,10 +2289,10 @@ pub fn shutdown_all() {
         .unwrap()
         .running
         .values()
-        .filter_map(|control| {
+        .flat_map(|control| {
             let mut value = control.lock().unwrap();
             value.cancel = true;
-            value.pid
+            value.pids.iter().copied().collect::<Vec<_>>()
         })
         .collect();
     for pid in pids {
@@ -1841,6 +2328,7 @@ mod tests {
             frame_start: 1,
             frame_end: 20,
             frame_step: 1,
+            parallelism: 1,
             total_frames: 20,
             completed_frames: 0,
             failed_frames: 0,
@@ -1949,7 +2437,9 @@ mod tests {
         let eta = estimate_render_eta(
             &job,
             &frames_with_durations(
-                &[12_000, 12_000, 12_000, 13_000, 13_000, 13_000, 13_000, 13_000],
+                &[
+                    12_000, 12_000, 12_000, 13_000, 13_000, 13_000, 13_000, 13_000,
+                ],
                 148,
             ),
             1_000_000,
@@ -1958,6 +2448,22 @@ mod tests {
         let remaining = eta.remaining_ms.unwrap();
         assert!(remaining > 148 * 11_000);
         assert!(remaining < 148 * 18_000);
+    }
+
+    #[test]
+    fn eta_distributes_remaining_frames_across_job_workers() {
+        let frames = frames_with_durations(&[10_000, 10_000, 10_000, 10_000], 12);
+        let single = estimate_render_eta(&eta_job("running"), &frames, 1_000_000)
+            .remaining_ms
+            .unwrap();
+        let mut parallel_job = eta_job("running");
+        parallel_job.parallelism = 3;
+        let parallel = estimate_render_eta(&parallel_job, &frames, 1_000_000)
+            .remaining_ms
+            .unwrap();
+
+        assert!(parallel <= single / 3 + 10_000);
+        assert!(parallel < single / 2);
     }
 
     #[test]
@@ -2019,6 +2525,154 @@ mod tests {
             )
             .unwrap();
         assert_eq!(performance_columns, 5);
+        let parallelism_column: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('render_jobs') WHERE name='parallelism'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(parallelism_column, 1);
+        let force_render_column: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('render_frames') WHERE name='force_render'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(force_render_column, 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn editing_job_settings_preserves_or_invalidates_frames_as_needed() {
+        let root = std::env::temp_dir().join(format!("pm-render-edit-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let mut conn = open_db(root.to_str().unwrap()).unwrap();
+        conn.execute(
+            "INSERT INTO render_batches(id,project_path,name,status,created_at,updated_at) VALUES('edit-batch',?1,'Batch','completed',0,0)",
+            params![root.to_string_lossy()],
+        )
+        .unwrap();
+        let output_dir = root.join("renders");
+        fs::create_dir_all(&output_dir).unwrap();
+        let spec = json!({
+            "blendPath": root.join("test.blend"),
+            "sceneName": "Scene",
+            "frameStart": 1,
+            "frameEnd": 2,
+            "frameStep": 1,
+            "parallelism": 1,
+            "resolutionPercentage": 100,
+            "engine": "CYCLES",
+            "outputFormat": "PNG"
+        });
+        conn.execute(
+            "INSERT INTO render_jobs(id,batch_id,project_path,name,blend_path,scene_name,status,frame_start,frame_end,frame_step,parallelism,output_dir,blender_path,spec_json,position,created_at,finished_at) VALUES('edit-job','edit-batch',?1,'Job',?2,'Scene','completed',1,2,1,1,?3,'blender',?4,0,0,123)",
+            params![root.to_string_lossy(), root.join("test.blend").to_string_lossy(), output_dir.to_string_lossy(), spec.to_string()],
+        )
+        .unwrap();
+        for frame in 1..=2 {
+            let output_path = frame_output_path(&output_dir, "Scene", frame, 2, "PNG");
+            conn.execute(
+                "INSERT INTO render_frames(job_id,frame,status,attempts,output_path,duration_ms,updated_at) VALUES('edit-job',?1,'completed',1,?2,1000,0)",
+                params![frame, output_path.to_string_lossy()],
+            )
+            .unwrap();
+        }
+
+        let parallel_only = UpdateRenderJobRequest {
+            scene_name: "Scene".into(),
+            frame_start: 1,
+            frame_end: 2,
+            frame_step: 1,
+            parallelism: 2,
+            resolution_percentage: 100,
+            engine: Some("CYCLES".into()),
+            output_format: "PNG".into(),
+        };
+        let (should_kick, _) =
+            update_render_job_settings(&mut conn, "edit-job", &parallel_only).unwrap();
+        assert!(!should_kick);
+        let preserved: (String, i64, i64, i64) = conn
+            .query_row(
+                "SELECT j.status,j.parallelism,f.force_render,j.finished_at FROM render_jobs j JOIN render_frames f ON f.job_id=j.id WHERE j.id='edit-job' AND f.frame=1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(preserved, ("completed".into(), 2, 0, 123));
+
+        let changed = UpdateRenderJobRequest {
+            frame_end: 3,
+            resolution_percentage: 50,
+            ..parallel_only.clone()
+        };
+        update_render_job_settings(&mut conn, "edit-job", &changed).unwrap();
+        let reset: (String, i64, i64) = conn
+            .query_row(
+                "SELECT j.status,COUNT(*),SUM(f.force_render) FROM render_jobs j JOIN render_frames f ON f.job_id=j.id WHERE j.id='edit-job'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(reset, ("paused".into(), 3, 3));
+        let pending: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM render_frames WHERE job_id='edit-job' AND status='pending'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending, 3);
+
+        conn.execute(
+            "UPDATE render_jobs SET status='running' WHERE id='edit-job'",
+            [],
+        )
+        .unwrap();
+        let error = update_render_job_settings(&mut conn, "edit-job", &changed).unwrap_err();
+        assert!(error.contains("请先暂停"));
+        drop(conn);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workers_claim_distinct_frames_atomically() {
+        let root = std::env::temp_dir().join(format!("pm-render-claim-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let mut conn = open_db(root.to_str().unwrap()).unwrap();
+        conn.execute(
+            "INSERT INTO render_batches(id,project_path,name,status,created_at,updated_at) VALUES('batch',?1,'Batch','queued',0,0)",
+            params![root.to_string_lossy()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO render_jobs(id,batch_id,project_path,name,blend_path,scene_name,status,frame_start,frame_end,frame_step,output_dir,blender_path,spec_json,position,created_at) VALUES('job','batch',?1,'Job','test.blend','Scene','running',1,3,1,?1,'blender','{}',0,0)",
+            params![root.to_string_lossy()],
+        )
+        .unwrap();
+        for frame in 1..=3 {
+            conn.execute(
+                "INSERT INTO render_frames(job_id,frame,status,output_path,updated_at) VALUES('job',?1,'pending',?2,0)",
+                params![frame, root.join(format!("frame-{frame}.png")).to_string_lossy()],
+            )
+            .unwrap();
+        }
+
+        let first = claim_next_frame(&mut conn, "job", 2).unwrap().unwrap();
+        let second = claim_next_frame(&mut conn, "job", 2).unwrap().unwrap();
+        assert_eq!(first.0, 1);
+        assert_eq!(second.0, 2);
+        let running: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM render_frames WHERE job_id='job' AND status='running'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(running, 2);
+        drop(conn);
         let _ = fs::remove_dir_all(root);
     }
     #[test]

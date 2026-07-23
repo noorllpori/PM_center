@@ -23,6 +23,7 @@ import {
   Maximize2,
   Minimize2,
   Pause,
+  Pencil,
   Play,
   Plus,
   RefreshCw,
@@ -50,6 +51,7 @@ import type {
   RenderPreset,
   RenderSceneInfo,
   RenderSourceInfo,
+  UpdateRenderJobRequest,
 } from '../../types/render';
 
 type CenterView = 'queue' | 'results' | 'presets';
@@ -262,14 +264,16 @@ export function RenderCenterSurface({ isActive }: { isActive: boolean }) {
   }, [loadDetail, selectedJobId]);
 
   const runAction = async (label: string, command: string, payload: Record<string, unknown>) => {
-    if (!projectPath) return;
+    if (!projectPath) return false;
     setBusyAction(label);
     try {
       await invoke(command, { projectPath, ...payload });
       await refresh();
       if (selectedJobId) await loadDetail(selectedJobId);
+      return true;
     } catch (error) {
       showToast({ title: `${label}失败`, message: String(error), tone: 'error' });
+      return false;
     } finally {
       setBusyAction(null);
     }
@@ -291,14 +295,34 @@ export function RenderCenterSurface({ isActive }: { isActive: boolean }) {
           <div className="flex items-center gap-2">
             <Layers3 className="h-5 w-5 text-orange-500" />
             <h2 className="truncate text-base font-semibold">渲染与批处理</h2>
+            <HelpAssistant
+              title="渲染中心怎么用"
+              text={[
+                '先点击“新建批次”，选择 Blender 版本并添加一个或多个 .blend 文件。每个文件会成为独立作业。',
+                '在作业中设置场景、帧范围、帧多开、分辨率和格式后加入队列；在右侧选中任务可查看帧、日志和预览。',
+                '任务创建后可用右上角铅笔修改设置；正在渲染时先暂停，当前运行帧结束后再编辑。',
+              ]}
+              placement="bottom-start"
+              width={360}
+            />
             <span className="truncate text-xs text-gray-500">{projectName}</span>
           </div>
-          <p className="mt-0.5 truncate text-xs text-gray-500">本机队列 · {activeCount} 个活动作业 · 并发 {concurrency}</p>
+          <p className="mt-0.5 truncate text-xs text-gray-500">本机队列 · {activeCount} 个活动作业 · 作业并发 {concurrency}</p>
         </div>
         <div className="flex items-center gap-1.5">
-          <label className="flex h-8 items-center gap-2 rounded border border-gray-200 px-2 text-xs dark:border-gray-700" title="本机 Blender 并发数">
+          <label className="flex h-8 items-center gap-2 rounded border border-gray-200 px-2 text-xs dark:border-gray-700" title="同时运行的渲染作业数；每个作业内的帧多开单独设置">
             <Gauge className="h-3.5 w-3.5 text-gray-500" />
-            <span>并发</span>
+            <span>作业并发</span>
+            <HelpAssistant
+              title="作业并发与帧多开"
+              text={[
+                '作业并发表示同时启动多少个独立渲染任务。',
+                '帧多开在每个任务内另行设置，表示该任务同时启动多少个 Blender 进程来渲染不同帧。',
+                '实际 Blender 进程数量可能接近“作业并发 × 帧多开”。显存紧张或大场景建议先保持 1 开。',
+              ]}
+              placement="bottom-end"
+              width={350}
+            />
             <select
               value={concurrency}
               onChange={async (event) => {
@@ -400,7 +424,7 @@ function JobRow({ job, selected, onClick }: { job: RenderJob; selected: boolean;
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2"><p className="truncate text-sm font-medium">{job.name}</p><StatusBadge status={job.status} /></div>
-          <p className="mt-1 truncate text-xs text-gray-500">{fileName(job.blendPath)} · {job.frameStart}-{job.frameEnd}</p>
+          <p className="mt-1 truncate text-xs text-gray-500">{fileName(job.blendPath)} · {job.frameStart}-{job.frameEnd} · {job.parallelism} 开</p>
         </div>
         <ChevronRight className="mt-1 h-4 w-4 text-gray-400" />
       </div>
@@ -411,16 +435,19 @@ function JobRow({ job, selected, onClick }: { job: RenderJob; selected: boolean;
   );
 }
 
-function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; busy: boolean; onAction: (label: string, command: string, payload?: Record<string, unknown>) => Promise<void> }) {
+function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; busy: boolean; onAction: (label: string, command: string, payload?: Record<string, unknown>) => Promise<boolean> }) {
   const { job, frames, logTail } = detail;
   const performanceSamples = detail.performanceSamples || [];
   const [logExpanded, setLogExpanded] = useState(false);
   const [showPerformance, setShowPerformance] = useState(false);
   const [selectedFrameNumber, setSelectedFrameNumber] = useState<number | null>(null);
   const [previewFrameNumber, setPreviewFrameNumber] = useState<number | null>(null);
+  const [showSettingsEditor, setShowSettingsEditor] = useState(false);
   const canPause = ['pending', 'starting', 'running'].includes(job.status);
   const canResume = ['paused', 'failed', 'cancelled'].includes(job.status);
+  const canEdit = !['starting', 'running', 'pausing', 'cancelling'].includes(job.status);
   const failedFrames = frames.filter((frame) => frame.status === 'failed').map((frame) => frame.frame);
+  const runningFrames = frames.filter((frame) => frame.status === 'running').map((frame) => frame.frame);
   const previewableFrames = useMemo(
     () => frames.filter((frame) => ['completed', 'skipped'].includes(frame.status) && Boolean(frame.outputPath.trim())),
     [frames],
@@ -435,7 +462,8 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
     { label: '总帧', value: job.totalFrames, detail: '' },
     { label: '完成', value: job.completedFrames, detail: '' },
     { label: '失败', value: job.failedFrames, detail: '' },
-    { label: '当前', value: job.currentFrame ?? '-', detail: '' },
+    { label: '当前', value: runningFrames.length > 3 ? `${runningFrames[0]} 等 ${runningFrames.length} 帧` : runningFrames.join(', ') || job.currentFrame || '-', detail: runningFrames.join(', ') },
+    { label: '多开', value: `${job.parallelism} 开`, detail: '' },
     { label: '预计完成', value: completionEstimate.value, detail: completionEstimate.detail },
   ];
 
@@ -444,6 +472,7 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
     setShowPerformance(false);
     setSelectedFrameNumber(null);
     setPreviewFrameNumber(null);
+    setShowSettingsEditor(false);
   }, [job.id]);
 
   useEffect(() => {
@@ -459,19 +488,20 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
     <div className="flex h-full min-h-0 flex-col">
       <div className="border-b border-gray-200 px-3 py-2 dark:border-gray-800">
         <div className="flex items-center gap-2">
-          <div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h3 className="truncate text-sm font-semibold">{job.name}</h3><StatusBadge status={job.status} /></div><p className="mt-0.5 truncate text-[11px] text-gray-500" title={job.outputDir}>{job.outputDir}</p></div>
+          <div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h3 className="truncate text-sm font-semibold">{job.name}</h3><StatusBadge status={job.status} /><HelpAssistant title="管理这个任务" text={['单击帧行可选中；双击已完成帧可预览。', '铅笔按钮用于修改场景、帧范围、帧多开、分辨率和格式。运行中的任务需先暂停。', '改场景、分辨率或格式会让已有帧重新排队；只改帧多开不会影响已经完成的帧。']} placement="bottom-start" width={340} /></div><p className="mt-0.5 truncate text-[11px] text-gray-500" title={job.outputDir}>{job.outputDir}</p></div>
           <div className="flex shrink-0 items-center gap-1">
           {canPause && <IconAction title="暂停" icon={<CirclePause />} disabled={busy} onClick={() => onAction('暂停作业', 'pause_render_job')} />}
           {canResume && <IconAction title="继续" icon={<CirclePlay />} disabled={busy} onClick={() => onAction('继续作业', 'resume_render_job')} />}
           {!['completed','cancelled'].includes(job.status) && <IconAction title="取消" icon={<Square />} disabled={busy} onClick={() => onAction('取消作业', 'cancel_render_job')} />}
           {failedFrames.length > 0 && <IconAction title="重试失败帧" icon={<RotateCcw />} disabled={busy} onClick={() => onAction('重试失败帧', 'retry_render_frames', { frames: failedFrames })} />}
+          <IconAction title={canEdit ? '编辑任务设置' : '请先暂停任务再修改设置'} icon={<Pencil />} disabled={busy || !canEdit} onClick={() => setShowSettingsEditor(true)} />
           <IconAction title="打开输出目录" icon={<FolderOpen />} disabled={busy} onClick={() => onAction('打开输出目录', 'open_render_output', { path: job.outputDir })} />
           {!['running','pausing','cancelling'].includes(job.status) && <IconAction title={job.archived ? '取消归档' : '归档'} icon={<Archive />} disabled={busy} onClick={() => onAction('归档作业', 'archive_render_job', { archived: !job.archived })} />}
           </div>
         </div>
         {job.error && <p className="mt-1.5 flex items-start gap-1.5 text-[11px] text-red-600"><AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />{job.error}</p>}
       </div>
-      <div className="grid grid-cols-5 border-b border-gray-200 dark:border-gray-800">
+      <div className="grid grid-cols-6 border-b border-gray-200 dark:border-gray-800">
         {summaryItems.map(({ label, value, detail: detailText }) => <div key={label} className="min-w-0 border-r border-gray-100 px-2.5 py-1.5 last:border-r-0 dark:border-gray-800"><div className="text-[9px] text-gray-500">{label}</div><div className="truncate text-xs font-semibold tabular-nums" title={detailText || String(value)}>{value}</div>{detailText && <div className="truncate text-[9px] text-gray-500" title={detailText}>{detailText}</div>}</div>)}
       </div>
       <div className="grid grid-cols-[minmax(96px,1.2fr)_repeat(4,minmax(58px,1fr))] border-b border-gray-200 bg-gray-50/70 dark:border-gray-800 dark:bg-gray-900/50">
@@ -515,6 +545,13 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
         </div>}
       </div>
       {showPerformance && <PerformanceChartDialog job={job} samples={performanceSamples} onClose={() => setShowPerformance(false)} />}
+      {showSettingsEditor && (
+        <EditRenderJobDialog
+          detail={detail}
+          onClose={() => setShowSettingsEditor(false)}
+          onSave={(request) => onAction('修改任务设置', 'update_render_job', { request })}
+        />
+      )}
       {previewFrameNumber !== null && (
         <RenderFramePreview
           jobName={job.name}
@@ -527,6 +564,121 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
           onClose={() => setPreviewFrameNumber(null)}
         />
       )}
+    </div>
+  );
+}
+
+function EditRenderJobDialog({ detail, onClose, onSave }: { detail: RenderJobDetail; onClose: () => void; onSave: (request: UpdateRenderJobRequest) => Promise<boolean> }) {
+  const { job, settings } = detail;
+  const showToast = useUiStore((state) => state.showToast);
+  const [form, setForm] = useState<UpdateRenderJobRequest>(() => ({ ...settings }));
+  const [source, setSource] = useState<RenderSourceInfo | null>(null);
+  const [inspecting, setInspecting] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void invoke<RenderSourceInfo[]>('inspect_render_sources', {
+      blenderPath: job.blenderPath,
+      sources: [{ path: job.blendPath }],
+    }).then((items) => {
+      if (cancelled) return;
+      const next = items[0] || null;
+      setSource(next);
+      if (next?.error) {
+        showToast({ title: '读取 Blender 场景失败', message: next.error, tone: 'error' });
+      }
+    }).catch((error) => {
+      if (!cancelled) showToast({ title: '读取 Blender 场景失败', message: String(error), tone: 'error' });
+    }).finally(() => {
+      if (!cancelled) setInspecting(false);
+    });
+    return () => { cancelled = true; };
+  }, [job.blendPath, job.blenderPath, showToast]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape' && !saving) onClose(); };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose, saving]);
+
+  const scenes = source?.scenes || [];
+  const sceneOptions = scenes.some((scene) => scene.name === form.sceneName)
+    ? scenes
+    : [{ name: form.sceneName, frameStart: form.frameStart, frameEnd: form.frameEnd, resolutionX: 0, resolutionY: 0, fps: 0, engine: form.engine || '', outputFormat: form.outputFormat }, ...scenes];
+  const selectedScene = sceneOptions.find((scene) => scene.name === form.sceneName);
+  const imageSettingsChanged = form.sceneName !== settings.sceneName
+    || form.resolutionPercentage !== settings.resolutionPercentage
+    || form.engine !== settings.engine
+    || form.outputFormat !== settings.outputFormat;
+  const frameLayoutChanged = form.frameStart !== settings.frameStart
+    || form.frameEnd !== settings.frameEnd
+    || form.frameStep !== settings.frameStep;
+  const valid = form.sceneName.trim()
+    && form.frameEnd >= form.frameStart
+    && form.frameStep >= 1
+    && form.parallelism >= 1
+    && form.parallelism <= 8
+    && form.resolutionPercentage >= 1
+    && form.resolutionPercentage <= 100;
+
+  const save = async () => {
+    if (!valid || saving) return;
+    if ((imageSettingsChanged || frameLayoutChanged) && job.completedFrames > 0
+      && !confirm('修改会重新计算任务帧并可能重新渲染已有结果，确定继续吗？')) return;
+    setSaving(true);
+    try {
+      if (await onSave(form)) onClose();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/50 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose(); }}>
+      <div role="dialog" aria-modal="true" aria-label="编辑渲染任务设置" className="flex w-full max-w-3xl flex-col overflow-hidden rounded-md border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-950">
+        <div className="flex items-center gap-3 border-b border-gray-200 px-4 py-3 dark:border-gray-800">
+          <Pencil className="h-4 w-4 text-blue-600" />
+          <div className="min-w-0 flex-1"><div className="flex items-center gap-1.5"><h3 className="truncate text-sm font-semibold">编辑任务设置</h3><HelpAssistant title="修改已有任务" text={['保存后会自动刷新任务的帧列表。', '只调整帧多开会保留已完成帧；修改场景、分辨率、格式或帧范围时，受影响帧会重新排队。', '旧输出文件不会自动删除；需要继续渲染时点击任务工具栏的继续按钮。']} placement="bottom-start" width={340} /></div><p className="truncate text-[11px] text-gray-500" title={job.blendPath}>{fileName(job.blendPath)}</p></div>
+          <button type="button" onClick={onClose} disabled={saving} title="关闭" className="flex h-8 w-8 items-center justify-center rounded hover:bg-gray-100 disabled:opacity-40 dark:hover:bg-gray-800"><X className="h-4 w-4" /></button>
+        </div>
+        <div className="p-4">
+          <div className="grid grid-cols-[minmax(150px,1fr)_74px_74px_64px_82px_94px_100px] gap-2 max-[720px]:grid-cols-3">
+            <Field label={<span className="inline-flex items-center gap-1">场景{inspecting && <LoaderCircle className="h-3 w-3 animate-spin" />}<HelpAssistant title="切换场景" text={['列表由当前 .blend 文件读取。切换场景会带入该场景默认的起止帧、渲染引擎和格式。', '保存后会把现有帧重新排队。']} placement="top-start" /></span>}>
+              <select
+                value={form.sceneName}
+                onChange={(event) => {
+                  const scene = sceneOptions.find((item) => item.name === event.target.value);
+                  setForm((current) => ({
+                    ...current,
+                    sceneName: event.target.value,
+                    frameStart: scene?.frameStart ?? current.frameStart,
+                    frameEnd: scene?.frameEnd ?? current.frameEnd,
+                    engine: scene?.engine || null,
+                    outputFormat: scene?.outputFormat || current.outputFormat,
+                  }));
+                }}
+              >
+                {sceneOptions.map((scene) => <option key={scene.name} value={scene.name}>{scene.name}</option>)}
+              </select>
+            </Field>
+            <Field label={<span className="inline-flex items-center gap-1">起始<HelpAssistant title="帧范围与步长" text={['起始和结束决定要渲染的帧号；步长为 2 时会渲染 1、3、5 等帧。', '新增帧会进入待渲染队列，移出范围的帧记录会从任务中移除，但已有输出文件会保留。']} placement="top-start" /></span>}><input type="number" value={form.frameStart} onChange={(event) => setForm((current) => ({ ...current, frameStart: Number(event.target.value) }))} /></Field>
+            <Field label="结束"><input type="number" value={form.frameEnd} onChange={(event) => setForm((current) => ({ ...current, frameEnd: Number(event.target.value) }))} /></Field>
+            <Field label="步长"><input type="number" min={1} value={form.frameStep} onChange={(event) => setForm((current) => ({ ...current, frameStep: Math.max(1, Number(event.target.value)) }))} /></Field>
+            <Field label={<span className="inline-flex items-center gap-1">帧多开<HelpAssistant title="帧多开" text={["为当前任务同时启动多个 Blender 进程，每个进程领取不同帧。", "大场景或显存紧张时建议设为 1。"]} placement="top" /></span>}><select value={form.parallelism} onChange={(event) => setForm((current) => ({ ...current, parallelism: Number(event.target.value) }))}>{[1,2,3,4,5,6,7,8].map((value) => <option key={value} value={value}>{value} 开</option>)}</select></Field>
+            <Field label={<span className="inline-flex items-center gap-1">分辨率 %<HelpAssistant title="分辨率比例" text={['按场景原始分辨率的百分比渲染。100% 为正式输出，较低比例可用于快速预览。', '改变比例会重新渲染已有帧。']} placement="top" /></span>}><input type="number" min={1} max={100} value={form.resolutionPercentage} onChange={(event) => setForm((current) => ({ ...current, resolutionPercentage: Number(event.target.value) }))} /></Field>
+            <Field label={<span className="inline-flex items-center gap-1">格式<HelpAssistant title="输出格式" text={['PNG 适合常规交付；JPEG 文件更小；OPEN_EXR 常用于后期合成。', '切换格式会生成新的输出扩展名，并重新渲染受影响帧。']} placement="top-end" /></span>}><select value={form.outputFormat} onChange={(event) => setForm((current) => ({ ...current, outputFormat: event.target.value }))}><option>PNG</option><option>JPEG</option><option>OPEN_EXR</option><option>TIFF</option><option>WEBP</option></select></Field>
+          </div>
+          <div className="mt-2 flex min-h-5 items-center gap-2 text-[11px] text-gray-500">
+            {selectedScene && selectedScene.resolutionX > 0 && <span>{selectedScene.resolutionX} × {selectedScene.resolutionY} · {selectedScene.fps} fps · {form.engine || '-'}</span>}
+            {imageSettingsChanged && <span className="ml-auto text-amber-600">画面设置已变化，现有帧将重新排队</span>}
+          </div>
+        </div>
+        <div className="flex min-h-[58px] items-center justify-end gap-2 border-t border-gray-200 px-4 dark:border-gray-800">
+          <button type="button" onClick={onClose} disabled={saving} className="h-9 rounded px-4 text-xs disabled:opacity-40">取消</button>
+          <button type="button" onClick={() => void save()} disabled={!valid || saving} className="flex h-9 items-center gap-1.5 rounded bg-gray-900 px-4 text-xs font-medium text-white disabled:opacity-40 dark:bg-white dark:text-gray-900">{saving ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}保存设置</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -806,6 +958,7 @@ interface EditableJob {
   frameStart: number;
   frameEnd: number;
   frameStep: number;
+  parallelism: number;
   resolutionPercentage: number;
   engine: string;
   outputFormat: string;
@@ -881,10 +1034,11 @@ function CreateBatchDialog({ projectPath, presets, initialSources, onClose, onCr
     if (typeof settings.maxRetries === 'number') setMaxRetries(settings.maxRetries);
     if (typeof settings.outputFormat === 'string') setJobs((items) => items.map((item) => ({ ...item, outputFormat: settings.outputFormat as string })));
     if (typeof settings.resolutionPercentage === 'number') setJobs((items) => items.map((item) => ({ ...item, resolutionPercentage: settings.resolutionPercentage as number })));
+    if (typeof settings.parallelism === 'number') setJobs((items) => items.map((item) => ({ ...item, parallelism: Math.min(8, Math.max(1, settings.parallelism as number)) })));
   };
   const savePreset = async () => {
     if (!presetName.trim()) return;
-    await invoke('save_render_preset', { projectPath, name: presetName.trim(), scope: presetScope, settings: { outputRoot, forceOverwrite, maxRetries, outputFormat: jobs[0]?.outputFormat || 'PNG', resolutionPercentage: jobs[0]?.resolutionPercentage || 100 } });
+    await invoke('save_render_preset', { projectPath, name: presetName.trim(), scope: presetScope, settings: { outputRoot, forceOverwrite, maxRetries, outputFormat: jobs[0]?.outputFormat || 'PNG', resolutionPercentage: jobs[0]?.resolutionPercentage || 100, parallelism: jobs[0]?.parallelism || 1 } });
     setPresetName('');
     showToast({ title: '预设已保存', message: presetScope === 'global' ? '所有项目均可使用' : '仅当前项目使用', tone: 'success' });
   };
@@ -893,7 +1047,7 @@ function CreateBatchDialog({ projectPath, presets, initialSources, onClose, onCr
     if (!namePrefix.trim() || !blenderPath || !validJobs.length) return;
     setSubmitting(true);
     try {
-      const request: CreateRenderBatchRequest = { name: `${namePrefix.trim()} ${batchTimestamp}`, blenderPath, outputRoot: outputRoot || null, preHook: preHook || null, postHook: postHook || null, forceOverwrite, maxRetries, jobs: validJobs.map((job) => ({ blendPath: job.path, sceneName: job.sceneName, frameStart: job.frameStart, frameEnd: job.frameEnd, frameStep: job.frameStep, resolutionPercentage: job.resolutionPercentage, engine: job.engine || null, outputFormat: job.outputFormat })) };
+      const request: CreateRenderBatchRequest = { name: `${namePrefix.trim()} ${batchTimestamp}`, blenderPath, outputRoot: outputRoot || null, preHook: preHook || null, postHook: postHook || null, forceOverwrite, maxRetries, jobs: validJobs.map((job) => ({ blendPath: job.path, sceneName: job.sceneName, frameStart: job.frameStart, frameEnd: job.frameEnd, frameStep: job.frameStep, parallelism: job.parallelism, resolutionPercentage: job.resolutionPercentage, engine: job.engine || null, outputFormat: job.outputFormat })) };
       await invoke('create_render_batch', { projectPath, request });
       showToast({ title: '渲染批次已加入队列', message: `${validJobs.length} 个作业`, tone: 'success' });
       await onCreated();
@@ -904,7 +1058,7 @@ function CreateBatchDialog({ projectPath, presets, initialSources, onClose, onCr
   return (
     <div className="fixed inset-0 z-[80] flex justify-end bg-black/45" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <div className="flex h-full w-[760px] max-w-[96vw] flex-col bg-white shadow-2xl dark:bg-gray-950">
-        <div className="flex min-h-[58px] items-center justify-between border-b border-gray-200 px-5 dark:border-gray-800"><div><h3 className="text-base font-semibold">新建渲染批次</h3><p className="text-xs text-gray-500">设置仅在 Blender 内存中生效，不修改源文件</p></div><button title="关闭" className="h-8 w-8 p-0" onClick={onClose}><X className="mx-auto h-4 w-4" /></button></div>
+        <div className="flex min-h-[58px] items-center justify-between border-b border-gray-200 px-5 dark:border-gray-800"><div><div className="flex items-center gap-1.5"><h3 className="text-base font-semibold">新建渲染批次</h3><HelpAssistant title="创建渲染批次" text={['1. 选择已在设置中登记的 Blender 版本。', '2. 点击“添加 .blend”，从当前项目或系统文件选择器加入一个或多个文件。', '3. 为每个文件设置场景、帧范围、帧多开、分辨率和格式，最后点击“加入队列”。', '这些设置只作用于渲染进程内存，不会保存或改写源 .blend 文件。']} placement="bottom-start" width={350} /></div><p className="text-xs text-gray-500">设置仅在 Blender 内存中生效，不修改源文件</p></div><button title="关闭" className="h-8 w-8 p-0" onClick={onClose}><X className="mx-auto h-4 w-4" /></button></div>
         <div className="min-h-0 flex-1 overflow-auto p-5">
           <div className="grid grid-cols-2 gap-3 max-[620px]:grid-cols-1">
             <Field label="批次名称">
@@ -932,11 +1086,11 @@ function CreateBatchDialog({ projectPath, presets, initialSources, onClose, onCr
               </select>
             </Field>
             <PathField label="输出根目录（默认项目 renders）" value={outputRoot} onChange={setOutputRoot} onBrowse={() => setFilePickerTarget('outputRoot')} />
-            <div className="grid grid-cols-2 gap-3"><Field label="失败重试"><input type="number" min={0} max={10} value={maxRetries} onChange={(e) => setMaxRetries(Number(e.target.value))} /></Field><label className="mt-6 flex h-9 items-center gap-2 text-xs"><input type="checkbox" checked={forceOverwrite} onChange={(e) => setForceOverwrite(e.target.checked)} className="h-4 w-4" />强制覆盖已有帧</label></div>
+            <div className="grid grid-cols-2 gap-3"><Field label={<span className="inline-flex items-center gap-1">失败重试<HelpAssistant title="失败重试" text={['单帧失败后会等待再尝试，最多按这里的次数重试。', '适合临时资源加载失败；场景或插件报错时应先修复错误再继续。']} placement="top-start" /></span>}><input type="number" min={0} max={10} value={maxRetries} onChange={(e) => setMaxRetries(Number(e.target.value))} /></Field><label className="mt-6 flex h-9 items-center gap-1.5 text-xs"><input type="checkbox" checked={forceOverwrite} onChange={(e) => setForceOverwrite(e.target.checked)} className="h-4 w-4" />强制覆盖已有帧<HelpAssistant title="强制覆盖" text={['关闭时，已有有效图片会被跳过，适合断点续渲。', '开启后会重新写入同名输出文件，适合正式重渲。']} placement="top-end" /></label></div>
             <PathField label="前置脚本（PMC Python）" value={preHook} onChange={setPreHook} onBrowse={() => setFilePickerTarget('preHook')} />
             <PathField label="后置脚本（PMC Python）" value={postHook} onChange={setPostHook} onBrowse={() => setFilePickerTarget('postHook')} />
           </div>
-          <div className="mt-5 flex items-center justify-between border-b border-gray-200 pb-2 dark:border-gray-800"><div><h4 className="text-sm font-semibold">源文件与场景</h4><p className="text-xs text-gray-500">每个文件选择一个场景并生成独立作业</p></div><button disabled={inspecting || !blenderPath} onClick={() => setFilePickerTarget('blend')} className="flex h-8 items-center gap-1.5 rounded border border-gray-300 px-3 text-xs disabled:opacity-50 dark:border-gray-700">{inspecting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}添加 .blend</button></div>
+          <div className="mt-5 flex items-center justify-between border-b border-gray-200 pb-2 dark:border-gray-800"><div><div className="flex items-center gap-1.5"><h4 className="text-sm font-semibold">源文件与场景</h4><HelpAssistant title="添加源文件" text={['可以一次选择多个 .blend。PMC 会用上方 Blender 版本读取每个文件的场景信息。', '每个 .blend 只选择一个场景，并在加入队列后生成一个独立任务；不同文件可设不同帧多开数量。']} placement="top-start" width={330} /></div><p className="text-xs text-gray-500">每个文件选择一个场景并生成独立作业</p></div><button disabled={inspecting || !blenderPath} onClick={() => setFilePickerTarget('blend')} className="flex h-8 items-center gap-1.5 rounded border border-gray-300 px-3 text-xs disabled:opacity-50 dark:border-gray-700">{inspecting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}添加 .blend</button></div>
           {jobs.length === 0 ? <div className="flex h-32 items-center justify-center text-sm text-gray-500">选择一个或多个 Blender 文件开始</div> : <div>{jobs.map((job,index) => <EditableJobRow key={job.path} job={job} onChange={(patch) => updateJob(index, patch)} onRemove={() => setJobs((items) => items.filter((_,current) => current !== index))} />)}</div>}
           <div className="mt-5 border-t border-gray-200 pt-4 dark:border-gray-800"><div className="flex flex-wrap items-end gap-2"><Field label="保存当前通用设置为预设"><input value={presetName} onChange={(e) => setPresetName(e.target.value)} placeholder="预设名称" /></Field><select value={presetScope} onChange={(e) => setPresetScope(e.target.value as 'project'|'global')} className="h-9"><option value="project">项目</option><option value="global">全局</option></select><button disabled={!presetName.trim()} onClick={() => void savePreset()} className="flex h-9 items-center gap-1.5 rounded border border-gray-300 px-3 text-xs disabled:opacity-40 dark:border-gray-700"><Save className="h-4 w-4" />保存预设</button></div></div>
         </div>
@@ -958,12 +1112,12 @@ function CreateBatchDialog({ projectPath, presets, initialSources, onClose, onCr
 
 function toEditableJob(source: RenderSourceInfo): EditableJob {
   const scene = source.scenes[0];
-  return { path: source.path, scenes: source.scenes, sceneName: scene?.name || '', frameStart: scene?.frameStart ?? 1, frameEnd: scene?.frameEnd ?? 250, frameStep: 1, resolutionPercentage: 100, engine: scene?.engine || '', outputFormat: scene?.outputFormat || 'PNG', error: source.error };
+  return { path: source.path, scenes: source.scenes, sceneName: scene?.name || '', frameStart: scene?.frameStart ?? 1, frameEnd: scene?.frameEnd ?? 250, frameStep: 1, parallelism: 1, resolutionPercentage: 100, engine: scene?.engine || '', outputFormat: scene?.outputFormat || 'PNG', error: source.error };
 }
 
 function EditableJobRow({ job, onChange, onRemove }: { job: EditableJob; onChange: (patch: Partial<EditableJob>) => void; onRemove: () => void }) {
   const scene = job.scenes.find((item) => item.name === job.sceneName);
-  return <div className="border-b border-gray-100 py-3 dark:border-gray-800"><div className="flex items-center gap-2"><span className="min-w-0 flex-1 truncate text-xs font-medium" title={job.path}>{fileName(job.path)}</span>{job.error && <span className="text-xs text-red-600">读取失败</span>}<button title="移除" onClick={onRemove} className="h-7 w-7 p-0 text-gray-400 hover:text-red-600"><X className="mx-auto h-3.5 w-3.5" /></button></div>{job.error ? <p className="mt-1 text-xs text-red-600">{job.error}</p> : <div className="mt-2 grid grid-cols-[minmax(120px,1fr)_80px_80px_62px_90px_100px] gap-2 max-[680px]:grid-cols-3"><Field label="场景"><select value={job.sceneName} onChange={(e) => { const next=job.scenes.find((item)=>item.name===e.target.value); onChange({ sceneName:e.target.value, frameStart:next?.frameStart ?? job.frameStart, frameEnd:next?.frameEnd ?? job.frameEnd, engine:next?.engine ?? job.engine, outputFormat:next?.outputFormat ?? job.outputFormat }); }}>{job.scenes.map((item)=><option key={item.name}>{item.name}</option>)}</select></Field><Field label="起始"><input type="number" value={job.frameStart} onChange={(e)=>onChange({frameStart:Number(e.target.value)})} /></Field><Field label="结束"><input type="number" value={job.frameEnd} onChange={(e)=>onChange({frameEnd:Number(e.target.value)})} /></Field><Field label="步长"><input type="number" min={1} value={job.frameStep} onChange={(e)=>onChange({frameStep:Math.max(1,Number(e.target.value))})} /></Field><Field label={<span className="inline-flex items-center gap-1">分辨率 %<HelpAssistant title="渲染分辨率比例" text={["按场景原始分辨率的百分比渲染。", '降低比例可以加快预览渲染，正式输出通常使用 100%。']} images={[{ src: '/help_media/渲染像素比.jpg', alt: '不同渲染清晰度的对比' }]} placement="top" /></span>}><input type="number" min={1} max={100} value={job.resolutionPercentage} onChange={(e)=>onChange({resolutionPercentage:Number(e.target.value)})} /></Field><Field label="格式"><select value={job.outputFormat} onChange={(e)=>onChange({outputFormat:e.target.value})}><option>PNG</option><option>JPEG</option><option>OPEN_EXR</option><option>TIFF</option><option>WEBP</option></select></Field><div className="col-span-full text-[10px] text-gray-500">{scene?.resolutionX} × {scene?.resolutionY} · {scene?.fps} fps · {job.engine}</div></div>}</div>;
+  return <div className="border-b border-gray-100 py-3 dark:border-gray-800"><div className="flex items-center gap-2"><span className="min-w-0 flex-1 truncate text-xs font-medium" title={job.path}>{fileName(job.path)}</span>{job.error && <span className="text-xs text-red-600">读取失败</span>}<button title="移除" onClick={onRemove} className="h-7 w-7 p-0 text-gray-400 hover:text-red-600"><X className="mx-auto h-3.5 w-3.5" /></button></div>{job.error ? <p className="mt-1 text-xs text-red-600">{job.error}</p> : <div className="mt-2 grid grid-cols-[minmax(116px,1fr)_68px_68px_56px_72px_88px_90px] gap-2 max-[680px]:grid-cols-3"><Field label="场景"><select value={job.sceneName} onChange={(e) => { const next=job.scenes.find((item)=>item.name===e.target.value); onChange({ sceneName:e.target.value, frameStart:next?.frameStart ?? job.frameStart, frameEnd:next?.frameEnd ?? job.frameEnd, engine:next?.engine ?? job.engine, outputFormat:next?.outputFormat ?? job.outputFormat }); }}>{job.scenes.map((item)=><option key={item.name}>{item.name}</option>)}</select></Field><Field label="起始"><input type="number" value={job.frameStart} onChange={(e)=>onChange({frameStart:Number(e.target.value)})} /></Field><Field label="结束"><input type="number" value={job.frameEnd} onChange={(e)=>onChange({frameEnd:Number(e.target.value)})} /></Field><Field label="步长"><input type="number" min={1} value={job.frameStep} onChange={(e)=>onChange({frameStep:Math.max(1,Number(e.target.value))})} /></Field><Field label={<span className="inline-flex items-center gap-1">帧多开<HelpAssistant title="帧多开" text={["为当前作业同时启动多个 Blender 进程，每个进程领取不同帧。", "大场景或显存紧张时建议设为 1；较小场景可逐步增加。"]} placement="top" /></span>}><select value={job.parallelism} onChange={(e)=>onChange({parallelism:Number(e.target.value)})}>{[1,2,3,4,5,6,7,8].map((value)=><option key={value} value={value}>{value} 开</option>)}</select></Field><Field label={<span className="inline-flex items-center gap-1">分辨率 %<HelpAssistant title="渲染分辨率比例" text={["按场景原始分辨率的百分比渲染。", '降低比例可以加快预览渲染，正式输出通常使用 100%。']} images={[{ src: '/help_media/渲染像素比.jpg', alt: '不同渲染清晰度的对比' }]} placement="top" /></span>}><input type="number" min={1} max={100} value={job.resolutionPercentage} onChange={(e)=>onChange({resolutionPercentage:Number(e.target.value)})} /></Field><Field label="格式"><select value={job.outputFormat} onChange={(e)=>onChange({outputFormat:e.target.value})}><option>PNG</option><option>JPEG</option><option>OPEN_EXR</option><option>TIFF</option><option>WEBP</option></select></Field><div className="col-span-full text-[10px] text-gray-500">{scene?.resolutionX} × {scene?.resolutionY} · {scene?.fps} fps · {job.engine}</div></div>}</div>;
 }
 
 function Field({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
