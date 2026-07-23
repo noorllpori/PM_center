@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useTaskStore, initTaskEventListeners } from '../../stores/taskStore';
+import { useRenderStore } from '../../stores/renderStore';
 import { useOptionalProjectStoreShallow } from '../../stores/projectStore';
 import type { Task, TaskStatus, TaskPriority, ProjectScript } from '../../types/task';
 import { getProjectScripts } from '../../api/scripts';
@@ -23,6 +24,7 @@ import {
   FileText,
   Code,
   RefreshCw,
+  Clapperboard,
 } from 'lucide-react';
 
 interface TaskPanelProps {
@@ -67,6 +69,7 @@ export function TaskPanel({ isOpen, onClose }: TaskPanelProps) {
     removeTask,
     clearCompleted,
   } = useTaskStore();
+  const renderJobsByProject = useRenderStore((state) => state.jobsByProject);
   const [projectFilter, setProjectFilter] = useState<string>(ALL_PROJECTS_VALUE);
 
   useEffect(() => {
@@ -89,6 +92,12 @@ export function TaskPanel({ isOpen, onClose }: TaskPanelProps) {
       }
     });
 
+    Object.keys(renderJobsByProject).forEach((path) => {
+      if (!options.has(path)) {
+        options.set(path, getProjectDisplayName(path, projectPath, projectName));
+      }
+    });
+
     if (projectPath) {
       options.set(projectPath, projectName || getProjectDisplayName(projectPath, projectPath, projectName));
     }
@@ -103,7 +112,7 @@ export function TaskPanel({ isOpen, onClose }: TaskPanelProps) {
 
         return a.label.localeCompare(b.label, 'zh-CN');
       });
-  }, [allTasks, projectName, projectPath]);
+  }, [allTasks, projectName, projectPath, renderJobsByProject]);
 
   const selectedProjectPath = projectFilter === ALL_PROJECTS_VALUE ? null : projectFilter;
   const selectedProjectLabel = selectedProjectPath
@@ -120,6 +129,19 @@ export function TaskPanel({ isOpen, onClose }: TaskPanelProps) {
 
     return allTasks.filter((task) => task.projectPath === selectedProjectPath);
   }, [allTasks, selectedProjectPath]);
+
+  const scopedRenderJobs = useMemo(() => {
+    const allRenderJobs = Object.values(renderJobsByProject).flat();
+    return selectedProjectPath
+      ? allRenderJobs.filter((job) => job.projectPath === selectedProjectPath)
+      : allRenderJobs;
+  }, [renderJobsByProject, selectedProjectPath]);
+  const activeRenderJobs = scopedRenderJobs.filter((job) =>
+    ['pending', 'starting', 'running', 'pausing', 'cancelling'].includes(job.status),
+  );
+  const renderProgress = activeRenderJobs.length > 0
+    ? Math.round(activeRenderJobs.reduce((sum, job) => sum + job.progress, 0) / activeRenderJobs.length)
+    : 0;
 
   // 计算当前范围统计
   const stats = useMemo(() => ({
@@ -219,6 +241,13 @@ export function TaskPanel({ isOpen, onClose }: TaskPanelProps) {
               )}
             </div>
             <TaskStats stats={stats} />
+            {scopedRenderJobs.length > 0 && (
+              <div className="flex h-8 items-center gap-2 rounded border border-orange-200 bg-orange-50 px-2.5 text-xs text-orange-700 dark:border-orange-900/50 dark:bg-orange-950/20 dark:text-orange-300">
+                <Clapperboard className="h-3.5 w-3.5" />
+                <span>渲染 {activeRenderJobs.length} 活动 / {scopedRenderJobs.length} 总计</span>
+                {activeRenderJobs.length > 0 && <span className="font-medium tabular-nums">{renderProgress}%</span>}
+              </div>
+            )}
           </div>
           
           <div className="flex items-center gap-2">
@@ -284,6 +313,16 @@ export function TaskPanel({ isOpen, onClose }: TaskPanelProps) {
             </div>
 
             {/* 过滤器 */}
+            {activeRenderJobs.length > 0 && (
+              <div className="border-b border-orange-100 bg-orange-50/70 px-3 py-2 text-xs text-orange-700 dark:border-orange-900/40 dark:bg-orange-950/20 dark:text-orange-300">
+                <div className="flex items-center gap-2">
+                  <Clapperboard className="h-3.5 w-3.5" />
+                  <span>{activeRenderJobs.length} 个渲染作业正在队列中</span>
+                </div>
+                <p className="mt-0.5 text-[11px] opacity-75">在项目的“渲染与批处理”标签中管理帧、重试和日志。</p>
+              </div>
+            )}
+
             <div className="flex items-center gap-1 p-2 border-b border-gray-200 dark:border-gray-700">
               <FilterButton active={filter === 'all'} onClick={() => setFilter('all')} count={stats.total}>
                 全部

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { invoke } from '@tauri-apps/api/core';
 import {
   Box,
+  Clapperboard,
   ChevronDown,
   ChevronRight,
   Database,
@@ -17,6 +18,9 @@ import {
 import { Dialog } from '../Dialog';
 import { useResolvedImageSource } from '../image-viewer/useResolvedImageSource';
 import { useSettingsStore } from '../../stores/settingsStore';
+import { useProjectStoreShallow } from '../../stores/projectStore';
+import { useRenderStore } from '../../stores/renderStore';
+import { useWorkspaceTabStore } from '../../stores/workspaceTabStore';
 import type { BlenderInstallationInfo } from '../../stores/settingsStore';
 import type {
   BlenderSceneRenderEdit,
@@ -888,6 +892,9 @@ export function BlenderFileTab({
   title?: string;
 }) {
   const toolPaths = useSettingsStore((state) => state.toolPaths);
+  const projectPath = useProjectStoreShallow((state) => state.projectPath);
+  const queueRenderSource = useRenderStore((state) => state.queueSource);
+  const openRenderCenterTab = useWorkspaceTabStore((state) => state.openRenderCenterTab);
   const blenderInstallations = useSettingsStore((state) => state.blenderInstallations);
   const [details, setDetails] = useState<FileDetailsResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -1004,6 +1011,17 @@ export function BlenderFileTab({
             </div>
 
             <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (projectPath) queueRenderSource(projectPath, filePath);
+                  openRenderCenterTab();
+                }}
+                className="inline-flex h-8 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-xs text-gray-700 transition-colors hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+              >
+                <Clapperboard className="h-3.5 w-3.5 text-orange-500" />
+                加入渲染
+              </button>
               <BlenderOpenButton
                 filePath={filePath}
                 installations={blenderInstallations}

@@ -17,6 +17,7 @@ import {
   Puzzle,
   ChevronDown,
   Database,
+  Clapperboard,
 } from 'lucide-react';
 
 export const TOOLBAR_SEARCH_FOCUS_EVENT = 'pm-center:focus-toolbar-search';
@@ -63,6 +64,7 @@ export function Toolbar({ onOpenProject }: ToolbarProps) {
   const addTask = useTaskStore((state) => state.addTask);
   const showToast = useUiStore((state) => state.showToast);
   const openCacheManagerTab = useWorkspaceTabStore((state) => state.openCacheManagerTab);
+  const openRenderCenterTab = useWorkspaceTabStore((state) => state.openRenderCenterTab);
   const pluginProjectKey = projectPath || '__global__';
   const pluginState = usePluginStore((state) => state.byProject[pluginProjectKey]);
   const loadPlugins = usePluginStore((state) => state.loadPlugins);
@@ -378,6 +380,16 @@ export function Toolbar({ onOpenProject }: ToolbarProps) {
               </div>
             )}
           </div>
+        )}
+
+        {isInitialized && (
+          <button
+            onClick={openRenderCenterTab}
+            className="p-1.5 text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-md transition-colors"
+            title="渲染与批处理"
+          >
+            <Clapperboard className="w-4 h-4" />
+          </button>
         )}
 
         {isInitialized && (

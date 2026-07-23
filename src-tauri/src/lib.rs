@@ -18,6 +18,7 @@ mod plugin;
 mod process_utils;
 mod python;
 mod python_env;
+mod render_center;
 mod task;
 mod thumbnail_cache;
 mod tools;
@@ -98,6 +99,7 @@ async fn init_project(
     exclude_patterns: Option<Vec<String>>,
 ) -> Result<(), String> {
     ensure_project_support_files(&project_path)?;
+    render_center::init_project_storage(&project_path)?;
     let db = get_or_create_db(&db_state, &project_path).await?;
     let _ = tree_cache::get_or_create_project_cache(&project_path)?;
     watcher::set_active_project(
@@ -115,6 +117,7 @@ async fn activate_project(
     project_path: String,
     exclude_patterns: Option<Vec<String>>,
 ) -> Result<(), String> {
+    render_center::init_project_storage(&project_path)?;
     let db = get_or_create_db(&db_state, &project_path).await?;
     let _ = tree_cache::get_or_create_project_cache(&project_path)?;
     watcher::set_active_project(
@@ -840,6 +843,7 @@ async fn launch_program(path: String) -> Result<(), String> {
 
 #[tauri::command]
 fn exit_app(app: tauri::AppHandle) -> Result<(), String> {
+    render_center::shutdown_all();
     app.exit(0);
     Ok(())
 }
@@ -942,6 +946,7 @@ pub fn run() {
                         }
                     }
                     "quit" => {
+                        render_center::shutdown_all();
                         app.exit(0);
                     }
                     _ => {}
@@ -984,6 +989,24 @@ pub fn run() {
             cache_manager::check_project_cache,
             cache_manager::run_project_cache_action,
             cache_manager::cancel_cache_maintenance,
+            render_center::inspect_render_sources,
+            render_center::create_render_batch,
+            render_center::list_render_jobs,
+            render_center::get_render_job,
+            render_center::pause_render_job,
+            render_center::resume_render_job,
+            render_center::cancel_render_job,
+            render_center::pause_render_queue,
+            render_center::resume_render_queue,
+            render_center::retry_render_frames,
+            render_center::reorder_render_job,
+            render_center::archive_render_job,
+            render_center::list_render_presets,
+            render_center::save_render_preset,
+            render_center::delete_render_preset,
+            render_center::get_render_scheduler_settings,
+            render_center::set_render_scheduler_settings,
+            render_center::open_render_output,
             fs::read_directory,
             fs::get_directory_tree,
             fs::search_files,

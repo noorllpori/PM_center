@@ -74,7 +74,7 @@ function getFileNameFromPath(path: string) {
 }
 
 function getPersistedWorkspaceTabKey(tab: PersistedWorkspaceTab | PersistedWorkspaceActiveTab) {
-  return tab.type === 'files' || tab.type === 'cache'
+  return tab.type === 'files' || tab.type === 'cache' || tab.type === 'render'
     ? tab.type
     : `${tab.type}:${tab.filePath || ''}`;
 }
@@ -88,8 +88,8 @@ function serializeWorkspaceSession(
       return [];
     }
 
-    if (tab.type === 'cache') {
-      return [{ type: 'cache', title: tab.title }];
+    if (tab.type === 'cache' || tab.type === 'render') {
+      return [{ type: tab.type, title: tab.title }];
     }
 
     if (!tab.filePath) {
@@ -105,8 +105,8 @@ function serializeWorkspaceSession(
 
   const activeTab = state.tabs.find((tab) => tab.id === state.activeTabId) ?? state.tabs[0];
   const activePersistedTab: PersistedWorkspaceActiveTab =
-    activeTab?.type === 'cache'
-      ? { type: 'cache' }
+    activeTab?.type === 'cache' || activeTab?.type === 'render'
+      ? { type: activeTab.type }
       : activeTab?.type && activeTab.type !== 'files' && activeTab.filePath
         ? { type: activeTab.type, filePath: activeTab.filePath }
         : { type: 'files' };
@@ -128,6 +128,12 @@ async function restoreWorkspaceSession(
   for (const tab of session.tabs) {
     if (tab.type === 'cache') {
       const tabId = workspaceTabStore.getState().openCacheManagerTab();
+      restoredTabIds.set(getPersistedWorkspaceTabKey(tab), tabId);
+      continue;
+    }
+
+    if (tab.type === 'render') {
+      const tabId = workspaceTabStore.getState().openRenderCenterTab();
       restoredTabIds.set(getPersistedWorkspaceTabKey(tab), tabId);
       continue;
     }

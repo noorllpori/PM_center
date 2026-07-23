@@ -10,7 +10,7 @@ import { getFileNameFromPath, getWorkspaceOpenTarget } from '../components/works
 import { openStandaloneDirectoryViewer } from '../components/file-manager/openStandaloneDirectoryViewer';
 import type { ImageSequenceInfo } from '../types';
 
-export type WorkspaceTabType = 'files' | 'cache' | 'directory' | 'image' | 'text' | 'video' | 'blend' | 'collection';
+export type WorkspaceTabType = 'files' | 'cache' | 'render' | 'directory' | 'image' | 'text' | 'video' | 'blend' | 'collection';
 
 export type WorkspaceCollectionTabData =
   | {
@@ -39,6 +39,7 @@ export interface WorkspaceTab {
 
 const FILES_TAB_ID = 'files';
 export const CACHE_MANAGER_TAB_ID = 'cache-manager';
+export const RENDER_CENTER_TAB_ID = 'render-center';
 
 const FILES_TAB: WorkspaceTab = {
   id: FILES_TAB_ID,
@@ -51,6 +52,13 @@ const CACHE_MANAGER_TAB: WorkspaceTab = {
   id: CACHE_MANAGER_TAB_ID,
   type: 'cache',
   title: '缓存管理',
+  closable: true,
+};
+
+const RENDER_CENTER_TAB: WorkspaceTab = {
+  id: RENDER_CENTER_TAB_ID,
+  type: 'render',
+  title: '渲染与批处理',
   closable: true,
 };
 
@@ -124,6 +132,7 @@ export interface WorkspaceTabState {
   ) => Promise<boolean>;
   openDirectoryInTab: (directoryPath: string) => string;
   openCacheManagerTab: () => string;
+  openRenderCenterTab: () => string;
   openCollectionInTab: (collection: WorkspaceCollectionTabData) => string;
   activateTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
@@ -278,6 +287,22 @@ export function createWorkspaceTabStore(storeOptions: CreateWorkspaceTabStoreOpt
         activeTabId: CACHE_MANAGER_TAB_ID,
       }));
       return CACHE_MANAGER_TAB_ID;
+    },
+
+    openRenderCenterTab: () => {
+      if (storeOptions.forceStandaloneFileOpen) {
+        return RENDER_CENTER_TAB_ID;
+      }
+      const existingTab = get().tabs.find((tab) => tab.id === RENDER_CENTER_TAB_ID);
+      if (existingTab) {
+        set({ activeTabId: RENDER_CENTER_TAB_ID });
+        return RENDER_CENTER_TAB_ID;
+      }
+      set((state) => ({
+        tabs: [...state.tabs, RENDER_CENTER_TAB],
+        activeTabId: RENDER_CENTER_TAB_ID,
+      }));
+      return RENDER_CENTER_TAB_ID;
     },
 
     openCollectionInTab: (collection) => {

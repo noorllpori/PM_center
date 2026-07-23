@@ -85,12 +85,13 @@ function sanitizeWorkspaceTab(tab: unknown): PersistedWorkspaceTab | null {
     candidate.type !== 'text' &&
     candidate.type !== 'video' &&
     candidate.type !== 'blend' &&
-    candidate.type !== 'cache'
+    candidate.type !== 'cache' &&
+    candidate.type !== 'render'
   ) {
     return null;
   }
 
-  if (candidate.type !== 'cache' && !candidate.filePath) {
+  if (candidate.type !== 'cache' && candidate.type !== 'render' && !candidate.filePath) {
     return null;
   }
 
@@ -114,12 +115,13 @@ function sanitizeActiveWorkspaceTab(tab: unknown): PersistedWorkspaceActiveTab {
     candidate.type !== 'text' &&
     candidate.type !== 'video' &&
     candidate.type !== 'blend' &&
-    candidate.type !== 'cache'
+    candidate.type !== 'cache' &&
+    candidate.type !== 'render'
   ) {
     return { type: 'files' };
   }
 
-  if (candidate.type !== 'files' && candidate.type !== 'cache' && !candidate.filePath) {
+  if (candidate.type !== 'files' && candidate.type !== 'cache' && candidate.type !== 'render' && !candidate.filePath) {
     return { type: 'files' };
   }
 

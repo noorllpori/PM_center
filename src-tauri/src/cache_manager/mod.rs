@@ -472,6 +472,7 @@ fn compute_cache_report(project_path: &str) -> Result<CacheReport, String> {
     let data_db = pm_center.join("data.db");
     let scripts = pm_center.join("scripts");
     let plugins = pm_center.join("plugins");
+    let render_jobs = pm_center.join("render_jobs");
 
     let (total_files, total_bytes) = path_stats(&pm_center);
     let (thumbnail_count, thumbnail_bytes) = path_stats(&thumbnails);
@@ -480,6 +481,7 @@ fn compute_cache_report(project_path: &str) -> Result<CacheReport, String> {
     let (data_file_count, data_bytes) = database_group_stats(&data_db);
     let (script_count, script_bytes) = path_stats(&scripts);
     let (plugin_count, plugin_bytes) = path_stats(&plugins);
+    let (render_job_count, render_job_bytes) = path_stats(&render_jobs);
 
     let tree_result = read_tree_summary(&tree_db);
     let tree = tree_result.clone().unwrap_or_else(|_| TreeCacheSummary {
@@ -491,12 +493,14 @@ fn compute_cache_report(project_path: &str) -> Result<CacheReport, String> {
         .saturating_add(tree_bytes)
         .saturating_add(data_bytes)
         .saturating_add(script_bytes)
-        .saturating_add(plugin_bytes);
+        .saturating_add(plugin_bytes)
+        .saturating_add(render_job_bytes);
     let known_files = thumbnail_count
         .saturating_add(tree_file_count)
         .saturating_add(data_file_count)
         .saturating_add(script_count)
-        .saturating_add(plugin_count);
+        .saturating_add(plugin_count)
+        .saturating_add(render_job_count);
     let other_bytes = total_bytes.saturating_sub(known_bytes);
     let other_count = total_files.saturating_sub(known_files);
 
@@ -526,6 +530,7 @@ fn compute_cache_report(project_path: &str) -> Result<CacheReport, String> {
     let protected_bytes = data_bytes
         .saturating_add(script_bytes)
         .saturating_add(plugin_bytes)
+        .saturating_add(render_job_bytes)
         .saturating_add(other_bytes);
     let reclaimable_bytes = thumbnail_bytes.saturating_add(tree.file_details_logical_bytes);
     let categories = vec![
@@ -605,6 +610,17 @@ fn compute_cache_report(project_path: &str) -> Result<CacheReport, String> {
             status: "healthy".to_string(),
             protected: true,
             description: "项目脚本与插件，受保护且不会清理".to_string(),
+        },
+        CacheCategoryReport {
+            id: "renderJobs".to_string(),
+            label: "渲染任务归档".to_string(),
+            physical_bytes: render_job_bytes,
+            logical_bytes: None,
+            entry_count: render_job_count,
+            anomaly_count: 0,
+            status: "healthy".to_string(),
+            protected: true,
+            description: "作业规格、Blender 引导脚本和渲染日志，受保护且不会清理".to_string(),
         },
         CacheCategoryReport {
             id: "other".to_string(),

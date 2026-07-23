@@ -9,6 +9,7 @@ import { FileDetail } from './FileDetail';
 import { BlenderFileTab } from './BlenderFileTab';
 import { CollectionTabSurface } from './CollectionTabSurface';
 import { CacheManagerSurface } from './CacheManagerSurface';
+import { RenderCenterSurface } from './RenderCenterSurface';
 import { DirectoryTabSurface } from './DirectoryTabSurface';
 import { ImageSequencePlayerSurface } from './ImageSequencePlayerSurface';
 import { MdtOverviewPanel } from './MdtOverviewPanel';
@@ -1340,6 +1341,10 @@ export function ProjectWorkspace() {
 
                 {tab.type === 'cache' && (
                   <CacheManagerSurface isActive={isActive} />
+                )}
+
+                {tab.type === 'render' && (
+                  <RenderCenterSurface isActive={isActive} />
                 )}
 
                 {tab.type === 'directory' && tab.filePath && (

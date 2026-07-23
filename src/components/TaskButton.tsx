@@ -2,10 +2,12 @@ import { useState, useEffect } from 'react';
 import { Terminal } from 'lucide-react';
 import { TaskPanel } from './TaskPanel';
 import { useTaskStore, initTaskEventListeners } from '../stores/taskStore';
+import { getActiveRenderCount, initRenderEventListeners, useRenderStore } from '../stores/renderStore';
 
 export function TaskButton() {
   const [isOpen, setIsOpen] = useState(false);
   const { stats } = useTaskStore();
+  const renderCount = useRenderStore((state) => getActiveRenderCount(state.jobsByProject));
 
   // 全局快捷键 Ctrl+B
   useEffect(() => {
@@ -26,10 +28,11 @@ export function TaskButton() {
   // 初始化事件监听
   useEffect(() => {
     initTaskEventListeners();
+    void initRenderEventListeners();
   }, []);
 
   // 计算运行中任务数
-  const runningCount = stats.running;
+  const runningCount = stats.running + renderCount;
 
   return (
     <>
@@ -40,7 +43,7 @@ export function TaskButton() {
                    hover:from-purple-600 hover:to-indigo-700
                    text-white rounded-lg shadow-sm
                    transition-all hover:shadow-md"
-        title="任务中心 (Ctrl+B)"
+        title={renderCount > 0 ? `任务中心 · ${renderCount} 个渲染作业 (Ctrl+B)` : '任务中心 (Ctrl+B)'}
       >
         <Terminal className="w-4 h-4" />
         <span className="hidden sm:inline">任务</span>
