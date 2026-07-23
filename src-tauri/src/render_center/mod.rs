@@ -265,6 +265,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             project_path TEXT NOT NULL,
             name TEXT NOT NULL,
             status TEXT NOT NULL,
+            position INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
         );
@@ -386,6 +387,24 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
         "render_frames",
         "force_render",
         "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(
+        conn,
+        "render_batches",
+        "position",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    // Projects created before batch ordering have every batch at position 0. Give
+    // them a stable initial order while retaining their original queue sequence.
+    conn.execute(
+        "WITH legacy_projects AS (SELECT project_path FROM render_batches GROUP BY project_path HAVING MIN(position)=0 AND MAX(position)=0) UPDATE render_batches AS target SET position=(SELECT COUNT(*) FROM render_batches AS preceding WHERE preceding.project_path=target.project_path AND (preceding.created_at < target.created_at OR (preceding.created_at=target.created_at AND preceding.id < target.id))) WHERE target.project_path IN (SELECT project_path FROM legacy_projects)",
+        [],
+    )?;
+    // Batches created before queue sequencing used `queued` while their jobs were
+    // already runnable. Preserve that behavior for existing projects only.
+    conn.execute(
+        "UPDATE render_batches SET status='running' WHERE status='queued' AND EXISTS (SELECT 1 FROM render_jobs WHERE render_jobs.batch_id=render_batches.id AND render_jobs.status IN ('pending','starting','running','pausing'))",
+        [],
     )?;
     Ok(())
 }
@@ -626,9 +645,16 @@ pub async fn create_render_batch(
     let batch_id = Uuid::new_v4().to_string();
     let created = now();
     let tx = conn.transaction().map_err(|error| error.to_string())?;
+    let batch_position: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(position) + 1, 0) FROM render_batches WHERE project_path=?1",
+            params![project_path],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
     tx.execute(
-        "INSERT INTO render_batches(id, project_path, name, status, created_at, updated_at) VALUES(?1, ?2, ?3, 'queued', ?4, ?4)",
-        params![batch_id, project_path, request.name, created],
+        "INSERT INTO render_batches(id, project_path, name, status, position, created_at, updated_at) VALUES(?1, ?2, ?3, 'queued', ?4, ?5, ?5)",
+        params![batch_id, project_path, request.name, batch_position, created],
     ).map_err(|error| error.to_string())?;
     let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
     let default_root = PathBuf::from(&project_path).join("renders");
@@ -668,7 +694,7 @@ pub async fn create_render_batch(
         });
         let name = format!("{} · {}", blend_stem, job.scene_name);
         tx.execute(
-            "INSERT INTO render_jobs(id,batch_id,project_path,name,blend_path,scene_name,status,frame_start,frame_end,frame_step,parallelism,output_dir,blender_path,python_path,pre_hook,post_hook,force_overwrite,max_retries,spec_json,position,created_at) VALUES(?1,?2,?3,?4,?5,?6,'pending',?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
+            "INSERT INTO render_jobs(id,batch_id,project_path,name,blend_path,scene_name,status,frame_start,frame_end,frame_step,parallelism,output_dir,blender_path,python_path,pre_hook,post_hook,force_overwrite,max_retries,spec_json,position,created_at) VALUES(?1,?2,?3,?4,?5,?6,'paused',?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
             params![job_id,batch_id,project_path,name,job.blend_path,job.scene_name,job.frame_start,job.frame_end,job.frame_step,job.parallelism.clamp(1,8),output_dir.to_string_lossy(),request.blender_path,rusqlite::types::Null,request.pre_hook,request.post_hook,request.force_overwrite as i64,request.max_retries.max(0),spec.to_string(),position as i64,created],
         ).map_err(|error| error.to_string())?;
         for frame in (job.frame_start..=job.frame_end).step_by(job.frame_step as usize) {
@@ -692,7 +718,6 @@ pub async fn create_render_batch(
     }
     tx.commit().map_err(|error| error.to_string())?;
     emit_queue(&app_handle, &project_path);
-    kick_scheduler(app_handle, project_path.clone());
     Ok(RenderBatchResult { batch_id, job_ids })
 }
 
@@ -979,7 +1004,7 @@ pub async fn list_render_jobs(
     init_project_storage(&project_path)?;
     let conn = open_db(&project_path)?;
     let sql = format!(
-        "{} WHERE (?1=1 OR j.archived=0) ORDER BY j.position ASC, j.created_at DESC",
+        "{} JOIN render_batches b ON b.id=j.batch_id WHERE (?1=1 OR j.archived=0) ORDER BY b.position ASC, j.position ASC, j.created_at ASC",
         JOB_SELECT
     );
     let mut stmt = conn.prepare(&sql).map_err(|error| error.to_string())?;
@@ -1362,13 +1387,14 @@ fn kick_scheduler(app: tauri::AppHandle, project_path: String) {
     tauri::async_runtime::spawn(async move {
         let _scheduler_guard = SCHEDULER_LOCK.lock().await;
         loop {
+            let _ = advance_batch_queue(&project_path);
             let concurrency = load_scheduler_settings(&app).concurrency.clamp(1, 8) as usize;
             let running_total = RUNTIME.lock().unwrap().running.len();
             if running_total >= concurrency {
                 break;
             }
             let next_job = open_db(&project_path).ok().and_then(|conn| {
-                conn.query_row("SELECT id FROM render_jobs WHERE status='pending' AND archived=0 ORDER BY position ASC, created_at ASC LIMIT 1", [], |row| row.get::<_, String>(0)).optional().ok().flatten()
+                conn.query_row("SELECT j.id FROM render_jobs j JOIN render_batches b ON b.id=j.batch_id WHERE j.status='pending' AND j.archived=0 AND b.status='running' ORDER BY b.position ASC, j.position ASC, j.created_at ASC LIMIT 1", [], |row| row.get::<_, String>(0)).optional().ok().flatten()
             });
             let Some(job_id) = next_job else {
                 break;
@@ -1404,6 +1430,47 @@ fn kick_scheduler(app: tauri::AppHandle, project_path: String) {
             });
         }
     });
+}
+
+fn advance_batch_queue(project_path: &str) -> Result<(), String> {
+    let conn = open_db(project_path)?;
+    conn.execute(
+        "UPDATE render_batches SET status=CASE WHEN EXISTS (SELECT 1 FROM render_jobs WHERE render_jobs.batch_id=render_batches.id AND render_jobs.status='failed') THEN 'failed' WHEN EXISTS (SELECT 1 FROM render_jobs WHERE render_jobs.batch_id=render_batches.id AND render_jobs.status='cancelled') THEN 'cancelled' ELSE 'completed' END,updated_at=?2 WHERE project_path=?1 AND status='running' AND NOT EXISTS (SELECT 1 FROM render_jobs WHERE render_jobs.batch_id=render_batches.id AND render_jobs.status IN ('pending','starting','running','pausing','paused'))",
+        params![project_path, now()],
+    )
+    .map_err(|error| error.to_string())?;
+    let running_batches: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM render_batches WHERE project_path=?1 AND status='running'",
+            params![project_path],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if running_batches > 0 {
+        return Ok(());
+    }
+    let next_batch = conn
+        .query_row(
+            "SELECT id FROM render_batches WHERE project_path=?1 AND status='queued' ORDER BY position ASC, created_at ASC LIMIT 1",
+            params![project_path],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let Some(batch_id) = next_batch else {
+        return Ok(());
+    };
+    conn.execute(
+        "UPDATE render_batches SET status='running',updated_at=?2 WHERE id=?1",
+        params![batch_id, now()],
+    )
+    .map_err(|error| error.to_string())?;
+    conn.execute(
+        "UPDATE render_jobs SET status='pending',error=NULL,finished_at=NULL WHERE batch_id=?1 AND status IN ('paused','cancelled') AND archived=0",
+        params![batch_id],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 fn kick_all_schedulers(app: tauri::AppHandle) {
@@ -1995,6 +2062,11 @@ pub async fn resume_render_job(
     )
     .map_err(|e| e.to_string())?;
     conn.execute("UPDATE render_jobs SET status='pending',error=NULL,finished_at=NULL WHERE id=?1 AND status IN ('paused','failed','cancelled')", params![job_id]).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE render_batches SET status='running',updated_at=?2 WHERE id=(SELECT batch_id FROM render_jobs WHERE id=?1) AND status IN ('queued','paused','completed','failed','cancelled')",
+        params![job_id, now()],
+    )
+    .map_err(|e| e.to_string())?;
     kick_scheduler(app_handle, project_path);
     Ok(())
 }
@@ -2044,8 +2116,8 @@ pub async fn resume_render_queue(
 ) -> Result<(), String> {
     let conn = open_db(&project_path)?;
     conn.execute(
-        "UPDATE render_jobs SET status='pending',error=NULL WHERE status='paused' AND archived=0",
-        [],
+        "UPDATE render_jobs SET status='pending',error=NULL,finished_at=NULL WHERE status IN ('paused','cancelled') AND archived=0 AND batch_id IN (SELECT id FROM render_batches WHERE project_path=?1 AND status='running')",
+        params![project_path],
     )
     .map_err(|e| e.to_string())?;
     kick_scheduler(app_handle, project_path);
@@ -2054,12 +2126,21 @@ pub async fn resume_render_queue(
 
 #[tauri::command]
 pub async fn retry_render_frames(
-    app_handle: tauri::AppHandle,
     project_path: String,
     job_id: String,
     frames: Option<Vec<i64>>,
 ) -> Result<(), String> {
     let conn = open_db(&project_path)?;
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM render_jobs WHERE id=?1",
+            params![job_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if matches!(status.as_str(), "starting" | "running" | "pausing" | "cancelling") {
+        return Err("任务正在运行，请先暂停后再重新渲染帧".into());
+    }
     match frames.filter(|items| !items.is_empty()) {
         Some(frames) => {
             for frame in frames {
@@ -2071,11 +2152,15 @@ pub async fn retry_render_frames(
         }
     }
     conn.execute(
-        "UPDATE render_jobs SET status='pending',error=NULL,finished_at=NULL WHERE id=?1",
+        "UPDATE render_jobs SET status='paused',error=NULL,finished_at=NULL WHERE id=?1",
         params![job_id],
     )
     .map_err(|e| e.to_string())?;
-    kick_scheduler(app_handle, project_path);
+    conn.execute(
+        "UPDATE render_batches SET status=CASE WHEN status='running' THEN 'running' ELSE 'queued' END,updated_at=?2 WHERE id=(SELECT batch_id FROM render_jobs WHERE id=?1)",
+        params![job_id, now()],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -2140,14 +2225,81 @@ pub async fn skip_render_frames(
 pub async fn reorder_render_job(
     project_path: String,
     job_id: String,
-    position: i64,
+    before_job_id: Option<String>,
 ) -> Result<(), String> {
-    let conn = open_db(&project_path)?;
-    conn.execute(
-        "UPDATE render_jobs SET position=?2 WHERE id=?1",
-        params![job_id, position],
-    )
-    .map_err(|e| e.to_string())?;
+    reorder_render_job_in_db(&project_path, &job_id, before_job_id.as_deref())
+}
+
+fn reorder_render_job_in_db(
+    project_path: &str,
+    job_id: &str,
+    before_job_id: Option<&str>,
+) -> Result<(), String> {
+    let mut conn = open_db(project_path)?;
+    let transaction = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    let (source_batch_id, source_batch_status): (String, String) = transaction
+        .query_row(
+            "SELECT j.batch_id,b.status FROM render_jobs j JOIN render_batches b ON b.id=j.batch_id WHERE j.id=?1 AND j.project_path=?2",
+            params![job_id, project_path],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| "找不到要排序的渲染任务".to_string())?;
+
+    let target = before_job_id
+        .as_deref()
+        .filter(|id| *id != job_id)
+        .map(|target_job_id| {
+            transaction
+                .query_row(
+                    "SELECT j.batch_id,b.status FROM render_jobs j JOIN render_batches b ON b.id=j.batch_id WHERE j.id=?1 AND j.project_path=?2",
+                    params![target_job_id, project_path],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .map_err(|_| "找不到目标渲染任务".to_string())
+        })
+        .transpose()?;
+
+    if let Some((target_batch_id, target_batch_status)) = target {
+        if source_batch_id == target_batch_id {
+            let mut jobs = transaction
+                .prepare("SELECT id FROM render_jobs WHERE batch_id=?1 ORDER BY position ASC, created_at ASC, id ASC")
+                .map_err(|error| error.to_string())?
+                .query_map(params![source_batch_id], |row| row.get::<_, String>(0))
+                .map_err(|error| error.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?;
+            jobs.retain(|id| id != job_id);
+            let insert_at = jobs.iter().position(|id| id == before_job_id.unwrap()).unwrap_or(jobs.len());
+            jobs.insert(insert_at, job_id.to_string());
+            for (position, id) in jobs.iter().enumerate() {
+                transaction
+                    .execute("UPDATE render_jobs SET position=?2 WHERE id=?1", params![id, position as i64])
+                    .map_err(|error| error.to_string())?;
+            }
+        } else {
+            if source_batch_status == "running" || target_batch_status == "running" {
+                return Err("运行中的批次不可调整到其他批次位置".into());
+            }
+            let mut batches = transaction
+                .prepare("SELECT id FROM render_batches WHERE project_path=?1 ORDER BY position ASC, created_at ASC, id ASC")
+                .map_err(|error| error.to_string())?
+                .query_map(params![project_path], |row| row.get::<_, String>(0))
+                .map_err(|error| error.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?;
+            batches.retain(|id| id != &source_batch_id);
+            let insert_at = batches.iter().position(|id| id == &target_batch_id).unwrap_or(batches.len());
+            batches.insert(insert_at, source_batch_id);
+            for (position, id) in batches.iter().enumerate() {
+                transaction
+                    .execute("UPDATE render_batches SET position=?2,updated_at=?3 WHERE id=?1", params![id, position as i64, now()])
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+    }
+    transaction.commit().map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -2565,6 +2717,66 @@ mod tests {
     }
 
     #[test]
+    fn reorders_jobs_within_a_batch_and_moves_batches_as_a_unit() {
+        let root = std::env::temp_dir().join(format!("pm-render-reorder-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let project_path = root.to_string_lossy().to_string();
+        let conn = open_db(&project_path).unwrap();
+        for (id, position) in [("batch-a", 0_i64), ("batch-b", 1_i64)] {
+            conn.execute(
+                "INSERT INTO render_batches(id,project_path,name,status,position,created_at,updated_at) VALUES(?1,?2,?1,'queued',?3,?3,?3)",
+                params![id, project_path, position],
+            )
+            .unwrap();
+        }
+        for (id, batch_id, position) in [
+            ("job-a-1", "batch-a", 0_i64),
+            ("job-a-2", "batch-a", 1_i64),
+            ("job-b-1", "batch-b", 0_i64),
+        ] {
+            conn.execute(
+                "INSERT INTO render_jobs(id,batch_id,project_path,name,blend_path,scene_name,status,frame_start,frame_end,frame_step,output_dir,blender_path,spec_json,position,created_at) VALUES(?1,?2,?3,?1,'test.blend','Scene','paused',1,1,1,?3,'blender','{}',?4,0)",
+                params![id, batch_id, project_path, position],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        reorder_render_job_in_db(&project_path, "job-a-2", Some("job-a-1")).unwrap();
+        let conn = open_db(&project_path).unwrap();
+        let same_batch: Vec<String> = conn
+            .prepare("SELECT id FROM render_jobs WHERE batch_id='batch-a' ORDER BY position")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(same_batch, ["job-a-2", "job-a-1"]);
+        drop(conn);
+
+        reorder_render_job_in_db(&project_path, "job-b-1", Some("job-a-1")).unwrap();
+        let conn = open_db(&project_path).unwrap();
+        let batch_order: Vec<String> = conn
+            .prepare("SELECT id FROM render_batches ORDER BY position")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(batch_order, ["batch-b", "batch-a"]);
+        let positions: Vec<i64> = conn
+            .prepare("SELECT position FROM render_batches ORDER BY position")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(positions, [0, 1]);
+        drop(conn);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn initializes_render_schema_and_recovers_running_jobs() {
         let root = std::env::temp_dir().join(format!("pm-render-test-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
@@ -2727,6 +2939,93 @@ mod tests {
         .unwrap();
         let error = update_render_job_settings(&mut conn, "edit-job", &changed).unwrap_err();
         assert!(error.contains("请先暂停"));
+        drop(conn);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn batch_queue_starts_one_batch_at_a_time() {
+        let root = std::env::temp_dir().join(format!("pm-render-batch-queue-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let conn = open_db(root.to_str().unwrap()).unwrap();
+        for (id, created_at) in [("batch-a", 1_i64), ("batch-b", 2_i64)] {
+            conn.execute(
+                "INSERT INTO render_batches(id,project_path,name,status,created_at,updated_at) VALUES(?1,?2,?1,'queued',?3,?3)",
+                params![id, root.to_string_lossy(), created_at],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO render_jobs(id,batch_id,project_path,name,blend_path,scene_name,status,frame_start,frame_end,frame_step,output_dir,blender_path,spec_json,position,created_at) VALUES(?1,?2,?3,?1,'test.blend','Scene','paused',1,1,1,?3,'blender','{}',0,?4)",
+                params![format!("job-{id}"), id, root.to_string_lossy(), created_at],
+            )
+            .unwrap();
+        }
+        conn.execute("UPDATE render_jobs SET status='cancelled' WHERE id='job-batch-a'", [])
+            .unwrap();
+
+        advance_batch_queue(root.to_str().unwrap()).unwrap();
+        let first: (String, String, String, String) = conn
+            .query_row(
+                "SELECT (SELECT status FROM render_batches WHERE id='batch-a'),(SELECT status FROM render_jobs WHERE id='job-batch-a'),(SELECT status FROM render_batches WHERE id='batch-b'),(SELECT status FROM render_jobs WHERE id='job-batch-b')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(first, ("running".into(), "pending".into(), "queued".into(), "paused".into()));
+
+        conn.execute("UPDATE render_jobs SET status='completed' WHERE id='job-batch-a'", [])
+            .unwrap();
+        advance_batch_queue(root.to_str().unwrap()).unwrap();
+        let second: (String, String, String, String) = conn
+            .query_row(
+                "SELECT (SELECT status FROM render_batches WHERE id='batch-a'),(SELECT status FROM render_jobs WHERE id='job-batch-a'),(SELECT status FROM render_batches WHERE id='batch-b'),(SELECT status FROM render_jobs WHERE id='job-batch-b')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(second, ("completed".into(), "completed".into(), "running".into(), "pending".into()));
+        drop(conn);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn retrying_frames_only_queues_work_until_started() {
+        let root = std::env::temp_dir().join(format!("pm-render-retry-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let conn = open_db(root.to_str().unwrap()).unwrap();
+        conn.execute(
+            "INSERT INTO render_batches(id,project_path,name,status,created_at,updated_at) VALUES('retry-batch',?1,'Retry','completed',0,0)",
+            params![root.to_string_lossy()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO render_jobs(id,batch_id,project_path,name,blend_path,scene_name,status,frame_start,frame_end,frame_step,output_dir,blender_path,spec_json,position,created_at) VALUES('retry-job','retry-batch',?1,'Retry','test.blend','Scene','completed',1,1,1,?1,'blender','{}',0,0)",
+            params![root.to_string_lossy()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO render_frames(job_id,frame,status,output_path,updated_at) VALUES('retry-job',1,'completed',?1,0)",
+            params![root.join("Scene_0001.png").to_string_lossy()],
+        )
+        .unwrap();
+        drop(conn);
+
+        tauri::async_runtime::block_on(retry_render_frames(
+            root.to_string_lossy().to_string(),
+            "retry-job".into(),
+            Some(vec![1]),
+        ))
+        .unwrap();
+
+        let conn = open_db(root.to_str().unwrap()).unwrap();
+        let state: (String, String, String, i64) = conn
+            .query_row(
+                "SELECT (SELECT status FROM render_batches WHERE id='retry-batch'),(SELECT status FROM render_jobs WHERE id='retry-job'),(SELECT status FROM render_frames WHERE job_id='retry-job' AND frame=1),(SELECT force_render FROM render_frames WHERE job_id='retry-job' AND frame=1)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(state, ("queued".into(), "paused".into(), "pending".into(), 1));
         drop(conn);
         let _ = fs::remove_dir_all(root);
     }

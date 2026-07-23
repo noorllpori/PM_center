@@ -16,6 +16,7 @@ import {
   Cpu,
   FolderOpen,
   Gauge,
+  GripVertical,
   Image as ImageIcon,
   Layers3,
   ListRestart,
@@ -231,6 +232,8 @@ export function RenderCenterSurface({ isActive }: { isActive: boolean }) {
   const [presets, setPresets] = useState<RenderPreset[]>([]);
   const [concurrency, setConcurrency] = useState(1);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [draggedJobId, setDraggedJobId] = useState<string | null>(null);
+  const [dragOverJobId, setDragOverJobId] = useState<string | null>(null);
 
   const visibleJobs = useMemo(() => jobs.filter((job) =>
     view === 'results' ? ['completed', 'failed', 'cancelled'].includes(job.status) : !job.archived,
@@ -304,6 +307,21 @@ export function RenderCenterSurface({ isActive }: { isActive: boolean }) {
     void loadDetail(job.id);
   };
 
+  const reorderJob = async (beforeJobId: string) => {
+    if (!projectPath || !draggedJobId || draggedJobId === beforeJobId) return;
+    const draggedJob = jobs.find((job) => job.id === draggedJobId);
+    const targetJob = jobs.find((job) => job.id === beforeJobId);
+    setDragOverJobId(null);
+    setDraggedJobId(null);
+    if (!draggedJob || !targetJob) return;
+    try {
+      await invoke('reorder_render_job', { projectPath, jobId: draggedJobId, beforeJobId });
+      await refresh();
+    } catch (error) {
+      showToast({ title: '调整队列顺序失败', message: String(error), tone: 'error' });
+    }
+  };
+
   if (!projectPath) {
     return <div className="flex h-full items-center justify-center text-sm text-gray-500">项目已关闭</div>;
   }
@@ -319,8 +337,9 @@ export function RenderCenterSurface({ isActive }: { isActive: boolean }) {
               title="渲染中心怎么用"
               text={[
                 '先点击“新建批次”，选择 Blender 版本并添加一个或多个 .blend 文件。每个文件会成为独立作业。',
-                '在作业中设置场景、帧范围、帧多开、分辨率和格式后加入队列；在右侧选中任务可查看帧、日志和预览。',
+                '在作业中设置场景、帧范围、帧多开、分辨率和格式后加入队列；新批次不会自动开始，点击左侧“开始/继续队列”才会启动或继续暂停/取消的批次。',
                 '任务创建后可用右上角铅笔修改设置；正在渲染时先暂停，当前运行帧结束后再编辑。',
+                '在队列中可拖拽任务卡片排序：同批次内调整作业顺序，拖到另一批次的任务前会调整整个批次顺序。排序不会开始或暂停渲染。',
               ]}
               placement="bottom-start"
               width={360}
@@ -373,16 +392,20 @@ export function RenderCenterSurface({ isActive }: { isActive: boolean }) {
           <NavButton icon={<Check />} label="结果" count={completedCount + failedCount} active={view === 'results'} onClick={() => setView('results')} />
           <NavButton icon={<Settings2 />} label="预设" count={presets.length} active={view === 'presets'} onClick={() => setView('presets')} />
           <div className="mt-4 border-t border-gray-200 pt-3 dark:border-gray-800">
-            <button className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-xs text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-900" onClick={() => void runAction('暂停队列', 'pause_render_queue', {})}>
-              <Pause className="h-4 w-4" /> 暂停队列
+            <button className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-xs text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-900" onClick={() => void runAction('暂停当前批次', 'pause_render_queue', {})}>
+              <Pause className="h-4 w-4" /> 暂停当前批次
             </button>
-            <button className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-xs text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-900" onClick={() => void runAction('继续队列', 'resume_render_queue', {})}>
-              <Play className="h-4 w-4" /> 继续队列
+            <button className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-xs text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-900" onClick={() => void runAction('开始/继续队列', 'resume_render_queue', {})}>
+              <Play className="h-4 w-4" /> 开始/继续队列
             </button>
           </div>
         </nav>
 
-        <main className="min-h-0 overflow-auto border-r border-gray-200 dark:border-gray-800">
+        <main
+          className="min-h-0 overflow-auto border-r border-gray-200 dark:border-gray-800"
+          onDragOver={(event) => { if (draggedJobId) event.preventDefault(); }}
+          onDragLeave={(event) => { if (event.currentTarget === event.target) setDragOverJobId(null); }}
+        >
           {view === 'presets' ? (
             <PresetList presets={presets} projectPath={projectPath} onChanged={refresh} />
           ) : visibleJobs.length === 0 ? (
@@ -392,9 +415,40 @@ export function RenderCenterSurface({ isActive }: { isActive: boolean }) {
               {view === 'queue' && <button className="mt-3 text-xs text-blue-600 hover:underline" onClick={() => setShowCreate(true)}>创建第一个渲染批次</button>}
             </div>
           ) : (
-            visibleJobs.map((job) => (
-              <JobRow key={job.id} job={job} selected={job.id === selectedJobId} onClick={() => selectJob(job)} />
-            ))
+            <>
+              {view === 'queue' && (
+                <div className="sticky top-0 z-10 flex min-h-8 items-center gap-1.5 border-b border-gray-100 bg-white/95 px-3 text-[11px] text-gray-500 backdrop-blur dark:border-gray-800 dark:bg-gray-950/95">
+                  <GripVertical className="h-3.5 w-3.5" />
+                  <span>拖动任务卡片调整顺序</span>
+                  <span className="ml-auto text-[10px] text-gray-400">跨批次会整体移动</span>
+                </div>
+              )}
+              {visibleJobs.map((job) => (
+                <JobRow
+                  key={job.id}
+                  job={job}
+                  selected={job.id === selectedJobId}
+                  draggable={view === 'queue'}
+                  isDragging={job.id === draggedJobId}
+                  isDropTarget={job.id === dragOverJobId && job.id !== draggedJobId}
+                  onClick={() => selectJob(job)}
+                  onDragStart={(event) => {
+                    event.dataTransfer.effectAllowed = 'move';
+                    event.dataTransfer.setData('text/plain', job.id);
+                    setDraggedJobId(job.id);
+                  }}
+                  onDragOver={(event) => {
+                    if (draggedJobId && draggedJobId !== job.id) {
+                      event.preventDefault();
+                      event.dataTransfer.dropEffect = 'move';
+                      setDragOverJobId(job.id);
+                    }
+                  }}
+                  onDrop={(event) => { event.preventDefault(); void reorderJob(job.id); }}
+                  onDragEnd={() => { setDraggedJobId(null); setDragOverJobId(null); }}
+                />
+              ))}
+            </>
           )}
         </main>
 
@@ -436,12 +490,45 @@ function NavButton({ icon, label, count, active, onClick }: { icon: React.ReactE
   );
 }
 
-function JobRow({ job, selected, onClick }: { job: RenderJob; selected: boolean; onClick: () => void }) {
+function JobRow({
+  job,
+  selected,
+  draggable,
+  isDragging,
+  isDropTarget,
+  onClick,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
+}: {
+  job: RenderJob;
+  selected: boolean;
+  draggable: boolean;
+  isDragging: boolean;
+  isDropTarget: boolean;
+  onClick: () => void;
+  onDragStart: React.DragEventHandler<HTMLButtonElement>;
+  onDragOver: React.DragEventHandler<HTMLButtonElement>;
+  onDrop: React.DragEventHandler<HTMLButtonElement>;
+  onDragEnd: React.DragEventHandler<HTMLButtonElement>;
+}) {
   const showLivePerformance = ['starting', 'running', 'pausing', 'cancelling'].includes(job.status)
     && job.performanceUpdatedAt !== null;
   return (
-    <button onClick={onClick} className={`block w-full border-b border-gray-100 px-4 py-3 text-left transition-colors dark:border-gray-800 ${selected ? 'bg-blue-50 dark:bg-blue-950/20' : 'hover:bg-gray-50 dark:hover:bg-gray-900/60'}`}>
+    <button
+      draggable={draggable}
+      onClick={onClick}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      onDragEnd={onDragEnd}
+      title={draggable ? '拖拽调整队列顺序' : undefined}
+      className={`group relative block w-full border-b border-gray-100 px-4 py-3 text-left transition-colors dark:border-gray-800 ${selected ? 'bg-blue-50 dark:bg-blue-950/20' : 'hover:bg-gray-50 dark:hover:bg-gray-900/60'} ${isDragging ? 'opacity-45' : ''} ${isDropTarget ? 'border-t-2 border-t-blue-500 bg-blue-50/70 dark:bg-blue-950/30' : ''}`}
+    >
+      {isDropTarget && <span className="absolute -top-2 left-3 z-10 rounded bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium text-white shadow-sm">释放后排在此任务前</span>}
       <div className="flex items-start gap-3">
+        {draggable && <GripVertical className="mt-0.5 h-4 w-4 shrink-0 text-gray-300 transition-colors group-hover:text-gray-500 dark:text-gray-700" aria-hidden="true" />}
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2"><p className="truncate text-sm font-medium">{job.name}</p><StatusBadge status={job.status} /></div>
           <p className="mt-1 truncate text-xs text-gray-500">{fileName(job.blendPath)} · {job.frameStart}-{job.frameEnd} · {job.parallelism} 开</p>
@@ -662,12 +749,12 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
     <div className="flex h-full min-h-0 flex-col">
       <div className="border-b border-gray-200 px-3 py-2 dark:border-gray-800">
         <div className="flex items-center gap-2">
-          <div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h3 className="truncate text-sm font-semibold">{job.name}</h3><StatusBadge status={job.status} /><HelpAssistant title="管理这个任务" text={['单击帧行可选中；按 Ctrl/Cmd 多选，按 Shift 选择连续范围，也可拖拽框选。右键显示批量操作。', '双击已完成帧可预览；铅笔按钮用于修改场景、帧范围、帧多开、分辨率和格式。运行中的任务需先暂停。', '右键可重新渲染或跳过所选帧，均需先暂停并确认；跳过只标记等待中/失败帧，不删除已有输出。']} placement="bottom-start" width={340} /></div><p className="mt-0.5 truncate text-[11px] text-gray-500" title={job.outputDir}>{job.outputDir}</p></div>
+          <div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h3 className="truncate text-sm font-semibold">{job.name}</h3><StatusBadge status={job.status} /><HelpAssistant title="管理这个任务" text={['单击帧行可选中；按 Ctrl/Cmd 多选，按 Shift 选择连续范围，也可拖拽框选。右键显示批量操作。', '双击已完成帧可预览；铅笔按钮用于修改场景、帧范围、帧多开、分辨率和格式。运行中的任务需先暂停。', '右键重新渲染、重试或跳过都只修改等待队列，不会自动启动；仅播放按钮和“开始/继续队列”能开始渲染。']} placement="bottom-start" width={340} /></div><p className="mt-0.5 truncate text-[11px] text-gray-500" title={job.outputDir}>{job.outputDir}</p></div>
           <div className="flex shrink-0 items-center gap-1">
           {canPause && <IconAction title="暂停" icon={<CirclePause />} disabled={busy} onClick={() => onAction('暂停作业', 'pause_render_job')} />}
           {canResume && <IconAction title="继续" icon={<CirclePlay />} disabled={busy} onClick={() => onAction('继续作业', 'resume_render_job')} />}
           {!['completed','cancelled'].includes(job.status) && <IconAction title="取消" icon={<Square />} disabled={busy} onClick={() => onAction('取消作业', 'cancel_render_job')} />}
-          {failedFrames.length > 0 && <IconAction title="重试失败帧" icon={<RotateCcw />} disabled={busy} onClick={() => onAction('重试失败帧', 'retry_render_frames', { frames: failedFrames })} />}
+          {failedFrames.length > 0 && <IconAction title={canEdit ? '重试失败帧（等待开始）' : '请先暂停任务再重试失败帧'} icon={<RotateCcw />} disabled={busy || !canEdit} onClick={() => onAction('重试失败帧', 'retry_render_frames', { frames: failedFrames })} />}
           <IconAction title={canEdit ? '编辑任务设置' : '请先暂停任务再修改设置'} icon={<Pencil />} disabled={busy || !canEdit} onClick={() => setShowSettingsEditor(true)} />
           <IconAction title="打开输出目录" icon={<FolderOpen />} disabled={busy} onClick={() => onAction('打开输出目录', 'open_render_output', { path: job.outputDir })} />
           {!['running','pausing','cancelling'].includes(job.status) && <IconAction title={job.archived ? '取消归档' : '归档'} icon={<Archive />} disabled={busy} onClick={() => onAction('归档作业', 'archive_render_job', { archived: !job.archived })} />}
@@ -760,8 +847,8 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
       {rerenderConfirmation && (
         <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-label="确认重新渲染">
           <div className="w-full max-w-md overflow-hidden rounded-md border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-950">
-            <div className="flex items-center gap-3 border-b border-gray-200 px-4 py-3 dark:border-gray-800"><AlertCircle className="h-5 w-5 text-amber-500" /><div><h4 className="text-sm font-semibold">确认重新渲染</h4><p className="mt-0.5 text-xs text-gray-500">将强制重新渲染所选的 {rerenderConfirmation.frameNumbers.length} 帧，现有输出会被覆盖。</p></div></div>
-            <div className="flex justify-end gap-2 px-4 py-3"><button type="button" onClick={() => setRerenderConfirmation(null)} className="h-8 rounded px-3 text-xs hover:bg-gray-100 dark:hover:bg-gray-800">取消</button><button type="button" onClick={() => void confirmRerenderSelectedFrames()} className="h-8 rounded bg-red-600 px-3 text-xs font-medium text-white hover:bg-red-500">确认重新渲染</button></div>
+            <div className="flex items-center gap-3 border-b border-gray-200 px-4 py-3 dark:border-gray-800"><AlertCircle className="h-5 w-5 text-amber-500" /><div><h4 className="text-sm font-semibold">确认重新渲染</h4><p className="mt-0.5 text-xs text-gray-500">将所选的 {rerenderConfirmation.frameNumbers.length} 帧加入等待渲染队列，现有输出会在开始后被覆盖。</p></div></div>
+            <div className="flex justify-end gap-2 px-4 py-3"><button type="button" onClick={() => setRerenderConfirmation(null)} className="h-8 rounded px-3 text-xs hover:bg-gray-100 dark:hover:bg-gray-800">取消</button><button type="button" onClick={() => void confirmRerenderSelectedFrames()} className="h-8 rounded bg-red-600 px-3 text-xs font-medium text-white hover:bg-red-500">加入等待队列</button></div>
           </div>
         </div>
       )}
@@ -1261,7 +1348,7 @@ function CreateBatchDialog({ projectPath, presets, initialSources, onClose, onCr
     try {
       const request: CreateRenderBatchRequest = { name: `${namePrefix.trim()} ${batchTimestamp}`, blenderPath, outputRoot: outputRoot || null, preHook: preHook || null, postHook: postHook || null, forceOverwrite, maxRetries, jobs: validJobs.map((job) => ({ blendPath: job.path, sceneName: job.sceneName, frameStart: job.frameStart, frameEnd: job.frameEnd, frameStep: job.frameStep, parallelism: job.parallelism, resolutionPercentage: job.resolutionPercentage, engine: job.engine || null, outputFormat: job.outputFormat })) };
       await invoke('create_render_batch', { projectPath, request });
-      showToast({ title: '渲染批次已加入队列', message: `${validJobs.length} 个作业`, tone: 'success' });
+      showToast({ title: '渲染批次已加入队列', message: `${validJobs.length} 个作业，等待手动开始`, tone: 'success' });
       await onCreated();
     } catch (error) { showToast({ title: '创建渲染批次失败', message: String(error), tone: 'error' }); }
     finally { setSubmitting(false); }
@@ -1270,7 +1357,7 @@ function CreateBatchDialog({ projectPath, presets, initialSources, onClose, onCr
   return (
     <div className="fixed inset-0 z-[80] flex justify-end bg-black/45" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <div className="flex h-full w-[760px] max-w-[96vw] flex-col bg-white shadow-2xl dark:bg-gray-950">
-        <div className="flex min-h-[58px] items-center justify-between border-b border-gray-200 px-5 dark:border-gray-800"><div><div className="flex items-center gap-1.5"><h3 className="text-base font-semibold">新建渲染批次</h3><HelpAssistant title="创建渲染批次" text={['1. 选择已在设置中登记的 Blender 版本。', '2. 点击“添加 .blend”，从当前项目或系统文件选择器加入一个或多个文件。', '3. 为每个文件设置场景、帧范围、帧多开、分辨率和格式，最后点击“加入队列”。', '这些设置只作用于渲染进程内存，不会保存或改写源 .blend 文件。']} placement="bottom-start" width={350} /></div><p className="text-xs text-gray-500">设置仅在 Blender 内存中生效，不修改源文件</p></div><button title="关闭" className="h-8 w-8 p-0" onClick={onClose}><X className="mx-auto h-4 w-4" /></button></div>
+        <div className="flex min-h-[58px] items-center justify-between border-b border-gray-200 px-5 dark:border-gray-800"><div><div className="flex items-center gap-1.5"><h3 className="text-base font-semibold">新建渲染批次</h3><HelpAssistant title="创建渲染批次" text={['1. 选择已在设置中登记的 Blender 版本。', '2. 点击“添加 .blend”，从当前项目或系统文件选择器加入一个或多个文件。', '3. 为每个文件设置场景、帧范围、帧多开、分辨率和格式，最后点击“加入队列”。', '加入队列不会立即渲染；从左侧“开始/继续队列”手动启动，批次会按创建顺序依次执行。']} placement="bottom-start" width={350} /></div><p className="text-xs text-gray-500">设置仅在 Blender 内存中生效，不修改源文件</p></div><button title="关闭" className="h-8 w-8 p-0" onClick={onClose}><X className="mx-auto h-4 w-4" /></button></div>
         <div className="min-h-0 flex-1 overflow-auto p-5">
           <div className="grid grid-cols-2 gap-3 max-[620px]:grid-cols-1">
             <Field label="批次名称">
