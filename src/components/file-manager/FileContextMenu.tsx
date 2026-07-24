@@ -45,6 +45,8 @@ interface ContextMenuProps {
   onCreateFolder?: () => Promise<void> | void;
   onCreateCollection?: () => Promise<void> | void;
   canCreateCollection?: boolean;
+  onAddSelectionToCollection?: (collection?: FileInfo) => Promise<void> | void;
+  canAddSelectionToCollection?: boolean;
   onRenameCollection?: (file: FileInfo) => Promise<void> | void;
   onDeleteCollection?: (file: FileInfo) => Promise<void> | void;
   onOpenFile?: (file: FileInfo) => Promise<void> | void;
@@ -327,6 +329,8 @@ export function FileContextMenu({
   onCreateFolder,
   onCreateCollection,
   canCreateCollection = false,
+  onAddSelectionToCollection,
+  canAddSelectionToCollection = false,
   onRenameCollection,
   onDeleteCollection,
   onOpenFile,
@@ -521,6 +525,15 @@ export function FileContextMenu({
     onClose();
   };
 
+  const handleAddSelectionToCollection = async (collection?: FileInfo) => {
+    try {
+      await onAddSelectionToCollection?.(collection);
+    } catch (error) {
+      console.error('Failed to add items to collection:', error);
+    }
+    onClose();
+  };
+
   const handleRenameCollection = async () => {
     try {
       await onRenameCollection?.(file);
@@ -627,6 +640,16 @@ export function FileContextMenu({
           <>
             <MenuDivider />
 
+            <MenuItem
+              onClick={() => handleAddSelectionToCollection(file)}
+              icon={<FolderInput className="w-4 h-4" />}
+              disabled={!canAddSelectionToCollection}
+            >
+              将选中项目加入集合
+            </MenuItem>
+
+            <MenuDivider />
+
             <MenuItem onClick={handleRenameCollection} icon={<FileEdit className="w-4 h-4" />}>
               重命名集合
             </MenuItem>
@@ -702,6 +725,14 @@ export function FileContextMenu({
           disabled={!canCreateCollection}
         >
           创建集合
+        </MenuItem>
+
+        <MenuItem
+          onClick={() => handleAddSelectionToCollection()}
+          icon={<FolderInput className="w-4 h-4" />}
+          disabled={!canAddSelectionToCollection}
+        >
+          加入已有集合...
         </MenuItem>
 
         <MenuDivider />

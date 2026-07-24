@@ -84,7 +84,8 @@ export function compactDraggedPaths(paths: string[]): string[] {
 
 export function setFileDragData(dataTransfer: DataTransfer, paths: string[]): void {
   const compactPaths = compactDraggedPaths(paths);
-  dataTransfer.effectAllowed = 'move';
+  // Files can move into real folders or be copied as references into collections.
+  dataTransfer.effectAllowed = 'copyMove';
   dataTransfer.setData(INTERNAL_FILE_DRAG_MIME, JSON.stringify(compactPaths));
   dataTransfer.setData('text/plain', compactPaths.map(getFileNameFromPath).join('\n'));
 }

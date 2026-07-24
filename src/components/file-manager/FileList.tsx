@@ -18,7 +18,7 @@ import {
   FileContextMenu,
 } from "./FileContextMenu";
 import { FileDetailsDialog } from "./FileDetailsView";
-import { ConfirmDialog, InputDialog } from "../Dialog";
+import { ConfirmDialog, Dialog, InputDialog } from "../Dialog";
 import {
   canMovePathsToDirectory,
   compactDraggedPaths,
@@ -187,6 +187,17 @@ function getGridColumnCount(width: number): number {
 
 type ResolveFileTags = (filePath: string) => Tag[];
 type ResolveRelatedMdtCount = (filePath: string) => number;
+interface CollectionMemberUpdate {
+  collection_id: string;
+  added_count: number;
+  already_present_count: number;
+  item_count: number;
+}
+interface ProjectCollectionOption {
+  id: string;
+  name: string;
+  item_count: number;
+}
 type SelectFileHandler = (
   path: string,
   multi: boolean,
@@ -210,8 +221,10 @@ const ListRow = memo(function ListRow({
   onDragEnd,
   getExternalDragPaths,
   onDropToDirectory,
+  onDropToCollection,
   onHoverDirectory,
   canDropToDirectory,
+  canDropToCollection,
   getDraggedPathsFromDataTransfer,
 }: {
   file: FileInfo;
@@ -234,8 +247,10 @@ const ListRow = memo(function ListRow({
   onDragEnd: () => void;
   getExternalDragPaths: (file: FileInfo) => string[];
   onDropToDirectory: (targetDir: string, dragPaths?: string[]) => Promise<void>;
+  onDropToCollection: (collection: FileInfo, dragPaths?: string[]) => Promise<void>;
   onHoverDirectory: (targetDir: string) => void;
   canDropToDirectory: (targetDir: string, dragPaths?: string[]) => boolean;
+  canDropToCollection: (collection: FileInfo, dragPaths?: string[]) => boolean;
   getDraggedPathsFromDataTransfer: (
     dataTransfer: DataTransfer | null,
   ) => string[];
@@ -243,7 +258,8 @@ const ListRow = memo(function ListRow({
   const isSelected = selectedFiles.has(file.path);
   const fileTagList = resolveFileTags(file.path);
   const relatedMdtCount = resolveRelatedMdtCount(file.path);
-  const isDropTarget = file.is_dir && dropTargetPath === file.path;
+  const isManualCollection = file.entry_kind === "manual_collection";
+  const isDropTarget = (file.is_dir || isManualCollection) && dropTargetPath === file.path;
   const excluded = isExcluded(file);
   const externalDragZoneToneClass = isSelected
     ? "border-blue-500/25 bg-blue-950/18 text-blue-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.24)] dark:border-blue-300/20 dark:bg-blue-950/35 dark:text-blue-100"
@@ -288,17 +304,21 @@ const ListRow = memo(function ListRow({
         const internalDragPaths = getDraggedPathsFromDataTransfer(
           e.dataTransfer,
         );
-        if (isVirtualFile(file) || !file.is_dir || !canDropToDirectory(file.path, internalDragPaths))
+        const canDropOnCollection = isManualCollection && canDropToCollection(file, internalDragPaths);
+        const canDropOnDirectory = !isVirtualFile(file) && file.is_dir && canDropToDirectory(file.path, internalDragPaths);
+        if (!canDropOnCollection && !canDropOnDirectory)
           return;
         e.preventDefault();
-        e.dataTransfer.dropEffect = "move";
+        e.dataTransfer.dropEffect = canDropOnCollection ? "copy" : "move";
         onHoverDirectory(file.path);
       }}
       onDragEnter={(e) => {
         const internalDragPaths = getDraggedPathsFromDataTransfer(
           e.dataTransfer,
         );
-        if (isVirtualFile(file) || !file.is_dir || !canDropToDirectory(file.path, internalDragPaths))
+        const canDropOnCollection = isManualCollection && canDropToCollection(file, internalDragPaths);
+        const canDropOnDirectory = !isVirtualFile(file) && file.is_dir && canDropToDirectory(file.path, internalDragPaths);
+        if (!canDropOnCollection && !canDropOnDirectory)
           return;
         e.preventDefault();
         onHoverDirectory(file.path);
@@ -307,11 +327,17 @@ const ListRow = memo(function ListRow({
         const internalDragPaths = getDraggedPathsFromDataTransfer(
           e.dataTransfer,
         );
-        if (isVirtualFile(file) || !file.is_dir || !canDropToDirectory(file.path, internalDragPaths))
+        const canDropOnCollection = isManualCollection && canDropToCollection(file, internalDragPaths);
+        const canDropOnDirectory = !isVirtualFile(file) && file.is_dir && canDropToDirectory(file.path, internalDragPaths);
+        if (!canDropOnCollection && !canDropOnDirectory)
           return;
         e.preventDefault();
         e.stopPropagation();
-        await onDropToDirectory(file.path, internalDragPaths);
+        if (canDropOnCollection) {
+          await onDropToCollection(file, internalDragPaths);
+        } else {
+          await onDropToDirectory(file.path, internalDragPaths);
+        }
       }}
     >
       {isSelected && (
@@ -346,6 +372,11 @@ const ListRow = memo(function ListRow({
                   {relatedMdtCount > 0 && (
                     <span className="shrink-0 rounded-full bg-sky-100 px-1.5 py-0.5 text-[10px] text-sky-700 dark:bg-sky-900/30 dark:text-sky-200">
                       MDT {relatedMdtCount}
+                    </span>
+                  )}
+                  {isManualCollection && isDropTarget && (
+                    <span className="shrink-0 rounded-full bg-violet-600 px-1.5 py-0.5 text-[10px] font-medium text-white dark:bg-violet-500">
+                      松开加入
                     </span>
                   )}
                 </div>
@@ -433,8 +464,10 @@ function ListView({
   onDragEnd,
   getExternalDragPaths,
   onDropToDirectory,
+  onDropToCollection,
   onHoverDirectory,
   canDropToDirectory,
+  canDropToCollection,
   getDraggedPathsFromDataTransfer,
   suppressInteraction,
   dropTargetPath,
@@ -461,8 +494,10 @@ function ListView({
   onDragEnd: () => void;
   getExternalDragPaths: (file: FileInfo) => string[];
   onDropToDirectory: (targetDir: string, dragPaths?: string[]) => Promise<void>;
+  onDropToCollection: (collection: FileInfo, dragPaths?: string[]) => Promise<void>;
   onHoverDirectory: (targetDir: string) => void;
   canDropToDirectory: (targetDir: string, dragPaths?: string[]) => boolean;
+  canDropToCollection: (collection: FileInfo, dragPaths?: string[]) => boolean;
   getDraggedPathsFromDataTransfer: (
     dataTransfer: DataTransfer | null,
   ) => string[];
@@ -631,8 +666,10 @@ function ListView({
                   onDragEnd={onDragEnd}
                   getExternalDragPaths={getExternalDragPaths}
                   onDropToDirectory={onDropToDirectory}
+                  onDropToCollection={onDropToCollection}
                   onHoverDirectory={onHoverDirectory}
                   canDropToDirectory={canDropToDirectory}
+                  canDropToCollection={canDropToCollection}
                   getDraggedPathsFromDataTransfer={
                     getDraggedPathsFromDataTransfer
                   }
@@ -662,8 +699,10 @@ const GridCard = memo(function GridCard({
   onDragEnd,
   getExternalDragPaths,
   onDropToDirectory,
+  onDropToCollection,
   onHoverDirectory,
   canDropToDirectory,
+  canDropToCollection,
   getDraggedPathsFromDataTransfer,
 }: {
   file: FileInfo;
@@ -685,8 +724,10 @@ const GridCard = memo(function GridCard({
   onDragEnd: () => void;
   getExternalDragPaths: (file: FileInfo) => string[];
   onDropToDirectory: (targetDir: string, dragPaths?: string[]) => Promise<void>;
+  onDropToCollection: (collection: FileInfo, dragPaths?: string[]) => Promise<void>;
   onHoverDirectory: (targetDir: string) => void;
   canDropToDirectory: (targetDir: string, dragPaths?: string[]) => boolean;
+  canDropToCollection: (collection: FileInfo, dragPaths?: string[]) => boolean;
   getDraggedPathsFromDataTransfer: (
     dataTransfer: DataTransfer | null,
   ) => string[];
@@ -694,7 +735,8 @@ const GridCard = memo(function GridCard({
   const isSelected = selectedFiles.has(file.path);
   const fileTagList = resolveFileTags(file.path);
   const relatedMdtCount = resolveRelatedMdtCount(file.path);
-  const isDropTarget = file.is_dir && dropTargetPath === file.path;
+  const isManualCollection = file.entry_kind === "manual_collection";
+  const isDropTarget = (file.is_dir || isManualCollection) && dropTargetPath === file.path;
   const excluded = isExcluded(file);
   const externalDragHandleVisibilityClass = isSelected
     ? "opacity-100"
@@ -737,17 +779,21 @@ const GridCard = memo(function GridCard({
         const internalDragPaths = getDraggedPathsFromDataTransfer(
           e.dataTransfer,
         );
-        if (isVirtualFile(file) || !file.is_dir || !canDropToDirectory(file.path, internalDragPaths))
+        const canDropOnCollection = isManualCollection && canDropToCollection(file, internalDragPaths);
+        const canDropOnDirectory = !isVirtualFile(file) && file.is_dir && canDropToDirectory(file.path, internalDragPaths);
+        if (!canDropOnCollection && !canDropOnDirectory)
           return;
         e.preventDefault();
-        e.dataTransfer.dropEffect = "move";
+        e.dataTransfer.dropEffect = canDropOnCollection ? "copy" : "move";
         onHoverDirectory(file.path);
       }}
       onDragEnter={(e) => {
         const internalDragPaths = getDraggedPathsFromDataTransfer(
           e.dataTransfer,
         );
-        if (isVirtualFile(file) || !file.is_dir || !canDropToDirectory(file.path, internalDragPaths))
+        const canDropOnCollection = isManualCollection && canDropToCollection(file, internalDragPaths);
+        const canDropOnDirectory = !isVirtualFile(file) && file.is_dir && canDropToDirectory(file.path, internalDragPaths);
+        if (!canDropOnCollection && !canDropOnDirectory)
           return;
         e.preventDefault();
         onHoverDirectory(file.path);
@@ -756,17 +802,28 @@ const GridCard = memo(function GridCard({
         const internalDragPaths = getDraggedPathsFromDataTransfer(
           e.dataTransfer,
         );
-        if (isVirtualFile(file) || !file.is_dir || !canDropToDirectory(file.path, internalDragPaths))
+        const canDropOnCollection = isManualCollection && canDropToCollection(file, internalDragPaths);
+        const canDropOnDirectory = !isVirtualFile(file) && file.is_dir && canDropToDirectory(file.path, internalDragPaths);
+        if (!canDropOnCollection && !canDropOnDirectory)
           return;
         e.preventDefault();
         e.stopPropagation();
-        await onDropToDirectory(file.path, internalDragPaths);
+        if (canDropOnCollection) {
+          await onDropToCollection(file, internalDragPaths);
+        } else {
+          await onDropToDirectory(file.path, internalDragPaths);
+        }
       }}
     >
       <div className="absolute right-2 top-2 flex items-center gap-1">
         {isSelected && (
           <div className="rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium text-white dark:bg-blue-500">
             已选中
+          </div>
+        )}
+        {isManualCollection && isDropTarget && (
+          <div className="rounded-full bg-violet-600 px-1.5 py-0.5 text-[10px] font-medium text-white dark:bg-violet-500">
+            松开加入
           </div>
         )}
         {relatedMdtCount > 0 && (
@@ -921,8 +978,10 @@ function GridView({
   onDragEnd,
   getExternalDragPaths,
   onDropToDirectory,
+  onDropToCollection,
   onHoverDirectory,
   canDropToDirectory,
+  canDropToCollection,
   getDraggedPathsFromDataTransfer,
   suppressInteraction,
   dropTargetPath,
@@ -946,8 +1005,10 @@ function GridView({
   onDragEnd: () => void;
   getExternalDragPaths: (file: FileInfo) => string[];
   onDropToDirectory: (targetDir: string, dragPaths?: string[]) => Promise<void>;
+  onDropToCollection: (collection: FileInfo, dragPaths?: string[]) => Promise<void>;
   onHoverDirectory: (targetDir: string) => void;
   canDropToDirectory: (targetDir: string, dragPaths?: string[]) => boolean;
+  canDropToCollection: (collection: FileInfo, dragPaths?: string[]) => boolean;
   getDraggedPathsFromDataTransfer: (
     dataTransfer: DataTransfer | null,
   ) => string[];
@@ -1020,22 +1081,22 @@ function GridView({
         e.preventDefault();
         onBackgroundContextMenu(e.clientX, e.clientY);
       }}
-      onDragOver={(e) => {
-        const internalDragPaths = getDraggedPathsFromDataTransfer(
-          e.dataTransfer,
-        );
-        if (!canDropToDirectory(currentPath, internalDragPaths)) return;
-        e.preventDefault();
+        onDragOver={(e) => {
+          const internalDragPaths = getDraggedPathsFromDataTransfer(
+            e.dataTransfer,
+          );
+          if (!canDropToDirectory(currentPath, internalDragPaths)) return;
+          e.preventDefault();
         e.dataTransfer.dropEffect = "move";
         onHoverDirectory(currentPath);
       }}
-      onDrop={async (e) => {
-        const internalDragPaths = getDraggedPathsFromDataTransfer(
-          e.dataTransfer,
-        );
-        if (!canDropToDirectory(currentPath, internalDragPaths)) return;
-        e.preventDefault();
-        await onDropToDirectory(currentPath, internalDragPaths);
+        onDrop={async (e) => {
+          const internalDragPaths = getDraggedPathsFromDataTransfer(
+            e.dataTransfer,
+          );
+          if (!canDropToDirectory(currentPath, internalDragPaths)) return;
+          e.preventDefault();
+          await onDropToDirectory(currentPath, internalDragPaths);
       }}
     >
       {files.length === 0 ? (
@@ -1070,9 +1131,11 @@ function GridView({
                 onDragStart={onDragStart}
                 onDragEnd={onDragEnd}
                 getExternalDragPaths={getExternalDragPaths}
-                onDropToDirectory={onDropToDirectory}
-                onHoverDirectory={onHoverDirectory}
-                canDropToDirectory={canDropToDirectory}
+                  onDropToDirectory={onDropToDirectory}
+                  onDropToCollection={onDropToCollection}
+                  onHoverDirectory={onHoverDirectory}
+                  canDropToDirectory={canDropToDirectory}
+                  canDropToCollection={canDropToCollection}
                 getDraggedPathsFromDataTransfer={
                   getDraggedPathsFromDataTransfer
                 }
@@ -1203,6 +1266,17 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
     collectionId: null,
     name: "",
   });
+  const [addToCollectionDialog, setAddToCollectionDialog] = useState<{
+    isOpen: boolean;
+    collectionId: string | null;
+    memberPaths: string[];
+  }>({
+    isOpen: false,
+    collectionId: null,
+    memberPaths: [],
+  });
+  const [isAddingToCollection, setIsAddingToCollection] = useState(false);
+  const [collectionPickerOptions, setCollectionPickerOptions] = useState<ProjectCollectionOption[]>([]);
   const [resizingColumnKey, setResizingColumnKey] = useState<string | null>(
     null,
   );
@@ -1294,6 +1368,9 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
       (file) => getParentPath(file.path) === currentPath,
     );
   }, [currentPath, realSelectedFileInfos, searchQuery]);
+  const canAddSelectionToCollection = Boolean(
+    projectPath && realSelectedFileInfos.length > 0,
+  );
 
   useEffect(() => {
     const anchorPath = selectionAnchorPathRef.current;
@@ -1561,6 +1638,8 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
   const handleContextMenu = useCallback(
     (file: FileInfo, x: number, y: number) => {
       const selectionIncludesTarget = selectedFiles.has(file.path);
+      const keepSelectionForCollectionTarget =
+        file.entry_kind === "manual_collection" && realSelectedFileInfos.length > 0;
       const now = Date.now();
       const lastTrigger = lastFileContextMenuTriggerRef.current;
       const shouldOpenSystemMenu =
@@ -1568,7 +1647,7 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
         lastTrigger?.path === file.path &&
         now - lastTrigger.timestamp <= SYSTEM_CONTEXT_DOUBLE_TRIGGER_MS;
 
-      if (!selectionIncludesTarget) {
+      if (!selectionIncludesTarget && !keepSelectionForCollectionTarget) {
         projectStore.setState({
           selectedFiles: new Set([file.path]),
         });
@@ -1589,7 +1668,7 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
       };
       setContextMenu({ kind: "file", file, x, y });
     },
-    [openSystemContextMenu, projectStore, selectedFiles],
+    [openSystemContextMenu, projectStore, realSelectedFileInfos.length, selectedFiles],
   );
 
   const handleBackgroundContextMenu = useCallback(
@@ -1758,13 +1837,12 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
         if (collectionDialog.mode === "create") {
           await invoke("create_collection", {
             projectPath,
-            directoryPath: currentPath,
             name,
             memberPaths: collectionDialog.memberPaths,
           });
           showToast({
             title: "集合已创建",
-            message: name,
+            message: `${name} · 已显示在项目根目录`,
             tone: "success",
           });
         } else if (collectionDialog.collectionId) {
@@ -1829,6 +1907,164 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
       });
     }
   }, [deleteCollectionDialog, projectPath, refresh, showToast]);
+
+  const addItemsToCollection = useCallback(
+    async (collection: Pick<FileInfo, "collection_id" | "name">, memberPaths: string[]) => {
+      if (!projectPath || !collection.collection_id) {
+        return false;
+      }
+
+      const uniqueMemberPaths = Array.from(
+        new Set(memberPaths.filter((path) => Boolean(path))),
+      );
+      if (uniqueMemberPaths.length === 0) {
+        showToast({
+          title: "没有可加入的项目",
+          message: "集合只能收纳真实文件或文件夹。",
+          tone: "warning",
+        });
+        return false;
+      }
+
+      setIsAddingToCollection(true);
+      try {
+        const result = await invoke<CollectionMemberUpdate>("add_collection_items", {
+          projectPath,
+          collectionId: collection.collection_id,
+          memberPaths: uniqueMemberPaths,
+        });
+        await refresh();
+
+        if (result.added_count > 0) {
+          const duplicateMessage = result.already_present_count > 0
+            ? `，${result.already_present_count} 项已存在`
+            : "";
+          showToast({
+            title: "已加入集合",
+            message: `${collection.name} · 新增 ${result.added_count} 项${duplicateMessage}`,
+            tone: "success",
+          });
+        } else {
+          showToast({
+            title: "集合没有变化",
+            message: "选中的项目已全部在该集合中。",
+            tone: "warning",
+          });
+        }
+        return true;
+      } catch (error) {
+        console.error("Failed to add items to collection:", error);
+        showToast({
+          title: "加入集合失败",
+          message: String(error),
+          tone: "error",
+        });
+        return false;
+      } finally {
+        setIsAddingToCollection(false);
+      }
+    },
+    [projectPath, refresh, showToast],
+  );
+
+  const handleAddSelectionToCollection = useCallback(
+    async (targetCollection?: FileInfo) => {
+      const memberPaths = realSelectedFileInfos.map((file) => file.path);
+      if (!projectPath || memberPaths.length === 0) {
+        showToast({
+          title: "请选择项目",
+          message: "先选择要加入集合的真实文件或文件夹。",
+          tone: "warning",
+        });
+        return;
+      }
+
+      if (
+        targetCollection?.entry_kind === "manual_collection" &&
+        targetCollection.collection_id
+      ) {
+        await addItemsToCollection(targetCollection, memberPaths);
+        return;
+      }
+
+      try {
+        const collections = await invoke<ProjectCollectionOption[]>("list_project_collections", {
+          projectPath,
+        });
+        if (collections.length === 0) {
+          showToast({
+            title: "还没有集合",
+            message: "请先创建集合。",
+            tone: "warning",
+          });
+          return;
+        }
+
+        setCollectionPickerOptions(collections);
+        setAddToCollectionDialog({
+          isOpen: true,
+          collectionId: collections[0].id,
+          memberPaths,
+        });
+      } catch (error) {
+        console.error("Failed to load project collections:", error);
+        showToast({
+          title: "读取集合失败",
+          message: String(error),
+          tone: "error",
+        });
+      }
+    },
+    [addItemsToCollection, projectPath, realSelectedFileInfos, showToast],
+  );
+
+  const handleCloseAddToCollectionDialog = useCallback(() => {
+    if (isAddingToCollection) {
+      return;
+    }
+    setAddToCollectionDialog({
+      isOpen: false,
+      collectionId: null,
+      memberPaths: [],
+    });
+    setCollectionPickerOptions([]);
+  }, [isAddingToCollection]);
+
+  const handleConfirmAddToCollection = useCallback(async () => {
+    const collection = collectionPickerOptions.find(
+      (item) => item.id === addToCollectionDialog.collectionId,
+    );
+    if (!collection) {
+      showToast({
+        title: "请选择集合",
+        message: "目标集合已不存在，请刷新后重试。",
+        tone: "warning",
+      });
+      return;
+    }
+
+    const succeeded = await addItemsToCollection(
+      { collection_id: collection.id, name: collection.name },
+      addToCollectionDialog.memberPaths,
+    );
+    if (succeeded) {
+      setAddToCollectionDialog({
+        isOpen: false,
+        collectionId: null,
+        memberPaths: [],
+      });
+      setCollectionPickerOptions([]);
+    }
+  }, [addItemsToCollection, addToCollectionDialog, collectionPickerOptions, showToast]);
+
+  const handleDropToCollection = useCallback(
+    async (collection: FileInfo, dragPaths?: string[]) => {
+      const memberPaths = dragPaths && dragPaths.length > 0 ? dragPaths : draggedPaths;
+      clearDropHoverState();
+      await addItemsToCollection(collection, memberPaths);
+    },
+    [addItemsToCollection, clearDropHoverState, draggedPaths],
+  );
 
   const stopColumnResize = useCallback(() => {
     columnResizeStateRef.current = null;
@@ -2097,6 +2333,18 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
     [draggedPaths],
   );
 
+  const canDropToCollection = useCallback(
+    (collection: FileInfo, dragPaths = draggedPaths) => {
+      return Boolean(
+        projectPath &&
+          collection.entry_kind === "manual_collection" &&
+          collection.collection_id &&
+          compactDraggedPaths(dragPaths).length > 0,
+      );
+    },
+    [draggedPaths, projectPath],
+  );
+
   const handleDragStart = useCallback(
     (file: FileInfo, event: React.DragEvent<HTMLDivElement>) => {
       if (isVirtualFile(file)) {
@@ -2321,8 +2569,10 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
           onDragEnd={handleDragEnd}
           getExternalDragPaths={getDraggedItems}
           onDropToDirectory={handleDropToDirectory}
+          onDropToCollection={handleDropToCollection}
           onHoverDirectory={handleHoverDirectory}
           canDropToDirectory={canDropToDirectory}
+          canDropToCollection={canDropToCollection}
           getDraggedPathsFromDataTransfer={getDraggedPathsFromDataTransfer}
           suppressInteraction={suppressInteraction}
           dropTargetPath={dropTargetPath}
@@ -2347,8 +2597,10 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
           onDragEnd={handleDragEnd}
           getExternalDragPaths={getDraggedItems}
           onDropToDirectory={handleDropToDirectory}
+          onDropToCollection={handleDropToCollection}
           onHoverDirectory={handleHoverDirectory}
           canDropToDirectory={canDropToDirectory}
+          canDropToCollection={canDropToCollection}
           getDraggedPathsFromDataTransfer={getDraggedPathsFromDataTransfer}
           suppressInteraction={suppressInteraction}
           dropTargetPath={dropTargetPath}
@@ -2376,6 +2628,8 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
           onCreateFolder={handleCreateFolder}
           onCreateCollection={handleOpenCreateCollectionDialog}
           canCreateCollection={canCreateCollectionFromSelection}
+          onAddSelectionToCollection={handleAddSelectionToCollection}
+          canAddSelectionToCollection={canAddSelectionToCollection}
           onRenameCollection={handleOpenRenameCollectionDialog}
           onDeleteCollection={handleOpenDeleteCollectionDialog}
           onOpenFile={handleSystemOpenFile}
@@ -2440,11 +2694,64 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
         disabled={isSavingCollection}
         description={
           collectionDialog.mode === "create"
-            ? `将收纳 ${collectionDialog.memberPaths.length} 个项目，磁盘文件不会移动。`
+            ? `将显示在项目根目录并收纳 ${collectionDialog.memberPaths.length} 个项目，磁盘文件不会移动。`
             : "只修改集合名称，不影响真实文件。"
         }
         selectOnOpen
       />
+
+      <Dialog
+        isOpen={addToCollectionDialog.isOpen}
+        onClose={handleCloseAddToCollectionDialog}
+        title="加入集合"
+        size="sm"
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={handleCloseAddToCollectionDialog}
+              disabled={isAddingToCollection}
+              className="rounded-lg px-4 py-2 text-sm text-gray-700 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-gray-300 dark:hover:bg-gray-800"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleConfirmAddToCollection()}
+              disabled={isAddingToCollection || !addToCollectionDialog.collectionId}
+              className="rounded-lg bg-blue-600 px-4 py-2 text-sm text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isAddingToCollection ? "加入中..." : "加入"}
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <label className="block">
+            <span className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">目标集合</span>
+            <select
+              value={addToCollectionDialog.collectionId || ""}
+              disabled={isAddingToCollection}
+              onChange={(event) =>
+                setAddToCollectionDialog((state) => ({
+                  ...state,
+                  collectionId: event.target.value || null,
+                }))
+              }
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm text-gray-900 outline-none transition-colors focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+            >
+              {collectionPickerOptions.map((collection) => (
+                <option key={collection.id} value={collection.id}>
+                  {collection.name} · {collection.item_count ?? 0} 项
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            将收纳 {addToCollectionDialog.memberPaths.length} 个项目，磁盘文件不会移动。
+          </p>
+        </div>
+      </Dialog>
 
       <ConfirmDialog
         isOpen={deleteCollectionDialog.isOpen}

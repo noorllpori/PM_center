@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
-import { Box, ChevronDown, ChevronRight, ExternalLink, FileIcon, FileText, Film, FolderIcon, Hash, Image, Link2, Maximize2, Music4, RefreshCw, Tag as TagIcon } from 'lucide-react';
+import { Box, ChevronDown, ChevronRight, ExternalLink, FileIcon, FileText, Film, FolderIcon, Hash, Image, Layers, Link2, Maximize2, Music4, RefreshCw, Tag as TagIcon } from 'lucide-react';
 import { Dialog } from '../Dialog';
 import {
   BlenderSceneRenderEdit,
@@ -19,6 +19,7 @@ import { useOptionalProjectStore } from '../../stores/projectStore';
 import { useWorkspaceTabStore } from '../../stores/workspaceTabStore';
 import { getMdtRelativePath, type MdtReferenceEntry } from '../../utils/mdt';
 import { cacheResolvedPreviewThumbnail } from './thumbnailCache';
+import { isVirtualFile } from '../../utils/collections';
 
 interface FileDetailsContentProps {
   file: FileInfo | null;
@@ -711,6 +712,95 @@ function RelatedMdtSection({
   );
 }
 
+function formatVirtualEntryTimestamp(timestamp: number | undefined) {
+  if (!timestamp) {
+    return '-';
+  }
+
+  return new Date(timestamp * 1000).toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function VirtualEntryDetails({ file, view }: { file: FileInfo; view: 'panel' | 'dialog' }) {
+  const isCollection = file.entry_kind === 'manual_collection';
+  const sequence = file.sequence;
+  const directoryPath = file.directory_path || sequence?.directory_path || null;
+  const entryLabel = isCollection ? '集合' : '图片序列';
+  const EntryIcon = isCollection ? Layers : Film;
+
+  const entries = isCollection
+    ? [
+        ['成员数量', `${file.item_count ?? file.collection_member_paths?.length ?? 0} 个`],
+        ['创建时间', formatVirtualEntryTimestamp(file.created_at)],
+        ['修改时间', formatVirtualEntryTimestamp(file.updated_at)],
+      ]
+    : [
+        ['帧范围', sequence ? `${sequence.start_frame}-${sequence.end_frame}` : '-'],
+        ['有效帧', `${sequence?.frame_count ?? file.item_count ?? 0} 帧`],
+        ['缺失帧', `${sequence?.missing_count ?? 0} 帧`],
+        ['格式', sequence?.extension?.toUpperCase() || '-'],
+      ];
+
+  return (
+    <div className={`h-full flex flex-col bg-white dark:bg-gray-900 ${view === 'panel' ? 'overflow-auto' : ''}`}>
+      <div className="flex justify-center border-b border-gray-200 bg-gray-50 py-8 dark:border-gray-700 dark:bg-gray-800">
+        <EntryIcon className={`h-16 w-16 ${isCollection ? 'text-violet-500' : 'text-teal-500'}`} />
+      </div>
+
+      <div className="space-y-4 p-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <h3 className="min-w-0 break-all text-sm font-medium text-gray-900 dark:text-gray-100">{file.name}</h3>
+            <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium ${isCollection ? 'bg-violet-100 text-violet-700 dark:bg-violet-950/50 dark:text-violet-200' : 'bg-teal-100 text-teal-700 dark:bg-teal-950/50 dark:text-teal-200'}`}>
+              {entryLabel}
+            </span>
+          </div>
+          <p className="mt-1 break-all text-xs text-gray-500 dark:text-gray-400">{file.path}</p>
+        </div>
+
+        <div className="border-t border-gray-200 pt-4 dark:border-gray-700">
+          <div className="mb-3 flex items-center gap-2">
+            <Hash className="h-4 w-4 text-gray-400" />
+            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{entryLabel}信息</span>
+          </div>
+          <div className="space-y-3">
+            {entries.map(([label, value]) => (
+              <div key={label} className="flex items-start gap-3 text-sm">
+                <span className="min-w-[72px] text-gray-500 dark:text-gray-400">{label}</span>
+                <span className="min-w-0 flex-1 break-all text-right text-gray-900 dark:text-gray-100">{value}</span>
+              </div>
+            ))}
+            <div className="flex items-start gap-3 text-sm">
+              <span className="min-w-[72px] text-gray-500 dark:text-gray-400">所属目录</span>
+              <span className="min-w-0 flex-1 break-all text-right text-gray-900 dark:text-gray-100">{directoryPath || '-'}</span>
+            </div>
+          </div>
+        </div>
+
+        {directoryPath && (
+          <div className="border-t border-gray-200 pt-4 dark:border-gray-700">
+            <button
+              type="button"
+              className="flex w-full items-center justify-center gap-2 rounded bg-gray-100 px-3 py-2 text-sm text-gray-700 transition-colors hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
+              onClick={() => {
+                void invoke('open_path', { path: directoryPath });
+              }}
+            >
+              <ExternalLink className="h-4 w-4" />
+              打开所属目录
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function FileDetailsContent({
   file,
   fileTagList,
@@ -718,7 +808,11 @@ function FileDetailsContent({
   view,
   selectedCount = 0,
 }: FileDetailsContentProps) {
-  const { details, isLoading, isRefreshing, errorMessage, refresh, replaceDetails } = useFileDetails(file, view);
+  const isVirtualEntry = Boolean(file && isVirtualFile(file));
+  const { details, isLoading, isRefreshing, errorMessage, refresh, replaceDetails } = useFileDetails(
+    isVirtualEntry ? null : file,
+    view,
+  );
   const projectPath = useOptionalProjectStore((state) => state.projectPath);
   const openFileInTab = useWorkspaceTabStore((state) => state.openFileInTab);
   const [detailsModalItem, setDetailsModalItem] = useState<FileDetailsResponse['sections'][number]['items'][number] | null>(null);
@@ -776,6 +870,10 @@ function FileDetailsContent({
         </div>
       </div>
     );
+  }
+
+  if (isVirtualEntry) {
+    return <VirtualEntryDetails file={file} view={view} />;
   }
 
   return (

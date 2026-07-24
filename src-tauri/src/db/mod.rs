@@ -51,6 +51,14 @@ pub struct Collection {
     pub member_paths: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CollectionMemberUpdate {
+    pub collection_id: String,
+    pub added_count: i64,
+    pub already_present_count: i64,
+    pub item_count: i64,
+}
+
 // 文件变更记录
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileChange {
@@ -440,10 +448,7 @@ impl Database {
         })
     }
 
-    pub fn list_collections(
-        &self,
-        directory_path: &str,
-    ) -> Result<Vec<Collection>, rusqlite::Error> {
+    pub fn list_all_collections(&self) -> Result<Vec<Collection>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             r#"
@@ -451,14 +456,13 @@ impl Database {
                    COUNT(ci.file_path) AS item_count
             FROM collections c
             LEFT JOIN collection_items ci ON ci.collection_id = c.id
-            WHERE c.directory_path = ?1
             GROUP BY c.id, c.directory_path, c.name, c.created_at, c.updated_at
             ORDER BY lower(c.name)
             "#,
         )?;
 
         let mut collections = stmt
-            .query_map(params![directory_path], |row| {
+            .query_map([], |row| {
                 Ok(Collection {
                     id: row.get(0)?,
                     directory_path: row.get(1)?,
@@ -487,6 +491,82 @@ impl Database {
     ) -> Result<Vec<String>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         Self::get_collection_item_paths_with_conn(&conn, collection_id)
+    }
+
+    pub fn add_collection_items(
+        &self,
+        collection_id: &str,
+        member_paths: &[String],
+    ) -> Result<CollectionMemberUpdate, rusqlite::Error> {
+        let mut unique_member_paths = Vec::new();
+        let mut seen_paths = std::collections::HashSet::new();
+        for member_path in member_paths {
+            let member_path = member_path.trim();
+            if member_path.is_empty() || !seen_paths.insert(member_path.to_string()) {
+                continue;
+            }
+            unique_member_paths.push(member_path.to_string());
+        }
+
+        if unique_member_paths.is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "collection members are required".to_string(),
+            ));
+        }
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.query_row(
+            "SELECT id FROM collections WHERE id = ?1",
+            params![collection_id],
+            |row| row.get::<_, String>(0),
+        )?;
+
+        let mut next_position = tx.query_row(
+            "SELECT COALESCE(MAX(position), -1) FROM collection_items WHERE collection_id = ?1",
+            params![collection_id],
+            |row| row.get::<_, i64>(0),
+        )? + 1;
+        let mut added_count = 0_i64;
+        let mut already_present_count = 0_i64;
+
+        for member_path in unique_member_paths {
+            let inserted = tx.execute(
+                r#"
+                INSERT OR IGNORE INTO collection_items (collection_id, file_path, position)
+                VALUES (?1, ?2, ?3)
+                "#,
+                params![collection_id, member_path, next_position],
+            )?;
+
+            if inserted > 0 {
+                added_count += 1;
+                next_position += 1;
+            } else {
+                already_present_count += 1;
+            }
+        }
+
+        if added_count > 0 {
+            tx.execute(
+                "UPDATE collections SET updated_at = ?1 WHERE id = ?2",
+                params![Self::current_timestamp(), collection_id],
+            )?;
+        }
+
+        let item_count = tx.query_row(
+            "SELECT COUNT(*) FROM collection_items WHERE collection_id = ?1",
+            params![collection_id],
+            |row| row.get::<_, i64>(0),
+        )?;
+        tx.commit()?;
+
+        Ok(CollectionMemberUpdate {
+            collection_id: collection_id.to_string(),
+            added_count,
+            already_present_count,
+            item_count,
+        })
     }
 
     pub fn rename_collection(
@@ -520,7 +600,10 @@ impl Database {
             "DELETE FROM collection_items WHERE collection_id = ?1",
             params![collection_id],
         )?;
-        tx.execute("DELETE FROM collections WHERE id = ?1", params![collection_id])?;
+        tx.execute(
+            "DELETE FROM collections WHERE id = ?1",
+            params![collection_id],
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -915,5 +998,61 @@ impl Database {
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(dates)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Database;
+
+    fn make_temp_project_path() -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("pm-center-db-test-{}", nonce))
+    }
+
+    #[test]
+    fn adding_collection_items_appends_new_members_without_duplicates() {
+        let project_path = make_temp_project_path();
+        std::fs::create_dir_all(&project_path).unwrap();
+        let database = Database::new(&project_path.to_string_lossy()).unwrap();
+        let collection = database
+            .create_collection(
+                "C:\\project",
+                "镜头",
+                &[
+                    "C:\\project\\a.png".to_string(),
+                    "C:\\project\\b.png".to_string(),
+                ],
+            )
+            .unwrap();
+
+        let update = database
+            .add_collection_items(
+                &collection.id,
+                &[
+                    "C:\\project\\b.png".to_string(),
+                    "C:\\project\\c.png".to_string(),
+                    "C:\\project\\c.png".to_string(),
+                ],
+            )
+            .unwrap();
+
+        assert_eq!(update.added_count, 1);
+        assert_eq!(update.already_present_count, 1);
+        assert_eq!(update.item_count, 3);
+        assert_eq!(
+            database.get_collection_item_paths(&collection.id).unwrap(),
+            vec![
+                "C:\\project\\a.png".to_string(),
+                "C:\\project\\b.png".to_string(),
+                "C:\\project\\c.png".to_string(),
+            ],
+        );
+
+        drop(database);
+        std::fs::remove_dir_all(project_path).unwrap();
     }
 }

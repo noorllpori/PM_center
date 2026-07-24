@@ -37,7 +37,7 @@ export interface WorkspaceTab {
   collection?: WorkspaceCollectionTabData;
 }
 
-const FILES_TAB_ID = 'files';
+export const FILES_TAB_ID = 'files';
 export const CACHE_MANAGER_TAB_ID = 'cache-manager';
 export const RENDER_CENTER_TAB_ID = 'render-center';
 

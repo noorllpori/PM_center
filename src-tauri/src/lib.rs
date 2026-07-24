@@ -26,7 +26,7 @@ mod tree_cache;
 mod watcher;
 
 use db::FileChange;
-use db::{Collection, Database, FileMetadata, Tag};
+use db::{Collection, CollectionMemberUpdate, Database, FileMetadata, Tag};
 use file_details::{
     get_blender_external_data, get_blender_preview_png, get_file_details,
     update_blender_scene_render,
@@ -702,16 +702,15 @@ async fn update_file_metadata(
 async fn create_collection(
     db_state: tauri::State<'_, DbState>,
     project_path: String,
-    directory_path: String,
     name: String,
     member_paths: Vec<String>,
 ) -> Result<Collection, String> {
     let db = get_or_create_db(&db_state, &project_path).await?;
-    db.create_collection(&directory_path, &name, &member_paths)
+    db.create_collection(&project_path, &name, &member_paths)
         .map_err(|e| {
             let message = e.to_string();
             if message.contains("UNIQUE constraint failed") {
-                "当前目录已存在同名集合".to_string()
+                "项目根目录已存在同名集合".to_string()
             } else {
                 message
             }
@@ -719,14 +718,12 @@ async fn create_collection(
 }
 
 #[tauri::command]
-async fn list_collections(
+async fn list_project_collections(
     db_state: tauri::State<'_, DbState>,
     project_path: String,
-    directory_path: String,
 ) -> Result<Vec<Collection>, String> {
     let db = get_or_create_db(&db_state, &project_path).await?;
-    db.list_collections(&directory_path)
-        .map_err(|e| e.to_string())
+    db.list_all_collections().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -748,6 +745,24 @@ async fn get_collection_items(
     }
 
     Ok(items)
+}
+
+#[tauri::command]
+async fn add_collection_items(
+    db_state: tauri::State<'_, DbState>,
+    project_path: String,
+    collection_id: String,
+    member_paths: Vec<String>,
+) -> Result<CollectionMemberUpdate, String> {
+    let db = get_or_create_db(&db_state, &project_path).await?;
+    db.add_collection_items(&collection_id, &member_paths)
+        .map_err(|error| {
+            if matches!(&error, rusqlite::Error::QueryReturnedNoRows) {
+                "集合不存在或已被删除".to_string()
+            } else {
+                error.to_string()
+            }
+        })
 }
 
 #[tauri::command]
@@ -1064,8 +1079,9 @@ pub fn run() {
             get_file_metadata,
             update_file_metadata,
             create_collection,
-            list_collections,
+            list_project_collections,
             get_collection_items,
+            add_collection_items,
             rename_collection,
             delete_collection,
             detect_python_envs,

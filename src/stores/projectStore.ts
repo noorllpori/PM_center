@@ -290,12 +290,18 @@ export function createProjectStore() {
 
         if (activeProjectPath) {
           try {
-            const collections = await invoke<ProjectCollectionInfo[]>('list_collections', {
+            const collections = await invoke<ProjectCollectionInfo[]>('list_project_collections', {
               projectPath: activeProjectPath,
-              directoryPath: path,
             });
 
-            manualCollectionFiles = collections.map(createManualCollectionFileInfo);
+            if (path === activeProjectPath) {
+              manualCollectionFiles = collections.map((collection) =>
+                createManualCollectionFileInfo({
+                  ...collection,
+                  directory_path: activeProjectPath,
+                }),
+              );
+            }
             for (const collection of collections) {
               for (const memberPath of collection.member_paths || []) {
                 manualHiddenPaths.add(memberPath);
