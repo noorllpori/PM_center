@@ -9,6 +9,7 @@ export interface PythonEnv {
   version?: string;     // Python 版本
   isSystem: boolean;    // 是否是系统 Python
   isVenv: boolean;      // 是否是虚拟环境
+  isEmbedded: boolean;  // 是否是随 PMC 安装的内置 Python
   venvPath?: string;    // 虚拟环境目录（如果是 venv）
 }
 
@@ -82,11 +83,13 @@ export const usePythonEnvStore = create<PythonEnvState>((set, get) => ({
       
       let mergedEnvs = Array.from(envMap.values());
       
-      // 排序：venv 优先显示在前面，然后按版本号排序（新版本在前）
+      // 排序：venv、PMC 内置环境优先，然后按版本号排序（新版本在前）
       mergedEnvs.sort((a, b) => {
         // venv 优先
         if (a.isVenv && !b.isVenv) return -1;
         if (!a.isVenv && b.isVenv) return 1;
+        if (a.isEmbedded && !b.isEmbedded) return -1;
+        if (!a.isEmbedded && b.isEmbedded) return 1;
         
         // 同类型按版本排序（新版本在前）
         const versionA = a.version || '0';
@@ -101,10 +104,11 @@ export const usePythonEnvStore = create<PythonEnvState>((set, get) => ({
       await store.set('pythonEnvs', mergedEnvs);
       await store.save();
       
-      // 如果没有选中环境，默认选第一个系统 Python 或第一个环境
-      if (!get().selectedEnvId && mergedEnvs.length > 0) {
-        const systemPython = mergedEnvs.find(e => e.isSystem);
-        await get().selectEnv(systemPython?.id || mergedEnvs[0].id);
+      // 如果先前选择的环境已消失，优先回退到 PMC 内置 Python。
+      const selectedEnvId = get().selectedEnvId;
+      if ((!selectedEnvId || !mergedEnvs.some((env) => env.id === selectedEnvId)) && mergedEnvs.length > 0) {
+        const preferredPython = mergedEnvs.find((env) => env.isEmbedded) || mergedEnvs.find((env) => env.isSystem);
+        await get().selectEnv(preferredPython?.id || mergedEnvs[0].id);
       }
     } catch (error) {
       console.error('Failed to detect Python envs:', error);

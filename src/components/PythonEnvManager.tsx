@@ -42,12 +42,12 @@ export function PythonEnvManager({ isOpen, onClose }: PythonEnvManagerProps) {
   // 加载设置
   useEffect(() => {
     if (isOpen) {
-      loadSettings();
-      if (envs.length === 0) {
-        detectEnvs();
-      }
+      void (async () => {
+        await loadSettings();
+        await detectEnvs();
+      })();
     }
-  }, [isOpen]);
+  }, [isOpen, loadSettings, detectEnvs]);
 
   // 加载包列表
   useEffect(() => {
@@ -223,6 +223,11 @@ export function PythonEnvManager({ isOpen, onClose }: PythonEnvManagerProps) {
                         {env.isVenv && (
                           <span className="text-xs px-1.5 py-0.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 rounded">
                             venv
+                          </span>
+                        )}
+                        {env.isEmbedded && (
+                          <span className="text-xs px-1.5 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded">
+                            PMC 内置
                           </span>
                         )}
                       </div>

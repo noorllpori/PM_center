@@ -14,6 +14,8 @@ pub struct PythonEnv {
     pub version: Option<String>,
     pub is_system: bool,
     pub is_venv: bool,
+    #[serde(default)]
+    pub is_embedded: bool,
     pub venv_path: Option<String>,
 }
 
@@ -129,6 +131,7 @@ async fn check_python(cmd: &str) -> Option<PythonEnv> {
         version: version_num,
         is_system: true,
         is_venv: false,
+        is_embedded: false,
         venv_path: None,
     })
 }
@@ -161,6 +164,7 @@ async fn check_python_path(path: &PathBuf) -> Option<PythonEnv> {
         version: version_num,
         is_system: true,
         is_venv: false,
+        is_embedded: false,
         venv_path: None,
     })
 }
@@ -212,13 +216,16 @@ pub async fn scan_app_venvs(app_handle: tauri::AppHandle) -> Result<Vec<PythonEn
         .app_data_dir()
         .map_err(|e| format!("无法获取应用数据目录: {}", e))?;
 
+    let mut envs = Vec::new();
+    if let Some(env) = detect_pmc_embedded_python(&app_handle).await {
+        envs.push(env);
+    }
+
     let venvs_dir = app_data_dir.join("venvs");
 
     if !venvs_dir.exists() {
-        return Ok(vec![]);
+        return Ok(envs);
     }
-
-    let mut envs = vec![];
 
     if let Ok(entries) = std::fs::read_dir(&venvs_dir) {
         for entry in entries.flatten() {
@@ -258,12 +265,35 @@ pub async fn scan_app_venvs(app_handle: tauri::AppHandle) -> Result<Vec<PythonEn
                 version,
                 is_system: false,
                 is_venv: true,
+                is_embedded: false,
                 venv_path: Some(path.to_string_lossy().to_string()),
             });
         }
     }
 
     Ok(envs)
+}
+
+async fn detect_pmc_embedded_python(app_handle: &tauri::AppHandle) -> Option<PythonEnv> {
+    let runtime = crate::plugin::resolve_plugin_runtime(app_handle);
+    if runtime.status != "ready" || runtime.source != "embedded" {
+        return None;
+    }
+    let path = PathBuf::from(runtime.resolved_path?);
+    let checked = check_python_path(&path).await?;
+    Some(PythonEnv {
+        id: "pmc_embedded_python".to_string(),
+        name: format!(
+            "PMC 内置 Python {}",
+            checked.version.as_deref().unwrap_or("未知")
+        ),
+        path: checked.path,
+        version: checked.version,
+        is_system: false,
+        is_venv: false,
+        is_embedded: true,
+        venv_path: None,
+    })
 }
 
 /// 删除 venv
