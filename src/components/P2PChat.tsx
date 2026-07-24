@@ -32,12 +32,13 @@ export function P2PChat({ isOpen, onClose }: P2PChatProps) {
   const [showSettings, setShowSettings] = useState(false);
   const [newUserName, setNewUserName] = useState('');
   const [activeTab, setActiveTab] = useState<'chat' | 'users'>('chat');
+  const [sendFeedback, setSendFeedback] = useState<{ tone: 'warning' | 'error'; message: string } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // 初始化
   useEffect(() => {
-    loadSettings();
-  }, []);
+    void loadSettings();
+  }, [loadSettings]);
 
   // 自动滚动到底部
   useEffect(() => {
@@ -65,9 +66,19 @@ export function P2PChat({ isOpen, onClose }: P2PChatProps) {
   // 发送消息
   const handleSendMessage = async () => {
     if (!inputMessage.trim()) return;
-    
-    await sendMessage(selectedUserId, inputMessage.trim());
-    setInputMessage('');
+    setSendFeedback(null);
+    try {
+      const result = await sendMessage(selectedUserId, inputMessage.trim());
+      setInputMessage('');
+      if (result.failures.length > 0) {
+        setSendFeedback({
+          tone: 'warning',
+          message: `已送达 ${result.deliveredCount}/${result.targetCount} 人；未送达：${result.failures.map((failure) => failure.userName).join('、')}`,
+        });
+      }
+    } catch (error) {
+      setSendFeedback({ tone: 'error', message: String(error) });
+    }
   };
 
   // 更新用户名
@@ -247,6 +258,7 @@ export function P2PChat({ isOpen, onClose }: P2PChatProps) {
 
             {/* 输入框 */}
             <div className="p-3 border-t border-gray-200 dark:border-gray-700">
+              {sendFeedback && <p className={`mb-2 text-xs leading-5 ${sendFeedback.tone === 'error' ? 'text-red-600 dark:text-red-300' : 'text-amber-700 dark:text-amber-300'}`}>{sendFeedback.message}</p>}
               <div className="flex gap-2">
                 <input
                   type="text"
@@ -276,6 +288,7 @@ export function P2PChat({ isOpen, onClose }: P2PChatProps) {
                 <Users className="w-12 h-12 mx-auto mb-3 opacity-50" />
                 <p className="text-sm">暂无在线用户</p>
                 <p className="text-xs mt-1">确保发现服务已启动</p>
+                <p className="mx-auto mt-3 max-w-sm text-xs leading-5 text-gray-500">若对方能看到你、但这里看不到对方，请在本机 Windows Defender 防火墙中允许 PM Center 的专用网络访问：UDP 31523 和 TCP 31524；随后停止并重新开始发现。</p>
               </div>
             ) : (
               <div className="space-y-2">

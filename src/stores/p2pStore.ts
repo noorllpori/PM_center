@@ -19,6 +19,18 @@ export interface P2PMessage {
   timestamp: number;
 }
 
+export interface P2PDeliveryFailure {
+  userId: string;
+  userName: string;
+  error: string;
+}
+
+export interface P2PDeliveryResult {
+  targetCount: number;
+  deliveredCount: number;
+  failures: P2PDeliveryFailure[];
+}
+
 interface RawP2PUser {
   id: string;
   name: string;
@@ -69,7 +81,7 @@ interface P2PState {
   removeOfflineUsers: () => void;
   
   // 消息
-  sendMessage: (toId: string | null, content: string) => Promise<void>;
+  sendMessage: (toId: string | null, content: string) => Promise<P2PDeliveryResult>;
   receiveMessage: (message: P2PMessage) => void;
   markAllAsRead: () => void;
   clearMessages: () => void;
@@ -79,6 +91,7 @@ const STORE_FILE = 'p2p-settings.json';
 const USER_ID_KEY = 'p2p-user-id';
 const USER_NAME_KEY = 'p2p-user-name';
 let p2pEventListenersInitialized = false;
+let p2pInitializationPromise: Promise<void> | null = null;
 
 function normalizeP2PUser(user: RawP2PUser): P2PUser {
   return {
@@ -118,9 +131,13 @@ export const useP2PStore = create<P2PState>((set, get) => ({
   isDiscoveryEnabled: false,
 
   loadSettings: async () => {
-    try {
+    if (p2pInitializationPromise) {
+      return p2pInitializationPromise;
+    }
+
+    const initialize = async () => {
       const store = await load(STORE_FILE);
-      
+
       // 加载或生成用户 ID
       let userId = await store.get<string>(USER_ID_KEY);
       if (!userId) {
@@ -128,21 +145,21 @@ export const useP2PStore = create<P2PState>((set, get) => ({
         await store.set(USER_ID_KEY, userId);
         await store.save();
       }
-      
+
       // 加载用户名
       const userName = await store.get<string>(USER_NAME_KEY) || '匿名用户';
-      
       set({ userId, userName });
-      
-      // 初始化后端 P2P
-      await invoke('init_p2p', { userId, userName });
-      
-      // 监听事件
-      setupEventListeners(get().receiveMessage, get().updateOnlineUsers);
 
-      // 默认进入发现状态
+      await invoke('init_p2p', { userId, userName });
+      setupEventListeners(get().receiveMessage, get().updateOnlineUsers);
       await get().startDiscovery();
+    };
+
+    p2pInitializationPromise = initialize();
+    try {
+      await p2pInitializationPromise;
     } catch (error) {
+      p2pInitializationPromise = null;
       console.error('Failed to load P2P settings:', error);
     }
   },
@@ -200,27 +217,32 @@ export const useP2PStore = create<P2PState>((set, get) => ({
   },
 
   sendMessage: async (toId: string | null, content: string) => {
-    try {
-      const { userId, userName } = get();
-      if (!userId) return;
-
-      const message: P2PMessage = {
-        id: generateUUID(),
-        fromId: userId,
-        fromName: userName,
-        toId,
-        content,
-        timestamp: Date.now(),
-      };
-
-      await invoke('send_p2p_message', { message });
-
-      set(state => ({
-        messages: [...state.messages, message],
-      }));
-    } catch (error) {
-      console.error('Failed to send message:', error);
+    const { userId, userName } = get();
+    if (!userId) {
+      throw new Error('局域网身份尚未初始化，请稍后重试');
     }
+
+    const message: P2PMessage = {
+      id: generateUUID(),
+      fromId: userId,
+      fromName: userName,
+      toId,
+      content,
+      timestamp: Date.now(),
+    };
+    const result = await invoke<P2PDeliveryResult>('send_p2p_message', { message });
+    if (result.targetCount === 0) {
+      throw new Error('没有可接收消息的在线用户');
+    }
+    if (result.deliveredCount === 0) {
+      const detail = result.failures.map((failure) => `${failure.userName}：${failure.error}`).join('；');
+      throw new Error(detail || '消息未送达');
+    }
+
+    set(state => ({
+      messages: [...state.messages, message],
+    }));
+    return result;
   },
 
   receiveMessage: (message: P2PMessage) => {
