@@ -53,6 +53,11 @@ function getFileName(path: string): string {
   return path.split(/[\\/]/).pop() || path;
 }
 
+function getCollectionIdFromVirtualPath(path: string): string | null {
+  const prefix = 'pmc://collection/';
+  return path.startsWith(prefix) ? path.slice(prefix.length) || null : null;
+}
+
 function buildExpandedPathChain(projectPath: string, targetPath: string): Set<string> {
   const expandedPaths = new Set<string>();
   const normalizedProjectPath = normalizePath(projectPath);
@@ -272,6 +277,42 @@ export function createProjectStore() {
     loadDirectory: async (path: string, forceRefresh = false, preserveSelection = false) => {
       try {
         const activeProjectPath = get().projectPath;
+        const collectionId = getCollectionIdFromVirtualPath(path);
+
+        if (collectionId && activeProjectPath) {
+          const files = sortDirectoryEntries(
+            await invoke<FileInfo[]>('get_collection_items', {
+              projectPath: activeProjectPath,
+              collectionId,
+            }),
+          );
+          const fileTags = new Map<string, string[]>();
+          const filePaths = files.map((file) => file.path);
+
+          if (filePaths.length > 0) {
+            const tagsByPath = await invoke<Record<string, string[]>>('get_file_tags_batch', {
+              projectPath: activeProjectPath,
+              filePaths,
+            });
+            for (const [filePath, tags] of Object.entries(tagsByPath)) {
+              if (Array.isArray(tags) && tags.length > 0) {
+                fileTags.set(filePath, tags);
+              }
+            }
+          }
+
+          const filePathSet = new Set(files.map((file) => file.path));
+          set((state) => ({
+            currentPath: path,
+            files,
+            fileTags: new Map([...state.fileTags, ...fileTags]),
+            selectedFiles: preserveSelection
+              ? new Set(Array.from(state.selectedFiles).filter((selectedPath) => filePathSet.has(selectedPath)))
+              : new Set(),
+          }));
+          return;
+        }
+
         let files = await invoke<FileInfo[]>('read_directory', {
           path,
           projectPath: activeProjectPath,
