@@ -206,6 +206,8 @@ export function SettingsPanel({
     autoOpenLastProject,
     launchOnStartup,
     launchOnStartupAvailable,
+    confirmProjectTabClose,
+    confirmFileTabClose,
     ignoredProjects,
     recentProjects,
     toolPaths,
@@ -213,6 +215,8 @@ export function SettingsPanel({
     loadSettings,
     setAutoOpen,
     setLaunchOnStartup,
+    setConfirmProjectTabClose,
+    setConfirmFileTabClose,
     clearAllRecentProjects,
     clearIgnoredProjects,
     unignoreProject,
@@ -1670,6 +1674,28 @@ export function SettingsPanel({
               </span>
             </span>
           </label>
+
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-gray-100 pt-3 text-xs text-gray-600 dark:border-gray-800 dark:text-gray-300">
+            <span className="font-medium text-gray-700 dark:text-gray-200">关闭标签页时确认</span>
+            <label className="inline-flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={confirmProjectTabClose}
+                onChange={(event) => void setConfirmProjectTabClose(event.target.checked)}
+                className="rounded"
+              />
+              项目标签页
+            </label>
+            <label className="inline-flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={confirmFileTabClose}
+                onChange={(event) => void setConfirmFileTabClose(event.target.checked)}
+                className="rounded"
+              />
+              文件标签页
+            </label>
+          </div>
         </div>
       </section>
 

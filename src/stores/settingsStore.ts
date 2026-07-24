@@ -39,6 +39,8 @@ interface SettingsState {
   autoOpenLastProject: boolean;
   launchOnStartup: boolean;
   launchOnStartupAvailable: boolean;
+  confirmProjectTabClose: boolean;
+  confirmFileTabClose: boolean;
   projectsRootDir: string | null; // 项目根目录（扫描用）
   ignoredProjects: string[]; // 被忽略的项目路径列表
   toolPaths: ToolPaths;
@@ -57,6 +59,10 @@ interface SettingsState {
   setAutoOpen: (enabled: boolean) => Promise<void>;
   // 设置开机自启动
   setLaunchOnStartup: (enabled: boolean) => Promise<void>;
+  // 设置关闭项目标签页时的确认提示
+  setConfirmProjectTabClose: (enabled: boolean) => Promise<void>;
+  // 设置关闭项目内工作区标签页时的确认提示
+  setConfirmFileTabClose: (enabled: boolean) => Promise<void>;
   // 设置项目根目录
   setProjectsRootDir: (path: string | null) => Promise<void>;
   // 忽略项目
@@ -86,6 +92,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   autoOpenLastProject: true,
   launchOnStartup: false,
   launchOnStartupAvailable: true,
+  confirmProjectTabClose: true,
+  confirmFileTabClose: false,
   projectsRootDir: null,
   ignoredProjects: [],
   toolPaths: {
@@ -102,6 +110,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       const recent = await store.get<RecentProject[]>('recentProjects');
       const autoOpen = await store.get<boolean>('autoOpenLastProject');
       const launchOnStartup = await store.get<boolean>(LAUNCH_ON_STARTUP_KEY);
+      const confirmProjectTabClose = await store.get<boolean>('confirmProjectTabClose');
+      const confirmFileTabClose = await store.get<boolean>('confirmFileTabClose');
       const rootDir = await store.get<string | null>('projectsRootDir');
       const ignored = await store.get<string[]>('ignoredProjects');
       const toolPaths = await store.get<ToolPaths>('toolPaths');
@@ -119,6 +129,14 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
       if (launchOnStartup !== undefined) {
         set({ launchOnStartup });
+      }
+
+      if (confirmProjectTabClose !== undefined) {
+        set({ confirmProjectTabClose });
+      }
+
+      if (confirmFileTabClose !== undefined) {
+        set({ confirmFileTabClose });
       }
       
       if (rootDir !== undefined) {
@@ -278,6 +296,28 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     } catch (error) {
       console.error('Failed to set launch on startup:', error);
       throw error;
+    }
+  },
+
+  setConfirmProjectTabClose: async (enabled: boolean) => {
+    try {
+      const store = await load(STORE_FILE);
+      await store.set('confirmProjectTabClose', enabled);
+      await store.save();
+      set({ confirmProjectTabClose: enabled });
+    } catch (error) {
+      console.error('Failed to set project tab close confirmation:', error);
+    }
+  },
+
+  setConfirmFileTabClose: async (enabled: boolean) => {
+    try {
+      const store = await load(STORE_FILE);
+      await store.set('confirmFileTabClose', enabled);
+      await store.save();
+      set({ confirmFileTabClose: enabled });
+    } catch (error) {
+      console.error('Failed to set workspace tab close confirmation:', error);
     }
   },
 

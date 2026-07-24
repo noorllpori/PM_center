@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emitTo, listen, once } from '@tauri-apps/api/event';
 import { Upload } from 'lucide-react';
+import { ConfirmDialog } from '../Dialog';
 import { FileTree } from './FileTree';
 import { FileList } from './FileList';
 import { ColumnSettings } from './ColumnSettings';
@@ -47,7 +48,8 @@ import { useClipboardStore } from '../../stores/clipboardStore';
 import { useFileDragStore } from '../../stores/fileDragStore';
 import { useFileOperationStore } from '../../stores/fileOperationStore';
 import { useUiStore } from '../../stores/uiStore';
-import { useWorkspaceTabStore, useWorkspaceTabStoreApi } from '../../stores/workspaceTabStore';
+import { useWorkspaceTabStore, useWorkspaceTabStoreApi, type WorkspaceTab } from '../../stores/workspaceTabStore';
+import { useSettingsStore } from '../../stores/settingsStore';
 import { isVirtualFile } from '../../utils/collections';
 
 const FILE_TREE_PANEL_WIDTH_KEY = 'pm-center:file-tree-panel-width';
@@ -217,6 +219,7 @@ export function ProjectWorkspace() {
   const openDirectoryInTab = useWorkspaceTabStore((state) => state.openDirectoryInTab);
   const reorderTabs = useWorkspaceTabStore((state) => state.reorderTabs);
   const updateTabDirty = useWorkspaceTabStore((state) => state.updateTabDirty);
+  const confirmFileTabClose = useSettingsStore((state) => state.confirmFileTabClose);
 
   const [isDragImportActive, setIsDragImportActive] = useState(false);
   const [isImportingDrop, setIsImportingDrop] = useState(false);
@@ -237,6 +240,7 @@ export function ProjectWorkspace() {
   const [fileDetailsPanelWidth, setFileDetailsPanelWidth] = useState(getInitialFileDetailsPanelWidth);
   const [isResizingFileDetails, setIsResizingFileDetails] = useState(false);
   const [isMdtOverviewOpen, setIsMdtOverviewOpen] = useState(false);
+  const [pendingWorkspaceTabClose, setPendingWorkspaceTabClose] = useState<WorkspaceTab | null>(null);
   const externalDragDepthRef = useRef(0);
   const externalDropConflictResolverRef = useRef<((choice: ConflictResolution) => void) | null>(null);
   const fileTreeResizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
@@ -252,6 +256,27 @@ export function ProjectWorkspace() {
   const isFilesWorkspaceActiveRef = useRef(false);
   const activeWorkspaceTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
   const isFilesWorkspaceActive = activeWorkspaceTab?.type === 'files';
+
+  const requestCloseWorkspaceTab = useCallback((tabId: string) => {
+    const tab = workspaceTabStore.getState().tabs.find((item) => item.id === tabId);
+    if (!tab?.closable) {
+      return;
+    }
+
+    if (!confirmFileTabClose) {
+      closeTab(tabId);
+      return;
+    }
+
+    setPendingWorkspaceTabClose(tab);
+  }, [closeTab, confirmFileTabClose, workspaceTabStore]);
+
+  const confirmWorkspaceTabClose = useCallback(() => {
+    if (pendingWorkspaceTabClose) {
+      closeTab(pendingWorkspaceTabClose.id);
+    }
+    setPendingWorkspaceTabClose(null);
+  }, [closeTab, pendingWorkspaceTabClose]);
 
   useEffect(() => {
     return () => {
@@ -1268,7 +1293,7 @@ export function ProjectWorkspace() {
         tabs={tabs}
         activeTabId={activeTabId}
         onActivateTab={activateTab}
-        onCloseTab={closeTab}
+        onCloseTab={requestCloseWorkspaceTab}
         onReorderTabs={reorderTabs}
         onDetachTab={handleDetachTab}
       />
@@ -1477,6 +1502,16 @@ export function ProjectWorkspace() {
       <MdtOverviewPanel
         isOpen={isMdtOverviewOpen}
         onClose={() => setIsMdtOverviewOpen(false)}
+      />
+      <ConfirmDialog
+        isOpen={pendingWorkspaceTabClose !== null}
+        onClose={() => setPendingWorkspaceTabClose(null)}
+        onConfirm={confirmWorkspaceTabClose}
+        title="关闭标签页"
+        message={pendingWorkspaceTabClose ? `确定关闭标签页“${pendingWorkspaceTabClose.title}”吗？` : ''}
+        confirmText="关闭"
+        cancelText="取消"
+        type="warning"
       />
     </div>
   );

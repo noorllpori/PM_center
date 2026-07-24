@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Folder, Home, X } from 'lucide-react';
 import { ConfirmDialog } from '../Dialog';
 import type { ShellTab } from '../../stores/shellTabStore';
+import { useSettingsStore } from '../../stores/settingsStore';
 
 interface ShellTabBarProps {
   tabs: ShellTab[];
@@ -32,9 +33,10 @@ export function ShellTabBar({
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [pendingCloseTab, setPendingCloseTab] = useState<ShellTab | null>(null);
+  const confirmProjectTabClose = useSettingsStore((state) => state.confirmProjectTabClose);
 
   const requestCloseTab = (tab: ShellTab) => {
-    if (tab.type !== 'project') {
+    if (tab.type !== 'project' || !confirmProjectTabClose) {
       onCloseTab(tab.id);
       return;
     }
