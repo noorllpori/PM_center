@@ -5070,17 +5070,18 @@ fn package_render_batch_sync(
         .collect::<Result<Vec<_>, _>>()?;
 
     let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S-%3f");
-    let output_dir = PathBuf::from(project_path)
-        .join("renders")
-        .join(safe_name(&batch_name))
-        .join("videos")
-        .join(timestamp.to_string());
+    let output_dir = PathBuf::from(project_path).join("renders");
     fs::create_dir_all(&output_dir).map_err(|error| format!("创建视频输出目录失败: {error}"))?;
 
     let mut outputs = Vec::new();
     for (job, plan) in planned_jobs {
         let short_id = job.id.get(..8).unwrap_or(&job.id);
-        let name = format!("{}-{short_id}", safe_name(&job.name));
+        let name = format!(
+            "{}-{}-{short_id}-{}",
+            safe_name(&batch_name),
+            safe_name(&job.name),
+            timestamp
+        );
         let manifest_path = output_dir.join(format!(".{name}.ffconcat"));
         let output_path = output_dir.join(format!("{name}.{}", video_format.extension()));
         let work_dir = output_dir.join(format!(".{name}.frames"));
