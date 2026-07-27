@@ -8,6 +8,7 @@ import {
   FileEdit,
   FileInput,
   FolderInput,
+  FolderMinus,
   FolderOpen,
   FolderPlus,
   Info,
@@ -47,6 +48,7 @@ interface ContextMenuProps {
   canCreateCollection?: boolean;
   onAddSelectionToCollection?: (collection?: FileInfo) => Promise<void> | void;
   canAddSelectionToCollection?: boolean;
+  onRemoveFromCollection?: (file: FileInfo) => Promise<void> | void;
   onRenameCollection?: (file: FileInfo) => Promise<void> | void;
   onDeleteCollection?: (file: FileInfo) => Promise<void> | void;
   onOpenFile?: (file: FileInfo) => Promise<void> | void;
@@ -331,6 +333,7 @@ export function FileContextMenu({
   canCreateCollection = false,
   onAddSelectionToCollection,
   canAddSelectionToCollection = false,
+  onRemoveFromCollection,
   onRenameCollection,
   onDeleteCollection,
   onOpenFile,
@@ -534,6 +537,15 @@ export function FileContextMenu({
     onClose();
   };
 
+  const handleRemoveFromCollection = async () => {
+    try {
+      await onRemoveFromCollection?.(file);
+    } catch (error) {
+      console.error('Failed to remove item from collection:', error);
+    }
+    onClose();
+  };
+
   const handleRenameCollection = async () => {
     try {
       await onRenameCollection?.(file);
@@ -692,6 +704,16 @@ export function FileContextMenu({
         </MenuItem>
 
         <MenuDivider />
+
+        {onRemoveFromCollection && (
+          <>
+            <MenuItem onClick={handleRemoveFromCollection} icon={<FolderMinus className="w-4 h-4" />}>
+              从集合中移除
+            </MenuItem>
+
+            <MenuDivider />
+          </>
+        )}
 
         <MenuItem
           onClick={handleCut}

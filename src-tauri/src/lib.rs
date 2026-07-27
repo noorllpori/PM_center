@@ -26,7 +26,7 @@ mod tree_cache;
 mod watcher;
 
 use db::FileChange;
-use db::{Collection, CollectionMemberUpdate, Database, FileMetadata, Tag};
+use db::{Collection, CollectionMemberRemoval, CollectionMemberUpdate, Database, FileMetadata, Tag};
 use file_details::{
     get_blender_external_data, get_blender_preview_png, get_file_details,
     update_blender_scene_render,
@@ -766,6 +766,24 @@ async fn add_collection_items(
 }
 
 #[tauri::command]
+async fn remove_collection_items(
+    db_state: tauri::State<'_, DbState>,
+    project_path: String,
+    collection_id: String,
+    member_paths: Vec<String>,
+) -> Result<CollectionMemberRemoval, String> {
+    let db = get_or_create_db(&db_state, &project_path).await?;
+    db.remove_collection_items(&collection_id, &member_paths)
+        .map_err(|error| {
+            if matches!(&error, rusqlite::Error::QueryReturnedNoRows) {
+                "集合不存在或已被删除".to_string()
+            } else {
+                error.to_string()
+            }
+        })
+}
+
+#[tauri::command]
 async fn rename_collection(
     db_state: tauri::State<'_, DbState>,
     project_path: String,
@@ -1082,6 +1100,7 @@ pub fn run() {
             list_project_collections,
             get_collection_items,
             add_collection_items,
+            remove_collection_items,
             rename_collection,
             delete_collection,
             detect_python_envs,

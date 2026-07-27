@@ -1151,9 +1151,13 @@ function GridView({
 
 interface FileListProps {
   onOpenDirectoryTab?: (path: string) => Promise<void> | void;
+  onRemoveFromCollection?: (memberPaths: string[]) => Promise<void> | void;
 }
 
-export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
+export function FileList({
+  onOpenDirectoryTab,
+  onRemoveFromCollection,
+}: FileListProps = {}) {
   const projectStore = useProjectStoreApi();
   const {
     files,
@@ -1739,6 +1743,20 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
   const handleShowDetails = useCallback((file: FileInfo) => {
     setDetailsDialogFile(file);
   }, []);
+
+  const handleRemoveFromCollection = useCallback(
+    async (file: FileInfo) => {
+      if (!onRemoveFromCollection) {
+        return;
+      }
+
+      const memberPaths = selectedFiles.has(file.path)
+        ? realSelectedFileInfos.map((item) => item.path)
+        : [file.path];
+      await onRemoveFromCollection(memberPaths);
+    },
+    [onRemoveFromCollection, realSelectedFileInfos, selectedFiles],
+  );
 
   const handleCloseDetailsDialog = useCallback(() => {
     setDetailsDialogFile(null);
@@ -2630,6 +2648,11 @@ export function FileList({ onOpenDirectoryTab }: FileListProps = {}) {
           canCreateCollection={canCreateCollectionFromSelection}
           onAddSelectionToCollection={handleAddSelectionToCollection}
           canAddSelectionToCollection={canAddSelectionToCollection}
+          onRemoveFromCollection={
+            onRemoveFromCollection && currentPath?.startsWith("pmc://collection/")
+              ? handleRemoveFromCollection
+              : undefined
+          }
           onRenameCollection={handleOpenRenameCollectionDialog}
           onDeleteCollection={handleOpenDeleteCollectionDialog}
           onOpenFile={handleSystemOpenFile}

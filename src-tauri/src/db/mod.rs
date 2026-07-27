@@ -59,6 +59,14 @@ pub struct CollectionMemberUpdate {
     pub item_count: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CollectionMemberRemoval {
+    pub collection_id: String,
+    pub removed_count: i64,
+    pub not_found_count: i64,
+    pub item_count: i64,
+}
+
 // 文件变更记录
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileChange {
@@ -569,6 +577,71 @@ impl Database {
         })
     }
 
+    pub fn remove_collection_items(
+        &self,
+        collection_id: &str,
+        member_paths: &[String],
+    ) -> Result<CollectionMemberRemoval, rusqlite::Error> {
+        let mut unique_member_paths = Vec::new();
+        let mut seen_paths = std::collections::HashSet::new();
+        for member_path in member_paths {
+            let member_path = member_path.trim();
+            if member_path.is_empty() || !seen_paths.insert(member_path.to_string()) {
+                continue;
+            }
+            unique_member_paths.push(member_path.to_string());
+        }
+
+        if unique_member_paths.is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "collection members are required".to_string(),
+            ));
+        }
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.query_row(
+            "SELECT id FROM collections WHERE id = ?1",
+            params![collection_id],
+            |row| row.get::<_, String>(0),
+        )?;
+
+        let mut removed_count = 0_i64;
+        let mut not_found_count = 0_i64;
+        for member_path in unique_member_paths {
+            let deleted = tx.execute(
+                "DELETE FROM collection_items WHERE collection_id = ?1 AND file_path = ?2",
+                params![collection_id, member_path],
+            )?;
+            if deleted > 0 {
+                removed_count += 1;
+            } else {
+                not_found_count += 1;
+            }
+        }
+
+        if removed_count > 0 {
+            tx.execute(
+                "UPDATE collections SET updated_at = ?1 WHERE id = ?2",
+                params![Self::current_timestamp(), collection_id],
+            )?;
+        }
+
+        let item_count = tx.query_row(
+            "SELECT COUNT(*) FROM collection_items WHERE collection_id = ?1",
+            params![collection_id],
+            |row| row.get::<_, i64>(0),
+        )?;
+        tx.commit()?;
+
+        Ok(CollectionMemberRemoval {
+            collection_id: collection_id.to_string(),
+            removed_count,
+            not_found_count,
+            item_count,
+        })
+    }
+
     pub fn rename_collection(
         &self,
         collection_id: &str,
@@ -1050,6 +1123,45 @@ mod tests {
                 "C:\\project\\b.png".to_string(),
                 "C:\\project\\c.png".to_string(),
             ],
+        );
+
+        drop(database);
+        std::fs::remove_dir_all(project_path).unwrap();
+    }
+
+    #[test]
+    fn removing_collection_items_only_removes_collection_references() {
+        let project_path = make_temp_project_path();
+        std::fs::create_dir_all(&project_path).unwrap();
+        let database = Database::new(&project_path.to_string_lossy()).unwrap();
+        let collection = database
+            .create_collection(
+                "C:\\project",
+                "镜头",
+                &[
+                    "C:\\project\\a.png".to_string(),
+                    "C:\\project\\b.png".to_string(),
+                ],
+            )
+            .unwrap();
+
+        let removal = database
+            .remove_collection_items(
+                &collection.id,
+                &[
+                    "C:\\project\\b.png".to_string(),
+                    "C:\\project\\missing.png".to_string(),
+                    "C:\\project\\b.png".to_string(),
+                ],
+            )
+            .unwrap();
+
+        assert_eq!(removal.removed_count, 1);
+        assert_eq!(removal.not_found_count, 1);
+        assert_eq!(removal.item_count, 1);
+        assert_eq!(
+            database.get_collection_item_paths(&collection.id).unwrap(),
+            vec!["C:\\project\\a.png".to_string()],
         );
 
         drop(database);

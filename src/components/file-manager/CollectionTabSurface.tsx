@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { ArrowLeft, Layers, RefreshCw } from 'lucide-react';
 import {
   createProjectStore,
@@ -8,6 +9,7 @@ import {
   type ProjectStoreApi,
 } from '../../stores/projectStore';
 import { FILES_TAB_ID, useWorkspaceTabStore } from '../../stores/workspaceTabStore';
+import { useUiStore } from '../../stores/uiStore';
 import { FileDetail } from './FileDetail';
 import { FileList } from './FileList';
 
@@ -35,9 +37,11 @@ function createCollectionStore(projectPath: string, collectionPath: string): Pro
 
 function CollectionDirectoryContent({
   collectionPath,
+  collectionId,
   title,
 }: {
   collectionPath: string;
+  collectionId: string;
   title: string;
 }) {
   const projectStore = useProjectStoreApi();
@@ -46,6 +50,7 @@ function CollectionDirectoryContent({
     files: state.files,
   }));
   const activateTab = useWorkspaceTabStore((state) => state.activateTab);
+  const showToast = useUiStore((state) => state.showToast);
   const atCollectionRoot = currentPath === collectionPath;
 
   const handleBack = useCallback(() => {
@@ -59,6 +64,41 @@ function CollectionDirectoryContent({
   const handleRefresh = useCallback(() => {
     void projectStore.getState().refresh(true, true);
   }, [projectStore]);
+
+  const handleRemoveFromCollection = useCallback(
+    async (memberPaths: string[]) => {
+      if (memberPaths.length === 0) {
+        return;
+      }
+
+      const result = await invoke<{
+        removed_count: number;
+        not_found_count: number;
+      }>('remove_collection_items', {
+        projectPath: projectStore.getState().projectPath,
+        collectionId,
+        memberPaths,
+      });
+      await projectStore.getState().loadDirectory(collectionPath, true);
+
+      if (result.removed_count > 0) {
+        showToast({
+          title: '已从集合中移除',
+          message: result.removed_count === 1
+            ? '已移除 1 个项目，磁盘文件未删除。'
+            : `已移除 ${result.removed_count} 个项目，磁盘文件未删除。`,
+          tone: 'success',
+        });
+      } else {
+        showToast({
+          title: '集合没有变化',
+          message: '选中的项目已不在此集合中。',
+          tone: 'warning',
+        });
+      }
+    },
+    [collectionId, collectionPath, projectStore, showToast],
+  );
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-white dark:bg-gray-900">
@@ -92,7 +132,7 @@ function CollectionDirectoryContent({
 
       <div className="flex min-h-0 flex-1">
         <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
-          <FileList />
+          <FileList onRemoveFromCollection={handleRemoveFromCollection} />
         </div>
         <div className="w-80 min-w-[260px] max-w-[45%] border-l border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
           <FileDetail />
@@ -139,7 +179,11 @@ export function CollectionTabSurface({
 
   return (
     <ProjectStoreProvider store={collectionStore}>
-      <CollectionDirectoryContent collectionPath={collectionPath} title={title} />
+      <CollectionDirectoryContent
+        collectionPath={collectionPath}
+        collectionId={collectionId}
+        title={title}
+      />
     </ProjectStoreProvider>
   );
 }
