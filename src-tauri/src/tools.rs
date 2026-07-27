@@ -351,9 +351,7 @@ fn command_output_with_timeout(
     loop {
         match child.try_wait() {
             Ok(Some(_status)) => {
-                return child
-                    .wait_with_output()
-                    .map_err(|error| error.to_string());
+                return child.wait_with_output().map_err(|error| error.to_string());
             }
             Ok(None) => {
                 if started_at.elapsed() >= timeout {

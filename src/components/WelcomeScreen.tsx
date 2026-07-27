@@ -85,30 +85,9 @@ export function WelcomeScreen({ onOpenProject, settingsLoaded }: WelcomeScreenPr
     : projectDatePrefix;
   const canCreateProject = trimmedProjectName.length > 0;
 
-  // 处理项目点击（支持未初始化的项目）
+  // 项目位置与初始化状态由统一的打开预检处理。
   const handleProjectClick = async (project: ScannedProject) => {
-    if (project.hasPmCenter) {
-      // 已初始化，直接打开
-      await onOpenProject(project.path);
-    } else {
-      // 未初始化，弹出确认对话框
-      setConfirmDialog({
-        isOpen: true,
-        title: '初始化项目',
-        message: `项目 "${project.name}" 未初始化，是否现在初始化？`,
-        onConfirm: async () => {
-          try {
-            await onOpenProject(project.path);
-          } catch (err) {
-            setAlertDialog({
-              isOpen: true,
-              title: '初始化失败',
-              message: String(err),
-            });
-          }
-        },
-      });
-    }
+    await onOpenProject(project.path);
   };
   
   // 处理忽略项目

@@ -117,7 +117,12 @@ struct FileCopyProgressEvent {
 }
 
 impl CopyProgressContext {
-    fn new(config: CopyProgressConfig, source: &PathBuf, target: &PathBuf, total_bytes: u64) -> Self {
+    fn new(
+        config: CopyProgressConfig,
+        source: &PathBuf,
+        target: &PathBuf,
+        total_bytes: u64,
+    ) -> Self {
         Self {
             app: config.app,
             progress_id: config.progress_id,
@@ -131,8 +136,7 @@ impl CopyProgressContext {
 
     fn emit(&mut self, done: bool) {
         if !done
-            && self.last_emit_at.elapsed()
-                < Duration::from_millis(FILE_COPY_PROGRESS_INTERVAL_MS)
+            && self.last_emit_at.elapsed() < Duration::from_millis(FILE_COPY_PROGRESS_INTERVAL_MS)
         {
             return;
         }
@@ -1453,7 +1457,8 @@ fn calculate_copy_size(
             if let Some(progress_id) = &progress_id {
                 throw_if_file_copy_cancelled(progress_id)?;
             }
-            total = total.saturating_add(calculate_copy_size(entry.path(), progress_id.clone()).await?);
+            total =
+                total.saturating_add(calculate_copy_size(entry.path(), progress_id.clone()).await?);
         }
 
         Ok(total)
@@ -1476,10 +1481,7 @@ async fn copy_file_with_progress(
 
     loop {
         progress.throw_if_cancelled()?;
-        let bytes_read = input
-            .read(&mut buffer)
-            .await
-            .map_err(|e| e.to_string())?;
+        let bytes_read = input.read(&mut buffer).await.map_err(|e| e.to_string())?;
         if bytes_read == 0 {
             break;
         }
@@ -1604,7 +1606,12 @@ pub async fn copy_path_to_target(
         .filter(|value| !value.is_empty())
         .map(|progress_id| CopyProgressConfig { app, progress_id });
 
-    copy_path_to_exact_target(PathBuf::from(source), PathBuf::from(target), progress_config).await
+    copy_path_to_exact_target(
+        PathBuf::from(source),
+        PathBuf::from(target),
+        progress_config,
+    )
+    .await
 }
 
 #[tauri::command]

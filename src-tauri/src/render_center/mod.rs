@@ -5750,7 +5750,8 @@ mod tests {
 
     #[test]
     fn archived_jobs_do_not_block_the_next_render_batch() {
-        let root = std::env::temp_dir().join(format!("pm-render-archived-batch-{}", Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("pm-render-archived-batch-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let conn = open_db(root.to_str().unwrap()).unwrap();
         conn.execute(

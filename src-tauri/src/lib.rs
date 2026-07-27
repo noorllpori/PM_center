@@ -26,7 +26,9 @@ mod tree_cache;
 mod watcher;
 
 use db::FileChange;
-use db::{Collection, CollectionMemberRemoval, CollectionMemberUpdate, Database, FileMetadata, Tag};
+use db::{
+    Collection, CollectionMemberRemoval, CollectionMemberUpdate, Database, FileMetadata, Tag,
+};
 use file_details::{
     get_blender_external_data, get_blender_preview_png, get_file_details,
     update_blender_scene_render,
@@ -125,6 +127,26 @@ async fn activate_project(
         &db,
         exclude_patterns.as_deref().unwrap_or(&[]),
     )?;
+    Ok(())
+}
+
+/// Releases process-local resources after an outer project tab is closed.
+/// Project data is kept on disk; reopening the project creates fresh handles.
+#[tauri::command]
+async fn release_project_resources(
+    db_state: tauri::State<'_, DbState>,
+    project_path: String,
+) -> Result<(), String> {
+    // Drop the watcher first so its worker stops retaining a Database clone.
+    watcher::clear_active_project_if_matches(&project_path);
+
+    let project_key = tree_cache::normalize_path_key(&project_path);
+    {
+        let mut state = db_state.lock().await;
+        state.databases.remove(&project_key);
+    }
+    tree_cache::release_project_cache(&project_path)?;
+
     Ok(())
 }
 
@@ -483,6 +505,374 @@ struct ScannedProject {
     path: String,
     name: String,
     has_pm_center: bool,
+}
+
+#[derive(serde::Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ProjectLocationIssue {
+    code: String,
+    severity: String,
+    message: String,
+}
+
+#[derive(serde::Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ProjectLocationReport {
+    project_path: String,
+    pm_center_path: String,
+    status: String,
+    missing_items: Vec<String>,
+    issues: Vec<ProjectLocationIssue>,
+    can_initialize: bool,
+    can_repair: bool,
+}
+
+#[derive(serde::Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ProjectLocationCandidate {
+    path: String,
+    name: String,
+    match_reason: String,
+}
+
+fn project_location_issue(
+    code: &str,
+    severity: &str,
+    message: impl Into<String>,
+) -> ProjectLocationIssue {
+    ProjectLocationIssue {
+        code: code.to_string(),
+        severity: severity.to_string(),
+        message: message.into(),
+    }
+}
+
+fn inspect_sqlite_database(path: &std::path::Path, required_tables: &[&str]) -> Result<(), String> {
+    use rusqlite::{Connection, OpenFlags, OptionalExtension};
+
+    let connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|error| error.to_string())?;
+    let quick_check: String = connection
+        .query_row("PRAGMA quick_check(1)", [], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    if !quick_check.eq_ignore_ascii_case("ok") {
+        return Err(format!("SQLite quick_check: {quick_check}"));
+    }
+
+    for table in required_tables {
+        let exists = connection
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?1",
+                [*table],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .is_some();
+        if !exists {
+            return Err(format!("缺少必要数据表: {table}"));
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn inspect_project_location(project_path: String) -> Result<ProjectLocationReport, String> {
+    use std::fs;
+    use std::path::PathBuf;
+
+    let project_root = PathBuf::from(&project_path);
+    let pm_center_path = project_root.join(".pm_center");
+    let mut issues = Vec::new();
+    let mut missing_items = Vec::new();
+
+    if !project_root.exists() {
+        issues.push(project_location_issue(
+            "project-directory-missing",
+            "error",
+            "项目目录不存在，可能已移动、改名或所在磁盘尚未连接。",
+        ));
+        return Ok(ProjectLocationReport {
+            project_path,
+            pm_center_path: pm_center_path.to_string_lossy().to_string(),
+            status: "missingDirectory".to_string(),
+            missing_items,
+            issues,
+            can_initialize: false,
+            can_repair: false,
+        });
+    }
+
+    if !project_root.is_dir() {
+        issues.push(project_location_issue(
+            "project-path-not-directory",
+            "error",
+            "指定位置不是一个目录，不能作为项目根目录打开。",
+        ));
+        return Ok(ProjectLocationReport {
+            project_path,
+            pm_center_path: pm_center_path.to_string_lossy().to_string(),
+            status: "notDirectory".to_string(),
+            missing_items,
+            issues,
+            can_initialize: false,
+            can_repair: false,
+        });
+    }
+
+    if let Err(error) = fs::read_dir(&project_root) {
+        issues.push(project_location_issue(
+            "project-directory-unreadable",
+            "error",
+            format!("项目目录无法读取: {error}"),
+        ));
+        return Ok(ProjectLocationReport {
+            project_path,
+            pm_center_path: pm_center_path.to_string_lossy().to_string(),
+            status: "unreadable".to_string(),
+            missing_items,
+            issues,
+            can_initialize: false,
+            can_repair: false,
+        });
+    }
+
+    if !pm_center_path.exists() {
+        missing_items.push(".pm_center".to_string());
+        issues.push(project_location_issue(
+            "pm-center-missing",
+            "warning",
+            "此目录尚未初始化为 PMC 项目。初始化只会创建 .pm_center，不会改动现有项目文件。",
+        ));
+        return Ok(ProjectLocationReport {
+            project_path,
+            pm_center_path: pm_center_path.to_string_lossy().to_string(),
+            status: "missingPmCenter".to_string(),
+            missing_items,
+            issues,
+            can_initialize: true,
+            can_repair: false,
+        });
+    }
+
+    if !pm_center_path.is_dir() {
+        issues.push(project_location_issue(
+            "pm-center-not-directory",
+            "error",
+            ".pm_center 应为目录，但当前位置是普通文件。请先备份并手动处理。",
+        ));
+        return Ok(ProjectLocationReport {
+            project_path,
+            pm_center_path: pm_center_path.to_string_lossy().to_string(),
+            status: "invalidPmCenter".to_string(),
+            missing_items,
+            issues,
+            can_initialize: false,
+            can_repair: false,
+        });
+    }
+
+    let data_db = pm_center_path.join("data.db");
+    let tree_cache_db = pm_center_path.join("tree_cache.db");
+    let support_dirs = ["thumbnails", "scripts", "plugins"];
+    let mut has_data_db_error = false;
+    let mut has_tree_cache_error = false;
+
+    if !data_db.is_file() {
+        missing_items.push("data.db".to_string());
+    } else if let Err(error) = inspect_sqlite_database(
+        &data_db,
+        &["tags", "file_metadata", "collections", "file_changes"],
+    ) {
+        has_data_db_error = true;
+        issues.push(project_location_issue(
+            "data-db-invalid",
+            "error",
+            format!("data.db 无法通过完整性检查: {error}。请先备份 .pm_center。"),
+        ));
+    }
+
+    if !tree_cache_db.is_file() {
+        missing_items.push("tree_cache.db".to_string());
+    } else if let Err(error) = inspect_sqlite_database(
+        &tree_cache_db,
+        &[
+            "fs_entries",
+            "dir_state",
+            "tree_state",
+            "file_details_cache",
+        ],
+    ) {
+        has_tree_cache_error = true;
+        issues.push(project_location_issue(
+            "tree-cache-invalid",
+            "warning",
+            format!("tree_cache.db 无法通过完整性检查: {error}。可以安全重建目录缓存。"),
+        ));
+    }
+
+    for directory in support_dirs {
+        if !pm_center_path.join(directory).is_dir() {
+            missing_items.push(directory.to_string());
+        }
+    }
+
+    if has_data_db_error {
+        return Ok(ProjectLocationReport {
+            project_path,
+            pm_center_path: pm_center_path.to_string_lossy().to_string(),
+            status: "invalidDataDb".to_string(),
+            missing_items,
+            issues,
+            can_initialize: false,
+            can_repair: false,
+        });
+    }
+
+    if !missing_items.is_empty() || has_tree_cache_error {
+        if !missing_items.is_empty() {
+            issues.push(project_location_issue(
+                "pm-center-incomplete",
+                "warning",
+                format!(".pm_center 缺少: {}。", missing_items.join("、")),
+            ));
+        }
+        return Ok(ProjectLocationReport {
+            project_path,
+            pm_center_path: pm_center_path.to_string_lossy().to_string(),
+            status: "incompletePmCenter".to_string(),
+            missing_items,
+            issues,
+            can_initialize: false,
+            can_repair: true,
+        });
+    }
+
+    Ok(ProjectLocationReport {
+        project_path,
+        pm_center_path: pm_center_path.to_string_lossy().to_string(),
+        status: "ready".to_string(),
+        missing_items,
+        issues,
+        can_initialize: false,
+        can_repair: false,
+    })
+}
+
+fn project_location_key(path: &std::path::Path) -> String {
+    tree_cache::normalize_path_key(&path.to_string_lossy())
+}
+
+fn is_safe_auto_search_root(path: &std::path::Path) -> bool {
+    path.parent().is_some()
+        && path
+            .file_name()
+            .map(|name| !name.is_empty())
+            .unwrap_or(false)
+}
+
+#[tauri::command]
+async fn find_project_location_candidates(
+    project_path: String,
+    search_roots: Vec<String>,
+) -> Result<Vec<ProjectLocationCandidate>, String> {
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+    use walkdir::WalkDir;
+
+    let requested = PathBuf::from(&project_path);
+    let requested_name = requested
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let mut roots = Vec::<(PathBuf, bool)>::new();
+
+    let mut ancestor = requested.clone();
+    while !ancestor.exists() {
+        if !ancestor.pop() {
+            break;
+        }
+    }
+    if ancestor.is_dir() && is_safe_auto_search_root(&ancestor) {
+        roots.push((ancestor, false));
+    }
+    for root in search_roots {
+        let root = PathBuf::from(root);
+        if root.is_dir() {
+            roots.push((root, true));
+        }
+    }
+
+    let mut seen_roots = HashSet::new();
+    roots.retain(|(root, _)| seen_roots.insert(project_location_key(root)));
+
+    let mut seen_candidates = HashSet::new();
+    let mut candidates = Vec::<(i32, ProjectLocationCandidate)>::new();
+    for (root, is_configured_root) in roots {
+        let walker = WalkDir::new(&root)
+            .follow_links(false)
+            .max_depth(3)
+            .into_iter()
+            .filter_entry(|entry| {
+                if entry.depth() == 0 {
+                    return true;
+                }
+                let name = entry.file_name().to_string_lossy();
+                !matches!(name.as_ref(), ".pm_center" | "node_modules" | "renders")
+            });
+
+        for entry in walker.filter_map(Result::ok) {
+            if !entry.file_type().is_dir() {
+                continue;
+            }
+            let candidate_path = entry.path();
+            if !candidate_path.join(".pm_center").is_dir() {
+                continue;
+            }
+            let key = project_location_key(candidate_path);
+            if !seen_candidates.insert(key) {
+                continue;
+            }
+
+            let name = candidate_path
+                .file_name()
+                .map(|value| value.to_string_lossy().to_string())
+                .unwrap_or_else(|| candidate_path.to_string_lossy().to_string());
+            let name_matches =
+                !requested_name.is_empty() && name.eq_ignore_ascii_case(&requested_name);
+            let score = if name_matches { 0 } else { 1 };
+            let match_reason = if name_matches {
+                "目录名与原项目一致".to_string()
+            } else if is_configured_root {
+                "在已配置的项目根目录中找到".to_string()
+            } else {
+                "在原项目路径附近找到".to_string()
+            };
+            candidates.push((
+                score,
+                ProjectLocationCandidate {
+                    path: candidate_path.to_string_lossy().to_string(),
+                    name,
+                    match_reason,
+                },
+            ));
+        }
+    }
+
+    candidates.sort_by(|(left_score, left), (right_score, right)| {
+        left_score
+            .cmp(right_score)
+            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+    });
+    Ok(candidates
+        .into_iter()
+        .take(20)
+        .map(|(_, candidate)| candidate)
+        .collect())
 }
 
 /// 扫描项目根目录，查找带 .pm_center 的项目（2级深度）
@@ -1087,6 +1477,7 @@ pub fn run() {
             icon_extractor::extract_icon,
             init_project,
             activate_project,
+            release_project_resources,
             get_tags,
             add_tag,
             delete_tag,
@@ -1116,6 +1507,8 @@ pub fn run() {
             get_global_task_scripts_path,
             get_project_scripts,
             scan_projects_root,
+            inspect_project_location,
+            find_project_location_candidates,
             create_project,
             init_p2p,
             update_p2p_user,
@@ -1143,4 +1536,76 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod project_location_tests {
+    use super::*;
+    use std::fs;
+
+    fn temporary_project_root(name: &str) -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!("pm-center-{name}-{unique}"))
+    }
+
+    #[tokio::test]
+    async fn project_location_report_distinguishes_missing_incomplete_and_ready_storage() {
+        let project_root = temporary_project_root("location-report");
+        let project_path = project_root.to_string_lossy().to_string();
+
+        let missing_directory = inspect_project_location(project_path.clone())
+            .await
+            .unwrap();
+        assert_eq!(missing_directory.status, "missingDirectory");
+
+        fs::create_dir_all(&project_root).unwrap();
+        let missing_pm_center = inspect_project_location(project_path.clone())
+            .await
+            .unwrap();
+        assert_eq!(missing_pm_center.status, "missingPmCenter");
+        assert!(missing_pm_center.can_initialize);
+
+        fs::create_dir_all(project_root.join(".pm_center")).unwrap();
+        let incomplete = inspect_project_location(project_path.clone())
+            .await
+            .unwrap();
+        assert_eq!(incomplete.status, "incompletePmCenter");
+        assert!(incomplete.can_repair);
+
+        let database = Database::new(&project_path).unwrap();
+        for name in ["thumbnails", "scripts", "plugins"] {
+            fs::create_dir_all(project_root.join(".pm_center").join(name)).unwrap();
+        }
+        tree_cache::get_or_create_project_cache(&project_path).unwrap();
+        let ready = inspect_project_location(project_path.clone())
+            .await
+            .unwrap();
+        assert_eq!(ready.status, "ready");
+
+        drop(database);
+        tree_cache::release_project_cache(&project_path).unwrap();
+        fs::remove_dir_all(project_root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn project_location_search_finds_project_under_configured_root() {
+        let root = temporary_project_root("location-search");
+        let project = root.join("moved-project");
+        fs::create_dir_all(project.join(".pm_center")).unwrap();
+
+        let missing_path = root.join("missing-project").to_string_lossy().to_string();
+        let candidates = find_project_location_candidates(
+            missing_path,
+            vec![root.to_string_lossy().to_string()],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].path, project.to_string_lossy());
+        fs::remove_dir_all(root).unwrap();
+    }
 }

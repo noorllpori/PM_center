@@ -79,6 +79,16 @@ pub fn get_or_create_project_cache(project_path: &str) -> Result<TreeCacheDb, St
         .clone())
 }
 
+/// Drops the process-local SQLite handle for a project tree cache.
+///
+/// The cache files themselves remain untouched. A later project activation will
+/// open a fresh connection and reuse the existing on-disk cache.
+pub fn release_project_cache(project_path: &str) -> Result<bool, String> {
+    let project_key = normalize_path_key(project_path);
+    let mut guard = TREE_CACHE_DBS.lock().map_err(|error| error.to_string())?;
+    Ok(guard.remove(&project_key).is_some())
+}
+
 pub fn process_dirty_dirs(max_dirs_per_project: usize) -> Result<(), String> {
     let project_paths = {
         let guard = TREE_CACHE_DBS.lock().map_err(|error| error.to_string())?;
@@ -359,18 +369,30 @@ impl TreeCacheDb {
             ON file_details_cache(expires_at);
             "#;
 
-        let mut conn = Connection::open(&db_path).map_err(|error| error.to_string())?;
-        if let Err(error) = conn.execute_batch(schema_sql) {
-            let _ = fs::remove_file(&db_path);
-            conn = Connection::open(&db_path).map_err(|open_error| open_error.to_string())?;
-            conn.execute_batch(schema_sql).map_err(|schema_error| {
-                format!("tree cache schema init failed: {}", schema_error)
-            })?;
-            eprintln!(
-                "[TreeCache] schema init failed, recreated cache db: {}",
-                error
-            );
-        }
+        let conn = Connection::open(&db_path).map_err(|error| error.to_string())?;
+        let conn = match conn.execute_batch(schema_sql) {
+            Ok(()) => conn,
+            Err(error) => {
+                // Close the corrupt database before removing it. Windows does
+                // not allow deleting a SQLite file while its handle is open.
+                drop(conn);
+                fs::remove_file(&db_path).map_err(|remove_error| {
+                    format!("failed to remove invalid tree cache: {remove_error}")
+                })?;
+                let replacement =
+                    Connection::open(&db_path).map_err(|open_error| open_error.to_string())?;
+                replacement
+                    .execute_batch(schema_sql)
+                    .map_err(|schema_error| {
+                        format!("tree cache schema init failed: {}", schema_error)
+                    })?;
+                eprintln!(
+                    "[TreeCache] schema init failed, recreated cache db: {}",
+                    error
+                );
+                replacement
+            }
+        };
 
         conn.execute(
             "INSERT OR IGNORE INTO tree_state (id, is_dirty, last_full_scan_ts) VALUES (1, 1, NULL)",
@@ -1038,5 +1060,54 @@ fn subtree_like_pattern(path_key: &str) -> String {
     #[cfg(not(windows))]
     {
         format!("{}/%", path_key)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn releasing_project_cache_removes_the_registry_entry() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let project_root = std::env::temp_dir().join(format!("pm-center-tree-cache-{unique}"));
+        fs::create_dir_all(&project_root).unwrap();
+        let project_path = project_root.to_string_lossy().to_string();
+        let project_key = normalize_path_key(&project_path);
+
+        get_or_create_project_cache(&project_path).unwrap();
+        assert!(TREE_CACHE_DBS.lock().unwrap().contains_key(&project_key));
+
+        assert!(release_project_cache(&project_path).unwrap());
+        assert!(!TREE_CACHE_DBS.lock().unwrap().contains_key(&project_key));
+
+        fs::remove_dir_all(project_root).unwrap();
+    }
+
+    #[test]
+    fn invalid_tree_cache_is_recreated_after_closing_the_old_connection() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let project_root =
+            std::env::temp_dir().join(format!("pm-center-invalid-tree-cache-{unique}"));
+        let pm_center = project_root.join(".pm_center");
+        fs::create_dir_all(&pm_center).unwrap();
+        fs::write(pm_center.join("tree_cache.db"), b"not a sqlite database").unwrap();
+        let project_path = project_root.to_string_lossy().to_string();
+
+        let cache = get_or_create_project_cache(&project_path).unwrap();
+        assert!(cache
+            .get_directory_entries(&project_path)
+            .unwrap()
+            .is_empty());
+
+        drop(cache);
+        release_project_cache(&project_path).unwrap();
+        fs::remove_dir_all(project_root).unwrap();
     }
 }

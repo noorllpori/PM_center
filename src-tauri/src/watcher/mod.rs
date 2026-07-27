@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
 
@@ -61,7 +62,10 @@ struct PendingEvent {
 lazy_static::lazy_static! {
     static ref ACTIVE_WATCHER: Arc<Mutex<Option<RecommendedWatcher>>> =
         Arc::new(Mutex::new(None));
+    static ref ACTIVE_WATCHER_WORKER: Arc<Mutex<Option<JoinHandle<()>>>> =
+        Arc::new(Mutex::new(None));
     static ref ACTIVE_PROJECT: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    static ref WATCHER_STATE_LOCK: Mutex<()> = Mutex::new(());
     static ref APP_HANDLE: Arc<Mutex<Option<tauri::AppHandle>>> = Arc::new(Mutex::new(None));
 }
 
@@ -81,12 +85,10 @@ pub fn set_active_project(
         return Err("项目目录不存在或不可访问".to_string());
     }
 
-    if let Ok(mut active_watcher) = ACTIVE_WATCHER.lock() {
-        *active_watcher = None;
-    }
-    if let Ok(mut active_project) = ACTIVE_PROJECT.lock() {
-        *active_project = None;
-    }
+    let _state_guard = WATCHER_STATE_LOCK
+        .lock()
+        .map_err(|error| error.to_string())?;
+    stop_active_watcher();
 
     let (sender, receiver) = mpsc::channel::<Result<Event, notify::Error>>();
     let callback_sender = sender.clone();
@@ -106,7 +108,7 @@ pub fn set_active_project(
     let worker_project_path = project_path.clone();
     let worker_db = db.clone();
     let worker_excludes = exclude_patterns.to_vec();
-    std::thread::Builder::new()
+    let worker = std::thread::Builder::new()
         .name("pm-center-watcher".to_string())
         .spawn(move || {
             run_event_worker(receiver, &worker_project_path, &worker_db, &worker_excludes)
@@ -119,11 +121,63 @@ pub fn set_active_project(
     }
     let mut active_watcher = ACTIVE_WATCHER.lock().map_err(|error| error.to_string())?;
     *active_watcher = Some(watcher);
+    let mut active_worker = ACTIVE_WATCHER_WORKER
+        .lock()
+        .map_err(|error| error.to_string())?;
+    *active_worker = Some(worker);
     Ok(())
 }
 
 pub fn get_active_project_path() -> Option<String> {
     ACTIVE_PROJECT.lock().ok().and_then(|path| path.clone())
+}
+
+/// Stops the active watcher only when it belongs to the project being closed.
+/// This avoids a late cleanup from a closed tab stopping a watcher that was
+/// already switched to another project.
+pub fn clear_active_project_if_matches(project_path: &str) -> bool {
+    let expected_key = normalize_path_key(project_path);
+    let _state_guard = match WATCHER_STATE_LOCK.lock() {
+        Ok(guard) => guard,
+        Err(_) => return false,
+    };
+    let matches_project = ACTIVE_PROJECT
+        .lock()
+        .ok()
+        .and_then(|active| {
+            active
+                .as_ref()
+                .map(|path| normalize_path_key(path) == expected_key)
+        })
+        .unwrap_or(false);
+
+    if !matches_project {
+        return false;
+    }
+
+    stop_active_watcher();
+    true
+}
+
+fn stop_active_watcher() {
+    let watcher = ACTIVE_WATCHER
+        .lock()
+        .ok()
+        .and_then(|mut value| value.take());
+    if let Ok(mut active_project) = ACTIVE_PROJECT.lock() {
+        *active_project = None;
+    }
+
+    // Dropping notify's watcher disconnects its event channel. Join the worker
+    // before releasing cache handles so it cannot flush a final stale batch.
+    drop(watcher);
+    let worker = ACTIVE_WATCHER_WORKER
+        .lock()
+        .ok()
+        .and_then(|mut value| value.take());
+    if let Some(worker) = worker {
+        let _ = worker.join();
+    }
 }
 
 fn run_event_worker(

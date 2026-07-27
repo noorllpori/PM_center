@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MessageCircle, Terminal, X } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 import { WelcomeScreen } from '../WelcomeScreen';
 import { P2PChat } from '../P2PChat';
 import { PythonEnvManager } from '../PythonEnvManager';
@@ -15,6 +16,7 @@ import { ProjectWorkspace } from './ProjectWorkspace';
 import { ProjectSessionProvider } from './ProjectSessionProvider';
 import { ShellTabBar } from '../shell/ShellTabBar';
 import { Dialog } from '../Dialog';
+import { ProjectLocationDialog } from './ProjectLocationDialog';
 import { createProjectStore, type ProjectStoreApi } from '../../stores/projectStore';
 import { useTaskStore } from '../../stores/taskStore';
 import { createWorkspaceTabStore, type WorkspaceTabStoreApi } from '../../stores/workspaceTabStore';
@@ -40,6 +42,12 @@ import {
   STANDALONE_RETURN_TO_WORKSPACE_EVENT,
   type StandaloneReturnToWorkspacePayload,
 } from '../workspace/standaloneWindowReturn';
+import {
+  findProjectLocationCandidates,
+  inspectProjectLocation,
+  type ProjectLocationCandidate,
+  type ProjectLocationReport,
+} from '../../api/projects';
 
 interface ProjectSession {
   projectStore: ProjectStoreApi;
@@ -61,6 +69,16 @@ interface PluginConfirmDialogState {
   cancelText: string;
   items: string[];
   data?: unknown;
+}
+
+interface OpenProjectOptions {
+  skipRecentTracking?: boolean;
+}
+
+interface PendingProjectOpen {
+  path: string;
+  options?: OpenProjectOptions;
+  report: ProjectLocationReport;
 }
 
 const SESSION_PERSIST_DEBOUNCE_MS = 180;
@@ -212,6 +230,7 @@ async function restoreStandaloneWindow(window: PersistedStandaloneWindow) {
 export function FileManager() {
   const loadSettings = useSettingsStore((state) => state.loadSettings);
   const recentProjects = useSettingsStore((state) => state.recentProjects);
+  const projectsRootDir = useSettingsStore((state) => state.projectsRootDir);
   const autoOpenLastProject = useSettingsStore((state) => state.autoOpenLastProject);
   const addRecentProject = useSettingsStore((state) => state.addRecentProject);
   const showToast = useUiStore((state) => state.showToast);
@@ -243,6 +262,12 @@ export function FileManager() {
     items: [],
     data: undefined,
   });
+  const [pendingProjectOpen, setPendingProjectOpen] = useState<PendingProjectOpen | null>(null);
+  const [projectLocationCandidates, setProjectLocationCandidates] = useState<ProjectLocationCandidate[]>([]);
+  const [isSearchingProjectLocation, setIsSearchingProjectLocation] = useState(false);
+  const [projectLocationSearchError, setProjectLocationSearchError] = useState<string | null>(null);
+  const [hasSearchedProjectLocation, setHasSearchedProjectLocation] = useState(false);
+  const [isOpeningResolvedProject, setIsOpeningResolvedProject] = useState(false);
   const sessionsRef = useRef<Map<string, ProjectSession>>(new Map());
   const sessionSubscriptionsRef = useRef<Map<string, ProjectSessionSubscriptions>>(new Map());
   const sessionPersistTimerRef = useRef<number | null>(null);
@@ -441,9 +466,7 @@ export function FileManager() {
 
   const openProjectSession = useCallback(async (
     path: string,
-    options?: {
-      skipRecentTracking?: boolean;
-    },
+    options?: OpenProjectOptions,
   ) => {
     const session = await ensureProjectSession(path);
     const projectName = session.projectStore.getState().projectName || getProjectNameFromPath(path);
@@ -454,18 +477,121 @@ export function FileManager() {
     return session;
   }, [addRecentProject, ensureProjectSession, openProjectTab]);
 
+  const closeProjectLocationDialog = useCallback(() => {
+    if (isOpeningResolvedProject) {
+      return;
+    }
+    setPendingProjectOpen(null);
+    setProjectLocationCandidates([]);
+    setProjectLocationSearchError(null);
+    setHasSearchedProjectLocation(false);
+  }, [isOpeningResolvedProject]);
+
+  const requestOpenProject = useCallback(async (
+    path: string,
+    options?: OpenProjectOptions,
+  ) => {
+    try {
+      const report = await inspectProjectLocation(path);
+      if (report.status === 'ready') {
+        await openProjectSession(path, options);
+        setPendingProjectOpen(null);
+        setProjectLocationCandidates([]);
+        setProjectLocationSearchError(null);
+        setHasSearchedProjectLocation(false);
+        return true;
+      }
+
+      setProjectLocationCandidates([]);
+      setProjectLocationSearchError(null);
+      setHasSearchedProjectLocation(false);
+      setPendingProjectOpen({ path, options, report });
+      return false;
+    } catch (error) {
+      console.error('Failed to inspect project location:', path, error);
+      showToast({
+        title: '项目位置检查失败',
+        message: String(error),
+        tone: 'error',
+      });
+      return false;
+    }
+  }, [openProjectSession, showToast]);
+
+  const openResolvedProject = useCallback(async () => {
+    const pending = pendingProjectOpen;
+    if (!pending) {
+      return;
+    }
+
+    setIsOpeningResolvedProject(true);
+    try {
+      await openProjectSession(pending.path, pending.options);
+      setPendingProjectOpen(null);
+      setProjectLocationCandidates([]);
+      setProjectLocationSearchError(null);
+      setHasSearchedProjectLocation(false);
+    } catch (error) {
+      console.error('Failed to initialize or repair project:', pending.path, error);
+      showToast({
+        title: pending.report.canInitialize ? '项目初始化失败' : '项目修复失败',
+        message: String(error),
+        tone: 'error',
+      });
+    } finally {
+      setIsOpeningResolvedProject(false);
+    }
+  }, [openProjectSession, pendingProjectOpen, showToast]);
+
+  const searchForProjectLocation = useCallback(async () => {
+    const pending = pendingProjectOpen;
+    if (!pending || pending.report.status !== 'missingDirectory') {
+      return;
+    }
+
+    setIsSearchingProjectLocation(true);
+    setProjectLocationSearchError(null);
+    setHasSearchedProjectLocation(true);
+    try {
+      const searchRoots = projectsRootDir ? [projectsRootDir] : [];
+      const candidates = await findProjectLocationCandidates(pending.path, searchRoots);
+      setProjectLocationCandidates(candidates);
+    } catch (error) {
+      console.error('Failed to find project location:', pending.path, error);
+      setProjectLocationSearchError(String(error));
+    } finally {
+      setIsSearchingProjectLocation(false);
+    }
+  }, [pendingProjectOpen, projectsRootDir]);
+
+  const selectResolvedProjectLocation = useCallback((path: string) => {
+    const options = pendingProjectOpen?.options;
+    void requestOpenProject(path, options);
+  }, [pendingProjectOpen?.options, requestOpenProject]);
+
   const handleOpenProject = useCallback(async (path: string) => {
-    await openProjectSession(path);
-  }, [openProjectSession]);
+    await requestOpenProject(path);
+  }, [requestOpenProject]);
 
   const restorePersistedSession = useCallback(async (sessionSnapshot: PersistedAppSession) => {
     let restoredAnything = false;
+    let unresolvedProject: PendingProjectOpen | null = null;
     const projectSessionMap = new Map(
       sessionSnapshot.projects.map((project) => [normalizeProjectPath(project.projectPath), project] as const),
     );
 
     for (const projectTab of sessionSnapshot.projectTabs) {
       try {
+        const report = await inspectProjectLocation(projectTab.projectPath);
+        if (report.status !== 'ready') {
+          unresolvedProject ??= {
+            path: projectTab.projectPath,
+            options: { skipRecentTracking: true },
+            report,
+          };
+          continue;
+        }
+
         const session = await openProjectSession(projectTab.projectPath, {
           skipRecentTracking: true,
         });
@@ -497,6 +623,13 @@ export function FileManager() {
       }
     }
 
+    if (unresolvedProject) {
+      setProjectLocationCandidates([]);
+      setProjectLocationSearchError(null);
+      setHasSearchedProjectLocation(false);
+      setPendingProjectOpen(unresolvedProject);
+    }
+
     for (const standaloneWindow of sessionSnapshot.standaloneWindows) {
       try {
         await restoreStandaloneWindow(standaloneWindow);
@@ -521,7 +654,7 @@ export function FileManager() {
       }
     }
 
-    return restoredAnything;
+    return restoredAnything || unresolvedProject !== null;
   }, [openProjectSession]);
 
   useEffect(() => {
@@ -553,7 +686,7 @@ export function FileManager() {
           return;
         }
 
-        await openProjectSession(latestProject.path, {
+        await requestOpenProject(latestProject.path, {
           skipRecentTracking: true,
         });
       } finally {
@@ -567,7 +700,7 @@ export function FileManager() {
   }, [
     autoOpenLastProject,
     isSettingsLoaded,
-    openProjectSession,
+    requestOpenProject,
     recentProjects,
     restorePersistedSession,
     schedulePersistAppSession,
@@ -822,13 +955,22 @@ export function FileManager() {
     };
   }, []);
 
-  const handleCloseShellTab = (tabId: string) => {
+  const handleCloseShellTab = async (tabId: string) => {
     const closingTab = tabs.find((tab) => tab.id === tabId);
     closeTab(tabId);
 
     if (closingTab?.type === 'project' && closingTab.projectPath) {
       unregisterSessionPersistence(closingTab.projectPath);
       sessionsRef.current.delete(normalizeProjectPath(closingTab.projectPath));
+
+      try {
+        await invoke('release_project_resources', {
+          projectPath: closingTab.projectPath,
+        });
+      } catch (error) {
+        // Closing the tab must not depend on best-effort resource cleanup.
+        console.warn('Failed to release project resources:', closingTab.projectPath, error);
+      }
     }
   };
 
@@ -926,6 +1068,20 @@ export function FileManager() {
       <PythonEnvManager
         isOpen={isPythonEnvOpen}
         onClose={() => setIsPythonEnvOpen(false)}
+      />
+
+      <ProjectLocationDialog
+        report={pendingProjectOpen?.report ?? null}
+        candidates={projectLocationCandidates}
+        isSearching={isSearchingProjectLocation}
+        hasSearched={hasSearchedProjectLocation}
+        searchError={projectLocationSearchError}
+        isOpening={isOpeningResolvedProject}
+        onClose={closeProjectLocationDialog}
+        onInitialize={() => void openResolvedProject()}
+        onRepair={() => void openResolvedProject()}
+        onSearch={() => void searchForProjectLocation()}
+        onSelectLocation={selectResolvedProjectLocation}
       />
 
       {toast.isOpen && (

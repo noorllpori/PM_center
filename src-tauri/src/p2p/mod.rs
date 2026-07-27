@@ -410,7 +410,9 @@ async fn handle_tcp_connection(
                     break;
                 }
                 if let Ok(message) = serde_json::from_str::<P2PMessage>(&line.trim()) {
-                    if message.content.trim().is_empty() || message.content.len() > MAX_MESSAGE_BYTES {
+                    if message.content.trim().is_empty()
+                        || message.content.len() > MAX_MESSAGE_BYTES
+                    {
                         println!("[P2P] 拒绝无效消息");
                         continue;
                     }
@@ -437,7 +439,9 @@ async fn handle_tcp_connection(
                     };
                     match serde_json::to_string(&ack) {
                         Ok(ack) => {
-                            if let Err(error) = writer.write_all(format!("{ack}\n").as_bytes()).await {
+                            if let Err(error) =
+                                writer.write_all(format!("{ack}\n").as_bytes()).await
+                            {
                                 println!("[P2P] 发送消息回执失败: {error}");
                             }
                         }
@@ -476,7 +480,12 @@ async fn send_tcp_message(ip: &str, message: &P2PMessage) -> Result<(), String> 
     let mut response = String::new();
     tokio::time::timeout(DELIVERY_ACK_TIMEOUT, reader.read_line(&mut response))
         .await
-        .map_err(|_| format!("对方未确认消息。请确认对方已更新 PMC，并在 Windows 防火墙中允许 TCP {}", MESSAGE_PORT))?
+        .map_err(|_| {
+            format!(
+                "对方未确认消息。请确认对方已更新 PMC，并在 Windows 防火墙中允许 TCP {}",
+                MESSAGE_PORT
+            )
+        })?
         .map_err(|error| format!("读取 {} 的送达确认失败: {}", addr, error))?;
     let ack = serde_json::from_str::<P2PDeliveryAck>(response.trim())
         .map_err(|_| format!("{} 返回了无效的送达确认", addr))?;
