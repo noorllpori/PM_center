@@ -6,6 +6,7 @@ import {
   FileImage,
   FileVideo,
   FolderOpen,
+  SquareArrowOutUpRight,
   RefreshCw,
   X,
 } from 'lucide-react';
@@ -124,9 +125,12 @@ export function LanTransferCard({
               </button>
             </div>
           ) : localPath && transfer.status === 'completed' ? (
-            <div className="flex justify-end border-t border-gray-100 px-3 py-2 dark:border-gray-800">
+            <div className="flex justify-end gap-1 border-t border-gray-100 px-3 py-2 dark:border-gray-800">
+              <button type="button" onClick={() => void invoke('show_in_folder', { path: localPath })} className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800">
+                <FolderOpen className="h-3.5 w-3.5" />所在目录
+              </button>
               <button type="button" onClick={() => void invoke('open_file', { path: localPath })} className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-blue-600 hover:bg-blue-50 dark:text-blue-300 dark:hover:bg-blue-950/30">
-                <FolderOpen className="h-3.5 w-3.5" />打开文件
+                <SquareArrowOutUpRight className="h-3.5 w-3.5" />打开文件
               </button>
             </div>
           ) : null}
