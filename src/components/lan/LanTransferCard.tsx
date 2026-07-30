@@ -33,6 +33,11 @@ function TransferIcon({ mimeType }: { mimeType: string | null }) {
 }
 
 function statusLabel(transfer: LanTransfer) {
+  const autoReceivingImage = transfer.direction === 'incoming'
+    && transfer.status === 'pending'
+    && transfer.totalBytes <= 100 * 1024 * 1024
+    && transfer.mimeType?.startsWith('image/');
+  if (autoReceivingImage) return '正在自动接收';
   switch (transfer.status) {
     case 'waiting': return '等待对方接收';
     case 'pending': return '待接收';
@@ -67,7 +72,13 @@ export function LanTransferCard({
   const progressPercent = transfer.totalBytes > 0
     ? Math.min(100, Math.round((transferredBytes / transfer.totalBytes) * 100))
     : transfer.status === 'completed' ? 100 : 0;
-  const canRespond = !outgoing && (transfer.status === 'pending' || transfer.status === 'failed');
+  const autoReceivingImage = !outgoing
+    && transfer.status === 'pending'
+    && transfer.totalBytes <= 100 * 1024 * 1024
+    && transfer.mimeType?.startsWith('image/');
+  const canRespond = !outgoing
+    && !autoReceivingImage
+    && (transfer.status === 'pending' || transfer.status === 'failed');
 
   return (
     <div className={`flex gap-2.5 ${outgoing ? 'justify-end' : 'justify-start'}`}>

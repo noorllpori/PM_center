@@ -53,6 +53,13 @@ pub struct LanProfile {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LanLocalSettings {
+    pub receive_directory: String,
+    pub auto_receive_images: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LanContact {
     pub id: String,
     pub display_name: String,
@@ -147,6 +154,7 @@ impl Default for LanServiceStatus {
 #[serde(rename_all = "camelCase")]
 pub struct LanSnapshot {
     pub profile: LanProfile,
+    pub local_settings: LanLocalSettings,
     pub contacts: Vec<LanContact>,
     pub messages: Vec<LanMessage>,
     pub transfers: Vec<LanTransfer>,
@@ -160,6 +168,12 @@ pub struct LanSnapshot {
 pub struct UpdateLanProfileRequest {
     pub display_name: String,
     pub department: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateLanReceiveDirectoryRequest {
+    pub receive_directory: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -428,11 +442,50 @@ fn open_database(path: &Path) -> Result<Connection, String> {
          CREATE TABLE IF NOT EXISTS lan_conversation_reads (
            conversation_id TEXT PRIMARY KEY,
            last_read_at INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS lan_local_settings (
+           singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+           receive_directory TEXT NOT NULL,
+           auto_receive_images INTEGER NOT NULL DEFAULT 1,
+           updated_at INTEGER NOT NULL
          );",
     )
     .map_err(|error| error.to_string())?;
     transfer::initialize_schema(&conn)?;
     Ok(conn)
+}
+
+fn load_local_settings(conn: &Connection) -> Result<LanLocalSettings, String> {
+    conn.query_row(
+        "SELECT receive_directory,auto_receive_images FROM lan_local_settings WHERE singleton=1",
+        [],
+        |row| {
+            Ok(LanLocalSettings {
+                receive_directory: row.get(0)?,
+                auto_receive_images: row.get::<_, i64>(1)? != 0,
+            })
+        },
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn ensure_local_settings(conn: &Connection, default_directory: &Path) -> Result<(), String> {
+    fs::create_dir_all(default_directory)
+        .map_err(|error| format!("创建默认局域网接收目录失败：{error}"))?;
+    conn.execute(
+        "INSERT OR IGNORE INTO lan_local_settings(
+           singleton,receive_directory,auto_receive_images,updated_at
+         ) VALUES(1,?1,1,?2)",
+        params![default_directory.to_string_lossy(), now_millis() as i64],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+pub(super) fn configured_receive_directory() -> Result<PathBuf, String> {
+    let (db_path, _) = state_paths()?;
+    let settings = load_local_settings(&open_database(&db_path)?)?;
+    Ok(PathBuf::from(settings.receive_directory))
 }
 
 fn validate_profile_text(value: &str, label: &str, max_chars: usize) -> Result<String, String> {
@@ -1483,6 +1536,7 @@ fn snapshot() -> Result<LanSnapshot, String> {
         )
     };
     let conn = open_database(&db_path)?;
+    let local_settings = load_local_settings(&conn)?;
     let contacts = load_contacts(&conn, &online)?;
     let messages = load_messages(&conn)?;
     let transfers = transfer::load_transfers(&conn)?;
@@ -1490,6 +1544,7 @@ fn snapshot() -> Result<LanSnapshot, String> {
     let conversations = build_conversations(&contacts, &messages, &transfers, &unread);
     Ok(LanSnapshot {
         profile,
+        local_settings,
         contacts,
         messages,
         transfers,
@@ -1515,6 +1570,12 @@ pub async fn initialize_lan_collaboration(
     fs::create_dir_all(&avatars_dir).map_err(|error| error.to_string())?;
     fs::create_dir_all(&transfer_staging_dir).map_err(|error| error.to_string())?;
     let conn = open_database(&db_path)?;
+    let default_receive_directory = app_handle
+        .path()
+        .download_dir()
+        .unwrap_or_else(|_| app_data_dir.join("lan_collaboration").join("received"))
+        .join("PM Center 接收文件");
+    ensure_local_settings(&conn, &default_receive_directory)?;
     transfer::recover_interrupted(&conn)?;
     transfer::prune_staging_files(&transfer_staging_dir);
     let profile = load_or_create_profile(&conn, legacy_profile)?;
@@ -1583,6 +1644,37 @@ pub async fn update_lan_profile(
     }
     let _ = app_handle.emit("pm-center:lan-profile-changed", &profile);
     Ok(profile)
+}
+
+#[tauri::command]
+pub async fn update_lan_receive_directory(
+    app_handle: tauri::AppHandle,
+    request: UpdateLanReceiveDirectoryRequest,
+) -> Result<LanLocalSettings, String> {
+    let requested = request.receive_directory.trim();
+    if requested.is_empty() {
+        return Err("请选择局域网文件接收目录".to_string());
+    }
+    let path = PathBuf::from(requested);
+    if !path.is_absolute() {
+        return Err("局域网文件接收目录必须是绝对路径".to_string());
+    }
+    fs::create_dir_all(&path).map_err(|error| format!("创建局域网接收目录失败：{error}"))?;
+    let canonical =
+        fs::canonicalize(&path).map_err(|error| format!("无法访问局域网接收目录：{error}"))?;
+    if !canonical.is_dir() {
+        return Err("选择的位置不是文件夹".to_string());
+    }
+    let (db_path, _) = state_paths()?;
+    let conn = open_database(&db_path)?;
+    conn.execute(
+        "UPDATE lan_local_settings SET receive_directory=?1,updated_at=?2 WHERE singleton=1",
+        params![canonical.to_string_lossy(), now_millis() as i64],
+    )
+    .map_err(|error| error.to_string())?;
+    let settings = load_local_settings(&conn)?;
+    let _ = app_handle.emit("pm-center:lan-settings-changed", &settings);
+    Ok(settings)
 }
 
 fn create_avatar(source_path: &Path) -> Result<(Vec<u8>, String), String> {
@@ -2093,5 +2185,23 @@ mod tests {
         assert_eq!(count, 0);
         drop(conn);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn local_receive_settings_are_initialized_once() {
+        let path = temp_db("local-settings");
+        let receive_directory = path.with_extension("received");
+        let conn = open_database(&path).unwrap();
+        ensure_local_settings(&conn, &receive_directory).unwrap();
+        ensure_local_settings(&conn, &path.with_extension("other")).unwrap();
+        let settings = load_local_settings(&conn).unwrap();
+        assert_eq!(
+            PathBuf::from(settings.receive_directory),
+            receive_directory
+        );
+        assert!(settings.auto_receive_images);
+        drop(conn);
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_dir_all(receive_directory);
     }
 }

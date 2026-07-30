@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 use tauri::{Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -20,6 +21,8 @@ const TRANSFER_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 const TRANSFER_IO_TIMEOUT: Duration = Duration::from_secs(60);
 const TRANSFER_CHUNK_SIZE: usize = 1024 * 1024;
 const MAX_TRANSFER_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
+const MAX_AUTO_RECEIVE_IMAGE_BYTES: u64 = 100 * 1024 * 1024;
+static RECEIVE_PATH_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -327,19 +330,164 @@ fn update_transfer(
     load_transfer(conn, transfer_id)
 }
 
-fn claim_incoming_transfer(conn: &Connection, transfer_id: &str) -> Result<LanTransfer, String> {
+fn claim_incoming_transfer(
+    conn: &Connection,
+    transfer_id: &str,
+    destination_path: &Path,
+) -> Result<LanTransfer, String> {
     let claimed = conn
         .execute(
             "UPDATE lan_transfers
-             SET status='transferring',error=NULL,updated_at=?2
+             SET status='transferring',error=NULL,received_path=?2,updated_at=?3
              WHERE id=?1 AND direction='incoming' AND status IN ('pending','failed')",
-            params![transfer_id, now_millis() as i64],
+            params![
+                transfer_id,
+                destination_path.to_string_lossy(),
+                now_millis() as i64
+            ],
         )
         .map_err(|error| error.to_string())?;
     if claimed == 0 {
         return Err("当前传输已被其他窗口处理或状态已变化".to_string());
     }
     load_transfer(conn, transfer_id)
+}
+
+fn sanitize_sender_directory(display_name: &str, sender_id: &str) -> String {
+    let mut sanitized = display_name
+        .trim()
+        .chars()
+        .map(|value| {
+            if value.is_control()
+                || matches!(value, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+            {
+                '_'
+            } else {
+                value
+            }
+        })
+        .take(80)
+        .collect::<String>();
+    sanitized = sanitized.trim_matches([' ', '.']).to_string();
+    let reserved_stem = sanitized
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    let windows_reserved = matches!(
+        reserved_stem.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    );
+    if windows_reserved {
+        sanitized.insert(0, '_');
+    }
+    if sanitized.is_empty() {
+        let suffix = sender_id.chars().take(8).collect::<String>();
+        format!("联系人-{suffix}")
+    } else {
+        sanitized
+    }
+}
+
+fn destination_is_reserved(
+    conn: &Connection,
+    transfer_id: &str,
+    destination: &Path,
+) -> Result<bool, String> {
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM lan_transfers
+             WHERE id<>?1 AND received_path=?2 AND status<>'rejected'",
+            params![transfer_id, destination.to_string_lossy()],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(count > 0)
+}
+
+fn allocate_default_destination(
+    conn: &Connection,
+    transfer: &LanTransfer,
+) -> Result<PathBuf, String> {
+    let root = super::configured_receive_directory()?;
+    let sender_directory = root.join(sanitize_sender_directory(
+        &transfer.from_name,
+        &transfer.from_id,
+    ));
+    fs::create_dir_all(&sender_directory)
+        .map_err(|error| format!("创建联系人接收目录失败：{error}"))?;
+    let file_name = validate_file_name(&transfer.display_name)?;
+    let original = Path::new(&file_name);
+    let stem = original
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("文件");
+    let extension = original.extension().and_then(|value| value.to_str());
+    for index in 0..10_000u32 {
+        let candidate_name = if index == 0 {
+            file_name.clone()
+        } else if let Some(extension) = extension {
+            format!("{stem} ({index}).{extension}")
+        } else {
+            format!("{stem} ({index})")
+        };
+        let candidate = sender_directory.join(candidate_name);
+        if !candidate.exists() && !destination_is_reserved(conn, &transfer.id, &candidate)? {
+            return Ok(candidate);
+        }
+    }
+    Err("接收目录中同名文件过多，请整理后重试".to_string())
+}
+
+fn is_image_transfer(transfer: &LanTransfer) -> bool {
+    transfer
+        .mime_type
+        .as_deref()
+        .is_some_and(|value| value.starts_with("image/"))
+}
+
+fn should_auto_receive_image(transfer: &LanTransfer) -> bool {
+    is_image_transfer(transfer) && transfer.total_bytes <= MAX_AUTO_RECEIVE_IMAGE_BYTES
+}
+
+async fn validate_received_image(path: &Path) -> Result<(), String> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let reader = image::io::Reader::open(&path)
+            .map_err(|error| format!("无法读取接收图片：{error}"))?
+            .with_guessed_format()
+            .map_err(|error| format!("无法识别接收图片：{error}"))?;
+        if reader.format().is_none() {
+            return Err("接收内容不是可识别的图片".to_string());
+        }
+        reader
+            .into_dimensions()
+            .map_err(|error| format!("接收图片校验失败：{error}"))?;
+        Ok(())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn reject_incoming_transfer(conn: &Connection, transfer_id: &str) -> Result<LanTransfer, String> {
@@ -880,6 +1028,9 @@ async fn download_transfer(
         let _ = tokio::fs::remove_file(&temp_path).await;
         return Err("文件完整性校验失败，临时文件已删除".to_string());
     }
+    if is_image_transfer(transfer) {
+        validate_received_image(&temp_path).await?;
+    }
     atomic_replace_file(&temp_path, destination_path)?;
     let _ = write_envelope(
         &mut writer,
@@ -941,21 +1092,29 @@ pub async fn respond_lan_transfer(
             if transfer.status != "pending" && transfer.status != "failed" {
                 return Err("当前传输状态不能开始接收".to_string());
             }
-            let destination = request
+            let peer = transfer_target(&transfer.from_id)?;
+            let path_guard = RECEIVE_PATH_LOCK
+                .lock()
+                .map_err(|error| error.to_string())?;
+            let destination = if let Some(value) = request
                 .destination_path
                 .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| "请选择文件保存位置".to_string())?;
-            let peer = transfer_target(&transfer.from_id)?;
-            let transferring = claim_incoming_transfer(&conn, &transfer.id)?;
+            {
+                PathBuf::from(value)
+            } else {
+                allocate_default_destination(&conn, &transfer)?
+            };
+            let transferring = claim_incoming_transfer(&conn, &transfer.id, &destination)?;
+            drop(path_guard);
             emit_changed(&app_handle, &transferring);
-            match download_transfer(&app_handle, &transfer, &peer, Path::new(&destination)).await {
+            match download_transfer(&app_handle, &transfer, &peer, &destination).await {
                 Ok(()) => {
                     let completed = update_transfer(
                         &open_database(&db_path)?,
                         &transfer.id,
                         "completed",
                         None,
-                        Some(&destination),
+                        Some(&destination.to_string_lossy()),
                     )?;
                     emit_changed(&app_handle, &completed);
                     Ok(completed)
@@ -1236,7 +1395,8 @@ pub(super) async fn handle_connection(
                 emit_contacts_changed(&app_handle);
             }
             let transfer = transfer_from_offer(&offer);
-            if insert_transfer(&conn, &transfer)? {
+            let inserted = insert_transfer(&conn, &transfer)?;
+            if inserted {
                 emit_changed(&app_handle, &transfer);
             }
             write_envelope(
@@ -1245,7 +1405,29 @@ pub(super) async fn handle_connection(
                     transfer_id: offer.id,
                 },
             )
-            .await
+            .await?;
+            if inserted
+                && should_auto_receive_image(&transfer)
+                && super::load_local_settings(&conn)
+                    .map(|settings| settings.auto_receive_images)
+                    .unwrap_or(true)
+            {
+                let app_handle = app_handle.clone();
+                let transfer_id = transfer.id.clone();
+                tokio::spawn(async move {
+                    tokio::task::yield_now().await;
+                    let _ = respond_lan_transfer(
+                        app_handle,
+                        RespondLanTransferRequest {
+                            transfer_id,
+                            action: "accept".to_string(),
+                            destination_path: None,
+                        },
+                    )
+                    .await;
+                });
+            }
+            Ok(())
         }
         TransferControlEnvelope::TransferDecision {
             transfer_id,
@@ -1382,10 +1564,12 @@ mod tests {
         };
         insert_transfer(&conn, &transfer).unwrap();
         assert_eq!(
-            claim_incoming_transfer(&conn, &transfer.id).unwrap().status,
+            claim_incoming_transfer(&conn, &transfer.id, Path::new("received.bin"))
+                .unwrap()
+                .status,
             "transferring"
         );
-        assert!(claim_incoming_transfer(&conn, &transfer.id).is_err());
+        assert!(claim_incoming_transfer(&conn, &transfer.id, Path::new("received.bin")).is_err());
         assert!(reject_incoming_transfer(&conn, &transfer.id).is_err());
 
         transfer.id = "incoming-reject".to_string();
@@ -1397,11 +1581,37 @@ mod tests {
                 .status,
             "rejected"
         );
-        assert!(claim_incoming_transfer(&conn, &transfer.id).is_err());
+        assert!(claim_incoming_transfer(&conn, &transfer.id, Path::new("received.bin")).is_err());
         assert!(reject_incoming_transfer(&conn, &transfer.id).is_err());
 
         drop(conn);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn sender_names_are_safe_directory_names() {
+        assert_eq!(sanitize_sender_directory(" Alice ", "peer"), "Alice");
+        assert_eq!(sanitize_sender_directory("A/B:C*", "peer"), "A_B_C_");
+        assert_eq!(sanitize_sender_directory("CON", "peer"), "_CON");
+        assert_eq!(
+            sanitize_sender_directory("...", "peer-123"),
+            "联系人-peer-123"
+        );
+    }
+
+    #[tokio::test]
+    async fn automatic_images_must_have_a_decodable_header() {
+        let directory =
+            std::env::temp_dir().join(format!("pm-center-transfer-image-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        let valid_path = directory.join("valid.png");
+        image::RgbImage::new(2, 2).save(&valid_path).unwrap();
+        validate_received_image(&valid_path).await.unwrap();
+
+        let invalid_path = directory.join("invalid.png");
+        fs::write(&invalid_path, b"not an image").unwrap();
+        assert!(validate_received_image(&invalid_path).await.is_err());
+        let _ = fs::remove_dir_all(directory);
     }
 
     #[test]

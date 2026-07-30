@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { convertFileSrc } from '@tauri-apps/api/core';
-import { downloadDir, join } from '@tauri-apps/api/path';
-import { open, save } from '@tauri-apps/plugin-dialog';
+import { convertFileSrc, invoke } from '@tauri-apps/api/core';
+import { open } from '@tauri-apps/plugin-dialog';
 import {
   ArrowLeft,
   Building2,
   CircleUserRound,
   ContactRound,
   Eraser,
+  FolderOpen,
   History,
   ImagePlus,
   Inbox,
@@ -242,6 +242,7 @@ function MessageBubble({
 export function LanCollaborationSurface({ isActive = true }: LanCollaborationSurfaceProps) {
   const {
     profile,
+    localSettings,
     contacts,
     messages,
     transfers,
@@ -254,6 +255,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
     initialize,
     refresh,
     updateProfile,
+    updateReceiveDirectory,
     setAvatar,
     startDiscovery,
     stopDiscovery,
@@ -282,8 +284,10 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
   const [profileDepartment, setProfileDepartment] = useState('');
   const [isProfileDraftDirty, setIsProfileDraftDirty] = useState(false);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [isUpdatingReceiveDirectory, setIsUpdatingReceiveDirectory] = useState(false);
   const [confirmAction, setConfirmAction] = useState<'conversation' | 'history' | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const [scrollRequest, setScrollRequest] = useState(0);
+  const messagesViewportRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     void initialize().catch((initializationError) => {
@@ -326,8 +330,30 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
 
   useEffect(() => {
     if (!isActive) return;
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [isActive, selectedConversationId, selectedTimeline.length]);
+    const viewport = messagesViewportRef.current;
+    if (!viewport) return;
+    const scrollToBottom = () => {
+      viewport.scrollTop = viewport.scrollHeight;
+    };
+    scrollToBottom();
+    let secondFrame = 0;
+    const firstFrame = window.requestAnimationFrame(() => {
+      scrollToBottom();
+      secondFrame = window.requestAnimationFrame(scrollToBottom);
+    });
+    const content = viewport.firstElementChild;
+    const resizeObserver = content instanceof HTMLElement
+      ? new ResizeObserver(scrollToBottom)
+      : null;
+    if (content instanceof HTMLElement) resizeObserver?.observe(content);
+    const settleTimer = window.setTimeout(() => resizeObserver?.disconnect(), 800);
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame) window.cancelAnimationFrame(secondFrame);
+      window.clearTimeout(settleTimer);
+      resizeObserver?.disconnect();
+    };
+  }, [isActive, scrollRequest, selectedConversationId, selectedTimeline.length, showMobileConversation]);
 
   const filteredContacts = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
@@ -356,6 +382,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
     setSelectedConversationId(conversationId);
     setMode('messages');
     setShowMobileConversation(true);
+    setScrollRequest((current) => current + 1);
   };
 
   const handleSend = async () => {
@@ -523,18 +550,36 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
   const handleAcceptTransfer = async (transfer: LanTransfer) => {
     if (!beginTransferAction(transfer.id)) return;
     try {
-      const defaultPath = await join(await downloadDir(), transfer.displayName);
-      const destinationPath = await save({
-        title: `接收 ${transfer.displayName}`,
-        defaultPath,
+      const completed = await respondTransfer(transfer.id, 'accept');
+      showToast({
+        title: '文件接收完成',
+        message: completed.receivedPath || transfer.displayName,
+        tone: 'success',
       });
-      if (!destinationPath) return;
-      await respondTransfer(transfer.id, 'accept', destinationPath);
-      showToast({ title: '文件接收完成', message: transfer.displayName, tone: 'success' });
     } catch (acceptError) {
       showToast({ title: '文件接收失败', message: String(acceptError), tone: 'error' });
     } finally {
       endTransferAction(transfer.id);
+    }
+  };
+
+  const handleChooseReceiveDirectory = async () => {
+    if (isUpdatingReceiveDirectory) return;
+    const selected = await open({
+      title: '选择局域网文件接收目录',
+      multiple: false,
+      directory: true,
+      defaultPath: localSettings?.receiveDirectory,
+    });
+    if (typeof selected !== 'string') return;
+    setIsUpdatingReceiveDirectory(true);
+    try {
+      await updateReceiveDirectory(selected);
+      showToast({ title: '接收目录已更新', message: selected, tone: 'success' });
+    } catch (directoryError) {
+      showToast({ title: '更新接收目录失败', message: String(directoryError), tone: 'error' });
+    } finally {
+      setIsUpdatingReceiveDirectory(false);
     }
   };
 
@@ -781,7 +826,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
             <div className="text-center">
               <Paperclip className="mx-auto h-7 w-7" />
               <p className="mt-2 text-sm font-medium">拖到此处发送文件</p>
-              <p className="mt-1 text-xs opacity-75">对方确认接收后才会开始传输</p>
+              <p className="mt-1 text-xs opacity-75">普通文件由对方确认，图片会自动接收</p>
             </div>
           </div>
         ) : null}
@@ -795,7 +840,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
                   title="局域网协同说明"
                   text={[
                     '消息和压缩头像仅在当前局域网内传输，不经过云端，但内容未加密，请只在可信网络中使用。',
-                    '文件只在联系人确认接收并选择保存位置后开始传输；传输使用临时文件和 BLAKE3 完整性校验。',
+                    '普通文件在联系人确认后保存到默认接收目录；图片会自动接收。所有内容都使用临时文件和 BLAKE3 完整性校验。',
                     '无法互相发现时，请允许 PM Center 通过 Windows 专用网络防火墙访问 UDP 31523 和 TCP 31524。',
                   ]}
                   placement="bottom-start"
@@ -845,6 +890,37 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
               </div>
 
               <div className="mt-8 border-t border-gray-200 pt-5 dark:border-gray-800">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <h3 className="text-sm font-semibold">文件接收</h3>
+                    <p className="mt-1 text-xs text-gray-500">按发送者名称建立子目录；同名文件自动编号，不覆盖已有内容。</p>
+                  </div>
+                  <div className="flex shrink-0 gap-2">
+                    <button
+                      type="button"
+                      disabled={!localSettings?.receiveDirectory}
+                      onClick={() => localSettings?.receiveDirectory && void invoke('open_path', { path: localSettings.receiveDirectory })}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 px-2.5 py-1.5 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-900"
+                    >
+                      <FolderOpen className="h-3.5 w-3.5" />打开
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isUpdatingReceiveDirectory}
+                      onClick={() => void handleChooseReceiveDirectory()}
+                      className="rounded-md bg-blue-600 px-3 py-1.5 text-xs text-white hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {isUpdatingReceiveDirectory ? '更新中...' : '更改位置'}
+                    </button>
+                  </div>
+                </div>
+                <p className="mt-3 break-all rounded-md bg-gray-100 px-3 py-2 text-xs text-gray-600 dark:bg-gray-900 dark:text-gray-300">
+                  {localSettings?.receiveDirectory || '正在读取接收目录...'}
+                </p>
+                <p className="mt-2 text-xs text-gray-500">图片不需要手动确认，校验通过后会自动保存到对应联系人目录。</p>
+              </div>
+
+              <div className="mt-8 border-t border-gray-200 pt-5 dark:border-gray-800">
                 <div className="flex items-center justify-between gap-4">
                   <div>
                     <h3 className="text-sm font-semibold">网络诊断</h3>
@@ -878,7 +954,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
               <button type="button" onClick={() => setConfirmAction('conversation')} title="清空当前会话" className="flex h-8 w-8 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-red-600 dark:hover:bg-gray-800"><History className="h-4 w-4" /></button>
             </header>
 
-            <div className="min-h-0 flex-1 overflow-auto px-4 py-5">
+            <div ref={messagesViewportRef} className="min-h-0 flex-1 overflow-auto px-4 py-5">
               {selectedTimeline.length === 0 ? (
                 <div className="flex h-full min-h-52 flex-col items-center justify-center text-center text-gray-400">
                   <Inbox className="h-10 w-10" />
@@ -911,7 +987,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
                       onReject={(transfer) => void handleRejectTransfer(transfer)}
                     />
                   ))}
-                  <div ref={messagesEndRef} />
+                  <div aria-hidden="true" />
                 </div>
               )}
             </div>

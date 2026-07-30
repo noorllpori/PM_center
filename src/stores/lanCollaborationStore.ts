@@ -12,6 +12,11 @@ export interface LanProfile {
   profileRevision: number;
 }
 
+export interface LanLocalSettings {
+  receiveDirectory: string;
+  autoReceiveImages: boolean;
+}
+
 export interface LanContact {
   id: string;
   displayName: string;
@@ -102,6 +107,7 @@ export interface LanServiceStatus {
 
 export interface LanSnapshot {
   profile: LanProfile;
+  localSettings: LanLocalSettings;
   contacts: LanContact[];
   messages: LanMessage[];
   transfers: LanTransfer[];
@@ -124,6 +130,7 @@ export interface LanDeliveryResult {
 
 interface LanCollaborationState {
   profile: LanProfile | null;
+  localSettings: LanLocalSettings | null;
   contacts: LanContact[];
   messages: LanMessage[];
   transfers: LanTransfer[];
@@ -137,6 +144,7 @@ interface LanCollaborationState {
   initialize: () => Promise<void>;
   refresh: () => Promise<void>;
   updateProfile: (displayName: string, department: string) => Promise<void>;
+  updateReceiveDirectory: (receiveDirectory: string) => Promise<void>;
   setAvatar: (imagePath: string | null) => Promise<void>;
   startDiscovery: () => Promise<void>;
   stopDiscovery: () => Promise<void>;
@@ -174,6 +182,7 @@ const unlisteners: UnlistenFn[] = [];
 function applySnapshot(snapshot: LanSnapshot) {
   useLanCollaborationStore.setState({
     profile: snapshot.profile,
+    localSettings: snapshot.localSettings,
     contacts: snapshot.contacts,
     messages: snapshot.messages,
     transfers: snapshot.transfers,
@@ -218,6 +227,7 @@ async function setupListeners() {
       'pm-center:lan-message',
       'pm-center:lan-contacts-changed',
       'pm-center:lan-profile-changed',
+      'pm-center:lan-settings-changed',
       'pm-center:lan-read-state-changed',
       'pm-center:lan-service-status',
       'pm-center:lan-transfer-changed',
@@ -241,6 +251,7 @@ async function setupListeners() {
 
 export const useLanCollaborationStore = create<LanCollaborationState>((set, get) => ({
   profile: null,
+  localSettings: null,
   contacts: [],
   messages: [],
   transfers: [],
@@ -304,6 +315,14 @@ export const useLanCollaborationStore = create<LanCollaborationState>((set, get)
       request: { displayName, department },
     });
     set({ profile });
+    await get().refresh();
+  },
+
+  updateReceiveDirectory: async (receiveDirectory) => {
+    const localSettings = await invoke<LanLocalSettings>('update_lan_receive_directory', {
+      request: { receiveDirectory },
+    });
+    set({ localSettings });
     await get().refresh();
   },
 

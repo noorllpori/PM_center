@@ -38,8 +38,8 @@ use p2p::{
     discard_lan_transfer_staging_file, get_lan_collaboration_snapshot, init_p2p,
     initialize_lan_collaboration, mark_lan_conversation_read, offer_lan_files, remove_lan_contact,
     respond_lan_transfer, send_lan_message, send_p2p_message, set_lan_avatar, start_lan_discovery,
-    start_p2p_discovery, stop_lan_discovery, stop_p2p_discovery, update_lan_profile,
-    update_p2p_user,
+    start_p2p_discovery, stop_lan_discovery, stop_p2p_discovery,
+    update_lan_profile, update_lan_receive_directory, update_p2p_user,
 };
 use plugin::{
     get_plugin_dirs, inspect_plugin_dependencies, install_plugin_dependencies, list_plugins,
@@ -1525,6 +1525,7 @@ pub fn run() {
             initialize_lan_collaboration,
             get_lan_collaboration_snapshot,
             update_lan_profile,
+            update_lan_receive_directory,
             set_lan_avatar,
             start_lan_discovery,
             stop_lan_discovery,
