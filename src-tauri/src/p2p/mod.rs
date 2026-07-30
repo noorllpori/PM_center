@@ -14,9 +14,15 @@ use tauri::{Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
+mod transfer;
+pub use transfer::{
+    create_lan_transfer_staging_path, discard_lan_transfer_staging_file, offer_lan_files,
+    respond_lan_transfer, LanTransfer,
+};
+
 const DISCOVERY_PORT: u16 = 31523;
 const MESSAGE_PORT: u16 = 31524;
-const PROTOCOL_VERSION: u16 = 2;
+const PROTOCOL_VERSION: u16 = 3;
 const BROADCAST_INTERVAL: Duration = Duration::from_secs(4);
 const USER_TIMEOUT: Duration = Duration::from_secs(16);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -143,6 +149,7 @@ pub struct LanSnapshot {
     pub profile: LanProfile,
     pub contacts: Vec<LanContact>,
     pub messages: Vec<LanMessage>,
+    pub transfers: Vec<LanTransfer>,
     pub conversations: Vec<LanConversation>,
     pub unread_count: u64,
     pub service: LanServiceStatus,
@@ -334,6 +341,7 @@ struct OnlinePeer {
     avatar_hash: Option<String>,
     ip: String,
     last_seen: u64,
+    protocol_version: u16,
     profile_revision: u64,
 }
 
@@ -423,6 +431,7 @@ fn open_database(path: &Path) -> Result<Connection, String> {
          );",
     )
     .map_err(|error| error.to_string())?;
+    transfer::initialize_schema(&conn)?;
     Ok(conn)
 }
 
@@ -507,6 +516,7 @@ fn prune_old_messages(conn: &Connection) -> Result<(), String> {
         params![cutoff as i64],
     )
     .map_err(|error| error.to_string())?;
+    transfer::prune_expired(conn)?;
     Ok(())
 }
 
@@ -588,11 +598,11 @@ fn upsert_contact(
     ip: &str,
     protocol_version: u16,
 ) -> Result<bool, String> {
-    let previous: Option<(String, String, Option<String>, Option<String>, String, u64, u64)> = conn
+    let previous: Option<(String, String, Option<String>, Option<String>, String, u64, u16)> = conn
         .query_row(
-            "SELECT display_name,department,avatar_hash,avatar_path,ip,profile_revision,last_seen FROM lan_contacts WHERE id=?1",
+            "SELECT display_name,department,avatar_hash,avatar_path,ip,profile_revision,protocol_version FROM lan_contacts WHERE id=?1",
             params![profile.id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get::<_, i64>(5)? as u64, row.get::<_, i64>(6)? as u64)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get::<_, i64>(5)? as u64, row.get::<_, i64>(6)? as u16)),
         )
         .optional()
         .map_err(|error| error.to_string())?;
@@ -643,6 +653,7 @@ fn upsert_contact(
                 || value.2 != profile.avatar_hash
                 || value.4 != ip
                 || value.5 != profile.profile_revision
+                || value.6 != protocol_version
         })
         .unwrap_or(true))
 }
@@ -674,7 +685,7 @@ fn upsert_legacy_contact(
         .unwrap_or(true))
 }
 
-fn set_online_peer(profile: &WireProfile, ip: &str) -> Result<bool, String> {
+fn set_online_peer(profile: &WireProfile, ip: &str, protocol_version: u16) -> Result<bool, String> {
     let mut state = P2P_GLOBAL.lock().map_err(|error| error.to_string())?;
     let now = now_millis();
     let previous = state.online_users.get(&profile.id);
@@ -684,6 +695,7 @@ fn set_online_peer(profile: &WireProfile, ip: &str) -> Result<bool, String> {
                 || peer.department != profile.department
                 || peer.avatar_hash != profile.avatar_hash
                 || peer.ip != ip
+                || peer.protocol_version != protocol_version
                 || peer.profile_revision != profile.profile_revision
         })
         .unwrap_or(true);
@@ -696,6 +708,7 @@ fn set_online_peer(profile: &WireProfile, ip: &str) -> Result<bool, String> {
             avatar_hash: profile.avatar_hash.clone(),
             ip: ip.to_string(),
             last_seen: now,
+            protocol_version,
             profile_revision: profile.profile_revision,
         },
     );
@@ -723,6 +736,7 @@ fn set_online_legacy_peer(id: &str, name: &str, ip: &str) -> Result<bool, String
                 avatar_hash: None,
                 ip: ip.to_string(),
                 last_seen: now,
+                protocol_version: 1,
                 profile_revision: 0,
             },
         );
@@ -913,7 +927,7 @@ async fn run_discovery_loop(socket: UdpSocket, app_handle: tauri::AppHandle, db_
                 let changed = open_database(&db_path)
                     .and_then(|conn| upsert_contact(&conn, &profile, &ip, protocol_version))
                     .unwrap_or(false)
-                    | set_online_peer(&profile, &ip).unwrap_or(false);
+                    | set_online_peer(&profile, &ip, protocol_version).unwrap_or(false);
                 if changed {
                     emit_contacts_changed(&app_handle);
                 }
@@ -1016,7 +1030,7 @@ async fn send_hello_and_fetch(
         &remote_profile,
         ip,
         protocol_version,
-    )? | set_online_peer(&remote_profile, ip)?;
+    )? | set_online_peer(&remote_profile, ip, protocol_version)?;
     if changed {
         emit_contacts_changed(&app_handle);
     }
@@ -1207,6 +1221,12 @@ async fn handle_tcp_connection(
         return Ok(());
     }
 
+    if let Ok(envelope) = serde_json::from_str::<transfer::TransferControlEnvelope>(trimmed) {
+        transfer::handle_connection(envelope, ip, &mut reader, &mut writer, app_handle, db_path)
+            .await?;
+        return Ok(());
+    }
+
     let envelope: LanControlEnvelope =
         serde_json::from_str(trimmed).map_err(|_| "收到无法识别的局域网数据".to_string())?;
     match envelope {
@@ -1216,7 +1236,7 @@ async fn handle_tcp_connection(
         } => {
             let conn = open_database(&db_path)?;
             let changed = upsert_contact(&conn, &profile, &ip, protocol_version)?
-                | set_online_peer(&profile, &ip)?;
+                | set_online_peer(&profile, &ip, protocol_version)?;
             if changed {
                 emit_contacts_changed(&app_handle);
             }
@@ -1363,13 +1383,22 @@ fn unread_counts(conn: &Connection) -> Result<HashMap<String, u64>, String> {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
         })
         .map_err(|error| error.to_string())?;
-    rows.collect::<Result<HashMap<_, _>, _>>()
-        .map_err(|error| error.to_string())
+    let mut counts = rows
+        .collect::<Result<HashMap<_, _>, _>>()
+        .map_err(|error| error.to_string())?;
+    for (conversation_id, count) in transfer::unread_counts(conn)? {
+        counts
+            .entry(conversation_id)
+            .and_modify(|value| *value += count)
+            .or_insert(count);
+    }
+    Ok(counts)
 }
 
 fn build_conversations(
     contacts: &[LanContact],
     messages: &[LanMessage],
+    transfers: &[LanTransfer],
     unread: &HashMap<String, u64>,
 ) -> Vec<LanConversation> {
     let mut last_message = HashMap::<String, u64>::new();
@@ -1378,6 +1407,12 @@ fn build_conversations(
             .entry(message.conversation_id.clone())
             .and_modify(|value| *value = (*value).max(message.timestamp))
             .or_insert(message.timestamp);
+    }
+    for (conversation_id, timestamp) in transfer::activity_by_conversation(transfers) {
+        last_message
+            .entry(conversation_id)
+            .and_modify(|value| *value = (*value).max(timestamp))
+            .or_insert(timestamp);
     }
     let mut conversations = vec![LanConversation {
         id: "lobby".to_string(),
@@ -1450,12 +1485,14 @@ fn snapshot() -> Result<LanSnapshot, String> {
     let conn = open_database(&db_path)?;
     let contacts = load_contacts(&conn, &online)?;
     let messages = load_messages(&conn)?;
+    let transfers = transfer::load_transfers(&conn)?;
     let unread = unread_counts(&conn)?;
-    let conversations = build_conversations(&contacts, &messages, &unread);
+    let conversations = build_conversations(&contacts, &messages, &transfers, &unread);
     Ok(LanSnapshot {
         profile,
         contacts,
         messages,
+        transfers,
         conversations,
         unread_count: unread.values().sum(),
         service,
@@ -1474,8 +1511,12 @@ pub async fn initialize_lan_collaboration(
     fs::create_dir_all(&app_data_dir).map_err(|error| error.to_string())?;
     let db_path = app_data_dir.join("lan_collaboration.db");
     let avatars_dir = app_data_dir.join("lan_collaboration").join("avatars");
+    let transfer_staging_dir = app_data_dir.join("lan_collaboration").join("staging");
     fs::create_dir_all(&avatars_dir).map_err(|error| error.to_string())?;
+    fs::create_dir_all(&transfer_staging_dir).map_err(|error| error.to_string())?;
     let conn = open_database(&db_path)?;
+    transfer::recover_interrupted(&conn)?;
+    transfer::prune_staging_files(&transfer_staging_dir);
     let profile = load_or_create_profile(&conn, legacy_profile)?;
     prune_old_messages(&conn)?;
     {
@@ -1836,10 +1877,27 @@ pub async fn clear_lan_conversation(
 ) -> Result<(), String> {
     let (db_path, _) = state_paths()?;
     let mut conn = open_database(&db_path)?;
+    let active_transfers: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM lan_transfers
+             WHERE conversation_id=?1 AND status IN ('waiting','pending','transferring')",
+            params![conversation_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if active_transfers > 0 {
+        return Err("当前会话仍有待处理或正在传输的文件，处理完成后再清理记录".to_string());
+    }
     let transaction = conn.transaction().map_err(|error| error.to_string())?;
     transaction
         .execute(
             "DELETE FROM lan_messages WHERE conversation_id=?1",
+            params![conversation_id],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM lan_transfers WHERE conversation_id=?1",
             params![conversation_id],
         )
         .map_err(|error| error.to_string())?;
@@ -1857,9 +1915,24 @@ pub async fn clear_lan_conversation(
 #[tauri::command]
 pub async fn clear_lan_history(app_handle: tauri::AppHandle) -> Result<(), String> {
     let (db_path, _) = state_paths()?;
-    open_database(&db_path)?
-        .execute_batch("DELETE FROM lan_messages; DELETE FROM lan_conversation_reads;")
+    let conn = open_database(&db_path)?;
+    let active_transfers: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM lan_transfers
+             WHERE status IN ('waiting','pending','transferring')",
+            [],
+            |row| row.get(0),
+        )
         .map_err(|error| error.to_string())?;
+    if active_transfers > 0 {
+        return Err("仍有待处理或正在传输的文件，处理完成后再清理全部记录".to_string());
+    }
+    conn.execute_batch(
+        "DELETE FROM lan_messages;
+             DELETE FROM lan_transfers;
+             DELETE FROM lan_conversation_reads;",
+    )
+    .map_err(|error| error.to_string())?;
     let _ = app_handle.emit("pm-center:lan-read-state-changed", ());
     Ok(())
 }

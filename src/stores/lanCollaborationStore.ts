@@ -39,6 +39,48 @@ export interface LanMessage {
   deliverySummary: string | null;
 }
 
+export interface LanTransfer {
+  id: string;
+  conversationId: string;
+  kind: string;
+  fromId: string;
+  fromName: string;
+  toId: string;
+  displayName: string;
+  itemCount: number;
+  totalBytes: number;
+  mimeType: string | null;
+  contentHash: string;
+  payloadFormat: string;
+  manifest: unknown;
+  status: 'waiting' | 'pending' | 'transferring' | 'completed' | 'rejected' | 'failed' | string;
+  direction: 'incoming' | 'outgoing' | string;
+  sourcePath: string | null;
+  receivedPath: string | null;
+  error: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface LanTransferProgress {
+  transferId: string;
+  status: string;
+  direction: string;
+  transferredBytes: number;
+  totalBytes: number;
+  bytesPerSecond: number;
+}
+
+export interface LanTransferFailure {
+  path: string;
+  error: string;
+}
+
+export interface LanFileOfferResult {
+  transfers: LanTransfer[];
+  failures: LanTransferFailure[];
+}
+
 export interface LanConversation {
   id: string;
   kind: 'lobby' | 'direct' | string;
@@ -62,6 +104,7 @@ export interface LanSnapshot {
   profile: LanProfile;
   contacts: LanContact[];
   messages: LanMessage[];
+  transfers: LanTransfer[];
   conversations: LanConversation[];
   unreadCount: number;
   service: LanServiceStatus;
@@ -83,6 +126,8 @@ interface LanCollaborationState {
   profile: LanProfile | null;
   contacts: LanContact[];
   messages: LanMessage[];
+  transfers: LanTransfer[];
+  transferProgress: Record<string, LanTransferProgress>;
   conversations: LanConversation[];
   unreadCount: number;
   service: LanServiceStatus;
@@ -96,6 +141,10 @@ interface LanCollaborationState {
   startDiscovery: () => Promise<void>;
   stopDiscovery: () => Promise<void>;
   sendMessage: (conversationId: string, content: string) => Promise<LanDeliveryResult>;
+  offerFiles: (contactId: string, paths: string[]) => Promise<LanFileOfferResult>;
+  respondTransfer: (transferId: string, action: 'accept' | 'reject', destinationPath?: string) => Promise<LanTransfer>;
+  createTransferStagingPath: (fileName: string) => Promise<string>;
+  discardTransferStagingFile: (path: string) => Promise<void>;
   markConversationRead: (conversationId: string) => Promise<void>;
   clearConversation: (conversationId: string) => Promise<void>;
   clearHistory: () => Promise<void>;
@@ -127,6 +176,7 @@ function applySnapshot(snapshot: LanSnapshot) {
     profile: snapshot.profile,
     contacts: snapshot.contacts,
     messages: snapshot.messages,
+    transfers: snapshot.transfers,
     conversations: snapshot.conversations,
     unreadCount: snapshot.unreadCount,
     service: snapshot.service,
@@ -170,10 +220,21 @@ async function setupListeners() {
       'pm-center:lan-profile-changed',
       'pm-center:lan-read-state-changed',
       'pm-center:lan-service-status',
+      'pm-center:lan-transfer-changed',
     ];
     for (const eventName of eventNames) {
       unlisteners.push(await listen(eventName, () => scheduleRefresh()));
     }
+    unlisteners.push(await listen<LanTransferProgress>('pm-center:lan-transfer-progress', (event) => {
+      const progress = event.payload;
+      if (!progress?.transferId) return;
+      useLanCollaborationStore.setState((state) => ({
+        transferProgress: {
+          ...state.transferProgress,
+          [progress.transferId]: progress,
+        },
+      }));
+    }));
   })();
   return listenersPromise;
 }
@@ -182,6 +243,8 @@ export const useLanCollaborationStore = create<LanCollaborationState>((set, get)
   profile: null,
   contacts: [],
   messages: [],
+  transfers: [],
+  transferProgress: {},
   conversations: [],
   unreadCount: 0,
   service: EMPTY_SERVICE,
@@ -270,6 +333,26 @@ export const useLanCollaborationStore = create<LanCollaborationState>((set, get)
     await get().refresh();
     return result;
   },
+
+  offerFiles: async (contactId, paths) => {
+    const result = await invoke<LanFileOfferResult>('offer_lan_files', {
+      request: { toId: contactId, paths },
+    });
+    await get().refresh();
+    return result;
+  },
+
+  respondTransfer: async (transferId, action, destinationPath) => {
+    const transfer = await invoke<LanTransfer>('respond_lan_transfer', {
+      request: { transferId, action, destinationPath: destinationPath || null },
+    });
+    await get().refresh();
+    return transfer;
+  },
+
+  createTransferStagingPath: (fileName) => invoke<string>('create_lan_transfer_staging_path', { fileName }),
+
+  discardTransferStagingFile: (path) => invoke('discard_lan_transfer_staging_file', { path }),
 
   markConversationRead: async (conversationId) => {
     await invoke('mark_lan_conversation_read', { conversationId });

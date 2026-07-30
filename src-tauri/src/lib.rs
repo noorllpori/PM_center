@@ -34,10 +34,12 @@ use file_details::{
     update_blender_scene_render,
 };
 use p2p::{
-    clear_lan_conversation, clear_lan_history, get_lan_collaboration_snapshot, init_p2p,
-    initialize_lan_collaboration, mark_lan_conversation_read, remove_lan_contact, send_lan_message,
-    send_p2p_message, set_lan_avatar, start_lan_discovery, start_p2p_discovery, stop_lan_discovery,
-    stop_p2p_discovery, update_lan_profile, update_p2p_user,
+    clear_lan_conversation, clear_lan_history, create_lan_transfer_staging_path,
+    discard_lan_transfer_staging_file, get_lan_collaboration_snapshot, init_p2p,
+    initialize_lan_collaboration, mark_lan_conversation_read, offer_lan_files, remove_lan_contact,
+    respond_lan_transfer, send_lan_message, send_p2p_message, set_lan_avatar, start_lan_discovery,
+    start_p2p_discovery, stop_lan_discovery, stop_p2p_discovery, update_lan_profile,
+    update_p2p_user,
 };
 use plugin::{
     get_plugin_dirs, inspect_plugin_dependencies, install_plugin_dependencies, list_plugins,
@@ -1527,6 +1529,10 @@ pub fn run() {
             start_lan_discovery,
             stop_lan_discovery,
             send_lan_message,
+            offer_lan_files,
+            respond_lan_transfer,
+            create_lan_transfer_staging_path,
+            discard_lan_transfer_staging_file,
             mark_lan_conversation_read,
             clear_lan_conversation,
             clear_lan_history,
