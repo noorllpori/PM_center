@@ -191,11 +191,19 @@ function ConversationRow({
   );
 }
 
-function MessageBubble({ message, profile }: { message: LanMessage; profile: LanProfile }) {
+function MessageBubble({
+  message,
+  profile,
+  senderAvatarPath,
+}: {
+  message: LanMessage;
+  profile: LanProfile;
+  senderAvatarPath?: string | null;
+}) {
   const mine = message.fromId === profile.id;
   return (
     <div className={`flex gap-2.5 ${mine ? 'justify-end' : 'justify-start'}`}>
-      {!mine ? <LanAvatar id={message.fromId} name={message.fromName} size="sm" /> : null}
+      {!mine ? <LanAvatar id={message.fromId} name={message.fromName} avatarPath={senderAvatarPath} size="sm" /> : null}
       <div className={`max-w-[min(72%,680px)] ${mine ? 'items-end' : 'items-start'}`}>
         {!mine ? <p className="mb-1 px-1 text-[11px] text-gray-500">{message.fromName}</p> : null}
         <div className={`whitespace-pre-wrap break-words rounded-md px-3 py-2 text-sm leading-6 ${mine ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-900 dark:bg-gray-800 dark:text-gray-100'}`}>
@@ -270,6 +278,10 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
   const selectedMessages = useMemo(
     () => messages.filter((message) => message.conversationId === selectedConversationId),
     [messages, selectedConversationId],
+  );
+  const contactsById = useMemo(
+    () => new Map(contacts.map((contact) => [contact.id, contact] as const)),
+    [contacts],
   );
 
   useEffect(() => {
@@ -621,7 +633,14 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
                 </div>
               ) : (
                 <div className="mx-auto max-w-4xl space-y-4">
-                  {selectedMessages.map((message) => <MessageBubble key={message.id} message={message} profile={profile} />)}
+                  {selectedMessages.map((message) => (
+                    <MessageBubble
+                      key={message.id}
+                      message={message}
+                      profile={profile}
+                      senderAvatarPath={contactsById.get(message.fromId)?.avatarPath}
+                    />
+                  ))}
                   <div ref={messagesEndRef} />
                 </div>
               )}
