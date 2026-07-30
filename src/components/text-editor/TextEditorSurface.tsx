@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useEffectEvent, useMemo, useRef, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
 import {
@@ -40,6 +40,7 @@ interface TextEditorSurfaceProps {
   initialMarkdownViewMode?: MarkdownViewMode;
   isActive?: boolean;
   showTitleInToolbar?: boolean;
+  toolbarActions?: ReactNode;
   onDirtyChange?: (isDirty: boolean) => void;
   onEditorStateChange?: (snapshot: TextEditorTransferPayload) => void;
 }
@@ -81,6 +82,7 @@ export function TextEditorSurface({
   initialMarkdownViewMode,
   isActive = true,
   showTitleInToolbar = true,
+  toolbarActions,
   onDirtyChange,
   onEditorStateChange,
 }: TextEditorSurfaceProps) {
@@ -603,7 +605,7 @@ export function TextEditorSurface({
         )}
 
         <div
-          className={`flex min-w-[120px] items-center justify-end gap-1.5 text-xs ${
+          className={`hidden min-w-[120px] items-center justify-end gap-1.5 text-xs lg:flex ${
             errorMessage
               ? 'text-red-500'
               : saveMessage === SAVE_SUCCESS_MESSAGE
@@ -614,6 +616,13 @@ export function TextEditorSurface({
           {statusIcon}
           <span>{statusText}</span>
         </div>
+
+        {toolbarActions && (
+          <>
+            <div className="h-4 w-px shrink-0 bg-gray-300 dark:bg-gray-600" />
+            {toolbarActions}
+          </>
+        )}
       </div>
 
       {isMarkdownDocument && markdownWarningText && (

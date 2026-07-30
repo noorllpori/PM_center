@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Image as ImageIcon, Maximize, RefreshCw, RotateCw, ZoomIn, ZoomOut } from 'lucide-react';
 import { TransformComponent, TransformWrapper, type ReactZoomPanPinchContentRef } from 'react-zoom-pan-pinch';
 import { useResolvedImageSource } from './useResolvedImageSource';
@@ -7,6 +7,7 @@ interface ImageViewerSurfaceProps {
   title: string;
   source: string;
   showTitleInToolbar?: boolean;
+  toolbarActions?: ReactNode;
 }
 
 const MIN_SCALE = 0.05;
@@ -22,6 +23,7 @@ export function ImageViewerSurface({
   title,
   source,
   showTitleInToolbar = true,
+  toolbarActions,
 }: ImageViewerSurfaceProps) {
   const { resolvedSource, isLoading, errorMessage: sourceErrorMessage } = useResolvedImageSource(source);
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -261,9 +263,16 @@ export function ImageViewerSurface({
 
         <div className="flex-1" />
 
-        <span className="min-w-[120px] text-right text-xs text-gray-500 dark:text-gray-400">
+        <span className="hidden min-w-[120px] text-right text-xs text-gray-500 dark:text-gray-400 lg:block">
           {statusText}
         </span>
+
+        {toolbarActions && (
+          <>
+            <div className="h-4 w-px bg-gray-300 dark:bg-gray-600" />
+            {toolbarActions}
+          </>
+        )}
       </div>
 
       <div

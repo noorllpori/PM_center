@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { ArrowLeft } from 'lucide-react';
 import { VideoPlayerSurface } from './VideoPlayerSurface';
+import { StandaloneWindowControls } from '../workspace/StandaloneWindowModeButton';
 import {
   STANDALONE_RETURN_TO_WORKSPACE_EVENT,
   type StandaloneReturnToWorkspacePayload,
@@ -73,19 +73,16 @@ export function StandaloneVideoPlayerPage() {
   }
 
   return (
-    <div className="relative h-screen bg-[#0a0c10]">
+    <div className="relative flex h-screen flex-col bg-[#0a0c10]">
       {projectPath && (
-        <div className="pointer-events-none absolute right-3 top-3 z-40">
-          <button
-            type="button"
-            onClick={handleReturnToProject}
-            disabled={isReturning}
-            className="pointer-events-auto inline-flex items-center gap-1.5 rounded-md border border-white/20 bg-black/50 px-3 py-1.5 text-xs text-white transition-colors hover:bg-black/65 disabled:cursor-not-allowed disabled:opacity-60"
-            title="回归到项目标签页"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            回归项目标签页
-          </button>
+        <div className="flex h-10 shrink-0 items-center gap-3 border-b border-white/10 bg-[#11151c] px-3">
+          <p className="min-w-0 flex-1 truncate text-xs text-white/70" title={title}>{title}</p>
+          <StandaloneWindowControls
+            onReturn={handleReturnToProject}
+            isReturning={isReturning}
+            tone="dark"
+            compact
+          />
         </div>
       )}
 
@@ -95,10 +92,12 @@ export function StandaloneVideoPlayerPage() {
         </div>
       )}
 
-      <VideoPlayerSurface
-        title={title}
-        source={sourcePath}
-      />
+      <div className="min-h-0 flex-1">
+        <VideoPlayerSurface
+          title={title}
+          source={sourcePath}
+        />
+      </div>
     </div>
   );
 }

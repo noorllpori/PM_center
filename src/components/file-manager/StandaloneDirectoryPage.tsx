@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { ArrowLeft } from 'lucide-react';
 import { DirectoryTabSurface } from './DirectoryTabSurface';
 import { openStandaloneDirectoryViewer } from './openStandaloneDirectoryViewer';
 import { createWorkspaceTabStore, WorkspaceTabStoreProvider } from '../../stores/workspaceTabStore';
+import { StandaloneWindowControls } from '../workspace/StandaloneWindowModeButton';
 import {
   STANDALONE_RETURN_TO_WORKSPACE_EVENT,
   type StandaloneReturnToWorkspacePayload,
@@ -225,16 +225,11 @@ export function StandaloneDirectoryPage() {
           projectName={projectPath ? (projectName || getPathName(projectPath)) : null}
           onOpenDirectoryTab={handleOpenDirectoryTab}
           toolbarActions={projectPath ? (
-            <button
-              type="button"
-              onClick={handleReturnToProject}
-              disabled={isReturning}
-              className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs text-gray-700 shadow-sm transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
-              title="回归到项目标签页"
-            >
-              <ArrowLeft className="h-3.5 w-3.5" />
-              回归项目标签页
-            </button>
+            <StandaloneWindowControls
+              onReturn={handleReturnToProject}
+              isReturning={isReturning}
+              compact
+            />
           ) : null}
           treePanelWidth={treePanelWidth}
           isResizingTreePanel={isResizingTreePanel}

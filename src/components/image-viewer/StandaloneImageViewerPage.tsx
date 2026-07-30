@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { ArrowLeft } from 'lucide-react';
 import { ImageViewerSurface } from './ImageViewerSurface';
+import { StandaloneWindowControls } from '../workspace/StandaloneWindowModeButton';
 import {
   STANDALONE_RETURN_TO_WORKSPACE_EVENT,
   type StandaloneReturnToWorkspacePayload,
@@ -74,21 +74,6 @@ export function StandaloneImageViewerPage() {
 
   return (
     <div className="relative h-screen bg-gray-950">
-      {projectPath && (
-        <div className="pointer-events-none absolute right-3 top-3 z-40">
-          <button
-            type="button"
-            onClick={handleReturnToProject}
-            disabled={isReturning}
-            className="pointer-events-auto inline-flex items-center gap-1.5 rounded-md border border-white/20 bg-black/50 px-3 py-1.5 text-xs text-white transition-colors hover:bg-black/65 disabled:cursor-not-allowed disabled:opacity-60"
-            title="回归到项目标签页"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            回归项目标签页
-          </button>
-        </div>
-      )}
-
       {returnErrorMessage && (
         <div className="pointer-events-none absolute left-1/2 top-3 z-40 -translate-x-1/2 rounded-md border border-red-300 bg-white px-3 py-1.5 text-xs text-red-600 shadow">
           {returnErrorMessage}
@@ -98,6 +83,13 @@ export function StandaloneImageViewerPage() {
       <ImageViewerSurface
         title={title}
         source={sourcePath}
+        toolbarActions={projectPath ? (
+          <StandaloneWindowControls
+            onReturn={handleReturnToProject}
+            isReturning={isReturning}
+            compact
+          />
+        ) : undefined}
       />
     </div>
   );
