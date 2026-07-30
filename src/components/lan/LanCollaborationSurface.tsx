@@ -245,6 +245,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
   const [showMobileConversation, setShowMobileConversation] = useState(false);
   const [profileName, setProfileName] = useState('');
   const [profileDepartment, setProfileDepartment] = useState('');
+  const [isProfileDraftDirty, setIsProfileDraftDirty] = useState(false);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [confirmAction, setConfirmAction] = useState<'conversation' | 'history' | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -256,10 +257,10 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
   }, [initialize, showToast]);
 
   useEffect(() => {
-    if (!profile) return;
+    if (!profile || isProfileDraftDirty) return;
     setProfileName(profile.displayName);
     setProfileDepartment(profile.department);
-  }, [profile]);
+  }, [isProfileDraftDirty, profile]);
 
   const selectedContactId = selectedConversationId.startsWith('direct:')
     ? selectedConversationId.slice('direct:'.length)
@@ -336,6 +337,12 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
     setIsSavingProfile(true);
     try {
       await updateProfile(profileName, profileDepartment);
+      const savedProfile = useLanCollaborationStore.getState().profile;
+      if (savedProfile) {
+        setProfileName(savedProfile.displayName);
+        setProfileDepartment(savedProfile.department);
+      }
+      setIsProfileDraftDirty(false);
       showToast({ title: '个人资料已更新', message: '新名称和部门已向在线联系人广播。', tone: 'success' });
     } catch (saveError) {
       showToast({ title: '保存个人资料失败', message: String(saveError), tone: 'error' });
@@ -543,11 +550,28 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
                 <div className="min-w-0 flex-1 space-y-4">
                   <label className="block">
                     <span className="mb-1.5 block text-sm font-medium">显示名称</span>
-                    <input value={profileName} onChange={(event) => setProfileName(event.target.value)} maxLength={32} className="h-10 w-full rounded-md border border-gray-300 px-3 text-sm outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-900" />
+                    <input
+                      value={profileName}
+                      onChange={(event) => {
+                        setProfileName(event.target.value);
+                        setIsProfileDraftDirty(true);
+                      }}
+                      maxLength={32}
+                      className="h-10 w-full rounded-md border border-gray-300 px-3 text-sm outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-900"
+                    />
                   </label>
                   <label className="block">
                     <span className="mb-1.5 block text-sm font-medium">部门</span>
-                    <input value={profileDepartment} onChange={(event) => setProfileDepartment(event.target.value)} maxLength={40} placeholder="未填写时归入未分组联系人" className="h-10 w-full rounded-md border border-gray-300 px-3 text-sm outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-900" />
+                    <input
+                      value={profileDepartment}
+                      onChange={(event) => {
+                        setProfileDepartment(event.target.value);
+                        setIsProfileDraftDirty(true);
+                      }}
+                      maxLength={40}
+                      placeholder="未填写时归入未分组联系人"
+                      className="h-10 w-full rounded-md border border-gray-300 px-3 text-sm outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-900"
+                    />
                   </label>
                   <div className="flex justify-end">
                     <button type="button" disabled={isSavingProfile || !profileName.trim()} onClick={() => void handleSaveProfile()} className="rounded-md bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-50">{isSavingProfile ? '保存中...' : '保存资料'}</button>
