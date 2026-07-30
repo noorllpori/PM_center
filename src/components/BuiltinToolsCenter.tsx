@@ -82,8 +82,8 @@ export function BuiltinToolsCenter({
       return;
     }
 
+    onOpenTool(toolId);
     onClose();
-    window.setTimeout(() => onOpenTool(toolId), 0);
   };
 
   const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
