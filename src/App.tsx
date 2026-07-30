@@ -7,6 +7,7 @@ import { StandaloneTextEditorPage, isStandaloneTextEditorRoute } from './compone
 import { StandaloneVideoPlayerPage, isStandaloneVideoPlayerRoute } from './components/video-player/StandaloneVideoPlayerPage';
 import { FileOperationPanel } from './components/file-manager/FileOperationPanel';
 import { initTaskEventListeners, loadTaskState } from './stores/taskStore';
+import { initRenderEventListeners } from './stores/renderStore';
 
 function App() {
   const isDirectoryWindow = isStandaloneDirectoryRoute();
@@ -22,6 +23,7 @@ function App() {
 
     void loadTaskState();
     initTaskEventListeners();
+    void initRenderEventListeners();
     document.documentElement.classList.remove('dark');
     document.body.classList.remove('dark');
     document.documentElement.style.colorScheme = 'light';

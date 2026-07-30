@@ -3,6 +3,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useLauncherStore } from '../stores/launcherStore';
 import { Rocket, Plus, X, Edit2, Trash2, Save, FolderOpen, Play } from 'lucide-react';
+import { BuiltinToolsCenter } from './BuiltinToolsCenter';
+import { BUILTIN_TOOLS_ICON, type OpenBuiltinTool } from '../features/builtinTools';
 
 // 启动软件
 async function launchSoftware(path: string) {
@@ -354,48 +356,53 @@ export function LauncherPanel({ isOpen, onClose }: LauncherProps) {
   );
 }
 
-// 工具栏按钮
-export function LauncherButton() {
-  const [isOpen, setIsOpen] = useState(false);
-  const { loadItems } = useLauncherStore();
+interface LauncherButtonProps {
+  hasActiveProject: boolean;
+  activeProjectName?: string | null;
+  onOpenTool: OpenBuiltinTool;
+}
 
-  // 监听快捷键 Ctrl+Q
+// 内置功能中心入口。上面的 LauncherPanel 保留为旧软件启动器兼容实现。
+export function LauncherButton({
+  hasActiveProject,
+  activeProjectName,
+  onOpenTool,
+}: LauncherButtonProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const ToolIcon = BUILTIN_TOOLS_ICON;
+
+  // 全局快捷键 Alt+Q
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'q') {
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.key.toLowerCase() === 'q') {
         e.preventDefault();
-        setIsOpen(true);
-        loadItems();
-      }
-      if (e.key === 'Escape' && isOpen) {
-        setIsOpen(false);
+        setIsOpen((value) => !value);
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, loadItems]);
+  }, []);
 
   return (
     <>
       <button
-        onClick={() => {
-          setIsOpen(true);
-          loadItems();
-        }}
-        className="flex items-center gap-1.5 px-3 py-1.5 text-sm
-                   bg-gradient-to-r from-blue-500 to-purple-600 
-                   hover:from-blue-600 hover:to-purple-700
-                   text-white rounded-lg shadow-sm
-                   transition-all hover:shadow-md"
-        title="快捷启动 (Ctrl+Q)"
+        onClick={() => setIsOpen(true)}
+        className="flex h-8 items-center gap-1.5 rounded-md border border-gray-300 bg-white px-2.5 text-sm text-gray-700 shadow-sm transition-colors hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+        title="功能中心 (Alt+Q)"
       >
-        <Rocket className="w-4 h-4" />
-        <span className="hidden sm:inline">启动</span>
-        <span className="text-xs opacity-70">Ctrl+Q</span>
+        <ToolIcon className="h-4 w-4" />
+        <span className="hidden sm:inline">工具</span>
+        <span className="text-[11px] text-gray-400">Alt+Q</span>
       </button>
 
-      <LauncherPanel isOpen={isOpen} onClose={() => setIsOpen(false)} />
+      <BuiltinToolsCenter
+        isOpen={isOpen}
+        onClose={() => setIsOpen(false)}
+        hasActiveProject={hasActiveProject}
+        activeProjectName={activeProjectName}
+        onOpenTool={onOpenTool}
+      />
     </>
   );
 }

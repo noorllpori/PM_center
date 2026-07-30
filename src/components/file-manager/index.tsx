@@ -1,18 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { MessageCircle, Terminal, X } from 'lucide-react';
+import { X } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { WelcomeScreen } from '../WelcomeScreen';
 import { P2PChat } from '../P2PChat';
 import { PythonEnvManager } from '../PythonEnvManager';
+import { SettingsPanel } from '../SettingsPanel';
+import { TaskPanel } from '../TaskPanel';
 import { openStandaloneDirectoryViewer } from './openStandaloneDirectoryViewer';
 import { openStandaloneImageViewer } from '../image-viewer/openStandaloneImageViewer';
-import { TaskButton } from '../TaskButton';
 import { LauncherButton } from '../Launcher';
+import { BlenderFileParserDialog } from '../tools/BlenderFileParserDialog';
 import { openStandaloneTextEditor } from '../text-editor/openStandaloneTextEditor';
 import { openStandaloneVideoPlayer } from '../video-player/openStandaloneVideoPlayer';
 import { Toolbar, TOOLBAR_SEARCH_FOCUS_EVENT } from './Toolbar';
-import { ProjectWorkspace } from './ProjectWorkspace';
+import { OPEN_MDT_OVERVIEW_EVENT, ProjectWorkspace } from './ProjectWorkspace';
 import { ProjectSessionProvider } from './ProjectSessionProvider';
 import { ShellTabBar } from '../shell/ShellTabBar';
 import { Dialog } from '../Dialog';
@@ -23,6 +25,8 @@ import { createWorkspaceTabStore, type WorkspaceTabStoreApi } from '../../stores
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useShellTabStore, normalizeProjectPath } from '../../stores/shellTabStore';
+import { useBuiltinToolsStore } from '../../stores/builtinToolsStore';
+import type { BuiltinToolId } from '../../features/builtinTools';
 import {
   createDefaultPersistedAppSession,
   dedupeStandaloneWindows,
@@ -233,6 +237,7 @@ export function FileManager() {
   const projectsRootDir = useSettingsStore((state) => state.projectsRootDir);
   const autoOpenLastProject = useSettingsStore((state) => state.autoOpenLastProject);
   const addRecentProject = useSettingsStore((state) => state.addRecentProject);
+  const loadBuiltinToolsPreferences = useBuiltinToolsStore((state) => state.loadPreferences);
   const showToast = useUiStore((state) => state.showToast);
   const toast = useUiStore((state) => state.toast);
   const hideToast = useUiStore((state) => state.hideToast);
@@ -250,6 +255,10 @@ export function FileManager() {
 
   const [isP2PChatOpen, setIsP2PChatOpen] = useState(false);
   const [isPythonEnvOpen, setIsPythonEnvOpen] = useState(false);
+  const [isTaskCenterOpen, setIsTaskCenterOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isBlenderFileParserOpen, setIsBlenderFileParserOpen] = useState(false);
+  const [blenderParserInitialFilePath, setBlenderParserInitialFilePath] = useState<string | null>(null);
   const [isSettingsLoaded, setIsSettingsLoaded] = useState(false);
   const [pluginConfirmDialog, setPluginConfirmDialog] = useState<PluginConfirmDialogState>({
     isOpen: false,
@@ -279,7 +288,7 @@ export function FileManager() {
     let isActive = true;
 
     const initializeSettings = async () => {
-      await loadSettings();
+      await Promise.all([loadSettings(), loadBuiltinToolsPreferences()]);
       if (isActive) {
         setIsSettingsLoaded(true);
       }
@@ -290,7 +299,7 @@ export function FileManager() {
     return () => {
       isActive = false;
     };
-  }, [loadSettings]);
+  }, [loadBuiltinToolsPreferences, loadSettings]);
 
   useEffect(() => {
     if (!toast.isOpen) {
@@ -433,6 +442,18 @@ export function FileManager() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [activeProjectSession]);
+
+  useEffect(() => {
+    const handleTaskShortcut = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'b') {
+        event.preventDefault();
+        setIsTaskCenterOpen(true);
+      }
+    };
+
+    window.addEventListener('keydown', handleTaskShortcut);
+    return () => window.removeEventListener('keydown', handleTaskShortcut);
+  }, []);
 
   useEffect(() => {
     if (activeShellTab?.type !== 'project' || !activeShellTab.projectPath) {
@@ -974,6 +995,68 @@ export function FileManager() {
     }
   };
 
+  const openBuiltinTool = useCallback((toolId: BuiltinToolId) => {
+    const shellState = useShellTabStore.getState();
+    const currentShellTab = shellState.tabs.find((tab) => tab.id === shellState.activeTabId);
+    const currentProjectSession = currentShellTab?.type === 'project' && currentShellTab.projectPath
+      ? sessionsRef.current.get(normalizeProjectPath(currentShellTab.projectPath)) ?? null
+      : null;
+
+    const requireProjectSession = () => {
+      if (currentProjectSession) {
+        return currentProjectSession;
+      }
+
+      showToast({
+        title: '需要打开项目',
+        message: '这个功能需要当前活动项目，请先打开或切换到项目标签页。',
+        tone: 'warning',
+      });
+      return null;
+    };
+
+    switch (toolId) {
+      case 'render-center': {
+        const session = requireProjectSession();
+        session?.workspaceTabStore.getState().openRenderCenterTab();
+        break;
+      }
+      case 'cache-manager': {
+        const session = requireProjectSession();
+        session?.workspaceTabStore.getState().openCacheManagerTab();
+        break;
+      }
+      case 'p2p-chat':
+        setIsP2PChatOpen(true);
+        break;
+      case 'python-environments':
+        setIsPythonEnvOpen(true);
+        break;
+      case 'task-center':
+        setIsTaskCenterOpen(true);
+        break;
+      case 'settings':
+        setIsSettingsOpen(true);
+        break;
+      case 'mdt-overview': {
+        const session = requireProjectSession();
+        if (session) {
+          window.dispatchEvent(new Event(OPEN_MDT_OVERVIEW_EVENT));
+        }
+        break;
+      }
+      case 'blender-file-parser': {
+        const selectedBlendFiles = currentProjectSession
+          ? Array.from(currentProjectSession.projectStore.getState().selectedFiles)
+            .filter((path) => path.toLocaleLowerCase().endsWith('.blend'))
+          : [];
+        setBlenderParserInitialFilePath(selectedBlendFiles.length === 1 ? selectedBlendFiles[0] : null);
+        setIsBlenderFileParserOpen(true);
+        break;
+      }
+    }
+  }, [showToast]);
+
   const toastStyles = {
     info: 'border-blue-200 bg-white text-gray-900',
     success: 'border-green-200 bg-white text-gray-900',
@@ -996,7 +1079,7 @@ export function FileManager() {
               projectStore={activeProjectSession.projectStore}
               workspaceTabStore={activeProjectSession.workspaceTabStore}
             >
-              <Toolbar onOpenProject={handleOpenProject} />
+              <Toolbar onOpenBuiltinTool={openBuiltinTool} />
             </ProjectSessionProvider>
           ) : (
             <div className="h-full px-3 py-2" />
@@ -1004,35 +1087,11 @@ export function FileManager() {
         </div>
 
         <div className="flex items-center gap-2 px-3 border-l border-gray-200 dark:border-gray-700">
-          <button
-            onClick={() => setIsPythonEnvOpen(true)}
-            className="p-2 text-gray-500 hover:text-green-600 dark:text-gray-400 
-                       dark:hover:text-green-400 hover:bg-green-50 dark:hover:bg-green-900/20 
-                       rounded-lg transition-colors"
-            title="Python 环境管理"
-          >
-            <Terminal className="w-5 h-5" />
-          </button>
-          <button
-            onClick={() => setIsP2PChatOpen(true)}
-            className="p-2 text-gray-500 hover:text-blue-600 dark:text-gray-400 
-                       dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 
-                       rounded-lg transition-colors"
-            title="局域网消息"
-          >
-            <MessageCircle className="w-5 h-5" />
-          </button>
-          {activeProjectSession ? (
-            <ProjectSessionProvider
-              projectStore={activeProjectSession.projectStore}
-              workspaceTabStore={activeProjectSession.workspaceTabStore}
-            >
-              <TaskButton />
-            </ProjectSessionProvider>
-          ) : (
-            <TaskButton />
-          )}
-          <LauncherButton />
+          <LauncherButton
+            hasActiveProject={Boolean(activeProjectSession)}
+            activeProjectName={activeProjectSession?.projectStore.getState().projectName || activeShellTab?.title}
+            onOpenTool={openBuiltinTool}
+          />
         </div>
       </div>
 
@@ -1068,6 +1127,42 @@ export function FileManager() {
       <PythonEnvManager
         isOpen={isPythonEnvOpen}
         onClose={() => setIsPythonEnvOpen(false)}
+      />
+
+      {activeProjectSession ? (
+        <ProjectSessionProvider
+          projectStore={activeProjectSession.projectStore}
+          workspaceTabStore={activeProjectSession.workspaceTabStore}
+        >
+          <TaskPanel isOpen={isTaskCenterOpen} onClose={() => setIsTaskCenterOpen(false)} />
+          <SettingsPanel
+            isOpen={isSettingsOpen}
+            onClose={() => setIsSettingsOpen(false)}
+            defaultScope="project"
+            onOpenProject={handleOpenProject}
+          />
+        </ProjectSessionProvider>
+      ) : (
+        <>
+          <TaskPanel isOpen={isTaskCenterOpen} onClose={() => setIsTaskCenterOpen(false)} />
+          <SettingsPanel
+            isOpen={isSettingsOpen}
+            onClose={() => setIsSettingsOpen(false)}
+            defaultScope="global"
+            onOpenProject={handleOpenProject}
+          />
+        </>
+      )}
+
+      <BlenderFileParserDialog
+        isOpen={isBlenderFileParserOpen}
+        onClose={() => setIsBlenderFileParserOpen(false)}
+        projectPath={activeProjectSession?.projectStore.getState().projectPath}
+        projectName={activeProjectSession?.projectStore.getState().projectName}
+        initialFilePath={blenderParserInitialFilePath}
+        onOpenInWorkspace={activeProjectSession
+          ? (filePath) => activeProjectSession.workspaceTabStore.getState().openFileInTab(filePath)
+          : undefined}
       />
 
       <ProjectLocationDialog

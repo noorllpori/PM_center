@@ -5,28 +5,26 @@ import { usePluginStore } from '../../stores/pluginStore';
 import { useTaskStore } from '../../stores/taskStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceTabStore } from '../../stores/workspaceTabStore';
-import { SettingsPanel } from '../SettingsPanel';
 import { APP_VERSION } from '../../config/appMeta';
 import { buildPluginContextItems, getVisiblePluginActions } from '../../utils/pluginActions';
+import type { OpenBuiltinTool } from '../../features/builtinTools';
+import { PinnedToolsToolbar } from './PinnedToolsToolbar';
 import {
   List,
   Grid,
   Search,
   X,
-  Settings,
   Puzzle,
   ChevronDown,
-  Database,
-  Clapperboard,
 } from 'lucide-react';
 
 export const TOOLBAR_SEARCH_FOCUS_EVENT = 'pm-center:focus-toolbar-search';
 
 interface ToolbarProps {
-  onOpenProject: (path: string) => Promise<void> | void;
+  onOpenBuiltinTool: OpenBuiltinTool;
 }
 
-export function Toolbar({ onOpenProject }: ToolbarProps) {
+export function Toolbar({ onOpenBuiltinTool }: ToolbarProps) {
   const {
     viewMode,
     setViewMode,
@@ -57,14 +55,11 @@ export function Toolbar({ onOpenProject }: ToolbarProps) {
 
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [localSearch, setLocalSearch] = useState('');
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isPluginMenuOpen, setIsPluginMenuOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const pluginMenuRef = useRef<HTMLDivElement | null>(null);
   const addTask = useTaskStore((state) => state.addTask);
   const showToast = useUiStore((state) => state.showToast);
-  const openCacheManagerTab = useWorkspaceTabStore((state) => state.openCacheManagerTab);
-  const openRenderCenterTab = useWorkspaceTabStore((state) => state.openRenderCenterTab);
   const pluginProjectKey = projectPath || '__global__';
   const pluginState = usePluginStore((state) => state.byProject[pluginProjectKey]);
   const loadPlugins = usePluginStore((state) => state.loadPlugins);
@@ -383,47 +378,10 @@ export function Toolbar({ onOpenProject }: ToolbarProps) {
         )}
 
         {isInitialized && (
-          <button
-            onClick={openRenderCenterTab}
-            className="p-1.5 text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-md transition-colors"
-            title="渲染与批处理"
-          >
-            <Clapperboard className="w-4 h-4" />
-          </button>
-        )}
-
-        {isInitialized && (
-          <button
-            onClick={openCacheManagerTab}
-            className="p-1.5 text-gray-600 hover:text-gray-900 dark:text-gray-400
-                       dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800
-                       rounded-md transition-colors"
-            title="缓存管理"
-          >
-            <Database className="w-4 h-4" />
-          </button>
-        )}
-
-        {isInitialized && (
-          <button
-            onClick={() => setIsSettingsOpen(true)}
-            className="p-1.5 text-gray-600 hover:text-gray-900 dark:text-gray-400
-                       dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800
-                       rounded-md transition-colors"
-            title="项目设置"
-          >
-            <Settings className="w-4 h-4" />
-          </button>
+          <PinnedToolsToolbar compact={isSearchOpen} onOpenTool={onOpenBuiltinTool} />
         )}
 
       </div>
-
-      <SettingsPanel
-        isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
-        defaultScope="project"
-        onOpenProject={onOpenProject}
-      />
     </div>
   );
 }

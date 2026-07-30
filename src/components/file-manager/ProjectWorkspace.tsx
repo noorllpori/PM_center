@@ -64,6 +64,7 @@ const TEXT_DETACH_EVENT_TIMEOUT_MS = 10000;
 const FS_REFRESH_ACTIVE_DELAY_MS = 500;
 const FS_REFRESH_INACTIVE_DELAY_MS = 500;
 const FS_TREE_REFRESH_MIN_INTERVAL_MS = 800;
+export const OPEN_MDT_OVERVIEW_EVENT = 'pm-center:open-mdt-overview';
 
 interface ProjectFsChangeEventPayload {
   projectPath: string;
@@ -306,6 +307,17 @@ export function ProjectWorkspace() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isInitialized]);
+
+  useEffect(() => {
+    const handleOpenMdtOverview = () => {
+      if (isInitialized) {
+        setIsMdtOverviewOpen(true);
+      }
+    };
+
+    window.addEventListener(OPEN_MDT_OVERVIEW_EVENT, handleOpenMdtOverview);
+    return () => window.removeEventListener(OPEN_MDT_OVERVIEW_EVENT, handleOpenMdtOverview);
   }, [isInitialized]);
 
   useEffect(() => {
