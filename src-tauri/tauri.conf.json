@@ -33,9 +33,15 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "章知涵@Ninniku",
+    "copyright": "Copyright (c) 2026 章知涵@Ninniku",
+    "shortDescription": "项目管理与渲染工作流工具",
+    "longDescription": "PM Center 项目管理与渲染工作流工具。作者：章知涵@Ninniku；联系 QQ：2143178235。",
     "windows": {
       "wix": {
         "language": "zh-CN",
+        "fragmentPaths": ["../installer/author.wxs"],
+        "componentGroupRefs": ["AuthorSupportGroup"],
         "dialogImagePath": "../installer/dialog.bmp"
       }
     },

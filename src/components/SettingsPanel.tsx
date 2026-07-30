@@ -19,6 +19,7 @@ import {
   ExternalLink,
   FolderOpen,
   ImageIcon,
+  Info,
   HelpCircle,
   Plus,
   Power,
@@ -42,7 +43,12 @@ import {
   getExcludeStorageKey,
   readProjectExcludePatterns,
 } from '../utils/excludePatterns';
-import { APP_VERSION_TEXT } from '../config/appMeta';
+import {
+  APP_AUTHOR_CONTACT,
+  APP_AUTHOR_NAME,
+  APP_NAME,
+  APP_VERSION_TEXT,
+} from '../config/appMeta';
 import type {
   PluginDependencyStatus,
   PluginDescriptor,
@@ -2082,6 +2088,24 @@ export function SettingsPanel({
             <Power className="w-4 h-4" />
             结束程序
           </button>
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
+        <div className="mb-3 flex items-center gap-2">
+          <Info className="h-4 w-4 text-blue-500" />
+          <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">关于 {APP_NAME}</h4>
+        </div>
+        <div className="grid gap-3 text-sm sm:grid-cols-2">
+          <div>
+            <p className="text-xs text-gray-500 dark:text-gray-400">版本</p>
+            <p className="mt-1 font-medium text-gray-900 dark:text-gray-100">{APP_VERSION_TEXT}</p>
+          </div>
+          <div>
+            <p className="text-xs text-gray-500 dark:text-gray-400">作者与联系</p>
+            <p className="mt-1 font-medium text-gray-900 dark:text-gray-100">{APP_AUTHOR_NAME}</p>
+            <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{APP_AUTHOR_CONTACT}</p>
+          </div>
         </div>
       </section>
     </div>

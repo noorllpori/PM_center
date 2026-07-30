@@ -4,7 +4,12 @@ import { scanProjectsRoot, createProject, ScannedProject } from '../api/projects
 import { Dialog, ConfirmDialog, AlertDialog } from './Dialog';
 import { SettingsPanel } from './SettingsPanel';
 import pmcLogo from '../assets/pmc-logo.png';
-import { APP_NAME, APP_VERSION_TEXT } from '../config/appMeta';
+import {
+  APP_AUTHOR_CONTACT,
+  APP_AUTHOR_NAME,
+  APP_NAME,
+  APP_VERSION_TEXT,
+} from '../config/appMeta';
 import { 
   Folder, FolderOpen, Plus, Clock, X, Trash2, Settings, 
   RefreshCw, FolderPlus, ChevronRight, EyeOff, Eye
@@ -217,9 +222,12 @@ export function WelcomeScreen({ onOpenProject, settingsLoaded }: WelcomeScreenPr
               <p className="text-sm text-gray-500 dark:text-gray-400">
                 项目管理与渲染工作流工具
               </p>
-              <p className="mt-2 text-xs font-medium uppercase tracking-[0.2em] text-gray-400">
-                {APP_VERSION_TEXT}
-              </p>
+              <div className="mt-2 flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-xs text-gray-400">
+                <span className="font-medium uppercase tracking-[0.2em]">{APP_VERSION_TEXT}</span>
+                <span className="hidden sm:inline" aria-hidden="true">·</span>
+                <span>{APP_AUTHOR_NAME}</span>
+                <span>{APP_AUTHOR_CONTACT}</span>
+              </div>
             </div>
             <button
               onClick={() => setShowSettings(true)}

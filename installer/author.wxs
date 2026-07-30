@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="AuthorSupportRegistry" Guid="E8D8E6AC-8A38-48A7-96B2-CFA491F038AA" Win64="yes">
+        <RegistryKey Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\[ProductCode]">
+          <RegistryValue Name="Contact" Type="string" Value="章知涵@Ninniku · QQ：2143178235" KeyPath="yes" />
+          <RegistryValue Name="Comments" Type="string" Value="PM Center 项目管理与渲染工作流工具" />
+        </RegistryKey>
+      </Component>
+    </DirectoryRef>
+    <ComponentGroup Id="AuthorSupportGroup">
+      <ComponentRef Id="AuthorSupportRegistry" />
+    </ComponentGroup>
+  </Fragment>
+</Wix>
