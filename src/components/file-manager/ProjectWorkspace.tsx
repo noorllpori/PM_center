@@ -11,6 +11,7 @@ import { BlenderFileTab } from './BlenderFileTab';
 import { CollectionTabSurface } from './CollectionTabSurface';
 import { CacheManagerSurface } from './CacheManagerSurface';
 import { RenderCenterSurface } from './RenderCenterSurface';
+import { LanProjectPlaceholderSurface } from './LanProjectPlaceholderSurface';
 import { DirectoryTabSurface } from './DirectoryTabSurface';
 import { ImageSequencePlayerSurface } from './ImageSequencePlayerSurface';
 import { MdtOverviewPanel } from './MdtOverviewPanel';
@@ -1382,6 +1383,10 @@ export function ProjectWorkspace() {
 
                 {tab.type === 'render' && (
                   <RenderCenterSurface isActive={isActive} />
+                )}
+
+                {tab.type === 'p2p' && (
+                  <LanProjectPlaceholderSurface />
                 )}
 
                 {tab.type === 'directory' && tab.filePath && (

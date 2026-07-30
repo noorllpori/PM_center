@@ -1,24 +1,65 @@
-// P2P 局域网消息系统
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use if_addrs::{get_if_addrs, IfAddr};
+use image::{codecs::jpeg::JpegEncoder, imageops::FilterType, GenericImageView};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::net::UdpSocket;
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::io::Cursor;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::Emitter;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tauri::{Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
-// 默认端口
 const DISCOVERY_PORT: u16 = 31523;
 const MESSAGE_PORT: u16 = 31524;
-const BROADCAST_ADDR: &str = "255.255.255.255";
-
-// 用户发现广播间隔
-const BROADCAST_INTERVAL: Duration = Duration::from_secs(5);
-const USER_TIMEOUT: Duration = Duration::from_secs(30);
+const PROTOCOL_VERSION: u16 = 2;
+const BROADCAST_INTERVAL: Duration = Duration::from_secs(4);
+const USER_TIMEOUT: Duration = Duration::from_secs(16);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const DELIVERY_ACK_TIMEOUT: Duration = Duration::from_secs(4);
 const MAX_MESSAGE_BYTES: usize = 16 * 1024;
+const MAX_CONTROL_BYTES: usize = 160 * 1024;
+const MAX_AVATAR_SOURCE_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_AVATAR_BYTES: usize = 64 * 1024;
+const MESSAGE_RETENTION_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyLanProfile {
+    pub user_id: Option<String>,
+    pub user_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanProfile {
+    pub id: String,
+    pub display_name: String,
+    pub department: String,
+    pub avatar_hash: Option<String>,
+    pub avatar_path: Option<String>,
+    pub profile_revision: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanContact {
+    pub id: String,
+    pub display_name: String,
+    pub department: String,
+    pub avatar_hash: Option<String>,
+    pub avatar_path: Option<String>,
+    pub ip: String,
+    pub online: bool,
+    pub first_seen: u64,
+    pub last_seen: u64,
+    pub protocol_version: u16,
+    pub profile_revision: u64,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct P2PUser {
@@ -37,9 +78,88 @@ pub struct P2PMessage {
     #[serde(alias = "fromName")]
     pub from_name: String,
     #[serde(alias = "toId")]
-    pub to_id: Option<String>, // None 表示广播
+    pub to_id: Option<String>,
     pub content: String,
     pub timestamp: u64,
+    #[serde(default)]
+    pub protocol_version: Option<u16>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanMessage {
+    pub id: String,
+    pub conversation_id: String,
+    pub from_id: String,
+    pub from_name: String,
+    pub to_id: Option<String>,
+    pub content: String,
+    pub timestamp: u64,
+    pub direction: String,
+    pub delivery_status: String,
+    pub delivery_summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanConversation {
+    pub id: String,
+    pub kind: String,
+    pub contact_id: Option<String>,
+    pub title: String,
+    pub unread_count: u64,
+    pub last_message_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanServiceStatus {
+    pub is_running: bool,
+    pub udp_bound: bool,
+    pub tcp_bound: bool,
+    pub local_addresses: Vec<String>,
+    pub online_count: usize,
+    pub last_discovery_at: Option<u64>,
+    pub last_error: Option<String>,
+}
+
+impl Default for LanServiceStatus {
+    fn default() -> Self {
+        Self {
+            is_running: false,
+            udp_bound: false,
+            tcp_bound: false,
+            local_addresses: Vec::new(),
+            online_count: 0,
+            last_discovery_at: None,
+            last_error: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanSnapshot {
+    pub profile: LanProfile,
+    pub contacts: Vec<LanContact>,
+    pub messages: Vec<LanMessage>,
+    pub conversations: Vec<LanConversation>,
+    pub unread_count: u64,
+    pub service: LanServiceStatus,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateLanProfileRequest {
+    pub display_name: String,
+    pub department: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendLanMessageRequest {
+    pub to_id: Option<String>,
+    pub content: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -58,6 +178,8 @@ pub struct P2PDeliveryResult {
     pub failures: Vec<P2PDeliveryFailure>,
 }
 
+pub type LanDeliveryResult = P2PDeliveryResult;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct P2PDeliveryAck {
@@ -66,33 +188,182 @@ struct P2PDeliveryAck {
     message_id: String,
 }
 
-// 发现广播包
 #[derive(Debug, Clone, Serialize, Deserialize)]
-enum DiscoveryPacket {
-    Announce { user_id: String, user_name: String },
-    Response { user_id: String, user_name: String },
-}
-
-// 全局状态
-type P2PState = Arc<Mutex<P2PStateInner>>;
-
-struct P2PStateInner {
+struct DiscoveryPacketFields {
     user_id: String,
     user_name: String,
-    online_users: HashMap<String, P2PUser>, // id -> user
+    #[serde(default)]
+    protocol_version: Option<u16>,
+    #[serde(default)]
+    department: Option<String>,
+    #[serde(default)]
+    avatar_hash: Option<String>,
+    #[serde(default)]
+    profile_revision: Option<u64>,
+    #[serde(default)]
+    message_port: Option<u16>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum DiscoveryPacket {
+    Announce {
+        user_id: String,
+        user_name: String,
+        #[serde(default)]
+        protocol_version: Option<u16>,
+        #[serde(default)]
+        department: Option<String>,
+        #[serde(default)]
+        avatar_hash: Option<String>,
+        #[serde(default)]
+        profile_revision: Option<u64>,
+        #[serde(default)]
+        message_port: Option<u16>,
+    },
+    Response {
+        user_id: String,
+        user_name: String,
+        #[serde(default)]
+        protocol_version: Option<u16>,
+        #[serde(default)]
+        department: Option<String>,
+        #[serde(default)]
+        avatar_hash: Option<String>,
+        #[serde(default)]
+        profile_revision: Option<u64>,
+        #[serde(default)]
+        message_port: Option<u16>,
+    },
+}
+
+impl DiscoveryPacket {
+    fn fields(self) -> (DiscoveryPacketFields, bool) {
+        match self {
+            Self::Announce {
+                user_id,
+                user_name,
+                protocol_version,
+                department,
+                avatar_hash,
+                profile_revision,
+                message_port,
+            } => (
+                DiscoveryPacketFields {
+                    user_id,
+                    user_name,
+                    protocol_version,
+                    department,
+                    avatar_hash,
+                    profile_revision,
+                    message_port,
+                },
+                true,
+            ),
+            Self::Response {
+                user_id,
+                user_name,
+                protocol_version,
+                department,
+                avatar_hash,
+                profile_revision,
+                message_port,
+            } => (
+                DiscoveryPacketFields {
+                    user_id,
+                    user_name,
+                    protocol_version,
+                    department,
+                    avatar_hash,
+                    profile_revision,
+                    message_port,
+                },
+                false,
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WireProfile {
+    id: String,
+    display_name: String,
+    department: String,
+    avatar_hash: Option<String>,
+    profile_revision: u64,
+}
+
+impl From<&LanProfile> for WireProfile {
+    fn from(profile: &LanProfile) -> Self {
+        Self {
+            id: profile.id.clone(),
+            display_name: profile.display_name.clone(),
+            department: profile.department.clone(),
+            avatar_hash: profile.avatar_hash.clone(),
+            profile_revision: profile.profile_revision,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+enum LanControlEnvelope {
+    Hello {
+        protocol_version: u16,
+        profile: WireProfile,
+    },
+    HelloAck {
+        protocol_version: u16,
+        profile: WireProfile,
+    },
+    ProfileRequest {
+        requester_id: String,
+        known_avatar_hash: Option<String>,
+    },
+    ProfileResponse {
+        profile: WireProfile,
+        avatar_base64: Option<String>,
+    },
+}
+
+#[derive(Clone)]
+struct OnlinePeer {
+    id: String,
+    display_name: String,
+    department: String,
+    avatar_hash: Option<String>,
+    ip: String,
+    last_seen: u64,
+    profile_revision: u64,
+}
+
+struct P2PStateInner {
+    profile: Option<LanProfile>,
+    db_path: Option<PathBuf>,
+    avatars_dir: Option<PathBuf>,
+    online_users: HashMap<String, OnlinePeer>,
     is_running: bool,
     discovery_worker_started: bool,
     tcp_server_started: bool,
+    announce_generation: u64,
+    last_cleanup_at: u64,
+    service: LanServiceStatus,
 }
+
+type P2PState = Arc<Mutex<P2PStateInner>>;
 
 lazy_static::lazy_static! {
     static ref P2P_GLOBAL: P2PState = Arc::new(Mutex::new(P2PStateInner {
-        user_id: String::new(),
-        user_name: String::new(),
+        profile: None,
+        db_path: None,
+        avatars_dir: None,
         online_users: HashMap::new(),
         is_running: false,
         discovery_worker_started: false,
         tcp_server_started: false,
+        announce_generation: 0,
+        last_cleanup_at: 0,
+        service: LanServiceStatus::default(),
     }));
 }
 
@@ -103,134 +374,1350 @@ fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
-/// 初始化 P2P
-#[tauri::command]
-pub async fn init_p2p(user_id: String, user_name: String) -> Result<(), String> {
-    let mut state = P2P_GLOBAL.lock().map_err(|e| e.to_string())?;
-    state.user_id = user_id;
-    state.user_name = user_name;
-    println!("[P2P] 初始化: {} ({})", state.user_name, state.user_id);
+fn open_database(path: &Path) -> Result<Connection, String> {
+    let conn = Connection::open(path).map_err(|error| error.to_string())?;
+    conn.busy_timeout(Duration::from_secs(5))
+        .map_err(|error| error.to_string())?;
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         PRAGMA foreign_keys=ON;
+         CREATE TABLE IF NOT EXISTS lan_profile (
+           singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+           id TEXT NOT NULL,
+           display_name TEXT NOT NULL,
+           department TEXT NOT NULL DEFAULT '',
+           avatar_hash TEXT,
+           avatar_path TEXT,
+           profile_revision INTEGER NOT NULL DEFAULT 1,
+           updated_at INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS lan_contacts (
+           id TEXT PRIMARY KEY,
+           display_name TEXT NOT NULL,
+           department TEXT NOT NULL DEFAULT '',
+           avatar_hash TEXT,
+           avatar_path TEXT,
+           ip TEXT NOT NULL,
+           first_seen INTEGER NOT NULL,
+           last_seen INTEGER NOT NULL,
+           protocol_version INTEGER NOT NULL DEFAULT 1,
+           profile_revision INTEGER NOT NULL DEFAULT 0
+         );
+         CREATE TABLE IF NOT EXISTS lan_messages (
+           id TEXT PRIMARY KEY,
+           conversation_id TEXT NOT NULL,
+           from_id TEXT NOT NULL,
+           from_name TEXT NOT NULL,
+           to_id TEXT,
+           content TEXT NOT NULL,
+           timestamp INTEGER NOT NULL,
+           direction TEXT NOT NULL,
+           delivery_status TEXT NOT NULL,
+           delivery_summary TEXT
+         );
+         CREATE INDEX IF NOT EXISTS idx_lan_messages_conversation_time
+           ON lan_messages(conversation_id,timestamp);
+         CREATE TABLE IF NOT EXISTS lan_conversation_reads (
+           conversation_id TEXT PRIMARY KEY,
+           last_read_at INTEGER NOT NULL
+         );",
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(conn)
+}
+
+fn validate_profile_text(value: &str, label: &str, max_chars: usize) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.chars().count() > max_chars {
+        return Err(format!("{label}不能超过 {max_chars} 个字符"));
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err(format!("{label}包含无效控制字符"));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn random_display_name(user_id: &str) -> String {
+    const STEMS: &[&str] = &[
+        "青竹", "云杉", "星河", "松风", "远山", "白榆", "海盐", "晨光", "银杏", "清泉", "山岚",
+        "雨燕", "月桂", "溪石", "南风", "霜叶",
+    ];
+    let digest = blake3::hash(user_id.as_bytes());
+    let bytes = digest.as_bytes();
+    let stem = STEMS[bytes[0] as usize % STEMS.len()];
+    let number = u16::from_le_bytes([bytes[1], bytes[2]]) % 10_000;
+    format!("{stem}-{number:04}")
+}
+
+fn load_or_create_profile(
+    conn: &Connection,
+    legacy: Option<LegacyLanProfile>,
+) -> Result<LanProfile, String> {
+    let existing = conn
+        .query_row(
+            "SELECT id,display_name,department,avatar_hash,avatar_path,profile_revision FROM lan_profile WHERE singleton=1",
+            [],
+            |row| {
+                Ok(LanProfile {
+                    id: row.get(0)?,
+                    display_name: row.get(1)?,
+                    department: row.get(2)?,
+                    avatar_hash: row.get(3)?,
+                    avatar_path: row.get(4)?,
+                    profile_revision: row.get::<_, i64>(5)? as u64,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    if let Some(profile) = existing {
+        return Ok(profile);
+    }
+
+    let legacy_id = legacy.as_ref().and_then(|value| value.user_id.clone());
+    let id = legacy_id
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let legacy_name = legacy.and_then(|value| value.user_name);
+    let display_name = legacy_name
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty() && value != "匿名用户")
+        .unwrap_or_else(|| random_display_name(&id));
+    let profile = LanProfile {
+        id,
+        display_name,
+        department: String::new(),
+        avatar_hash: None,
+        avatar_path: None,
+        profile_revision: 1,
+    };
+    conn.execute(
+        "INSERT INTO lan_profile(singleton,id,display_name,department,avatar_hash,avatar_path,profile_revision,updated_at)
+         VALUES(1,?1,?2,?3,NULL,NULL,1,?4)",
+        params![profile.id, profile.display_name, profile.department, now_millis() as i64],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(profile)
+}
+
+fn prune_old_messages(conn: &Connection) -> Result<(), String> {
+    let cutoff = now_millis().saturating_sub(MESSAGE_RETENTION_MS);
+    conn.execute(
+        "DELETE FROM lan_messages WHERE timestamp < ?1",
+        params![cutoff as i64],
+    )
+    .map_err(|error| error.to_string())?;
     Ok(())
 }
 
-/// 更新用户信息
-#[tauri::command]
-pub async fn update_p2p_user(user_id: String, user_name: String) -> Result<(), String> {
-    let mut state = P2P_GLOBAL.lock().map_err(|e| e.to_string())?;
-    state.user_id = user_id;
-    state.user_name = user_name;
-    println!(
-        "[P2P] 更新用户信息: {} ({})",
-        state.user_name, state.user_id
+fn state_paths() -> Result<(PathBuf, PathBuf), String> {
+    let state = P2P_GLOBAL.lock().map_err(|error| error.to_string())?;
+    let db_path = state
+        .db_path
+        .clone()
+        .ok_or_else(|| "局域网协同尚未初始化".to_string())?;
+    let avatars_dir = state
+        .avatars_dir
+        .clone()
+        .ok_or_else(|| "局域网头像目录尚未初始化".to_string())?;
+    Ok((db_path, avatars_dir))
+}
+
+fn conversation_id(message: &P2PMessage, local_id: &str) -> String {
+    match &message.to_id {
+        None => "lobby".to_string(),
+        Some(to_id) if message.from_id == local_id => format!("direct:{to_id}"),
+        Some(_) => format!("direct:{}", message.from_id),
+    }
+}
+
+fn insert_message(
+    conn: &Connection,
+    message: &P2PMessage,
+    local_id: &str,
+    direction: &str,
+    delivery_status: &str,
+    delivery_summary: Option<&str>,
+) -> Result<bool, String> {
+    let inserted = conn
+        .execute(
+            "INSERT OR IGNORE INTO lan_messages(
+               id,conversation_id,from_id,from_name,to_id,content,timestamp,direction,delivery_status,delivery_summary
+             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![
+                message.id,
+                conversation_id(message, local_id),
+                message.from_id,
+                message.from_name,
+                message.to_id,
+                message.content,
+                message.timestamp as i64,
+                direction,
+                delivery_status,
+                delivery_summary,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(inserted > 0)
+}
+
+fn wire_to_lan_message(
+    message: &P2PMessage,
+    local_id: &str,
+    direction: &str,
+    delivery_status: &str,
+    delivery_summary: Option<String>,
+) -> LanMessage {
+    LanMessage {
+        id: message.id.clone(),
+        conversation_id: conversation_id(message, local_id),
+        from_id: message.from_id.clone(),
+        from_name: message.from_name.clone(),
+        to_id: message.to_id.clone(),
+        content: message.content.clone(),
+        timestamp: message.timestamp,
+        direction: direction.to_string(),
+        delivery_status: delivery_status.to_string(),
+        delivery_summary,
+    }
+}
+
+fn upsert_contact(
+    conn: &Connection,
+    profile: &WireProfile,
+    ip: &str,
+    protocol_version: u16,
+) -> Result<bool, String> {
+    let previous: Option<(String, String, Option<String>, Option<String>, String, u64, u64)> = conn
+        .query_row(
+            "SELECT display_name,department,avatar_hash,avatar_path,ip,profile_revision,last_seen FROM lan_contacts WHERE id=?1",
+            params![profile.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get::<_, i64>(5)? as u64, row.get::<_, i64>(6)? as u64)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let now = now_millis();
+    let avatar_path = previous.as_ref().and_then(|value| {
+        if value.2 == profile.avatar_hash {
+            value.3.clone()
+        } else {
+            None
+        }
+    });
+    conn.execute(
+        "INSERT INTO lan_contacts(
+           id,display_name,department,avatar_hash,avatar_path,ip,first_seen,last_seen,protocol_version,profile_revision
+         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?7,?8,?9)
+         ON CONFLICT(id) DO UPDATE SET
+           display_name=excluded.display_name,
+           department=excluded.department,
+           avatar_hash=excluded.avatar_hash,
+           avatar_path=excluded.avatar_path,
+           ip=excluded.ip,
+           last_seen=excluded.last_seen,
+           protocol_version=excluded.protocol_version,
+           profile_revision=excluded.profile_revision",
+        params![
+            profile.id,
+            profile.display_name,
+            profile.department,
+            profile.avatar_hash,
+            avatar_path,
+            ip,
+            now as i64,
+            protocol_version as i64,
+            profile.profile_revision as i64,
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    if previous
+        .as_ref()
+        .is_some_and(|value| value.2 != profile.avatar_hash)
+    {
+        cleanup_orphan_avatar(conn, previous.as_ref().and_then(|value| value.3.clone()));
+    }
+    Ok(previous
+        .map(|value| {
+            value.0 != profile.display_name
+                || value.1 != profile.department
+                || value.2 != profile.avatar_hash
+                || value.4 != ip
+                || value.5 != profile.profile_revision
+        })
+        .unwrap_or(true))
+}
+
+fn upsert_legacy_contact(
+    conn: &Connection,
+    id: &str,
+    name: &str,
+    ip: &str,
+) -> Result<bool, String> {
+    let existing: Option<(String, String)> = conn
+        .query_row(
+            "SELECT display_name,ip FROM lan_contacts WHERE id=?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let now = now_millis();
+    conn.execute(
+        "INSERT INTO lan_contacts(id,display_name,department,ip,first_seen,last_seen,protocol_version,profile_revision)
+         VALUES(?1,?2,'',?3,?4,?4,1,0)
+         ON CONFLICT(id) DO UPDATE SET display_name=?2,ip=?3,last_seen=?4",
+        params![id, name, ip, now as i64],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(existing
+        .map(|value| value.0 != name || value.1 != ip)
+        .unwrap_or(true))
+}
+
+fn set_online_peer(profile: &WireProfile, ip: &str) -> Result<bool, String> {
+    let mut state = P2P_GLOBAL.lock().map_err(|error| error.to_string())?;
+    let now = now_millis();
+    let previous = state.online_users.get(&profile.id);
+    let changed = previous
+        .map(|peer| {
+            peer.display_name != profile.display_name
+                || peer.department != profile.department
+                || peer.avatar_hash != profile.avatar_hash
+                || peer.ip != ip
+                || peer.profile_revision != profile.profile_revision
+        })
+        .unwrap_or(true);
+    state.online_users.insert(
+        profile.id.clone(),
+        OnlinePeer {
+            id: profile.id.clone(),
+            display_name: profile.display_name.clone(),
+            department: profile.department.clone(),
+            avatar_hash: profile.avatar_hash.clone(),
+            ip: ip.to_string(),
+            last_seen: now,
+            profile_revision: profile.profile_revision,
+        },
     );
+    state.service.online_count = state.online_users.len();
+    state.service.last_discovery_at = Some(now);
+    Ok(changed)
+}
+
+fn set_online_legacy_peer(id: &str, name: &str, ip: &str) -> Result<bool, String> {
+    let mut state = P2P_GLOBAL.lock().map_err(|error| error.to_string())?;
+    let now = now_millis();
+    let changed = if let Some(peer) = state.online_users.get_mut(id) {
+        let changed = peer.display_name != name || peer.ip != ip;
+        peer.display_name = name.to_string();
+        peer.ip = ip.to_string();
+        peer.last_seen = now;
+        changed
+    } else {
+        state.online_users.insert(
+            id.to_string(),
+            OnlinePeer {
+                id: id.to_string(),
+                display_name: name.to_string(),
+                department: String::new(),
+                avatar_hash: None,
+                ip: ip.to_string(),
+                last_seen: now,
+                profile_revision: 0,
+            },
+        );
+        true
+    };
+    state.service.online_count = state.online_users.len();
+    state.service.last_discovery_at = Some(now);
+    Ok(changed)
+}
+
+fn emit_contacts_changed(app_handle: &tauri::AppHandle) {
+    let _ = app_handle.emit("pm-center:lan-contacts-changed", ());
+    if let Ok(state) = P2P_GLOBAL.lock() {
+        let users: Vec<P2PUser> = state
+            .online_users
+            .values()
+            .map(|peer| P2PUser {
+                id: peer.id.clone(),
+                name: peer.display_name.clone(),
+                ip: peer.ip.clone(),
+                last_seen: peer.last_seen,
+            })
+            .collect();
+        let _ = app_handle.emit("p2p-users", serde_json::json!({ "users": users }));
+    }
+}
+
+fn emit_service_status(app_handle: &tauri::AppHandle) {
+    if let Ok(state) = P2P_GLOBAL.lock() {
+        let _ = app_handle.emit("pm-center:lan-service-status", state.service.clone());
+    }
+}
+
+fn discovery_packet(profile: &LanProfile, response: bool) -> DiscoveryPacket {
+    let fields = (
+        profile.id.clone(),
+        profile.display_name.clone(),
+        Some(PROTOCOL_VERSION),
+        Some(profile.department.clone()),
+        profile.avatar_hash.clone(),
+        Some(profile.profile_revision),
+        Some(MESSAGE_PORT),
+    );
+    if response {
+        DiscoveryPacket::Response {
+            user_id: fields.0,
+            user_name: fields.1,
+            protocol_version: fields.2,
+            department: fields.3,
+            avatar_hash: fields.4,
+            profile_revision: fields.5,
+            message_port: fields.6,
+        }
+    } else {
+        DiscoveryPacket::Announce {
+            user_id: fields.0,
+            user_name: fields.1,
+            protocol_version: fields.2,
+            department: fields.3,
+            avatar_hash: fields.4,
+            profile_revision: fields.5,
+            message_port: fields.6,
+        }
+    }
+}
+
+fn discovery_targets() -> (Vec<SocketAddr>, Vec<String>) {
+    let mut targets = HashSet::new();
+    let mut local_addresses = HashSet::new();
+    targets.insert(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::BROADCAST),
+        DISCOVERY_PORT,
+    ));
+    if let Ok(interfaces) = get_if_addrs() {
+        for interface in interfaces {
+            if let IfAddr::V4(address) = interface.addr {
+                if address.ip.is_loopback() || address.ip.is_unspecified() {
+                    continue;
+                }
+                local_addresses.insert(address.ip.to_string());
+                let broadcast = address.broadcast.unwrap_or_else(|| {
+                    Ipv4Addr::from(u32::from(address.ip) | !u32::from(address.netmask))
+                });
+                targets.insert(SocketAddr::new(IpAddr::V4(broadcast), DISCOVERY_PORT));
+            }
+        }
+    }
+    let mut targets: Vec<_> = targets.into_iter().collect();
+    targets.sort_by_key(|value| value.to_string());
+    let mut local_addresses: Vec<_> = local_addresses.into_iter().collect();
+    local_addresses.sort();
+    (targets, local_addresses)
+}
+
+async fn broadcast_profile(
+    socket: &UdpSocket,
+    profile: &LanProfile,
+) -> Result<Vec<String>, String> {
+    let packet =
+        serde_json::to_vec(&discovery_packet(profile, false)).map_err(|error| error.to_string())?;
+    let (targets, local_addresses) = discovery_targets();
+    let mut sent = 0usize;
+    let mut last_error = None;
+    for target in targets {
+        match socket.send_to(&packet, target).await {
+            Ok(_) => sent += 1,
+            Err(error) => last_error = Some(error.to_string()),
+        }
+    }
+    if sent == 0 {
+        return Err(last_error.unwrap_or_else(|| "没有可用的局域网广播地址".to_string()));
+    }
+    Ok(local_addresses)
+}
+
+async fn run_discovery_loop(socket: UdpSocket, app_handle: tauri::AppHandle, db_path: PathBuf) {
+    let mut buffer = vec![0u8; 4096];
+    let mut tick = tokio::time::interval(Duration::from_millis(250));
+    let mut last_broadcast = Instant::now() - BROADCAST_INTERVAL;
+    let mut seen_generation = 0u64;
+
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {
+                let (profile, running, generation, removed) = {
+                    let mut state = match P2P_GLOBAL.lock() {
+                        Ok(state) => state,
+                        Err(_) => continue,
+                    };
+                    let now = now_millis();
+                    let before = state.online_users.len();
+                    state.online_users.retain(|_, peer| now.saturating_sub(peer.last_seen) < USER_TIMEOUT.as_millis() as u64);
+                    let removed = before != state.online_users.len();
+                    if removed {
+                        state.service.online_count = state.online_users.len();
+                    }
+                    (state.profile.clone(), state.is_running, state.announce_generation, removed)
+                };
+                if removed {
+                    emit_contacts_changed(&app_handle);
+                    emit_service_status(&app_handle);
+                }
+                if !running {
+                    continue;
+                }
+                if generation != seen_generation || last_broadcast.elapsed() >= BROADCAST_INTERVAL {
+                    if let Some(profile) = profile {
+                        match broadcast_profile(&socket, &profile).await {
+                            Ok(addresses) => {
+                                if let Ok(mut state) = P2P_GLOBAL.lock() {
+                                    state.service.local_addresses = addresses;
+                                    state.service.last_error = None;
+                                }
+                            }
+                            Err(error) => {
+                                if let Ok(mut state) = P2P_GLOBAL.lock() {
+                                    state.service.last_error = Some(format!("局域网广播失败：{error}"));
+                                }
+                            }
+                        }
+                        emit_service_status(&app_handle);
+                    }
+                    seen_generation = generation;
+                    last_broadcast = Instant::now();
+                }
+            }
+            received = socket.recv_from(&mut buffer) => {
+                let Ok((length, source)) = received else { continue; };
+                let running = P2P_GLOBAL.lock().map(|state| state.is_running).unwrap_or(false);
+                if !running {
+                    continue;
+                }
+                let Ok(packet) = serde_json::from_slice::<DiscoveryPacket>(&buffer[..length]) else { continue; };
+                let (fields, needs_response) = packet.fields();
+                let local_profile = P2P_GLOBAL.lock().ok().and_then(|state| state.profile.clone());
+                if local_profile.as_ref().is_some_and(|profile| profile.id == fields.user_id) {
+                    continue;
+                }
+                let profile = WireProfile {
+                    id: fields.user_id,
+                    display_name: fields.user_name,
+                    department: fields.department.unwrap_or_default(),
+                    avatar_hash: fields.avatar_hash,
+                    profile_revision: fields.profile_revision.unwrap_or(0),
+                };
+                let protocol_version = fields.protocol_version.unwrap_or(1);
+                let ip = source.ip().to_string();
+                let changed = open_database(&db_path)
+                    .and_then(|conn| upsert_contact(&conn, &profile, &ip, protocol_version))
+                    .unwrap_or(false)
+                    | set_online_peer(&profile, &ip).unwrap_or(false);
+                if changed {
+                    emit_contacts_changed(&app_handle);
+                }
+                emit_service_status(&app_handle);
+
+                if needs_response {
+                    if let Some(local_profile) = local_profile.clone() {
+                        if let Ok(data) = serde_json::to_vec(&discovery_packet(&local_profile, true)) {
+                            let response_port = if fields.message_port.is_some() { DISCOVERY_PORT } else { source.port() };
+                            let _ = socket.send_to(&data, SocketAddr::new(source.ip(), response_port)).await;
+                        }
+                    }
+                }
+
+                if protocol_version >= 2 && changed {
+                    let app_handle = app_handle.clone();
+                    let db_path = db_path.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) = send_hello_and_fetch(&ip, app_handle.clone(), db_path).await {
+                            if let Ok(mut state) = P2P_GLOBAL.lock() {
+                                state.service.last_error = Some(format!("与 {ip} 同步联系人资料失败：{error}"));
+                            }
+                            emit_service_status(&app_handle);
+                        }
+                    });
+                }
+            }
+        }
+    }
+}
+
+async fn connect_to_peer(ip: &str) -> Result<TcpStream, String> {
+    let address = format!("{ip}:{MESSAGE_PORT}");
+    tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(&address))
+        .await
+        .map_err(|_| format!("连接 {address} 超时"))?
+        .map_err(|error| format!("连接 {address} 失败：{error}"))
+}
+
+async fn write_json_line<T: Serialize>(
+    writer: &mut tokio::net::tcp::OwnedWriteHalf,
+    value: &T,
+) -> Result<(), String> {
+    let mut data = serde_json::to_vec(value).map_err(|error| error.to_string())?;
+    data.push(b'\n');
+    tokio::time::timeout(DELIVERY_ACK_TIMEOUT, writer.write_all(&data))
+        .await
+        .map_err(|_| "发送数据超时".to_string())?
+        .map_err(|error| error.to_string())
+}
+
+async fn read_json_line(
+    reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>,
+) -> Result<String, String> {
+    let mut line = String::new();
+    tokio::time::timeout(DELIVERY_ACK_TIMEOUT, reader.read_line(&mut line))
+        .await
+        .map_err(|_| "等待对方响应超时".to_string())?
+        .map_err(|error| error.to_string())?;
+    if line.len() > MAX_CONTROL_BYTES {
+        return Err("对方响应超过允许大小".to_string());
+    }
+    Ok(line)
+}
+
+async fn send_hello_and_fetch(
+    ip: &str,
+    app_handle: tauri::AppHandle,
+    db_path: PathBuf,
+) -> Result<(), String> {
+    let profile = P2P_GLOBAL
+        .lock()
+        .map_err(|error| error.to_string())?
+        .profile
+        .clone()
+        .ok_or_else(|| "局域网身份尚未初始化".to_string())?;
+    let stream = connect_to_peer(ip).await?;
+    let (reader, mut writer) = stream.into_split();
+    write_json_line(
+        &mut writer,
+        &LanControlEnvelope::Hello {
+            protocol_version: PROTOCOL_VERSION,
+            profile: WireProfile::from(&profile),
+        },
+    )
+    .await?;
+    let mut reader = BufReader::new(reader);
+    let line = read_json_line(&mut reader).await?;
+    let envelope: LanControlEnvelope =
+        serde_json::from_str(line.trim()).map_err(|error| error.to_string())?;
+    let LanControlEnvelope::HelloAck {
+        protocol_version,
+        profile: remote_profile,
+    } = envelope
+    else {
+        return Err("对方未返回联系人资料确认".to_string());
+    };
+    let changed = upsert_contact(
+        &open_database(&db_path)?,
+        &remote_profile,
+        ip,
+        protocol_version,
+    )? | set_online_peer(&remote_profile, ip)?;
+    if changed {
+        emit_contacts_changed(&app_handle);
+    }
+    fetch_remote_avatar(ip, &remote_profile, app_handle, db_path).await
+}
+
+fn contact_avatar_is_current(
+    conn: &Connection,
+    contact_id: &str,
+    avatar_hash: &str,
+) -> Result<bool, String> {
+    let stored: Option<(Option<String>, Option<String>)> = conn
+        .query_row(
+            "SELECT avatar_hash,avatar_path FROM lan_contacts WHERE id=?1",
+            params![contact_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    Ok(stored.is_some_and(|(hash, path)| {
+        hash.as_deref() == Some(avatar_hash) && path.is_some_and(|value| Path::new(&value).exists())
+    }))
+}
+
+async fn fetch_remote_avatar(
+    ip: &str,
+    profile: &WireProfile,
+    app_handle: tauri::AppHandle,
+    db_path: PathBuf,
+) -> Result<(), String> {
+    let Some(expected_hash) = profile.avatar_hash.as_deref() else {
+        return Ok(());
+    };
+    let conn = open_database(&db_path)?;
+    if contact_avatar_is_current(&conn, &profile.id, expected_hash)? {
+        return Ok(());
+    }
+    drop(conn);
+    let local_profile = P2P_GLOBAL
+        .lock()
+        .map_err(|error| error.to_string())?
+        .profile
+        .clone()
+        .ok_or_else(|| "局域网身份尚未初始化".to_string())?;
+    let stream = connect_to_peer(ip).await?;
+    let (reader, mut writer) = stream.into_split();
+    write_json_line(
+        &mut writer,
+        &LanControlEnvelope::ProfileRequest {
+            requester_id: local_profile.id,
+            known_avatar_hash: None,
+        },
+    )
+    .await?;
+    let mut reader = BufReader::new(reader);
+    let line = read_json_line(&mut reader).await?;
+    let response: LanControlEnvelope =
+        serde_json::from_str(line.trim()).map_err(|error| error.to_string())?;
+    let LanControlEnvelope::ProfileResponse {
+        profile: returned_profile,
+        avatar_base64,
+    } = response
+    else {
+        return Err("对方返回了无效头像资料".to_string());
+    };
+    if returned_profile.id != profile.id {
+        return Err("对方返回的头像身份不匹配".to_string());
+    }
+    let Some(encoded) = avatar_base64 else {
+        return Ok(());
+    };
+    let bytes = BASE64.decode(encoded).map_err(|error| error.to_string())?;
+    if bytes.len() > MAX_AVATAR_BYTES || image::load_from_memory(&bytes).is_err() {
+        return Err("对方头像无效或超过大小限制".to_string());
+    }
+    let actual_hash = blake3::hash(&bytes).to_hex().to_string();
+    if returned_profile.avatar_hash.as_deref() != Some(actual_hash.as_str()) {
+        return Err("对方头像哈希校验失败".to_string());
+    }
+    let (_, avatars_dir) = state_paths()?;
+    fs::create_dir_all(&avatars_dir).map_err(|error| error.to_string())?;
+    let avatar_path = avatars_dir.join(format!("{actual_hash}.jpg"));
+    fs::write(&avatar_path, bytes).map_err(|error| error.to_string())?;
+    let conn = open_database(&db_path)?;
+    conn.execute(
+        "UPDATE lan_contacts SET avatar_hash=?2,avatar_path=?3 WHERE id=?1",
+        params![
+            returned_profile.id,
+            actual_hash,
+            avatar_path.to_string_lossy()
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    emit_contacts_changed(&app_handle);
     Ok(())
 }
 
-/// 启动发现服务
-#[tauri::command]
-pub async fn start_p2p_discovery(app_handle: tauri::AppHandle) -> Result<(), String> {
-    let (start_discovery_worker, start_tcp_server) = {
-        let state = P2P_GLOBAL.lock().map_err(|e| e.to_string())?;
-        if state.is_running {
+async fn run_tcp_server(listener: TcpListener, app_handle: tauri::AppHandle, db_path: PathBuf) {
+    loop {
+        match listener.accept().await {
+            Ok((stream, address)) => {
+                let app_handle = app_handle.clone();
+                let db_path = db_path.clone();
+                tokio::spawn(async move {
+                    if let Err(error) =
+                        handle_tcp_connection(stream, address, app_handle, db_path).await
+                    {
+                        eprintln!("[P2P] 处理连接失败：{error}");
+                    }
+                });
+            }
+            Err(error) => {
+                if let Ok(mut state) = P2P_GLOBAL.lock() {
+                    state.service.last_error = Some(format!("接受局域网连接失败：{error}"));
+                }
+                emit_service_status(&app_handle);
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
+}
+
+async fn handle_tcp_connection(
+    stream: TcpStream,
+    address: SocketAddr,
+    app_handle: tauri::AppHandle,
+    db_path: PathBuf,
+) -> Result<(), String> {
+    if !P2P_GLOBAL
+        .lock()
+        .map_err(|error| error.to_string())?
+        .is_running
+    {
+        return Ok(());
+    }
+    let ip = address.ip().to_string();
+    let (reader, mut writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+    let line = read_json_line(&mut reader).await?;
+    let trimmed = line.trim();
+
+    if let Ok(message) = serde_json::from_str::<P2PMessage>(trimmed) {
+        if message.content.trim().is_empty() || message.content.len() > MAX_MESSAGE_BYTES {
+            return Err("收到无效消息".to_string());
+        }
+        let local_profile = P2P_GLOBAL
+            .lock()
+            .map_err(|error| error.to_string())?
+            .profile
+            .clone()
+            .ok_or_else(|| "局域网身份尚未初始化".to_string())?;
+        if message
+            .to_id
+            .as_deref()
+            .is_some_and(|to_id| to_id != local_profile.id)
+        {
             return Ok(());
         }
-        (!state.discovery_worker_started, !state.tcp_server_started)
-    };
+        let conn = open_database(&db_path)?;
+        let contact_changed =
+            upsert_legacy_contact(&conn, &message.from_id, &message.from_name, &ip)?
+                | set_online_legacy_peer(&message.from_id, &message.from_name, &ip)?;
+        let inserted = insert_message(
+            &conn,
+            &message,
+            &local_profile.id,
+            "incoming",
+            "delivered",
+            None,
+        )?;
+        if contact_changed {
+            emit_contacts_changed(&app_handle);
+        }
+        if inserted {
+            let lan_message =
+                wire_to_lan_message(&message, &local_profile.id, "incoming", "delivered", None);
+            let _ = app_handle.emit("pm-center:lan-message", &lan_message);
+            let _ = app_handle.emit("p2p-message", &message);
+        }
+        write_json_line(
+            &mut writer,
+            &P2PDeliveryAck {
+                kind: "ack".to_string(),
+                message_id: message.id,
+            },
+        )
+        .await?;
+        return Ok(());
+    }
 
-    let discovery_socket = if start_discovery_worker {
+    let envelope: LanControlEnvelope =
+        serde_json::from_str(trimmed).map_err(|_| "收到无法识别的局域网数据".to_string())?;
+    match envelope {
+        LanControlEnvelope::Hello {
+            protocol_version,
+            profile,
+        } => {
+            let conn = open_database(&db_path)?;
+            let changed = upsert_contact(&conn, &profile, &ip, protocol_version)?
+                | set_online_peer(&profile, &ip)?;
+            if changed {
+                emit_contacts_changed(&app_handle);
+            }
+            let local_profile = P2P_GLOBAL
+                .lock()
+                .map_err(|error| error.to_string())?
+                .profile
+                .clone()
+                .ok_or_else(|| "局域网身份尚未初始化".to_string())?;
+            write_json_line(
+                &mut writer,
+                &LanControlEnvelope::HelloAck {
+                    protocol_version: PROTOCOL_VERSION,
+                    profile: WireProfile::from(&local_profile),
+                },
+            )
+            .await?;
+            if profile.avatar_hash.is_some() {
+                let app_handle = app_handle.clone();
+                tokio::spawn(async move {
+                    let _ = fetch_remote_avatar(&ip, &profile, app_handle, db_path).await;
+                });
+            }
+        }
+        LanControlEnvelope::ProfileRequest {
+            known_avatar_hash, ..
+        } => {
+            let profile = P2P_GLOBAL
+                .lock()
+                .map_err(|error| error.to_string())?
+                .profile
+                .clone()
+                .ok_or_else(|| "局域网身份尚未初始化".to_string())?;
+            let avatar_base64 = if profile.avatar_hash != known_avatar_hash {
+                profile
+                    .avatar_path
+                    .as_deref()
+                    .and_then(|path| fs::read(path).ok())
+                    .filter(|bytes| bytes.len() <= MAX_AVATAR_BYTES)
+                    .map(|bytes| BASE64.encode(bytes))
+            } else {
+                None
+            };
+            write_json_line(
+                &mut writer,
+                &LanControlEnvelope::ProfileResponse {
+                    profile: WireProfile::from(&profile),
+                    avatar_base64,
+                },
+            )
+            .await?;
+        }
+        _ => return Err("不支持的局域网控制消息".to_string()),
+    }
+    Ok(())
+}
+
+async fn send_tcp_message(ip: &str, message: &P2PMessage) -> Result<(), String> {
+    let stream = connect_to_peer(ip).await?;
+    let (reader, mut writer) = stream.into_split();
+    write_json_line(&mut writer, message).await?;
+    let mut reader = BufReader::new(reader);
+    let response = read_json_line(&mut reader).await?;
+    let ack: P2PDeliveryAck =
+        serde_json::from_str(response.trim()).map_err(|_| "对方返回了无效送达确认".to_string())?;
+    if ack.kind != "ack" || ack.message_id != message.id {
+        return Err("对方未确认当前消息".to_string());
+    }
+    Ok(())
+}
+
+fn load_contacts(
+    conn: &Connection,
+    online: &HashMap<String, OnlinePeer>,
+) -> Result<Vec<LanContact>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT id,display_name,department,avatar_hash,avatar_path,ip,first_seen,last_seen,protocol_version,profile_revision
+             FROM lan_contacts ORDER BY display_name COLLATE NOCASE",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            let id: String = row.get(0)?;
+            Ok(LanContact {
+                online: online.contains_key(&id),
+                id,
+                display_name: row.get(1)?,
+                department: row.get(2)?,
+                avatar_hash: row.get(3)?,
+                avatar_path: row.get(4)?,
+                ip: row.get(5)?,
+                first_seen: row.get::<_, i64>(6)? as u64,
+                last_seen: row.get::<_, i64>(7)? as u64,
+                protocol_version: row.get::<_, i64>(8)? as u16,
+                profile_revision: row.get::<_, i64>(9)? as u64,
+            })
+        })
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())
+}
+
+fn load_messages(conn: &Connection) -> Result<Vec<LanMessage>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT id,conversation_id,from_id,from_name,to_id,content,timestamp,direction,delivery_status,delivery_summary
+             FROM (SELECT * FROM lan_messages ORDER BY timestamp DESC LIMIT 5000)
+             ORDER BY timestamp ASC",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(LanMessage {
+                id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                from_id: row.get(2)?,
+                from_name: row.get(3)?,
+                to_id: row.get(4)?,
+                content: row.get(5)?,
+                timestamp: row.get::<_, i64>(6)? as u64,
+                direction: row.get(7)?,
+                delivery_status: row.get(8)?,
+                delivery_summary: row.get(9)?,
+            })
+        })
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())
+}
+
+fn unread_counts(conn: &Connection) -> Result<HashMap<String, u64>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT m.conversation_id,COUNT(*)
+             FROM lan_messages m
+             LEFT JOIN lan_conversation_reads r ON r.conversation_id=m.conversation_id
+             WHERE m.direction='incoming' AND m.timestamp>COALESCE(r.last_read_at,0)
+             GROUP BY m.conversation_id",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+        })
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<HashMap<_, _>, _>>()
+        .map_err(|error| error.to_string())
+}
+
+fn build_conversations(
+    contacts: &[LanContact],
+    messages: &[LanMessage],
+    unread: &HashMap<String, u64>,
+) -> Vec<LanConversation> {
+    let mut last_message = HashMap::<String, u64>::new();
+    for message in messages {
+        last_message
+            .entry(message.conversation_id.clone())
+            .and_modify(|value| *value = (*value).max(message.timestamp))
+            .or_insert(message.timestamp);
+    }
+    let mut conversations = vec![LanConversation {
+        id: "lobby".to_string(),
+        kind: "lobby".to_string(),
+        contact_id: None,
+        title: "局域网大厅".to_string(),
+        unread_count: unread.get("lobby").copied().unwrap_or(0),
+        last_message_at: last_message.get("lobby").copied(),
+    }];
+    conversations.extend(contacts.iter().map(|contact| {
+        let id = format!("direct:{}", contact.id);
+        LanConversation {
+            id: id.clone(),
+            kind: "direct".to_string(),
+            contact_id: Some(contact.id.clone()),
+            title: contact.display_name.clone(),
+            unread_count: unread.get(&id).copied().unwrap_or(0),
+            last_message_at: last_message.get(&id).copied(),
+        }
+    }));
+    let known_ids: HashSet<String> = conversations
+        .iter()
+        .map(|conversation| conversation.id.clone())
+        .collect();
+    for (id, timestamp) in &last_message {
+        if !id.starts_with("direct:") || known_ids.contains(id) {
+            continue;
+        }
+        conversations.push(LanConversation {
+            id: id.clone(),
+            kind: "direct".to_string(),
+            contact_id: Some(id.trim_start_matches("direct:").to_string()),
+            title: "已移除联系人".to_string(),
+            unread_count: unread.get(id).copied().unwrap_or(0),
+            last_message_at: Some(*timestamp),
+        });
+    }
+    conversations.sort_by(|left, right| {
+        if left.id == "lobby" {
+            return std::cmp::Ordering::Less;
+        }
+        if right.id == "lobby" {
+            return std::cmp::Ordering::Greater;
+        }
+        right
+            .last_message_at
+            .unwrap_or(0)
+            .cmp(&left.last_message_at.unwrap_or(0))
+            .then(left.title.cmp(&right.title))
+    });
+    conversations
+}
+
+fn snapshot() -> Result<LanSnapshot, String> {
+    let (profile, db_path, online, service) = {
+        let state = P2P_GLOBAL.lock().map_err(|error| error.to_string())?;
+        (
+            state
+                .profile
+                .clone()
+                .ok_or_else(|| "局域网协同尚未初始化".to_string())?,
+            state
+                .db_path
+                .clone()
+                .ok_or_else(|| "局域网数据库尚未初始化".to_string())?,
+            state.online_users.clone(),
+            state.service.clone(),
+        )
+    };
+    let conn = open_database(&db_path)?;
+    let contacts = load_contacts(&conn, &online)?;
+    let messages = load_messages(&conn)?;
+    let unread = unread_counts(&conn)?;
+    let conversations = build_conversations(&contacts, &messages, &unread);
+    Ok(LanSnapshot {
+        profile,
+        contacts,
+        messages,
+        conversations,
+        unread_count: unread.values().sum(),
+        service,
+    })
+}
+
+#[tauri::command]
+pub async fn initialize_lan_collaboration(
+    app_handle: tauri::AppHandle,
+    legacy_profile: Option<LegacyLanProfile>,
+) -> Result<LanSnapshot, String> {
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("获取应用数据目录失败：{error}"))?;
+    fs::create_dir_all(&app_data_dir).map_err(|error| error.to_string())?;
+    let db_path = app_data_dir.join("lan_collaboration.db");
+    let avatars_dir = app_data_dir.join("lan_collaboration").join("avatars");
+    fs::create_dir_all(&avatars_dir).map_err(|error| error.to_string())?;
+    let conn = open_database(&db_path)?;
+    let profile = load_or_create_profile(&conn, legacy_profile)?;
+    prune_old_messages(&conn)?;
+    {
+        let mut state = P2P_GLOBAL.lock().map_err(|error| error.to_string())?;
+        state.profile = Some(profile);
+        state.db_path = Some(db_path);
+        state.avatars_dir = Some(avatars_dir);
+        state.last_cleanup_at = now_millis();
+    }
+    if let Err(error) = start_lan_discovery(app_handle.clone()).await {
+        if let Ok(mut state) = P2P_GLOBAL.lock() {
+            state.service.last_error = Some(error);
+        }
+    }
+    snapshot()
+}
+
+#[tauri::command]
+pub async fn get_lan_collaboration_snapshot() -> Result<LanSnapshot, String> {
+    let should_cleanup = {
+        let state = P2P_GLOBAL.lock().map_err(|error| error.to_string())?;
+        now_millis().saturating_sub(state.last_cleanup_at) > 24 * 60 * 60 * 1000
+    };
+    if should_cleanup {
+        let (db_path, _) = state_paths()?;
+        prune_old_messages(&open_database(&db_path)?)?;
+        if let Ok(mut state) = P2P_GLOBAL.lock() {
+            state.last_cleanup_at = now_millis();
+        }
+    }
+    snapshot()
+}
+
+#[tauri::command]
+pub async fn update_lan_profile(
+    app_handle: tauri::AppHandle,
+    request: UpdateLanProfileRequest,
+) -> Result<LanProfile, String> {
+    let display_name = validate_profile_text(&request.display_name, "显示名称", 32)?;
+    if display_name.is_empty() {
+        return Err("显示名称不能为空".to_string());
+    }
+    let department = validate_profile_text(&request.department, "部门", 40)?;
+    let (db_path, _) = state_paths()?;
+    let mut profile = P2P_GLOBAL
+        .lock()
+        .map_err(|error| error.to_string())?
+        .profile
+        .clone()
+        .ok_or_else(|| "局域网身份尚未初始化".to_string())?;
+    profile.display_name = display_name;
+    profile.department = department;
+    profile.profile_revision = profile.profile_revision.saturating_add(1);
+    open_database(&db_path)?
+        .execute(
+            "UPDATE lan_profile SET display_name=?1,department=?2,profile_revision=?3,updated_at=?4 WHERE singleton=1",
+            params![profile.display_name, profile.department, profile.profile_revision as i64, now_millis() as i64],
+        )
+        .map_err(|error| error.to_string())?;
+    {
+        let mut state = P2P_GLOBAL.lock().map_err(|error| error.to_string())?;
+        state.profile = Some(profile.clone());
+        state.announce_generation = state.announce_generation.wrapping_add(1);
+    }
+    let _ = app_handle.emit("pm-center:lan-profile-changed", &profile);
+    Ok(profile)
+}
+
+fn create_avatar(source_path: &Path) -> Result<(Vec<u8>, String), String> {
+    let metadata = fs::metadata(source_path).map_err(|error| format!("读取头像失败：{error}"))?;
+    if metadata.len() > MAX_AVATAR_SOURCE_BYTES {
+        return Err("头像原图不能超过 10 MB".to_string());
+    }
+    let image = image::open(source_path).map_err(|error| format!("无法解码头像图片：{error}"))?;
+    let (width, height) = image.dimensions();
+    let side = width.min(height);
+    let cropped = image.crop_imm((width - side) / 2, (height - side) / 2, side, side);
+    let resized = cropped
+        .resize_exact(128, 128, FilterType::Lanczos3)
+        .to_rgb8();
+    let mut bytes = Vec::new();
+    JpegEncoder::new_with_quality(Cursor::new(&mut bytes), 84)
+        .encode_image(&resized)
+        .map_err(|error| format!("压缩头像失败：{error}"))?;
+    if bytes.len() > MAX_AVATAR_BYTES {
+        return Err("压缩后的头像超过 64 KB".to_string());
+    }
+    let hash = blake3::hash(&bytes).to_hex().to_string();
+    Ok((bytes, hash))
+}
+
+#[tauri::command]
+pub async fn set_lan_avatar(
+    app_handle: tauri::AppHandle,
+    image_path: Option<String>,
+) -> Result<LanProfile, String> {
+    let (db_path, avatars_dir) = state_paths()?;
+    let mut profile = P2P_GLOBAL
+        .lock()
+        .map_err(|error| error.to_string())?
+        .profile
+        .clone()
+        .ok_or_else(|| "局域网身份尚未初始化".to_string())?;
+    if let Some(image_path) = image_path.filter(|value| !value.trim().is_empty()) {
+        let previous_path = profile.avatar_path.clone();
+        let (bytes, hash) = create_avatar(Path::new(&image_path))?;
+        fs::create_dir_all(&avatars_dir).map_err(|error| error.to_string())?;
+        let target = avatars_dir.join(format!("self-{hash}.jpg"));
+        fs::write(&target, bytes).map_err(|error| format!("保存头像失败：{error}"))?;
+        profile.avatar_hash = Some(hash);
+        profile.avatar_path = Some(target.to_string_lossy().to_string());
+        if previous_path.as_deref() != profile.avatar_path.as_deref() {
+            if let Some(previous_path) = previous_path {
+                let _ = fs::remove_file(previous_path);
+            }
+        }
+    } else {
+        if let Some(path) = profile.avatar_path.as_deref() {
+            let _ = fs::remove_file(path);
+        }
+        profile.avatar_hash = None;
+        profile.avatar_path = None;
+    }
+    profile.profile_revision = profile.profile_revision.saturating_add(1);
+    open_database(&db_path)?
+        .execute(
+            "UPDATE lan_profile SET avatar_hash=?1,avatar_path=?2,profile_revision=?3,updated_at=?4 WHERE singleton=1",
+            params![profile.avatar_hash, profile.avatar_path, profile.profile_revision as i64, now_millis() as i64],
+        )
+        .map_err(|error| error.to_string())?;
+    {
+        let mut state = P2P_GLOBAL.lock().map_err(|error| error.to_string())?;
+        state.profile = Some(profile.clone());
+        state.announce_generation = state.announce_generation.wrapping_add(1);
+    }
+    let _ = app_handle.emit("pm-center:lan-profile-changed", &profile);
+    Ok(profile)
+}
+
+#[tauri::command]
+pub async fn start_lan_discovery(app_handle: tauri::AppHandle) -> Result<(), String> {
+    let (start_udp, start_tcp, db_path) = {
+        let state = P2P_GLOBAL.lock().map_err(|error| error.to_string())?;
+        let db_path = state
+            .db_path
+            .clone()
+            .ok_or_else(|| "局域网协同尚未初始化".to_string())?;
+        (
+            !state.discovery_worker_started,
+            !state.tcp_server_started,
+            db_path,
+        )
+    };
+    let udp_socket = if start_udp {
         let socket = UdpSocket::bind(format!("0.0.0.0:{DISCOVERY_PORT}"))
-            .map_err(|error| format!("无法绑定局域网发现端口 {DISCOVERY_PORT}: {error}"))?;
+            .await
+            .map_err(|error| format!("无法绑定局域网发现端口 {DISCOVERY_PORT}：{error}"))?;
         socket
             .set_broadcast(true)
-            .map_err(|error| format!("无法启用局域网广播: {error}"))?;
-        socket
-            .set_nonblocking(true)
-            .map_err(|error| format!("无法设置局域网发现 socket: {error}"))?;
+            .map_err(|error| format!("无法启用局域网广播：{error}"))?;
         Some(socket)
     } else {
         None
     };
-    let tcp_listener = if start_tcp_server {
+    let tcp_listener = if start_tcp {
         Some(
             TcpListener::bind(format!("0.0.0.0:{MESSAGE_PORT}"))
                 .await
-                .map_err(|error| format!("无法绑定局域网消息端口 {MESSAGE_PORT}: {error}"))?,
+                .map_err(|error| format!("无法绑定局域网消息端口 {MESSAGE_PORT}：{error}"))?,
         )
     } else {
         None
     };
-
     {
-        let mut state = P2P_GLOBAL.lock().map_err(|e| e.to_string())?;
+        let mut state = P2P_GLOBAL.lock().map_err(|error| error.to_string())?;
         state.is_running = true;
-        state.discovery_worker_started |= discovery_socket.is_some();
-        state.tcp_server_started |= tcp_listener.is_some();
+        state.service.is_running = true;
+        state.service.last_error = None;
+        state.announce_generation = state.announce_generation.wrapping_add(1);
+        if udp_socket.is_some() {
+            state.discovery_worker_started = true;
+            state.service.udp_bound = true;
+        }
+        if tcp_listener.is_some() {
+            state.tcp_server_started = true;
+            state.service.tcp_bound = true;
+        }
     }
-    println!("[P2P] 发现服务已启动");
-
-    if let Some(socket) = discovery_socket {
-        let state_clone = P2P_GLOBAL.clone();
-        let app_handle_clone = app_handle.clone();
-        tokio::spawn(async move {
-            run_discovery_loop(state_clone, app_handle_clone, socket).await;
-        });
+    if let Some(socket) = udp_socket {
+        tokio::spawn(run_discovery_loop(
+            socket,
+            app_handle.clone(),
+            db_path.clone(),
+        ));
     }
     if let Some(listener) = tcp_listener {
-        let state_clone = P2P_GLOBAL.clone();
-        tokio::spawn(async move {
-            run_tcp_server(state_clone, app_handle, listener).await;
-        });
+        tokio::spawn(run_tcp_server(listener, app_handle.clone(), db_path));
     }
-
+    emit_service_status(&app_handle);
     Ok(())
 }
 
-/// 停止发现服务
 #[tauri::command]
-pub async fn stop_p2p_discovery() -> Result<(), String> {
-    let mut state = P2P_GLOBAL.lock().map_err(|e| e.to_string())?;
-    state.is_running = false;
-    state.online_users.clear();
-    println!("[P2P] 发现服务已停止");
+pub async fn stop_lan_discovery(app_handle: tauri::AppHandle) -> Result<(), String> {
+    {
+        let mut state = P2P_GLOBAL.lock().map_err(|error| error.to_string())?;
+        state.is_running = false;
+        state.online_users.clear();
+        state.service.is_running = false;
+        state.service.online_count = 0;
+    }
+    emit_contacts_changed(&app_handle);
+    emit_service_status(&app_handle);
     Ok(())
 }
 
-/// 发送消息
-#[tauri::command]
-pub async fn send_p2p_message(message: P2PMessage) -> Result<P2PDeliveryResult, String> {
-    if message.content.trim().is_empty() {
-        return Err("消息不能为空".to_string());
-    }
-    if message.content.len() > MAX_MESSAGE_BYTES {
-        return Err("消息过长，单条消息不能超过 16 KB".to_string());
-    }
-    // 复制需要的数据，避免长时间持有锁
+async fn deliver_message(message: &P2PMessage) -> Result<P2PDeliveryResult, String> {
     let targets: Vec<(String, String, String)> = {
-        let state = P2P_GLOBAL.lock().map_err(|e| e.to_string())?;
-
-        if let Some(ref to_id) = message.to_id {
-            // 私聊
-            if let Some(user) = state.online_users.get(to_id) {
-                vec![(to_id.clone(), user.name.clone(), user.ip.clone())]
-            } else {
-                return Err("用户不在线".to_string());
-            }
-        } else {
-            // 广播 - 发送给所有在线用户
+        let state = P2P_GLOBAL.lock().map_err(|error| error.to_string())?;
+        if let Some(to_id) = &message.to_id {
             state
                 .online_users
-                .iter()
-                .filter(|(id, _)| **id != message.from_id)
-                .map(|(id, user)| (id.clone(), user.name.clone(), user.ip.clone()))
+                .get(to_id)
+                .map(|peer| vec![(peer.id.clone(), peer.display_name.clone(), peer.ip.clone())])
+                .ok_or_else(|| "联系人当前离线，无法发送私聊".to_string())?
+        } else {
+            state
+                .online_users
+                .values()
+                .filter(|peer| peer.id != message.from_id)
+                .map(|peer| (peer.id.clone(), peer.display_name.clone(), peer.ip.clone()))
                 .collect()
         }
     };
-
+    if targets.is_empty() {
+        return Err("当前没有可接收消息的在线联系人".to_string());
+    }
     let target_count = targets.len();
-    let mut delivered_count = 0;
+    let mut delivered_count = 0usize;
     let mut failures = Vec::new();
     for (user_id, user_name, ip) in targets {
-        match send_tcp_message(&ip, &message).await {
+        match send_tcp_message(&ip, message).await {
             Ok(()) => delivered_count += 1,
             Err(error) => failures.push(P2PDeliveryFailure {
                 user_id,
@@ -239,7 +1726,6 @@ pub async fn send_p2p_message(message: P2PMessage) -> Result<P2PDeliveryResult, 
             }),
         }
     }
-
     Ok(P2PDeliveryResult {
         target_count,
         delivered_count,
@@ -247,251 +1733,292 @@ pub async fn send_p2p_message(message: P2PMessage) -> Result<P2PDeliveryResult, 
     })
 }
 
-// 发现循环
-async fn run_discovery_loop(state: P2PState, app_handle: tauri::AppHandle, socket: UdpSocket) {
-    println!("[P2P] UDP 发现端口绑定成功: {DISCOVERY_PORT}");
-    let socket = Arc::new(socket);
-    let mut last_broadcast = std::time::Instant::now() - BROADCAST_INTERVAL;
-
-    loop {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        // 检查运行状态并获取用户数据
-        let (user_id, user_name, is_running, users_changed) = {
-            let mut locked = state.lock().unwrap();
-
-            if !locked.is_running {
-                continue;
-            }
-
-            // 清理超时的用户
-            let now = now_millis();
-            let before_count = locked.online_users.len();
-            locked
-                .online_users
-                .retain(|_, user| now - user.last_seen < USER_TIMEOUT.as_millis() as u64);
-            let after_count = locked.online_users.len();
-
-            // 发送用户列表更新
-            let users: Vec<P2PUser> = locked.online_users.values().cloned().collect();
-            drop(locked);
-
-            let _ = app_handle.emit("p2p-users", serde_json::json!({ "users": users }));
-
-            let locked = state.lock().unwrap();
-            (
-                locked.user_id.clone(),
-                locked.user_name.clone(),
-                locked.is_running,
-                before_count != after_count,
-            )
-        };
-
-        if !is_running {
-            continue;
-        }
-
-        if users_changed {
-            println!("[P2P] 在线用户列表已更新");
-        }
-
-        // 定期广播自己的存在
-        if last_broadcast.elapsed() >= BROADCAST_INTERVAL {
-            let packet = DiscoveryPacket::Announce { user_id, user_name };
-
-            let data = serde_json::to_vec(&packet).unwrap_or_default();
-            let addr = format!("{}:{}", BROADCAST_ADDR, DISCOVERY_PORT);
-
-            if let Err(e) = socket.send_to(&data, &addr) {
-                println!("[P2P] 广播失败: {}", e);
-            }
-
-            last_broadcast = std::time::Instant::now();
-        }
-
-        // 接收广播
-        receive_discovery_broadcast(&state, &socket);
-    }
-}
-
-// 接收发现广播
-fn receive_discovery_broadcast(state: &P2PState, socket: &UdpSocket) {
-    let mut buf = [0u8; 1024];
-
-    while let Ok((len, addr)) = socket.recv_from(&mut buf) {
-        if let Ok(packet) = serde_json::from_slice::<DiscoveryPacket>(&buf[..len]) {
-            let (user_id, user_name, needs_response) = match packet {
-                DiscoveryPacket::Announce { user_id, user_name } => (user_id, user_name, true),
-                DiscoveryPacket::Response { user_id, user_name } => (user_id, user_name, false),
-            };
-            let response = {
-                let mut locked = state.lock().unwrap();
-                if !locked.is_running || user_id == locked.user_id {
-                    continue;
-                }
-
-                let previous_user = locked.online_users.get(&user_id).cloned();
-                let user = P2PUser {
-                    id: user_id.clone(),
-                    name: user_name,
-                    ip: addr.ip().to_string(),
-                    last_seen: now_millis(),
-                };
-                let is_new_user = previous_user.is_none();
-                let user_changed = previous_user
-                    .map(|existing| existing.name != user.name || existing.ip != user.ip)
-                    .unwrap_or(false);
-                if is_new_user || user_changed {
-                    println!("[P2P] 发现用户: {} ({}) @ {}", user.name, user.id, user.ip);
-                }
-                locked.online_users.insert(user_id, user);
-
-                needs_response.then(|| DiscoveryPacket::Response {
-                    user_id: locked.user_id.clone(),
-                    user_name: locked.user_name.clone(),
-                })
-            };
-            if let Some(response) = response {
-                if let Ok(data) = serde_json::to_vec(&response) {
-                    let response_addr = format!("{}:{DISCOVERY_PORT}", addr.ip());
-                    if let Err(error) = socket.send_to(&data, &response_addr) {
-                        println!("[P2P] 发送发现回执失败: {error}");
-                    }
-                }
-            }
-        }
-    }
-}
-
-// TCP 消息服务器
-async fn run_tcp_server(state: P2PState, app_handle: tauri::AppHandle, listener: TcpListener) {
-    println!("[P2P] TCP 服务器已启动，端口: {MESSAGE_PORT}");
-    loop {
-        match tokio::time::timeout(Duration::from_secs(1), listener.accept()).await {
-            Ok(Ok((stream, addr))) => {
-                println!("[P2P] 新连接: {}", addr);
-                let state_clone = state.clone();
-                let app_handle_clone = app_handle.clone();
-
-                tokio::spawn(async move {
-                    handle_tcp_connection(stream, state_clone, app_handle_clone).await;
-                });
-            }
-            Ok(Err(e)) => {
-                println!("[P2P] 接受连接失败: {}", e);
-            }
-            Err(_) => {
-                // 超时，继续循环检查 is_running
-            }
-        }
-    }
-}
-
-// 处理 TCP 连接
-async fn handle_tcp_connection(
-    stream: tokio::net::TcpStream,
-    state: P2PState,
+async fn send_and_store_message(
     app_handle: tauri::AppHandle,
-) {
-    let (reader, mut writer) = stream.into_split();
-    let mut reader = BufReader::new(reader);
-    let mut line = String::new();
+    message: P2PMessage,
+) -> Result<P2PDeliveryResult, String> {
+    if message.content.trim().is_empty() {
+        return Err("消息不能为空".to_string());
+    }
+    if message.content.as_bytes().len() > MAX_MESSAGE_BYTES {
+        return Err("消息过长，单条消息不能超过 16 KB".to_string());
+    }
+    let result = deliver_message(&message).await?;
+    let status = if result.delivered_count == result.target_count {
+        "delivered"
+    } else if result.delivered_count > 0 {
+        "partial"
+    } else {
+        "failed"
+    };
+    let summary = if result.failures.is_empty() {
+        None
+    } else {
+        Some(
+            result
+                .failures
+                .iter()
+                .map(|failure| format!("{}：{}", failure.user_name, failure.error))
+                .collect::<Vec<_>>()
+                .join("；"),
+        )
+    };
+    let local_profile = P2P_GLOBAL
+        .lock()
+        .map_err(|error| error.to_string())?
+        .profile
+        .clone()
+        .ok_or_else(|| "局域网身份尚未初始化".to_string())?;
+    let (db_path, _) = state_paths()?;
+    let conn = open_database(&db_path)?;
+    if insert_message(
+        &conn,
+        &message,
+        &local_profile.id,
+        "outgoing",
+        status,
+        summary.as_deref(),
+    )? {
+        let lan_message =
+            wire_to_lan_message(&message, &local_profile.id, "outgoing", status, summary);
+        let _ = app_handle.emit("pm-center:lan-message", &lan_message);
+    }
+    Ok(result)
+}
 
-    loop {
-        line.clear();
-        match reader.read_line(&mut line).await {
-            Ok(0) => {
-                // 连接关闭
-                break;
-            }
-            Ok(_) => {
-                if line.len() > MAX_MESSAGE_BYTES * 2 {
-                    println!("[P2P] 拒绝过长消息");
-                    break;
-                }
-                if let Ok(message) = serde_json::from_str::<P2PMessage>(&line.trim()) {
-                    if message.content.trim().is_empty()
-                        || message.content.len() > MAX_MESSAGE_BYTES
-                    {
-                        println!("[P2P] 拒绝无效消息");
-                        continue;
-                    }
-                    let should_deliver = {
-                        let state = state.lock().unwrap();
-                        state.is_running
-                            && message
-                                .to_id
-                                .as_deref()
-                                .is_none_or(|to_id| to_id == state.user_id)
-                    };
-                    if !should_deliver {
-                        continue;
-                    }
-                    println!(
-                        "[P2P] 收到消息 from {}: {}",
-                        message.from_name, message.content
-                    );
-                    let message_id = message.id.clone();
-                    let _ = app_handle.emit("p2p-message", message);
-                    let ack = P2PDeliveryAck {
-                        kind: "ack".to_string(),
-                        message_id,
-                    };
-                    match serde_json::to_string(&ack) {
-                        Ok(ack) => {
-                            if let Err(error) =
-                                writer.write_all(format!("{ack}\n").as_bytes()).await
-                            {
-                                println!("[P2P] 发送消息回执失败: {error}");
-                            }
-                        }
-                        Err(error) => println!("[P2P] 序列化消息回执失败: {error}"),
-                    }
-                }
-            }
-            Err(e) => {
-                println!("[P2P] 读取消息失败: {}", e);
-                break;
-            }
-        }
+#[tauri::command]
+pub async fn send_lan_message(
+    app_handle: tauri::AppHandle,
+    request: SendLanMessageRequest,
+) -> Result<LanDeliveryResult, String> {
+    let profile = P2P_GLOBAL
+        .lock()
+        .map_err(|error| error.to_string())?
+        .profile
+        .clone()
+        .ok_or_else(|| "局域网身份尚未初始化".to_string())?;
+    let message = P2PMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        from_id: profile.id,
+        from_name: profile.display_name,
+        to_id: request.to_id,
+        content: request.content.trim().to_string(),
+        timestamp: now_millis(),
+        protocol_version: Some(PROTOCOL_VERSION),
+    };
+    send_and_store_message(app_handle, message).await
+}
+
+#[tauri::command]
+pub async fn mark_lan_conversation_read(
+    app_handle: tauri::AppHandle,
+    conversation_id: String,
+) -> Result<(), String> {
+    let (db_path, _) = state_paths()?;
+    open_database(&db_path)?
+        .execute(
+            "INSERT INTO lan_conversation_reads(conversation_id,last_read_at) VALUES(?1,?2)
+             ON CONFLICT(conversation_id) DO UPDATE SET last_read_at=excluded.last_read_at",
+            params![conversation_id, now_millis() as i64],
+        )
+        .map_err(|error| error.to_string())?;
+    let _ = app_handle.emit(
+        "pm-center:lan-read-state-changed",
+        serde_json::json!({ "conversationId": conversation_id }),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn clear_lan_conversation(
+    app_handle: tauri::AppHandle,
+    conversation_id: String,
+) -> Result<(), String> {
+    let (db_path, _) = state_paths()?;
+    let mut conn = open_database(&db_path)?;
+    let transaction = conn.transaction().map_err(|error| error.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM lan_messages WHERE conversation_id=?1",
+            params![conversation_id],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM lan_conversation_reads WHERE conversation_id=?1",
+            params![conversation_id],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    let _ = app_handle.emit("pm-center:lan-read-state-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn clear_lan_history(app_handle: tauri::AppHandle) -> Result<(), String> {
+    let (db_path, _) = state_paths()?;
+    open_database(&db_path)?
+        .execute_batch("DELETE FROM lan_messages; DELETE FROM lan_conversation_reads;")
+        .map_err(|error| error.to_string())?;
+    let _ = app_handle.emit("pm-center:lan-read-state-changed", ());
+    Ok(())
+}
+
+fn cleanup_orphan_avatar(conn: &Connection, path: Option<String>) {
+    let Some(path) = path else {
+        return;
+    };
+    let references: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM lan_contacts WHERE avatar_path=?1",
+            params![path],
+            |row| row.get(0),
+        )
+        .unwrap_or(1);
+    if references == 0 {
+        let _ = fs::remove_file(path);
     }
 }
 
-// 发送 TCP 消息
-async fn send_tcp_message(ip: &str, message: &P2PMessage) -> Result<(), String> {
-    let addr = format!("{}:{}", ip, MESSAGE_PORT);
+#[tauri::command]
+pub async fn remove_lan_contact(
+    app_handle: tauri::AppHandle,
+    contact_id: String,
+) -> Result<(), String> {
+    let is_online = P2P_GLOBAL
+        .lock()
+        .map_err(|error| error.to_string())?
+        .online_users
+        .contains_key(&contact_id);
+    if is_online {
+        return Err("在线联系人不能删除；停止发现或等待对方离线后再试".to_string());
+    }
+    let (db_path, _) = state_paths()?;
+    let conn = open_database(&db_path)?;
+    let avatar_path: Option<String> = conn
+        .query_row(
+            "SELECT avatar_path FROM lan_contacts WHERE id=?1",
+            params![contact_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .flatten();
+    conn.execute("DELETE FROM lan_contacts WHERE id=?1", params![contact_id])
+        .map_err(|error| error.to_string())?;
+    cleanup_orphan_avatar(&conn, avatar_path);
+    emit_contacts_changed(&app_handle);
+    Ok(())
+}
 
-    let stream = tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(&addr))
-        .await
-        .map_err(|_| format!("连接 {} 超时", addr))?
-        .map_err(|error| format!("连接 {} 失败: {}", addr, error))?;
+// Legacy Tauri command wrappers retained for the existing UI and older callers.
+#[tauri::command]
+pub async fn init_p2p(
+    app_handle: tauri::AppHandle,
+    user_id: String,
+    user_name: String,
+) -> Result<(), String> {
+    initialize_lan_collaboration(
+        app_handle,
+        Some(LegacyLanProfile {
+            user_id: Some(user_id),
+            user_name: Some(user_name),
+        }),
+    )
+    .await
+    .map(|_| ())
+}
 
-    let (reader, mut writer) = stream.into_split();
+#[tauri::command]
+pub async fn update_p2p_user(
+    app_handle: tauri::AppHandle,
+    user_id: String,
+    user_name: String,
+) -> Result<(), String> {
+    let _ = user_id;
+    let department = P2P_GLOBAL
+        .lock()
+        .map_err(|error| error.to_string())?
+        .profile
+        .as_ref()
+        .map(|profile| profile.department.clone())
+        .unwrap_or_default();
+    update_lan_profile(
+        app_handle,
+        UpdateLanProfileRequest {
+            display_name: user_name,
+            department,
+        },
+    )
+    .await
+    .map(|_| ())
+}
 
-    let data = serde_json::to_string(message).map_err(|e| e.to_string())?;
-    let data = format!("{}\n", data);
+#[tauri::command]
+pub async fn start_p2p_discovery(app_handle: tauri::AppHandle) -> Result<(), String> {
+    start_lan_discovery(app_handle).await
+}
 
-    tokio::time::timeout(DELIVERY_ACK_TIMEOUT, writer.write_all(data.as_bytes()))
-        .await
-        .map_err(|_| format!("向 {} 发送超时", addr))?
-        .map_err(|error| format!("向 {} 发送失败: {}", addr, error))?;
+#[tauri::command]
+pub async fn stop_p2p_discovery(app_handle: tauri::AppHandle) -> Result<(), String> {
+    stop_lan_discovery(app_handle).await
+}
 
-    let mut reader = BufReader::new(reader);
-    let mut response = String::new();
-    tokio::time::timeout(DELIVERY_ACK_TIMEOUT, reader.read_line(&mut response))
-        .await
-        .map_err(|_| {
-            format!(
-                "对方未确认消息。请确认对方已更新 PMC，并在 Windows 防火墙中允许 TCP {}",
-                MESSAGE_PORT
-            )
-        })?
-        .map_err(|error| format!("读取 {} 的送达确认失败: {}", addr, error))?;
-    let ack = serde_json::from_str::<P2PDeliveryAck>(response.trim())
-        .map_err(|_| format!("{} 返回了无效的送达确认", addr))?;
-    if ack.kind != "ack" || ack.message_id != message.id {
-        return Err(format!("{} 未确认当前消息", addr));
+#[tauri::command]
+pub async fn send_p2p_message(
+    app_handle: tauri::AppHandle,
+    message: P2PMessage,
+) -> Result<P2PDeliveryResult, String> {
+    send_and_store_message(app_handle, message).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_db(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("pm-center-lan-{name}-{}.db", uuid::Uuid::new_v4()))
     }
 
-    Ok(())
+    #[test]
+    fn random_name_is_stable_and_not_anonymous() {
+        let first = random_display_name("fixed-id");
+        assert_eq!(first, random_display_name("fixed-id"));
+        assert_ne!(first, "匿名用户");
+    }
+
+    #[test]
+    fn legacy_discovery_packet_is_accepted() {
+        let packet: DiscoveryPacket =
+            serde_json::from_str(r#"{"Announce":{"user_id":"peer","user_name":"旧设备"}}"#)
+                .unwrap();
+        let (fields, needs_response) = packet.fields();
+        assert!(needs_response);
+        assert_eq!(fields.protocol_version, None);
+        assert_eq!(fields.user_name, "旧设备");
+    }
+
+    #[test]
+    fn messages_are_deduplicated_and_pruned() {
+        let path = temp_db("messages");
+        let conn = open_database(&path).unwrap();
+        let message = P2PMessage {
+            id: "message-1".to_string(),
+            from_id: "peer".to_string(),
+            from_name: "Peer".to_string(),
+            to_id: None,
+            content: "hello".to_string(),
+            timestamp: now_millis().saturating_sub(MESSAGE_RETENTION_MS + 1),
+            protocol_version: None,
+        };
+        assert!(insert_message(&conn, &message, "self", "incoming", "delivered", None).unwrap());
+        assert!(!insert_message(&conn, &message, "self", "incoming", "delivered", None).unwrap());
+        prune_old_messages(&conn).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM lan_messages", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+        drop(conn);
+        let _ = fs::remove_file(path);
+    }
 }

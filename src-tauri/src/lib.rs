@@ -33,7 +33,12 @@ use file_details::{
     get_blender_external_data, get_blender_preview_png, get_file_details,
     update_blender_scene_render,
 };
-use p2p::{init_p2p, send_p2p_message, start_p2p_discovery, stop_p2p_discovery, update_p2p_user};
+use p2p::{
+    clear_lan_conversation, clear_lan_history, get_lan_collaboration_snapshot, init_p2p,
+    initialize_lan_collaboration, mark_lan_conversation_read, remove_lan_contact, send_lan_message,
+    send_p2p_message, set_lan_avatar, start_lan_discovery, start_p2p_discovery, stop_lan_discovery,
+    stop_p2p_discovery, update_lan_profile, update_p2p_user,
+};
 use plugin::{
     get_plugin_dirs, inspect_plugin_dependencies, install_plugin_dependencies, list_plugins,
     refresh_plugins, remove_plugin_dependencies, reset_plugin_settings, run_plugin_action,
@@ -1515,6 +1520,17 @@ pub fn run() {
             start_p2p_discovery,
             stop_p2p_discovery,
             send_p2p_message,
+            initialize_lan_collaboration,
+            get_lan_collaboration_snapshot,
+            update_lan_profile,
+            set_lan_avatar,
+            start_lan_discovery,
+            stop_lan_discovery,
+            send_lan_message,
+            mark_lan_conversation_read,
+            clear_lan_conversation,
+            clear_lan_history,
+            remove_lan_contact,
             list_plugins,
             refresh_plugins,
             set_plugin_enabled,

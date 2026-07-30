@@ -6,6 +6,7 @@ import {
   FileSearch,
   ListTodo,
   MessageCircle,
+  Network,
   NotebookTabs,
   Settings,
   Terminal,
@@ -15,6 +16,7 @@ export type BuiltinToolId =
   | 'render-center'
   | 'cache-manager'
   | 'p2p-chat'
+  | 'p2p-project'
   | 'python-environments'
   | 'task-center'
   | 'settings'
@@ -71,13 +73,23 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
   },
   {
     id: 'p2p-chat',
-    title: '局域网消息',
-    description: '发现局域网设备并发送项目协作消息。',
+    title: '局域网主面板',
+    description: '打开全局联系人、大厅和私聊主面板。',
     category: 'communication',
     icon: MessageCircle,
     requiresProject: false,
     pinnable: true,
     keywords: ['p2p', 'lan', '聊天', '设备', '协作'],
+  },
+  {
+    id: 'p2p-project',
+    title: '局域网项目功能',
+    description: '打开当前项目中的局域网功能预留标签。',
+    category: 'communication',
+    icon: Network,
+    requiresProject: true,
+    pinnable: true,
+    keywords: ['p2p', 'lan', '项目', '协同', '内置标签'],
   },
   {
     id: 'python-environments',

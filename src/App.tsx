@@ -8,6 +8,7 @@ import { StandaloneVideoPlayerPage, isStandaloneVideoPlayerRoute } from './compo
 import { FileOperationPanel } from './components/file-manager/FileOperationPanel';
 import { initTaskEventListeners, loadTaskState } from './stores/taskStore';
 import { initRenderEventListeners } from './stores/renderStore';
+import { useLanCollaborationStore } from './stores/lanCollaborationStore';
 
 function App() {
   const isDirectoryWindow = isStandaloneDirectoryRoute();
@@ -24,6 +25,9 @@ function App() {
     void loadTaskState();
     initTaskEventListeners();
     void initRenderEventListeners();
+    void useLanCollaborationStore.getState().initialize().catch((error) => {
+      console.error('Failed to initialize LAN collaboration:', error);
+    });
     document.documentElement.classList.remove('dark');
     document.body.classList.remove('dark');
     document.documentElement.style.colorScheme = 'light';

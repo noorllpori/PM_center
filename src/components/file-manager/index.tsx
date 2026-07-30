@@ -3,7 +3,6 @@ import { X } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { WelcomeScreen } from '../WelcomeScreen';
-import { P2PChat } from '../P2PChat';
 import { PythonEnvManager } from '../PythonEnvManager';
 import { SettingsPanel } from '../SettingsPanel';
 import { TaskPanel } from '../TaskPanel';
@@ -13,6 +12,7 @@ import { LauncherButton } from '../Launcher';
 import { BlenderFileParserDialog } from '../tools/BlenderFileParserDialog';
 import { openStandaloneTextEditor } from '../text-editor/openStandaloneTextEditor';
 import { openStandaloneVideoPlayer } from '../video-player/openStandaloneVideoPlayer';
+import { LanCollaborationSurface } from '../lan/LanCollaborationSurface';
 import { Toolbar, TOOLBAR_SEARCH_FOCUS_EVENT } from './Toolbar';
 import { OPEN_MDT_OVERVIEW_EVENT, ProjectWorkspace } from './ProjectWorkspace';
 import { ProjectSessionProvider } from './ProjectSessionProvider';
@@ -96,7 +96,7 @@ function getFileNameFromPath(path: string) {
 }
 
 function getPersistedWorkspaceTabKey(tab: PersistedWorkspaceTab | PersistedWorkspaceActiveTab) {
-  return tab.type === 'files' || tab.type === 'cache' || tab.type === 'render'
+  return tab.type === 'files' || tab.type === 'cache' || tab.type === 'render' || tab.type === 'p2p'
     ? tab.type
     : `${tab.type}:${tab.filePath || ''}`;
 }
@@ -110,7 +110,7 @@ function serializeWorkspaceSession(
       return [];
     }
 
-    if (tab.type === 'cache' || tab.type === 'render') {
+    if (tab.type === 'cache' || tab.type === 'render' || tab.type === 'p2p') {
       return [{ type: tab.type, title: tab.title }];
     }
 
@@ -127,7 +127,7 @@ function serializeWorkspaceSession(
 
   const activeTab = state.tabs.find((tab) => tab.id === state.activeTabId) ?? state.tabs[0];
   const activePersistedTab: PersistedWorkspaceActiveTab =
-    activeTab?.type === 'cache' || activeTab?.type === 'render'
+    activeTab?.type === 'cache' || activeTab?.type === 'render' || activeTab?.type === 'p2p'
       ? { type: activeTab.type }
       : activeTab?.type && activeTab.type !== 'files' && activeTab.filePath
         ? { type: activeTab.type, filePath: activeTab.filePath }
@@ -156,6 +156,12 @@ async function restoreWorkspaceSession(
 
     if (tab.type === 'render') {
       const tabId = workspaceTabStore.getState().openRenderCenterTab();
+      restoredTabIds.set(getPersistedWorkspaceTabKey(tab), tabId);
+      continue;
+    }
+
+    if (tab.type === 'p2p') {
+      const tabId = workspaceTabStore.getState().openP2PTab();
       restoredTabIds.set(getPersistedWorkspaceTabKey(tab), tabId);
       continue;
     }
@@ -253,7 +259,6 @@ export function FileManager() {
     [activeTabId, tabs],
   );
 
-  const [isP2PChatOpen, setIsP2PChatOpen] = useState(false);
   const [isPythonEnvOpen, setIsPythonEnvOpen] = useState(false);
   const [isTaskCenterOpen, setIsTaskCenterOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -329,6 +334,7 @@ export function FileManager() {
         projectPath: tab.projectPath!,
         title: tab.title,
       }));
+    const utilityTabs = shellState.tabs.flatMap<'lan'>((tab) => tab.type === 'lan' ? ['lan'] : []);
 
     const projects = projectTabs.flatMap<PersistedProjectSession>((tab) => {
       const session = sessionsRef.current.get(normalizeProjectPath(tab.projectPath));
@@ -357,9 +363,12 @@ export function FileManager() {
     const persistedSession: PersistedAppSession = {
       ...createDefaultPersistedAppSession(),
       projectTabs,
+      utilityTabs,
       activeTab:
         activeTab?.type === 'project' && activeTab.projectPath
           ? { type: 'project', projectPath: activeTab.projectPath }
+          : activeTab?.type === 'lan'
+            ? { type: 'lan' }
           : { type: 'home' },
       projects,
       standaloneWindows: dedupeStandaloneWindows(getTrackedStandaloneWindows()),
@@ -601,6 +610,11 @@ export function FileManager() {
       sessionSnapshot.projects.map((project) => [normalizeProjectPath(project.projectPath), project] as const),
     );
 
+    if (sessionSnapshot.utilityTabs.includes('lan')) {
+      useShellTabStore.getState().openLanTab();
+      restoredAnything = true;
+    }
+
     for (const projectTab of sessionSnapshot.projectTabs) {
       try {
         const report = await inspectProjectLocation(projectTab.projectPath);
@@ -668,6 +682,8 @@ export function FileManager() {
       if (activeProjectTab) {
         useShellTabStore.getState().activateTab(activeProjectTab.id);
       }
+    } else if (sessionSnapshot.activeTab.type === 'lan') {
+      useShellTabStore.getState().openLanTab();
     } else {
       const homeTab = useShellTabStore.getState().tabs.find((tab) => tab.type === 'home');
       if (homeTab) {
@@ -1027,8 +1043,13 @@ export function FileManager() {
         break;
       }
       case 'p2p-chat':
-        setIsP2PChatOpen(true);
+        shellState.openLanTab();
         break;
+      case 'p2p-project': {
+        const session = requireProjectSession();
+        session?.workspaceTabStore.getState().openP2PTab();
+        break;
+      }
       case 'python-environments':
         setIsPythonEnvOpen(true);
         break;
@@ -1104,7 +1125,9 @@ export function FileManager() {
       />
 
       <div className="flex-1 min-h-0 overflow-hidden">
-        {activeProjectSession ? (
+        {activeShellTab?.type === 'lan' ? (
+          <LanCollaborationSurface />
+        ) : activeProjectSession ? (
           <ProjectSessionProvider
             projectStore={activeProjectSession.projectStore}
             workspaceTabStore={activeProjectSession.workspaceTabStore}
@@ -1118,11 +1141,6 @@ export function FileManager() {
           />
         )}
       </div>
-
-      <P2PChat
-        isOpen={isP2PChatOpen}
-        onClose={() => setIsP2PChatOpen(false)}
-      />
 
       <PythonEnvManager
         isOpen={isPythonEnvOpen}

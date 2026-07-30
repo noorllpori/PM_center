@@ -3,7 +3,7 @@ import type { WorkspaceTabType } from '../stores/workspaceTabStore';
 
 const STORE_FILE = 'app-session.json';
 const SESSION_KEY = 'appSession';
-const SESSION_VERSION = 1;
+const SESSION_VERSION = 2;
 
 export type PersistedWorkspaceTabType = Exclude<WorkspaceTabType, 'files'>;
 
@@ -29,6 +29,7 @@ export interface PersistedProjectSession {
 
 export type PersistedShellActiveTab =
   | { type: 'home' }
+  | { type: 'lan' }
   | { type: 'project'; projectPath: string };
 
 export interface PersistedShellProjectTab {
@@ -47,6 +48,7 @@ export interface PersistedStandaloneWindow {
 export interface PersistedAppSession {
   version: number;
   projectTabs: PersistedShellProjectTab[];
+  utilityTabs: Array<'lan'>;
   activeTab: PersistedShellActiveTab;
   projects: PersistedProjectSession[];
   standaloneWindows: PersistedStandaloneWindow[];
@@ -56,6 +58,7 @@ function createEmptySession(): PersistedAppSession {
   return {
     version: SESSION_VERSION,
     projectTabs: [],
+    utilityTabs: [],
     activeTab: { type: 'home' },
     projects: [],
     standaloneWindows: [],
@@ -86,12 +89,13 @@ function sanitizeWorkspaceTab(tab: unknown): PersistedWorkspaceTab | null {
     candidate.type !== 'video' &&
     candidate.type !== 'blend' &&
     candidate.type !== 'cache' &&
-    candidate.type !== 'render'
+    candidate.type !== 'render' &&
+    candidate.type !== 'p2p'
   ) {
     return null;
   }
 
-  if (candidate.type !== 'cache' && candidate.type !== 'render' && !candidate.filePath) {
+  if (candidate.type !== 'cache' && candidate.type !== 'render' && candidate.type !== 'p2p' && !candidate.filePath) {
     return null;
   }
 
@@ -116,12 +120,13 @@ function sanitizeActiveWorkspaceTab(tab: unknown): PersistedWorkspaceActiveTab {
     candidate.type !== 'video' &&
     candidate.type !== 'blend' &&
     candidate.type !== 'cache' &&
-    candidate.type !== 'render'
+    candidate.type !== 'render' &&
+    candidate.type !== 'p2p'
   ) {
     return { type: 'files' };
   }
 
-  if (candidate.type !== 'files' && candidate.type !== 'cache' && candidate.type !== 'render' && !candidate.filePath) {
+  if (candidate.type !== 'files' && candidate.type !== 'cache' && candidate.type !== 'render' && candidate.type !== 'p2p' && !candidate.filePath) {
     return { type: 'files' };
   }
 
@@ -233,20 +238,26 @@ export async function loadPersistedAppSession(): Promise<PersistedAppSession | n
           .filter((session): session is PersistedProjectSession => Boolean(session))
       : [];
 
+    const utilityTabs = Array.isArray(persisted.utilityTabs)
+      ? persisted.utilityTabs.filter((tab): tab is 'lan' => tab === 'lan')
+      : [];
+
     const standaloneWindows = Array.isArray(persisted.standaloneWindows)
       ? persisted.standaloneWindows
           .map(sanitizeStandaloneWindow)
           .filter((window): window is PersistedStandaloneWindow => Boolean(window))
       : [];
 
-    const activeTab =
-      persisted.activeTab?.type === 'project' && persisted.activeTab.projectPath
-        ? { type: 'project' as const, projectPath: persisted.activeTab.projectPath }
+    const activeTab = persisted.activeTab?.type === 'project' && persisted.activeTab.projectPath
+      ? { type: 'project' as const, projectPath: persisted.activeTab.projectPath }
+      : persisted.activeTab?.type === 'lan'
+        ? { type: 'lan' as const }
         : { type: 'home' as const };
 
     return {
       version: SESSION_VERSION,
       projectTabs,
+      utilityTabs,
       activeTab,
       projects,
       standaloneWindows,

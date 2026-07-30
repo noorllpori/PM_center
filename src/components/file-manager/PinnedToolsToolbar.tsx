@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { MoreHorizontal } from 'lucide-react';
 import { BUILTIN_TOOL_BY_ID, type BuiltinToolDefinition, type OpenBuiltinTool } from '../../features/builtinTools';
 import { useBuiltinToolsStore } from '../../stores/builtinToolsStore';
-import { useP2PStore } from '../../stores/p2pStore';
+import { useLanCollaborationStore } from '../../stores/lanCollaborationStore';
 import { getActiveRenderCount, useRenderStore } from '../../stores/renderStore';
 import { useTaskStore } from '../../stores/taskStore';
 
@@ -26,7 +26,7 @@ function badgeLabel(value: number) {
 export function PinnedToolsToolbar({ compact = false, onOpenTool }: PinnedToolsToolbarProps) {
   const pinnedToolIds = useBuiltinToolsStore((state) => state.pinnedToolIds);
   const loadPreferences = useBuiltinToolsStore((state) => state.loadPreferences);
-  const unreadCount = useP2PStore((state) => state.unreadCount);
+  const unreadCount = useLanCollaborationStore((state) => state.unreadCount);
   const runningTasks = useTaskStore((state) => state.stats.running);
   const renderCount = useRenderStore((state) => getActiveRenderCount(state.jobsByProject));
   const [visibleCapacity, setVisibleCapacity] = useState(() => getVisibleCapacity(compact));

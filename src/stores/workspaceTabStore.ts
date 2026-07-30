@@ -10,7 +10,7 @@ import { getFileNameFromPath, getWorkspaceOpenTarget } from '../components/works
 import { openStandaloneDirectoryViewer } from '../components/file-manager/openStandaloneDirectoryViewer';
 import type { ImageSequenceInfo } from '../types';
 
-export type WorkspaceTabType = 'files' | 'cache' | 'render' | 'directory' | 'image' | 'text' | 'video' | 'blend' | 'collection';
+export type WorkspaceTabType = 'files' | 'cache' | 'render' | 'p2p' | 'directory' | 'image' | 'text' | 'video' | 'blend' | 'collection';
 
 export type WorkspaceCollectionTabData =
   | {
@@ -40,6 +40,7 @@ export interface WorkspaceTab {
 export const FILES_TAB_ID = 'files';
 export const CACHE_MANAGER_TAB_ID = 'cache-manager';
 export const RENDER_CENTER_TAB_ID = 'render-center';
+export const P2P_TAB_ID = 'p2p-chat';
 
 const FILES_TAB: WorkspaceTab = {
   id: FILES_TAB_ID,
@@ -59,6 +60,13 @@ const RENDER_CENTER_TAB: WorkspaceTab = {
   id: RENDER_CENTER_TAB_ID,
   type: 'render',
   title: '渲染与批处理',
+  closable: true,
+};
+
+const P2P_TAB: WorkspaceTab = {
+  id: P2P_TAB_ID,
+  type: 'p2p',
+  title: '局域网项目功能',
   closable: true,
 };
 
@@ -133,6 +141,7 @@ export interface WorkspaceTabState {
   openDirectoryInTab: (directoryPath: string) => string;
   openCacheManagerTab: () => string;
   openRenderCenterTab: () => string;
+  openP2PTab: () => string;
   openCollectionInTab: (collection: WorkspaceCollectionTabData) => string;
   activateTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
@@ -303,6 +312,22 @@ export function createWorkspaceTabStore(storeOptions: CreateWorkspaceTabStoreOpt
         activeTabId: RENDER_CENTER_TAB_ID,
       }));
       return RENDER_CENTER_TAB_ID;
+    },
+
+    openP2PTab: () => {
+      if (storeOptions.forceStandaloneFileOpen) {
+        return P2P_TAB_ID;
+      }
+      const existingTab = get().tabs.find((tab) => tab.id === P2P_TAB_ID);
+      if (existingTab) {
+        set({ activeTabId: P2P_TAB_ID });
+        return P2P_TAB_ID;
+      }
+      set((state) => ({
+        tabs: [...state.tabs, P2P_TAB],
+        activeTabId: P2P_TAB_ID,
+      }));
+      return P2P_TAB_ID;
     },
 
     openCollectionInTab: (collection) => {

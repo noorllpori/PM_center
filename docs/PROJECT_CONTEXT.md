@@ -1,6 +1,6 @@
 # PM Center 项目总览与开发约定
 
-> 当前基线：`2.6.0`。本文件是 PM Center 的长期开发上下文；新增、修改或排查功能前，先确认其归属模块和下面的固定交互规则。README 保留对外简介和较长的愿望清单，本文件记录当前实际架构与已确定的产品约束。
+> 当前基线：`2.7.0`。本文件是 PM Center 的长期开发上下文；新增、修改或排查功能前，先确认其归属模块和下面的固定交互规则。README 保留对外简介和较长的愿望清单，本文件记录当前实际架构与已确定的产品约束。
 
 ## 1. 产品定位
 
@@ -47,8 +47,8 @@ App
       ProjectSessionProvider
       WorkspaceTabBar
       FileTree + FileList + FileDetail
-      files / directory / image / video / text / blend / collection / cache / render tabs
-    SettingsPanel / TaskPanel / P2PChat
+      files / directory / image / video / text / blend / collection / cache / render / p2p tabs
+    SettingsPanel / TaskPanel
   WindowManager
   FileOperationPanel
 
@@ -125,7 +125,7 @@ React invoke/listen
 | Python | `python/mod.rs`、`python_env/mod.rs` | PMC 内置/系统 Python、Blender 解析、venv 与 pip 管理。 |
 | 插件 | `plugin/mod.rs` | 插件发现、校验、启停、依赖、设置与动作。 |
 | 工具路径 | `tools.rs` | FFprobe、FFmpeg、Blender 路径校验与系统自动检测。 |
-| 局域网 | `p2p/mod.rs` | 在线发现、用户信息与消息。 |
+| 局域网 | `p2p/mod.rs` | 全局联系人数据库、双向在线发现、个人资料/头像同步、大厅与私聊消息。 |
 
 长耗时后端操作应避免阻塞 Tauri 主线程：使用 Tokio / `spawn_blocking`，向前端发进度事件，提供合理的取消与失败状态。Windows 子进程统一使用 `process_utils::{std_command, tokio_command}`，避免弹出控制台窗口。
 
@@ -168,7 +168,9 @@ React invoke/listen
 - FFprobe 用于媒体详情；FFmpeg 用于序列帧打包。全局设置可以手动固定路径，后端在未指定时允许从系统 PATH 自动检测。前端不能只以“是否手动指定”判断工具可用性。
 - Python 运行优先 PMC 内置 Python 或所选 Blender 自带 Python；插件不应自行创建第三套不透明运行时。
 - 插件 API、项目脚本与用户数据均视为受保护数据。新增插件能力要经 `plugin` 模块暴露，不直接由任意 UI 执行未知脚本。
-- P2P 当前是发现与消息基础能力；任何传输、远程执行或渲染农场扩展都必须先定义权限、路径边界、失败恢复和用户确认。
+- 局域网联系人、消息和头像属于软件级全局数据，保存在应用数据目录的 `lan_collaboration.db` 与头像缓存中，不写入项目 `.pm_center`。外层 Shell 的“局域网主面板”承载联系人、大厅和私聊；项目内 `p2p` 标签是独立的功能预留入口，暂不承载聊天界面。
+- 局域网提供两个稳定入口：主面板与主页、项目标签同级并保持全局单例；项目功能标签在每个项目内保持单例并参与项目会话恢复。当前不提供无项目独立窗口入口。
+- 局域网消息保留一个大厅与一对一私聊，记录默认保留 30 天；联系人离线后继续保留。任何文件传输、远程执行或渲染农场扩展都必须先定义权限、路径边界、失败恢复和用户确认。
 
 ## 8. 扩展流程
 

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-export type ShellTabType = 'home' | 'project';
+export type ShellTabType = 'home' | 'project' | 'lan';
 
 export interface ShellTab {
   id: string;
@@ -12,12 +12,20 @@ export interface ShellTab {
 }
 
 const HOME_TAB_ID = 'home';
+export const LAN_SHELL_TAB_ID = 'lan-collaboration';
 
 const HOME_TAB: ShellTab = {
   id: HOME_TAB_ID,
   type: 'home',
   title: '主页',
   closable: false,
+};
+
+const LAN_SHELL_TAB: ShellTab = {
+  id: LAN_SHELL_TAB_ID,
+  type: 'lan',
+  title: '局域网主面板',
+  closable: true,
 };
 
 export function normalizeProjectPath(path: string) {
@@ -31,6 +39,7 @@ interface ShellTabState {
   tabs: ShellTab[];
   activeTabId: string;
   openProjectTab: (projectPath: string, title: string) => string;
+  openLanTab: () => string;
   activateTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
   reorderTabs: (fromId: string, toId: string) => void;
@@ -67,6 +76,19 @@ export const useShellTabStore = create<ShellTabState>()((set, get) => ({
     }));
 
     return nextTab.id;
+  },
+
+  openLanTab: () => {
+    const existingTab = get().tabs.find((tab) => tab.id === LAN_SHELL_TAB_ID);
+    if (existingTab) {
+      set({ activeTabId: LAN_SHELL_TAB_ID });
+      return LAN_SHELL_TAB_ID;
+    }
+    set((state) => ({
+      tabs: [...state.tabs, LAN_SHELL_TAB],
+      activeTabId: LAN_SHELL_TAB_ID,
+    }));
+    return LAN_SHELL_TAB_ID;
   },
 
   activateTab: (tabId) => {
