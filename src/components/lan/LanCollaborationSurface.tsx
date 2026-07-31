@@ -8,9 +8,11 @@ import {
   CircleUserRound,
   ContactRound,
   Eraser,
+  ExternalLink,
   FileUp,
   FolderOpen,
   FolderUp,
+  Globe2,
   History,
   ImagePlus,
   Inbox,
@@ -175,6 +177,126 @@ function normalizeMessageUrl(value: string) {
   }
 }
 
+interface LinkPreview {
+  url: string;
+  finalUrl: string;
+  title: string;
+  description: string | null;
+  siteName: string;
+  faviconDataUrl: string | null;
+  imageDataUrl: string | null;
+}
+
+const linkPreviewRequests = new Map<string, Promise<LinkPreview | null>>();
+
+function firstPreviewUrl(content: string) {
+  for (const match of content.matchAll(MESSAGE_URL_PATTERN)) {
+    const { link } = trimUrlPunctuation(match[0]);
+    const href = normalizeMessageUrl(link);
+    if (href) return href;
+  }
+  return null;
+}
+
+function requestLinkPreview(url: string) {
+  const existing = linkPreviewRequests.get(url);
+  if (existing) return existing;
+  const request = invoke<LinkPreview>('get_link_preview', { url })
+    .catch((error) => {
+      linkPreviewRequests.delete(url);
+      console.debug('LAN link preview unavailable:', error);
+      return null;
+    });
+  if (linkPreviewRequests.size >= 256) {
+    const oldestUrl = linkPreviewRequests.keys().next().value;
+    if (oldestUrl) linkPreviewRequests.delete(oldestUrl);
+  }
+  linkPreviewRequests.set(url, request);
+  return request;
+}
+
+function LinkPreviewCard({ url }: { url: string }) {
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const [preview, setPreview] = useState<LinkPreview | null>(null);
+
+  useEffect(() => {
+    const element = cardRef.current;
+    if (!element) return;
+    let cancelled = false;
+    let requested = false;
+
+    const loadPreview = () => {
+      if (requested) return;
+      requested = true;
+      void requestLinkPreview(url).then((result) => {
+        if (!cancelled && result) setPreview(result);
+      });
+    };
+
+    if (typeof IntersectionObserver === 'undefined') {
+      loadPreview();
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      observer.disconnect();
+      loadPreview();
+    }, { rootMargin: '240px 0px' });
+    observer.observe(element);
+    return () => {
+      cancelled = true;
+      observer.disconnect();
+    };
+  }, [url]);
+
+  return (
+    <div ref={cardRef} className={preview ? 'mt-2' : 'h-px'}>
+      {preview ? (
+        <button
+          type="button"
+          title="使用默认浏览器打开"
+          onClick={() => {
+            void openUrl(preview.finalUrl).catch((error) => {
+              console.warn('Failed to open LAN link preview:', error);
+            });
+          }}
+          className="group flex w-full max-w-[560px] flex-col overflow-hidden rounded-md border border-gray-200 bg-white text-left shadow-sm transition-colors hover:border-blue-300 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:hover:border-blue-700 dark:hover:bg-gray-900/80 sm:flex-row"
+        >
+          <span className="min-w-0 flex-1 px-3 py-2.5">
+            <span className="flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400">
+              {preview.faviconDataUrl ? (
+                <img src={preview.faviconDataUrl} alt="" className="h-4 w-4 rounded-sm object-cover" />
+              ) : (
+                <Globe2 className="h-3.5 w-3.5" />
+              )}
+              <span className="truncate">{preview.siteName}</span>
+              <ExternalLink className="ml-auto h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover:opacity-100" />
+            </span>
+            <span className="mt-1.5 line-clamp-2 block break-words text-sm font-medium leading-5 text-gray-900 dark:text-gray-100">
+              {preview.title}
+            </span>
+            {preview.description ? (
+              <span className="mt-1 line-clamp-2 block break-words text-xs leading-4 text-gray-500 dark:text-gray-400">
+                {preview.description}
+              </span>
+            ) : null}
+          </span>
+          {preview.imageDataUrl ? (
+            <img
+              src={preview.imageDataUrl}
+              alt=""
+              className="order-first h-28 w-full shrink-0 border-b border-gray-200 object-cover dark:border-gray-700 sm:order-none sm:w-44 sm:self-stretch sm:border-b-0 sm:border-l"
+            />
+          ) : null}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function MessageText({ content, mine }: { content: string; mine: boolean }) {
   const parts: React.ReactNode[] = [];
   let cursor = 0;
@@ -294,6 +416,7 @@ function MessageBubble({
   senderAvatarPath?: string | null;
 }) {
   const mine = message.fromId === profile.id;
+  const previewUrl = firstPreviewUrl(message.content);
   return (
     <div className={`flex gap-2.5 ${mine ? 'justify-end' : 'justify-start'}`}>
       {!mine ? <LanAvatar id={message.fromId} name={message.fromName} avatarPath={senderAvatarPath} size="sm" /> : null}
@@ -302,6 +425,7 @@ function MessageBubble({
         <div className={`whitespace-pre-wrap break-words rounded-md px-3 py-2 text-sm leading-6 ${mine ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-900 dark:bg-gray-800 dark:text-gray-100'}`}>
           <MessageText content={message.content} mine={mine} />
         </div>
+        {previewUrl ? <LinkPreviewCard url={previewUrl} /> : null}
         <div className={`mt-1 flex items-center gap-2 px-1 text-[10px] text-gray-400 ${mine ? 'justify-end' : ''}`}>
           <span>{new Date(message.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</span>
           {mine && message.deliveryStatus !== 'delivered' ? (

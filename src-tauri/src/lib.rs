@@ -13,6 +13,7 @@ mod db;
 mod file_details;
 mod fs;
 mod icon_extractor;
+mod link_preview;
 mod p2p;
 mod plugin;
 mod process_utils;
@@ -1420,6 +1421,7 @@ pub fn run() {
             cache_manager::check_project_cache,
             cache_manager::run_project_cache_action,
             cache_manager::cancel_cache_maintenance,
+            link_preview::get_link_preview,
             render_center::inspect_render_sources,
             render_center::create_render_batch,
             render_center::list_render_jobs,

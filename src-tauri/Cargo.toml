@@ -1,6 +1,6 @@
 [package]
 name = "pm_center"
-version = "2.7.7"
+version = "2.7.9"
 description = "A Tauri App"
 authors = ["章知涵@Ninniku"]
 edition = "2021"
@@ -55,3 +55,6 @@ tauri-plugin-autostart = "2"
 sysinfo = "0.30"
 blake3 = "1"
 if-addrs = "0.13"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "charset", "gzip", "brotli", "deflate", "stream"] }
+scraper = "0.22"
+url = "2"
