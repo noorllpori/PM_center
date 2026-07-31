@@ -26,6 +26,7 @@ import { useSettingsStore } from '../../stores/settingsStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useShellTabStore, normalizeProjectPath } from '../../stores/shellTabStore';
 import { useBuiltinToolsStore } from '../../stores/builtinToolsStore';
+import { useLanCollaborationStore } from '../../stores/lanCollaborationStore';
 import type { BuiltinToolId } from '../../features/builtinTools';
 import {
   createDefaultPersistedAppSession,
@@ -462,6 +463,34 @@ export function FileManager() {
 
     window.addEventListener('keydown', handleTaskShortcut);
     return () => window.removeEventListener('keydown', handleTaskShortcut);
+  }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+
+    void listen<{ conversationId: string; messageId?: string | null; transferId?: string | null }>(
+      'pm-center:open-lan-conversation',
+      (event) => {
+        useShellTabStore.getState().openLanTab();
+        useLanCollaborationStore.getState().requestConversationNavigation(
+          event.payload.conversationId,
+          event.payload.messageId,
+          event.payload.transferId,
+        );
+      },
+    ).then((cleanup) => {
+      if (disposed) {
+        cleanup();
+      } else {
+        unlisten = cleanup;
+      }
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, []);
 
   useEffect(() => {

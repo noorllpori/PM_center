@@ -128,6 +128,13 @@ export interface LanDeliveryResult {
   failures: LanDeliveryFailure[];
 }
 
+export interface LanConversationNavigationRequest {
+  requestId: number;
+  conversationId: string;
+  messageId: string | null;
+  transferId: string | null;
+}
+
 interface LanCollaborationState {
   profile: LanProfile | null;
   localSettings: LanLocalSettings | null;
@@ -138,6 +145,7 @@ interface LanCollaborationState {
   conversations: LanConversation[];
   unreadCount: number;
   service: LanServiceStatus;
+  navigationRequest: LanConversationNavigationRequest | null;
   isLoading: boolean;
   isInitialized: boolean;
   error: string | null;
@@ -157,6 +165,12 @@ interface LanCollaborationState {
   clearConversation: (conversationId: string) => Promise<void>;
   clearHistory: () => Promise<void>;
   removeContact: (contactId: string) => Promise<void>;
+  requestConversationNavigation: (
+    conversationId: string,
+    messageId?: string | null,
+    transferId?: string | null,
+  ) => void;
+  clearConversationNavigation: () => void;
 }
 
 const EMPTY_SERVICE: LanServiceStatus = {
@@ -177,6 +191,7 @@ let initializationPromise: Promise<void> | null = null;
 let listenersPromise: Promise<void> | null = null;
 let refreshPromise: Promise<void> | null = null;
 let refreshTimer: number | null = null;
+let navigationRequestId = 0;
 const unlisteners: UnlistenFn[] = [];
 
 function applySnapshot(snapshot: LanSnapshot) {
@@ -259,6 +274,7 @@ export const useLanCollaborationStore = create<LanCollaborationState>((set, get)
   conversations: [],
   unreadCount: 0,
   service: EMPTY_SERVICE,
+  navigationRequest: null,
   isLoading: false,
   isInitialized: false,
   error: null,
@@ -392,6 +408,20 @@ export const useLanCollaborationStore = create<LanCollaborationState>((set, get)
     await invoke('remove_lan_contact', { contactId });
     await get().refresh();
   },
+
+  requestConversationNavigation: (conversationId, messageId = null, transferId = null) => {
+    navigationRequestId += 1;
+    set({
+      navigationRequest: {
+        requestId: navigationRequestId,
+        conversationId,
+        messageId,
+        transferId,
+      },
+    });
+  },
+
+  clearConversationNavigation: () => set({ navigationRequest: null }),
 }));
 
 export function disposeLanCollaborationListeners() {

@@ -5,6 +5,7 @@ import {
   File,
   FileImage,
   FileVideo,
+  Folder,
   FolderOpen,
   SquareArrowOutUpRight,
   RefreshCw,
@@ -24,7 +25,8 @@ function formatBytes(bytes: number) {
   return `${value >= 10 || unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`;
 }
 
-function TransferIcon({ mimeType }: { mimeType: string | null }) {
+function TransferIcon({ kind, mimeType }: { kind: string; mimeType: string | null }) {
+  if (kind === 'directory') return <Folder className="h-5 w-5" />;
   if (mimeType?.startsWith('image/')) return <FileImage className="h-5 w-5" />;
   if (mimeType?.startsWith('video/')) return <FileVideo className="h-5 w-5" />;
   if (mimeType?.includes('zip') || mimeType?.includes('compressed') || mimeType?.includes('archive')) {
@@ -87,7 +89,7 @@ export function LanTransferCard({
       <div className={`w-full max-w-[min(78%,520px)] ${outgoing ? 'items-end' : 'items-start'}`}>
         {!outgoing ? <p className="mb-1 px-1 text-[11px] text-gray-500">{transfer.fromName}</p> : null}
         <div className="overflow-hidden rounded-md border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
-          {transfer.mimeType?.startsWith('image/') && localPath ? (
+          {transfer.kind === 'file' && transfer.mimeType?.startsWith('image/') && localPath ? (
             <img
               src={convertFileSrc(localPath)}
               alt=""
@@ -96,11 +98,12 @@ export function LanTransferCard({
           ) : null}
           <div className="flex items-start gap-3 p-3">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-blue-50 text-blue-600 dark:bg-blue-950/40 dark:text-blue-300">
-              <TransferIcon mimeType={transfer.mimeType} />
+              <TransferIcon kind={transfer.kind} mimeType={transfer.mimeType} />
             </div>
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-medium" title={transfer.displayName}>{transfer.displayName}</p>
               <p className="mt-0.5 text-xs text-gray-500">
+                {transfer.kind === 'directory' ? `目录 · ${transfer.itemCount} 个项目 · ` : ''}
                 {formatBytes(transfer.totalBytes)} · {statusLabel(transfer)}
                 {transfer.status === 'transferring' && progress?.bytesPerSecond
                   ? ` · ${formatBytes(progress.bytesPerSecond)}/s`
@@ -122,6 +125,12 @@ export function LanTransferCard({
               <button type="button" disabled={busy} onClick={() => onAccept(transfer)} className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-2.5 py-1.5 text-xs text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">
                 {transfer.status === 'failed' ? <RefreshCw className="h-3.5 w-3.5" /> : <Download className="h-3.5 w-3.5" />}
                 {transfer.status === 'failed' ? '重新接收' : '接收'}
+              </button>
+            </div>
+          ) : localPath && transfer.status === 'completed' && transfer.kind === 'directory' ? (
+            <div className="flex justify-end border-t border-gray-100 px-3 py-2 dark:border-gray-800">
+              <button type="button" onClick={() => void invoke('open_path', { path: localPath })} className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-blue-600 hover:bg-blue-50 dark:text-blue-300 dark:hover:bg-blue-950/30">
+                <FolderOpen className="h-3.5 w-3.5" />打开目录
               </button>
             </div>
           ) : localPath && transfer.status === 'completed' ? (

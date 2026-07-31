@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
+#[cfg(not(target_os = "windows"))]
+use tauri_plugin_notification::NotificationExt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
@@ -22,16 +24,148 @@ pub use transfer::{
 
 const DISCOVERY_PORT: u16 = 31523;
 const MESSAGE_PORT: u16 = 31524;
-const PROTOCOL_VERSION: u16 = 3;
+const PROTOCOL_VERSION: u16 = 4;
 const BROADCAST_INTERVAL: Duration = Duration::from_secs(4);
 const USER_TIMEOUT: Duration = Duration::from_secs(16);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const DELIVERY_ACK_TIMEOUT: Duration = Duration::from_secs(4);
 const MAX_MESSAGE_BYTES: usize = 16 * 1024;
-const MAX_CONTROL_BYTES: usize = 160 * 1024;
+const MAX_CONTROL_BYTES: usize = 8 * 1024 * 1024;
 const MAX_AVATAR_SOURCE_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_AVATAR_BYTES: usize = 64 * 1024;
 const MESSAGE_RETENTION_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+
+fn notification_preview(content: &str) -> String {
+    const MAX_CHARS: usize = 120;
+    let normalized = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= MAX_CHARS {
+        return normalized;
+    }
+    format!(
+        "{}...",
+        normalized.chars().take(MAX_CHARS - 3).collect::<String>()
+    )
+}
+
+fn open_lan_notification_target(
+    app_handle: &tauri::AppHandle,
+    conversation_id: &str,
+    message_id: Option<&str>,
+    transfer_id: Option<&str>,
+) {
+    if let Some(window) = app_handle.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+    let _ = app_handle.emit(
+        "pm-center:open-lan-conversation",
+        serde_json::json!({
+            "conversationId": conversation_id,
+            "messageId": message_id,
+            "transferId": transfer_id,
+        }),
+    );
+}
+
+fn show_lan_notification(
+    app_handle: &tauri::AppHandle,
+    title: String,
+    body: String,
+    conversation_id: String,
+    message_id: Option<String>,
+    transfer_id: Option<String>,
+) {
+    #[cfg(target_os = "windows")]
+    {
+        let app_handle = app_handle.clone();
+        let app_identifier = app_handle.config().identifier.clone();
+        std::thread::spawn(move || {
+            let mut notification = notify_rust::Notification::new();
+            notification
+                .summary(&title)
+                .body(&body)
+                .sound_name("IM")
+                .app_id(&app_identifier);
+            match notification.show() {
+                Ok(handle) => {
+                    let result = handle.wait_for_response(
+                        move |response: &notify_rust::NotificationResponse| {
+                            if matches!(
+                                response,
+                                notify_rust::NotificationResponse::Default
+                                    | notify_rust::NotificationResponse::Action(_)
+                            ) {
+                                open_lan_notification_target(
+                                    &app_handle,
+                                    &conversation_id,
+                                    message_id.as_deref(),
+                                    transfer_id.as_deref(),
+                                );
+                            }
+                        },
+                    );
+                    if let Err(error) = result {
+                        eprintln!("[P2P] 监听系统消息通知点击失败：{error}");
+                    }
+                }
+                Err(error) => eprintln!("[P2P] 显示系统消息通知失败：{error}"),
+            }
+        });
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    if let Err(error) = app_handle
+        .notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+    {
+        eprintln!("[P2P] 显示系统消息通知失败：{error}");
+    }
+}
+
+fn notify_incoming_message(app_handle: &tauri::AppHandle, message: &LanMessage) {
+    let title = if message.to_id.is_some() {
+        format!("{} · 局域网私聊", message.from_name)
+    } else {
+        format!("局域网大厅 · {}", message.from_name)
+    };
+    show_lan_notification(
+        app_handle,
+        title,
+        notification_preview(&message.content),
+        message.conversation_id.clone(),
+        Some(message.id.clone()),
+        None,
+    );
+}
+
+fn notify_incoming_transfer(
+    app_handle: &tauri::AppHandle,
+    transfer: &LanTransfer,
+    auto_receiving: bool,
+) {
+    let body = if transfer.kind == "directory" {
+        format!(
+            "发来目录：{}（{} 个项目），等待你接收",
+            transfer.display_name, transfer.item_count
+        )
+    } else if auto_receiving {
+        format!("发来图片：{}，正在自动接收", transfer.display_name)
+    } else {
+        format!("发来文件：{}，等待你接收", transfer.display_name)
+    };
+    show_lan_notification(
+        app_handle,
+        format!("{} · 文件传输", transfer.from_name),
+        notification_preview(&body),
+        transfer.conversation_id.clone(),
+        None,
+        Some(transfer.id.clone()),
+    );
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1262,6 +1396,7 @@ async fn handle_tcp_connection(
                 wire_to_lan_message(&message, &local_profile.id, "incoming", "delivered", None);
             let _ = app_handle.emit("pm-center:lan-message", &lan_message);
             let _ = app_handle.emit("p2p-message", &message);
+            notify_incoming_message(&app_handle, &lan_message);
         }
         write_json_line(
             &mut writer,
@@ -2195,10 +2330,7 @@ mod tests {
         ensure_local_settings(&conn, &receive_directory).unwrap();
         ensure_local_settings(&conn, &path.with_extension("other")).unwrap();
         let settings = load_local_settings(&conn).unwrap();
-        assert_eq!(
-            PathBuf::from(settings.receive_directory),
-            receive_directory
-        );
+        assert_eq!(PathBuf::from(settings.receive_directory), receive_directory);
         assert!(settings.auto_receive_images);
         drop(conn);
         let _ = fs::remove_file(path);

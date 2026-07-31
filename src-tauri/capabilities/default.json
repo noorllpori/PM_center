@@ -21,6 +21,7 @@
     "core:tray:default",
     "opener:default",
     "dialog:default",
+    "notification:default",
     "autostart:default",
     "fs:default",
     "fs:read-all",

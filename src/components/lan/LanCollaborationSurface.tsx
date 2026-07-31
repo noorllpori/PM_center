@@ -7,7 +7,9 @@ import {
   CircleUserRound,
   ContactRound,
   Eraser,
+  FileUp,
   FolderOpen,
+  FolderUp,
   History,
   ImagePlus,
   Inbox,
@@ -250,6 +252,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
     conversations,
     unreadCount,
     service,
+    navigationRequest,
     isLoading,
     error,
     initialize,
@@ -268,6 +271,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
     clearConversation,
     clearHistory,
     removeContact,
+    clearConversationNavigation,
   } = useLanCollaborationStore();
   const showToast = useUiStore((state) => state.showToast);
   const [mode, setMode] = useState<LanViewMode>('messages');
@@ -276,6 +280,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
   const [input, setInput] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [isPreparingFiles, setIsPreparingFiles] = useState(false);
+  const [showAttachmentMenu, setShowAttachmentMenu] = useState(false);
   const [isFileDragOver, setIsFileDragOver] = useState(false);
   const [transferActions, setTransferActions] = useState<Set<string>>(() => new Set());
   const transferActionsRef = useRef<Set<string>>(new Set());
@@ -288,12 +293,30 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
   const [confirmAction, setConfirmAction] = useState<'conversation' | 'history' | null>(null);
   const [scrollRequest, setScrollRequest] = useState(0);
   const messagesViewportRef = useRef<HTMLDivElement | null>(null);
+  const attachmentMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     void initialize().catch((initializationError) => {
       showToast({ title: '局域网服务初始化失败', message: String(initializationError), tone: 'error' });
     });
   }, [initialize, showToast]);
+
+  useEffect(() => {
+    if (!showAttachmentMenu) return;
+    const closeMenu = (event: MouseEvent) => {
+      if (attachmentMenuRef.current?.contains(event.target as Node)) return;
+      setShowAttachmentMenu(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setShowAttachmentMenu(false);
+    };
+    window.addEventListener('mousedown', closeMenu);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      window.removeEventListener('mousedown', closeMenu);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [showAttachmentMenu]);
 
   useEffect(() => {
     if (!profile || isProfileDraftDirty) return;
@@ -332,18 +355,33 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
     if (!isActive) return;
     const viewport = messagesViewportRef.current;
     if (!viewport) return;
-    const scrollToBottom = () => {
-      viewport.scrollTop = viewport.scrollHeight;
+    const scrollToDestination = () => {
+      const targetMessageId = navigationRequest?.conversationId === selectedConversationId
+        ? navigationRequest.messageId
+        : null;
+      const targetTransferId = navigationRequest?.conversationId === selectedConversationId
+        ? navigationRequest.transferId
+        : null;
+      const target = targetMessageId
+        ? viewport.querySelector<HTMLElement>(`[data-lan-message-id="${CSS.escape(targetMessageId)}"]`)
+        : targetTransferId
+          ? viewport.querySelector<HTMLElement>(`[data-lan-transfer-id="${CSS.escape(targetTransferId)}"]`)
+          : null;
+      if (target) {
+        target.scrollIntoView({ block: 'center' });
+      } else {
+        viewport.scrollTop = viewport.scrollHeight;
+      }
     };
-    scrollToBottom();
+    scrollToDestination();
     let secondFrame = 0;
     const firstFrame = window.requestAnimationFrame(() => {
-      scrollToBottom();
-      secondFrame = window.requestAnimationFrame(scrollToBottom);
+      scrollToDestination();
+      secondFrame = window.requestAnimationFrame(scrollToDestination);
     });
     const content = viewport.firstElementChild;
     const resizeObserver = content instanceof HTMLElement
-      ? new ResizeObserver(scrollToBottom)
+      ? new ResizeObserver(scrollToDestination)
       : null;
     if (content instanceof HTMLElement) resizeObserver?.observe(content);
     const settleTimer = window.setTimeout(() => resizeObserver?.disconnect(), 800);
@@ -353,7 +391,15 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
       window.clearTimeout(settleTimer);
       resizeObserver?.disconnect();
     };
-  }, [isActive, scrollRequest, selectedConversationId, selectedTimeline.length, showMobileConversation]);
+  }, [isActive, navigationRequest, scrollRequest, selectedConversationId, selectedTimeline.length, showMobileConversation]);
+
+  useEffect(() => {
+    if (!isActive || !navigationRequest) return;
+    setSelectedConversationId(navigationRequest.conversationId);
+    setMode('messages');
+    setShowMobileConversation(true);
+    setScrollRequest((current) => current + 1);
+  }, [isActive, navigationRequest]);
 
   const filteredContacts = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
@@ -379,6 +425,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
   }, [filteredContacts]);
 
   const selectConversation = (conversationId: string) => {
+    clearConversationNavigation();
     setSelectedConversationId(conversationId);
     setMode('messages');
     setShowMobileConversation(true);
@@ -406,7 +453,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
     }
   };
 
-  const requireTransferContact = () => {
+  const requireTransferContact = (minProtocolVersion = 3, contentLabel = '文件') => {
     if (!selectedContactId || !selectedContact) {
       showToast({ title: '请选择联系人', message: '文件传输需要在联系人私聊中发起。', tone: 'warning' });
       return null;
@@ -415,8 +462,12 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
       showToast({ title: '联系人离线', message: '对方在线后才能接收文件传输请求。', tone: 'warning' });
       return null;
     }
-    if (selectedContact.protocolVersion < 3) {
-      showToast({ title: '客户端版本不兼容', message: '对方需要升级后才能使用确认式文件传输。', tone: 'warning' });
+    if (selectedContact.protocolVersion < minProtocolVersion) {
+      showToast({
+        title: '客户端版本不兼容',
+        message: `对方需要升级后才能使用${contentLabel}传输。`,
+        tone: 'warning',
+      });
       return null;
     }
     return selectedContact;
@@ -434,8 +485,8 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
         .map((item) => discardTransferStagingFile(item.path).catch(() => {})));
       if (result.transfers.length > 0) {
         showToast({
-          title: '文件请求已发送',
-          message: `${result.transfers.length} 个文件正在等待 ${contact.displayName} 接收。`,
+          title: '传输请求已发送',
+          message: `${result.transfers.length} 项内容正在等待 ${contact.displayName} 接收。`,
           tone: 'success',
         });
       }
@@ -472,6 +523,21 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
     })));
   };
 
+  const handleChooseDirectory = async () => {
+    if (!requireTransferContact(4, '目录')) return;
+    const selected = await open({
+      title: '选择要发送的文件夹',
+      multiple: false,
+      directory: true,
+    });
+    if (typeof selected !== 'string' || !selected) return;
+    await offerPreparedFiles([{
+      path: selected,
+      staged: false,
+      name: selected.split(/[\\/]/).pop() || selected,
+    }]);
+  };
+
   const handleFileDrop = async (event: React.DragEvent<HTMLElement>) => {
     event.preventDefault();
     event.stopPropagation();
@@ -486,6 +552,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
       })));
       return;
     }
+    const files = Array.from(event.dataTransfer.files || []);
     const containsDirectory = Array.from(event.dataTransfer.items || []).some((item) => {
       const entry = (item as DataTransferItem & {
         webkitGetAsEntry?: () => FileSystemEntry | null;
@@ -493,12 +560,23 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
       return Boolean(entry?.isDirectory);
     });
     if (containsDirectory) {
-      showToast({ title: '暂不支持发送目录', message: '目录和项目同步会复用当前传输引擎，在后续入口中提供。', tone: 'warning' });
+      if (!requireTransferContact(4, '目录')) return;
+      const directoryPaths = files
+        .map((file) => (file as File & { path?: string }).path)
+        .filter((path): path is string => Boolean(path));
+      if (directoryPaths.length > 0) {
+        await offerPreparedFiles(directoryPaths.map((path) => ({
+          path,
+          staged: false,
+          name: path.split(/[\\/]/).pop() || path,
+        })));
+        return;
+      }
+      showToast({ title: '无法读取文件夹路径', message: '请使用输入框旁的附件菜单选择“发送文件夹”。', tone: 'warning' });
       return;
     }
-    const files = Array.from(event.dataTransfer.files || []);
     if (files.length === 0) {
-      showToast({ title: '没有可发送的文件', message: '当前只支持文件，目录同步功能将使用同一传输引擎后续接入。', tone: 'warning' });
+      showToast({ title: '没有可发送的内容', message: '请使用附件菜单选择文件或文件夹。', tone: 'warning' });
       return;
     }
     try {
@@ -552,12 +630,12 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
     try {
       const completed = await respondTransfer(transfer.id, 'accept');
       showToast({
-        title: '文件接收完成',
+        title: transfer.kind === 'directory' ? '目录接收完成' : '文件接收完成',
         message: completed.receivedPath || transfer.displayName,
         tone: 'success',
       });
     } catch (acceptError) {
-      showToast({ title: '文件接收失败', message: String(acceptError), tone: 'error' });
+      showToast({ title: transfer.kind === 'directory' ? '目录接收失败' : '文件接收失败', message: String(acceptError), tone: 'error' });
     } finally {
       endTransferAction(transfer.id);
     }
@@ -825,8 +903,8 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
           <div className="pointer-events-none absolute inset-3 z-50 flex items-center justify-center rounded-md border-2 border-dashed border-blue-400 bg-blue-50/95 text-blue-700 shadow-sm dark:border-blue-600 dark:bg-blue-950/90 dark:text-blue-200">
             <div className="text-center">
               <Paperclip className="mx-auto h-7 w-7" />
-              <p className="mt-2 text-sm font-medium">拖到此处发送文件</p>
-              <p className="mt-1 text-xs opacity-75">普通文件由对方确认，图片会自动接收</p>
+              <p className="mt-2 text-sm font-medium">拖到此处发送文件或文件夹</p>
+              <p className="mt-1 text-xs opacity-75">文件夹和普通文件由对方确认，图片会自动接收</p>
             </div>
           </div>
         ) : null}
@@ -840,7 +918,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
                   title="局域网协同说明"
                   text={[
                     '消息和压缩头像仅在当前局域网内传输，不经过云端，但内容未加密，请只在可信网络中使用。',
-                    '普通文件在联系人确认后保存到默认接收目录；图片会自动接收。所有内容都使用临时文件和 BLAKE3 完整性校验。',
+                    '文件和文件夹在联系人确认后保存到默认接收目录；图片会自动接收。所有内容都使用临时路径和 BLAKE3 完整性校验。',
                     '无法互相发现时，请允许 PM Center 通过 Windows 专用网络防火墙访问 UDP 31523 和 TCP 31524。',
                   ]}
                   placement="bottom-start"
@@ -893,7 +971,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <h3 className="text-sm font-semibold">文件接收</h3>
-                    <p className="mt-1 text-xs text-gray-500">按发送者名称建立子目录；同名文件自动编号，不覆盖已有内容。</p>
+                    <p className="mt-1 text-xs text-gray-500">按发送者名称建立子目录；同名文件或文件夹自动编号，不覆盖已有内容。</p>
                   </div>
                   <div className="flex shrink-0 gap-2">
                     <button
@@ -963,29 +1041,31 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
               ) : (
                 <div className="mx-auto max-w-4xl space-y-4">
                   {selectedTimeline.map((item) => item.kind === 'message' ? (
-                    <MessageBubble
-                      key={`message:${item.message.id}`}
-                      message={item.message}
-                      profile={profile}
-                      senderAvatarPath={contactsById.get(item.message.fromId)?.avatarPath}
-                    />
+                    <div key={`message:${item.message.id}`} data-lan-message-id={item.message.id}>
+                      <MessageBubble
+                        message={item.message}
+                        profile={profile}
+                        senderAvatarPath={contactsById.get(item.message.fromId)?.avatarPath}
+                      />
+                    </div>
                   ) : (
-                    <LanTransferCard
-                      key={`transfer:${item.transfer.id}`}
-                      transfer={item.transfer}
-                      progress={transferProgress[item.transfer.id]}
-                      busy={transferActions.has(item.transfer.id)}
-                      avatar={(
-                        <LanAvatar
-                          id={item.transfer.fromId}
-                          name={item.transfer.fromName}
-                          avatarPath={contactsById.get(item.transfer.fromId)?.avatarPath}
-                          size="sm"
-                        />
-                      )}
-                      onAccept={(transfer) => void handleAcceptTransfer(transfer)}
-                      onReject={(transfer) => void handleRejectTransfer(transfer)}
-                    />
+                    <div key={`transfer:${item.transfer.id}`} data-lan-transfer-id={item.transfer.id}>
+                      <LanTransferCard
+                        transfer={item.transfer}
+                        progress={transferProgress[item.transfer.id]}
+                        busy={transferActions.has(item.transfer.id)}
+                        avatar={(
+                          <LanAvatar
+                            id={item.transfer.fromId}
+                            name={item.transfer.fromName}
+                            avatarPath={contactsById.get(item.transfer.fromId)?.avatarPath}
+                            size="sm"
+                          />
+                        )}
+                        onAccept={(transfer) => void handleAcceptTransfer(transfer)}
+                        onReject={(transfer) => void handleRejectTransfer(transfer)}
+                      />
+                    </div>
                   ))}
                   <div aria-hidden="true" />
                 </div>
@@ -994,19 +1074,46 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
 
             <footer className="shrink-0 border-t border-gray-200 p-3 dark:border-gray-800">
               <div className="mx-auto flex max-w-4xl items-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => void handleChooseFiles()}
-                  disabled={!canTransfer || isPreparingFiles}
-                  title={selectedConversationId === 'lobby'
-                    ? '请先进入联系人私聊'
-                    : selectedContact && selectedContact.protocolVersion < 3
-                      ? '对方客户端版本不支持文件传输'
-                      : '发送文件'}
-                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-gray-300 text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                >
-                  {isPreparingFiles ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}
-                </button>
+                <div ref={attachmentMenuRef} className="relative shrink-0">
+                  {showAttachmentMenu ? (
+                    <div className="absolute bottom-full left-0 z-30 mb-2 w-40 overflow-hidden rounded-md border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-700 dark:bg-gray-900">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowAttachmentMenu(false);
+                          void handleChooseFiles();
+                        }}
+                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                      >
+                        <FileUp className="h-4 w-4" />发送文件
+                      </button>
+                      <button
+                        type="button"
+                        disabled={Boolean(selectedContact && selectedContact.protocolVersion < 4)}
+                        onClick={() => {
+                          setShowAttachmentMenu(false);
+                          void handleChooseDirectory();
+                        }}
+                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-gray-200 dark:hover:bg-gray-800"
+                      >
+                        <FolderUp className="h-4 w-4" />发送文件夹
+                      </button>
+                    </div>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => setShowAttachmentMenu((current) => !current)}
+                    disabled={!canTransfer || isPreparingFiles}
+                    title={selectedConversationId === 'lobby'
+                      ? '请先进入联系人私聊'
+                      : selectedContact && selectedContact.protocolVersion < 3
+                        ? '对方客户端版本不支持文件传输'
+                        : '发送文件或文件夹'}
+                    className="flex h-11 w-11 items-center justify-center rounded-md border border-gray-300 text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                  >
+                    {isPreparingFiles ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}
+                  </button>
+                </div>
                 <textarea
                   value={input}
                   onChange={(event) => setInput(event.target.value)}

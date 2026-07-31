@@ -5,7 +5,7 @@ use super::{
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -14,6 +14,7 @@ use std::time::{Duration, Instant, SystemTime};
 use tauri::{Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use walkdir::WalkDir;
 
 const TRANSFER_PROTOCOL_VERSION: u16 = 1;
 const TRANSFER_RETENTION_MS: u64 = 30 * 24 * 60 * 60 * 1000;
@@ -22,6 +23,11 @@ const TRANSFER_IO_TIMEOUT: Duration = Duration::from_secs(60);
 const TRANSFER_CHUNK_SIZE: usize = 1024 * 1024;
 const MAX_TRANSFER_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
 const MAX_AUTO_RECEIVE_IMAGE_BYTES: u64 = 100 * 1024 * 1024;
+const FILE_TRANSFER_MIN_PROTOCOL_VERSION: u16 = 3;
+const DIRECTORY_TRANSFER_MIN_PROTOCOL_VERSION: u16 = 4;
+const MAX_DIRECTORY_ITEMS: usize = 20_000;
+const MAX_DIRECTORY_DEPTH: usize = 64;
+const MAX_RELATIVE_PATH_CHARS: usize = 2_048;
 static RECEIVE_PATH_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -438,12 +444,18 @@ fn allocate_default_destination(
     fs::create_dir_all(&sender_directory)
         .map_err(|error| format!("创建联系人接收目录失败：{error}"))?;
     let file_name = validate_file_name(&transfer.display_name)?;
-    let original = Path::new(&file_name);
-    let stem = original
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or("文件");
-    let extension = original.extension().and_then(|value| value.to_str());
+    let (stem, extension) = if transfer.kind == "directory" {
+        (file_name.as_str(), None)
+    } else {
+        let original = Path::new(&file_name);
+        (
+            original
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("文件"),
+            original.extension().and_then(|value| value.to_str()),
+        )
+    };
     for index in 0..10_000u32 {
         let candidate_name = if index == 0 {
             file_name.clone()
@@ -457,7 +469,7 @@ fn allocate_default_destination(
             return Ok(candidate);
         }
     }
-    Err("接收目录中同名文件过多，请整理后重试".to_string())
+    Err("接收位置中同名内容过多，请整理后重试".to_string())
 }
 
 fn is_image_transfer(transfer: &LanTransfer) -> bool {
@@ -597,13 +609,41 @@ fn hash_file(path: &Path) -> Result<String, String> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-struct SourceInspection {
-    path: PathBuf,
-    file_name: String,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TransferManifestItem {
+    path: String,
+    #[serde(default = "default_manifest_item_kind")]
+    kind: String,
     size_bytes: u64,
     mime_type: Option<String>,
-    content_hash: String,
+    content_hash: Option<String>,
     modified_at: u64,
+}
+
+fn default_manifest_item_kind() -> String {
+    "file".to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TransferManifest {
+    version: u16,
+    kind: String,
+    payload_format: String,
+    items: Vec<TransferManifestItem>,
+}
+
+struct SourceInspection {
+    path: PathBuf,
+    display_name: String,
+    kind: String,
+    item_count: u64,
+    total_bytes: u64,
+    mime_type: Option<String>,
+    content_hash: String,
+    payload_format: String,
+    manifest: serde_json::Value,
 }
 
 fn system_time_millis(value: SystemTime) -> u64 {
@@ -613,38 +653,278 @@ fn system_time_millis(value: SystemTime) -> u64 {
         .as_millis() as u64
 }
 
-async fn inspect_source(path: PathBuf) -> Result<SourceInspection, String> {
-    tokio::task::spawn_blocking(move || {
-        let canonical =
-            fs::canonicalize(&path).map_err(|error| format!("无法读取待发送文件：{error}"))?;
-        let metadata = fs::metadata(&canonical).map_err(|error| error.to_string())?;
-        if !metadata.is_file() {
-            return Err("当前只支持发送文件，目录同步将在后续功能中提供".to_string());
+fn validate_relative_path(path: &Path) -> Result<String, String> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        let std::path::Component::Normal(value) = component else {
+            return Err("目录清单包含无效路径".to_string());
+        };
+        let part = value
+            .to_str()
+            .ok_or_else(|| "目录内存在无法转换为 UTF-8 的名称".to_string())?;
+        parts.push(validate_file_name(part)?);
+    }
+    if parts.is_empty() || parts.len() > MAX_DIRECTORY_DEPTH {
+        return Err("目录层级为空或过深".to_string());
+    }
+    let relative = parts.join("/");
+    if relative.chars().count() > MAX_RELATIVE_PATH_CHARS {
+        return Err("目录内路径过长".to_string());
+    }
+    Ok(relative)
+}
+
+fn manifest_hash(manifest: &TransferManifest) -> Result<String, String> {
+    let bytes = serde_json::to_vec(manifest).map_err(|error| error.to_string())?;
+    Ok(blake3::hash(&bytes).to_hex().to_string())
+}
+
+fn parse_and_validate_manifest(
+    kind: &str,
+    payload_format: &str,
+    item_count: u64,
+    total_bytes: u64,
+    content_hash: &str,
+    value: &serde_json::Value,
+) -> Result<TransferManifest, String> {
+    if serde_json::to_vec(value)
+        .map_err(|error| error.to_string())?
+        .len()
+        > super::MAX_CONTROL_BYTES
+    {
+        return Err("目录清单超过允许大小".to_string());
+    }
+    let manifest: TransferManifest =
+        serde_json::from_value(value.clone()).map_err(|_| "传输清单格式无效".to_string())?;
+    if manifest.version != 1
+        || manifest.kind != kind
+        || manifest.payload_format != payload_format
+        || manifest.items.len() as u64 != item_count
+    {
+        return Err("传输清单与请求不一致".to_string());
+    }
+    if kind == "file" {
+        let item = manifest
+            .items
+            .first()
+            .ok_or_else(|| "文件传输清单为空".to_string())?;
+        if payload_format != "raw"
+            || item_count != 1
+            || item.kind != "file"
+            || item.size_bytes != total_bytes
+            || item.content_hash.as_deref() != Some(content_hash)
+        {
+            return Err("文件传输清单无效".to_string());
         }
-        if metadata.len() > MAX_TRANSFER_BYTES {
-            return Err("单个传输内容不能超过 1 TB".to_string());
+        validate_relative_path(Path::new(&item.path))?;
+        return Ok(manifest);
+    }
+    if kind != "directory" || payload_format != "tree-v1" {
+        return Err("不支持的传输内容类型".to_string());
+    }
+    if manifest.items.len() > MAX_DIRECTORY_ITEMS {
+        return Err("目录项目数量超过限制".to_string());
+    }
+    let mut seen = HashSet::new();
+    let mut kinds = HashMap::new();
+    let mut calculated_bytes = 0u64;
+    for item in &manifest.items {
+        let normalized = validate_relative_path(Path::new(&item.path))?;
+        if normalized != item.path.replace('\\', "/") {
+            return Err("目录清单路径格式无效".to_string());
         }
-        let file_name = canonical
-            .file_name()
-            .and_then(|value| value.to_str())
-            .ok_or_else(|| "文件名无法转换为 UTF-8".to_string())?;
-        let file_name = validate_file_name(file_name)?;
-        let mime_type = mime_guess::from_path(&canonical)
-            .first_raw()
-            .map(str::to_string);
-        let content_hash = hash_file(&canonical)?;
+        let key = normalized.to_lowercase();
+        if !seen.insert(key.clone()) {
+            return Err("目录清单包含重复路径".to_string());
+        }
+        if item.kind == "file" {
+            let hash = item
+                .content_hash
+                .as_deref()
+                .ok_or_else(|| "目录文件缺少完整性哈希".to_string())?;
+            if hash.len() != 64 || !hash.bytes().all(|value| value.is_ascii_hexdigit()) {
+                return Err("目录文件哈希无效".to_string());
+            }
+            calculated_bytes = calculated_bytes
+                .checked_add(item.size_bytes)
+                .ok_or_else(|| "目录总大小超出限制".to_string())?;
+        } else if item.kind == "directory" {
+            if item.size_bytes != 0 || item.content_hash.is_some() {
+                return Err("目录项目清单无效".to_string());
+            }
+        } else {
+            return Err("目录清单包含不支持的项目".to_string());
+        }
+        kinds.insert(key, item.kind.as_str());
+    }
+    for path in kinds.keys() {
+        let parts = path.split('/').collect::<Vec<_>>();
+        for index in 1..parts.len() {
+            let parent = parts[..index].join("/");
+            if kinds.get(&parent).is_some_and(|kind| *kind == "file") {
+                return Err("目录清单中存在文件与子路径冲突".to_string());
+            }
+        }
+    }
+    if calculated_bytes != total_bytes || total_bytes > MAX_TRANSFER_BYTES {
+        return Err("目录总大小与清单不一致".to_string());
+    }
+    if manifest_hash(&manifest)? != content_hash {
+        return Err("目录清单完整性校验失败".to_string());
+    }
+    Ok(manifest)
+}
+
+fn inspect_file_source(
+    canonical: PathBuf,
+    metadata: fs::Metadata,
+) -> Result<SourceInspection, String> {
+    if metadata.len() > MAX_TRANSFER_BYTES {
+        return Err("单个传输内容不能超过 1 TB".to_string());
+    }
+    let display_name = canonical
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "文件名无法转换为 UTF-8".to_string())?;
+    let display_name = validate_file_name(display_name)?;
+    let mime_type = mime_guess::from_path(&canonical)
+        .first_raw()
+        .map(str::to_string);
+    let content_hash = hash_file(&canonical)?;
+    let modified_at = metadata
+        .modified()
+        .map(system_time_millis)
+        .unwrap_or_default();
+    let manifest = TransferManifest {
+        version: 1,
+        kind: "file".to_string(),
+        payload_format: "raw".to_string(),
+        items: vec![TransferManifestItem {
+            path: display_name.clone(),
+            kind: "file".to_string(),
+            size_bytes: metadata.len(),
+            mime_type: mime_type.clone(),
+            content_hash: Some(content_hash.clone()),
+            modified_at,
+        }],
+    };
+    Ok(SourceInspection {
+        path: canonical,
+        display_name,
+        kind: "file".to_string(),
+        item_count: 1,
+        total_bytes: metadata.len(),
+        mime_type,
+        content_hash,
+        payload_format: "raw".to_string(),
+        manifest: serde_json::to_value(manifest).map_err(|error| error.to_string())?,
+    })
+}
+
+fn inspect_directory_source(canonical: PathBuf) -> Result<SourceInspection, String> {
+    let display_name = canonical
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "目录名无法转换为 UTF-8".to_string())?;
+    let display_name = validate_file_name(display_name)?;
+    let mut items = Vec::new();
+    let mut total_bytes = 0u64;
+    for entry in WalkDir::new(&canonical)
+        .min_depth(1)
+        .follow_links(false)
+        .sort_by_file_name()
+    {
+        let entry = entry.map_err(|error| format!("扫描目录失败：{error}"))?;
+        if items.len() >= MAX_DIRECTORY_ITEMS {
+            return Err(format!("单个目录最多包含 {MAX_DIRECTORY_ITEMS} 个项目"));
+        }
+        if entry.path_is_symlink() {
+            return Err(format!(
+                "目录中包含不支持的符号链接：{}",
+                entry.path().display()
+            ));
+        }
+        let relative = entry
+            .path()
+            .strip_prefix(&canonical)
+            .map_err(|error| error.to_string())?;
+        let relative = validate_relative_path(relative)?;
+        let metadata = entry.metadata().map_err(|error| error.to_string())?;
         let modified_at = metadata
             .modified()
             .map(system_time_millis)
             .unwrap_or_default();
-        Ok(SourceInspection {
-            path: canonical,
-            file_name,
-            size_bytes: metadata.len(),
-            mime_type,
-            content_hash,
-            modified_at,
-        })
+        if metadata.is_dir() {
+            items.push(TransferManifestItem {
+                path: relative,
+                kind: "directory".to_string(),
+                size_bytes: 0,
+                mime_type: None,
+                content_hash: None,
+                modified_at,
+            });
+        } else if metadata.is_file() {
+            total_bytes = total_bytes
+                .checked_add(metadata.len())
+                .ok_or_else(|| "目录总大小超出限制".to_string())?;
+            if total_bytes > MAX_TRANSFER_BYTES {
+                return Err("单个传输内容不能超过 1 TB".to_string());
+            }
+            items.push(TransferManifestItem {
+                path: relative,
+                kind: "file".to_string(),
+                size_bytes: metadata.len(),
+                mime_type: mime_guess::from_path(entry.path())
+                    .first_raw()
+                    .map(str::to_string),
+                content_hash: Some(hash_file(entry.path())?),
+                modified_at,
+            });
+        } else {
+            return Err(format!(
+                "目录中包含不支持的项目：{}",
+                entry.path().display()
+            ));
+        }
+    }
+    let manifest = TransferManifest {
+        version: 1,
+        kind: "directory".to_string(),
+        payload_format: "tree-v1".to_string(),
+        items,
+    };
+    let content_hash = manifest_hash(&manifest)?;
+    let item_count = manifest.items.len() as u64;
+    Ok(SourceInspection {
+        path: canonical,
+        display_name,
+        kind: "directory".to_string(),
+        item_count,
+        total_bytes,
+        mime_type: None,
+        content_hash,
+        payload_format: "tree-v1".to_string(),
+        manifest: serde_json::to_value(manifest).map_err(|error| error.to_string())?,
+    })
+}
+
+async fn inspect_source(path: PathBuf) -> Result<SourceInspection, String> {
+    tokio::task::spawn_blocking(move || {
+        let source_metadata =
+            fs::symlink_metadata(&path).map_err(|error| format!("无法读取待发送内容：{error}"))?;
+        if source_metadata.file_type().is_symlink() {
+            return Err("不支持发送符号链接".to_string());
+        }
+        let canonical =
+            fs::canonicalize(&path).map_err(|error| format!("无法读取待发送内容：{error}"))?;
+        let metadata = fs::symlink_metadata(&canonical).map_err(|error| error.to_string())?;
+        if metadata.is_file() {
+            inspect_file_source(canonical, metadata)
+        } else if metadata.is_dir() {
+            inspect_directory_source(canonical)
+        } else {
+            Err("只能发送普通文件或目录".to_string())
+        }
     })
     .await
     .map_err(|error| error.to_string())?
@@ -671,23 +951,36 @@ async fn read_envelope(
         .await
         .map_err(|_| "等待传输响应超时".to_string())?
         .map_err(|error| error.to_string())?;
-    if line.is_empty() || line.len() > 160 * 1024 {
+    if line.is_empty() || line.len() > super::MAX_CONTROL_BYTES {
         return Err("收到无效传输响应".to_string());
     }
     serde_json::from_str(line.trim()).map_err(|error| format!("无法解析传输响应：{error}"))
 }
 
-fn transfer_target(contact_id: &str) -> Result<OnlinePeer, String> {
+fn transfer_target(contact_id: &str, min_protocol_version: u16) -> Result<OnlinePeer, String> {
     let state = P2P_GLOBAL.lock().map_err(|error| error.to_string())?;
     let peer = state
         .online_users
         .get(contact_id)
         .cloned()
         .ok_or_else(|| "联系人当前离线，无法传输文件".to_string())?;
-    if peer.protocol_version < PROTOCOL_VERSION {
-        return Err("对方客户端版本不支持确认式文件传输，请先升级到 2.7.0 或更高版本".to_string());
+    if peer.protocol_version < min_protocol_version {
+        let feature = if min_protocol_version >= DIRECTORY_TRANSFER_MIN_PROTOCOL_VERSION {
+            "目录传输"
+        } else {
+            "确认式文件传输"
+        };
+        return Err(format!("对方客户端版本不支持{feature}，请先升级到兼容版本"));
     }
     Ok(peer)
+}
+
+fn transfer_min_protocol_version(kind: &str) -> u16 {
+    if kind == "directory" {
+        DIRECTORY_TRANSFER_MIN_PROTOCOL_VERSION
+    } else {
+        FILE_TRANSFER_MIN_PROTOCOL_VERSION
+    }
 }
 
 fn validate_peer_ip(contact_id: &str, ip: &str) -> Result<(), String> {
@@ -730,12 +1023,11 @@ pub async fn offer_lan_files(
     request: OfferLanFilesRequest,
 ) -> Result<LanFileOfferResult, String> {
     if request.paths.is_empty() {
-        return Err("请选择至少一个文件".to_string());
+        return Err("请选择至少一个文件或目录".to_string());
     }
     if request.paths.len() > 100 {
-        return Err("一次最多发送 100 个文件".to_string());
+        return Err("一次最多发送 100 个文件或目录".to_string());
     }
-    let peer = transfer_target(&request.to_id)?;
     let profile = P2P_GLOBAL
         .lock()
         .map_err(|error| error.to_string())?
@@ -757,48 +1049,50 @@ pub async fn offer_lan_files(
                 continue;
             }
         };
+        let peer = match transfer_target(
+            &request.to_id,
+            transfer_min_protocol_version(&inspection.kind),
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                failures.push(LanTransferFailure {
+                    path: source_path,
+                    error,
+                });
+                continue;
+            }
+        };
         let transfer_id = uuid::Uuid::new_v4().to_string();
         let created_at = now_millis();
-        let manifest = json!({
-            "version": 1,
-            "kind": "file",
-            "payloadFormat": "raw",
-            "items": [{
-                "path": inspection.file_name,
-                "sizeBytes": inspection.size_bytes,
-                "mimeType": inspection.mime_type,
-                "contentHash": inspection.content_hash,
-                "modifiedAt": inspection.modified_at,
-            }],
-        });
+        let manifest = inspection.manifest.clone();
         let offer = WireTransferOffer {
             id: transfer_id.clone(),
-            kind: "file".to_string(),
+            kind: inspection.kind.clone(),
             from_id: profile.id.clone(),
             from_name: profile.display_name.clone(),
             to_id: request.to_id.clone(),
-            display_name: inspection.file_name.clone(),
-            item_count: 1,
-            total_bytes: inspection.size_bytes,
+            display_name: inspection.display_name.clone(),
+            item_count: inspection.item_count,
+            total_bytes: inspection.total_bytes,
             mime_type: inspection.mime_type.clone(),
             content_hash: inspection.content_hash.clone(),
-            payload_format: "raw".to_string(),
+            payload_format: inspection.payload_format.clone(),
             manifest: manifest.clone(),
             created_at,
         };
         let transfer = LanTransfer {
             id: transfer_id.clone(),
             conversation_id: format!("direct:{}", request.to_id),
-            kind: "file".to_string(),
+            kind: inspection.kind,
             from_id: profile.id.clone(),
             from_name: profile.display_name.clone(),
             to_id: request.to_id.clone(),
-            display_name: inspection.file_name,
-            item_count: 1,
-            total_bytes: inspection.size_bytes,
+            display_name: inspection.display_name,
+            item_count: inspection.item_count,
+            total_bytes: inspection.total_bytes,
             mime_type: inspection.mime_type,
             content_hash: inspection.content_hash,
-            payload_format: "raw".to_string(),
+            payload_format: inspection.payload_format,
             manifest,
             status: "waiting".to_string(),
             direction: "outgoing".to_string(),
@@ -897,39 +1191,143 @@ impl Drop for TemporaryTransferFile {
     }
 }
 
-async fn verify_source_unchanged(transfer: &LanTransfer) -> Result<PathBuf, String> {
+struct TemporaryTransferDirectory(PathBuf);
+
+impl Drop for TemporaryTransferDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn atomic_commit_directory(temp_path: &Path, target_path: &Path) -> Result<(), String> {
+    if target_path.exists() {
+        return Err("接收位置已存在同名目录，请重新接收".to_string());
+    }
+    let parent = target_path
+        .parent()
+        .ok_or_else(|| "目录保存位置没有有效的父目录".to_string())?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    fs::rename(temp_path, target_path).map_err(|error| format!("保存接收目录失败：{error}"))
+}
+
+async fn verify_source_unchanged(
+    transfer: &LanTransfer,
+) -> Result<(PathBuf, TransferManifest), String> {
     let source_path = transfer
         .source_path
         .as_deref()
-        .ok_or_else(|| "发送源文件路径丢失".to_string())?;
-    let expected_modified_at = transfer
-        .manifest
-        .get("items")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|items| items.first())
-        .and_then(|item| item.get("modifiedAt"))
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or_default();
+        .ok_or_else(|| "发送源路径丢失".to_string())?;
+    let expected_manifest = parse_and_validate_manifest(
+        &transfer.kind,
+        &transfer.payload_format,
+        transfer.item_count,
+        transfer.total_bytes,
+        &transfer.content_hash,
+        &transfer.manifest,
+    )?;
     let source_path = PathBuf::from(source_path);
-    let expected_size = transfer.total_bytes;
+    let expected_kind = transfer.kind.clone();
+    let expected_item_count = transfer.item_count;
+    let expected_total_bytes = transfer.total_bytes;
+    let expected_content_hash = transfer.content_hash.clone();
+    let expected_payload_format = transfer.payload_format.clone();
+    let expected_manifest_for_check = expected_manifest.clone();
     tokio::task::spawn_blocking(move || {
         let canonical = fs::canonicalize(source_path)
-            .map_err(|error| format!("无法读取发送源文件：{error}"))?;
-        let metadata = fs::metadata(&canonical).map_err(|error| error.to_string())?;
-        if !metadata.is_file() || metadata.len() != expected_size {
-            return Err("发送源文件大小已发生变化，请重新发送".to_string());
+            .map_err(|error| format!("无法读取发送源内容：{error}"))?;
+        let metadata = fs::symlink_metadata(&canonical).map_err(|error| error.to_string())?;
+        if metadata.file_type().is_symlink() {
+            return Err("发送源已变为符号链接，请重新发送".to_string());
         }
-        let modified_at = metadata
-            .modified()
-            .map(system_time_millis)
-            .unwrap_or_default();
-        if expected_modified_at > 0 && modified_at != expected_modified_at {
-            return Err("发送源文件已发生变化，请重新发送".to_string());
+        let current = if expected_kind == "directory" && metadata.is_dir() {
+            inspect_directory_source(canonical.clone())?
+        } else if expected_kind == "file" && metadata.is_file() {
+            inspect_file_source(canonical.clone(), metadata)?
+        } else {
+            return Err("发送源类型已发生变化，请重新发送".to_string());
+        };
+        let current_manifest: TransferManifest =
+            serde_json::from_value(current.manifest.clone())
+                .map_err(|_| "无法校验当前发送源清单".to_string())?;
+        if current.item_count != expected_item_count
+            || current.total_bytes != expected_total_bytes
+            || current.content_hash != expected_content_hash
+            || current.payload_format != expected_payload_format
+            || current_manifest != expected_manifest_for_check
+        {
+            return Err("发送源内容已发生变化，请重新发送".to_string());
         }
         Ok(canonical)
     })
     .await
     .map_err(|error| error.to_string())?
+    .map(|path| (path, expected_manifest))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn receive_manifest_file(
+    app_handle: &tauri::AppHandle,
+    transfer: &LanTransfer,
+    reader: &mut BufReader<OwnedReadHalf>,
+    item: &TransferManifestItem,
+    target_path: &Path,
+    buffer: &mut [u8],
+    received_total: &mut u64,
+    started_at: Instant,
+    last_progress: &mut Instant,
+) -> Result<(), String> {
+    if let Some(parent) = target_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    let mut file = tokio::fs::File::create(target_path)
+        .await
+        .map_err(|error| format!("创建临时接收文件失败：{error}"))?;
+    let mut file_received = 0u64;
+    let mut hasher = blake3::Hasher::new();
+    while file_received < item.size_bytes {
+        let remaining = (item.size_bytes - file_received).min(buffer.len() as u64) as usize;
+        let count =
+            tokio::time::timeout(TRANSFER_IO_TIMEOUT, reader.read(&mut buffer[..remaining]))
+                .await
+                .map_err(|_| "接收文件数据超时".to_string())?
+                .map_err(|error| error.to_string())?;
+        if count == 0 {
+            return Err("发送方提前结束了文件传输".to_string());
+        }
+        file.write_all(&buffer[..count])
+            .await
+            .map_err(|error| error.to_string())?;
+        hasher.update(&buffer[..count]);
+        file_received += count as u64;
+        *received_total += count as u64;
+        if last_progress.elapsed() >= Duration::from_millis(150)
+            || *received_total == transfer.total_bytes
+        {
+            emit_progress(
+                app_handle,
+                &transfer.id,
+                "transferring",
+                "incoming",
+                *received_total,
+                transfer.total_bytes,
+                started_at,
+            );
+            *last_progress = Instant::now();
+        }
+    }
+    file.flush().await.map_err(|error| error.to_string())?;
+    file.sync_all().await.map_err(|error| error.to_string())?;
+    drop(file);
+    let expected_hash = item
+        .content_hash
+        .as_deref()
+        .ok_or_else(|| "接收清单缺少文件完整性哈希".to_string())?;
+    if hasher.finalize().to_hex().as_str() != expected_hash {
+        return Err(format!("文件完整性校验失败：{}", item.path));
+    }
+    Ok(())
 }
 
 async fn download_transfer(
@@ -939,8 +1337,16 @@ async fn download_transfer(
     destination_path: &Path,
 ) -> Result<(), String> {
     if destination_path.file_name().is_none() {
-        return Err("请选择有效的文件保存位置".to_string());
+        return Err("请选择有效的保存位置".to_string());
     }
+    let manifest = parse_and_validate_manifest(
+        &transfer.kind,
+        &transfer.payload_format,
+        transfer.item_count,
+        transfer.total_bytes,
+        &transfer.content_hash,
+        &transfer.manifest,
+    )?;
     let parent = destination_path
         .parent()
         .ok_or_else(|| "保存位置没有有效的父目录".to_string())?;
@@ -956,8 +1362,11 @@ async fn download_transfer(
         transfer.id
     );
     let temp_path = parent.join(temp_name);
-    let _ = tokio::fs::remove_file(&temp_path).await;
-    let _temp_cleanup = TemporaryTransferFile(temp_path.clone());
+    if transfer.kind == "directory" {
+        let _ = tokio::fs::remove_dir_all(&temp_path).await;
+    } else {
+        let _ = tokio::fs::remove_file(&temp_path).await;
+    }
 
     let stream = connect_to_peer(&peer.ip).await?;
     let (reader, mut writer) = stream.into_split();
@@ -977,61 +1386,80 @@ async fn download_transfer(
             content_hash,
         } if transfer_id == transfer.id => (total_bytes, content_hash),
         TransferControlEnvelope::TransferError { error, .. } => return Err(error),
-        _ => return Err("发送方返回了无效文件传输响应".to_string()),
+        _ => return Err("发送方返回了无效传输响应".to_string()),
     };
     if total_bytes != transfer.total_bytes || content_hash != transfer.content_hash {
-        return Err("发送方文件已发生变化，请重新发送".to_string());
+        return Err("发送方内容已发生变化，请重新发送".to_string());
     }
 
-    let mut file = tokio::fs::File::create(&temp_path)
-        .await
-        .map_err(|error| format!("创建临时接收文件失败：{error}"))?;
     let mut buffer = vec![0u8; TRANSFER_CHUNK_SIZE];
     let mut received = 0u64;
-    let mut hasher = blake3::Hasher::new();
     let started_at = Instant::now();
     let mut last_progress = Instant::now();
-    while received < total_bytes {
-        let remaining = (total_bytes - received).min(buffer.len() as u64) as usize;
-        let count =
-            tokio::time::timeout(TRANSFER_IO_TIMEOUT, reader.read(&mut buffer[..remaining]))
-                .await
-                .map_err(|_| "接收文件数据超时".to_string())?
-                .map_err(|error| error.to_string())?;
-        if count == 0 {
-            let _ = tokio::fs::remove_file(&temp_path).await;
-            return Err("发送方提前结束了文件传输".to_string());
-        }
-        file.write_all(&buffer[..count])
+    if transfer.kind == "directory" {
+        let _temp_cleanup = TemporaryTransferDirectory(temp_path.clone());
+        tokio::fs::create_dir_all(&temp_path)
             .await
-            .map_err(|error| error.to_string())?;
-        hasher.update(&buffer[..count]);
-        received += count as u64;
-        if last_progress.elapsed() >= Duration::from_millis(150) || received == total_bytes {
+            .map_err(|error| format!("创建临时接收目录失败：{error}"))?;
+        for item in &manifest.items {
+            let target = temp_path.join(Path::new(&item.path));
+            if item.kind == "directory" {
+                tokio::fs::create_dir_all(&target)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            } else {
+                receive_manifest_file(
+                    app_handle,
+                    transfer,
+                    &mut reader,
+                    item,
+                    &target,
+                    &mut buffer,
+                    &mut received,
+                    started_at,
+                    &mut last_progress,
+                )
+                .await?;
+            }
+        }
+        if received != total_bytes {
+            return Err("目录接收字节数与清单不一致".to_string());
+        }
+        if total_bytes == 0 {
             emit_progress(
                 app_handle,
                 &transfer.id,
                 "transferring",
                 "incoming",
-                received,
-                total_bytes,
+                0,
+                0,
                 started_at,
             );
-            last_progress = Instant::now();
         }
+        atomic_commit_directory(&temp_path, destination_path)?;
+    } else {
+        let _temp_cleanup = TemporaryTransferFile(temp_path.clone());
+        let item = manifest
+            .items
+            .first()
+            .ok_or_else(|| "文件传输清单为空".to_string())?;
+        receive_manifest_file(
+            app_handle,
+            transfer,
+            &mut reader,
+            item,
+            &temp_path,
+            &mut buffer,
+            &mut received,
+            started_at,
+            &mut last_progress,
+        )
+        .await?;
+        if is_image_transfer(transfer) {
+            validate_received_image(&temp_path).await?;
+        }
+        atomic_replace_file(&temp_path, destination_path)?;
     }
-    file.flush().await.map_err(|error| error.to_string())?;
-    file.sync_all().await.map_err(|error| error.to_string())?;
-    drop(file);
-    let actual_hash = hasher.finalize().to_hex().to_string();
-    if actual_hash != content_hash {
-        let _ = tokio::fs::remove_file(&temp_path).await;
-        return Err("文件完整性校验失败，临时文件已删除".to_string());
-    }
-    if is_image_transfer(transfer) {
-        validate_received_image(&temp_path).await?;
-    }
-    atomic_replace_file(&temp_path, destination_path)?;
     let _ = write_envelope(
         &mut writer,
         &TransferControlEnvelope::TransferReceipt {
@@ -1072,7 +1500,10 @@ pub async fn respond_lan_transfer(
             }
             let rejected = reject_incoming_transfer(&conn, &transfer.id)?;
             emit_changed(&app_handle, &rejected);
-            let notification_error = match transfer_target(&transfer.from_id) {
+            let notification_error = match transfer_target(
+                &transfer.from_id,
+                transfer_min_protocol_version(&transfer.kind),
+            ) {
                 Ok(peer) => send_rejection(&peer.ip, &transfer.id, &profile.id)
                     .await
                     .err(),
@@ -1092,7 +1523,10 @@ pub async fn respond_lan_transfer(
             if transfer.status != "pending" && transfer.status != "failed" {
                 return Err("当前传输状态不能开始接收".to_string());
             }
-            let peer = transfer_target(&transfer.from_id)?;
+            let peer = transfer_target(
+                &transfer.from_id,
+                transfer_min_protocol_version(&transfer.kind),
+            )?;
             let path_guard = RECEIVE_PATH_LOCK
                 .lock()
                 .map_err(|error| error.to_string())?;
@@ -1210,6 +1644,64 @@ fn transfer_from_offer(offer: &WireTransferOffer) -> LanTransfer {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn send_manifest_file(
+    app_handle: &tauri::AppHandle,
+    transfer: &LanTransfer,
+    writer: &mut OwnedWriteHalf,
+    item: &TransferManifestItem,
+    source_path: &Path,
+    buffer: &mut [u8],
+    sent_total: &mut u64,
+    started_at: Instant,
+    last_progress: &mut Instant,
+) -> Result<(), String> {
+    let mut file = tokio::fs::File::open(source_path)
+        .await
+        .map_err(|error| format!("读取发送源失败：{error}"))?;
+    let mut file_sent = 0u64;
+    while file_sent < item.size_bytes {
+        let remaining = (item.size_bytes - file_sent).min(buffer.len() as u64) as usize;
+        let count = file
+            .read(&mut buffer[..remaining])
+            .await
+            .map_err(|error| error.to_string())?;
+        if count == 0 {
+            return Err(format!("发送源文件在传输前被截断：{}", item.path));
+        }
+        tokio::time::timeout(TRANSFER_IO_TIMEOUT, writer.write_all(&buffer[..count]))
+            .await
+            .map_err(|_| "发送文件数据超时".to_string())?
+            .map_err(|error| error.to_string())?;
+        file_sent += count as u64;
+        *sent_total += count as u64;
+        if last_progress.elapsed() >= Duration::from_millis(150)
+            || *sent_total == transfer.total_bytes
+        {
+            emit_progress(
+                app_handle,
+                &transfer.id,
+                "transferring",
+                "outgoing",
+                *sent_total,
+                transfer.total_bytes,
+                started_at,
+            );
+            *last_progress = Instant::now();
+        }
+    }
+    let mut extra = [0u8; 1];
+    if file
+        .read(&mut extra)
+        .await
+        .map_err(|error| error.to_string())?
+        != 0
+    {
+        return Err(format!("发送源文件大小已发生变化：{}", item.path));
+    }
+    Ok(())
+}
+
 async fn serve_transfer(
     transfer_id: &str,
     receiver_id: &str,
@@ -1239,7 +1731,7 @@ async fn serve_transfer(
     emit_changed(app_handle, &transferring);
 
     let result = async {
-        let source_path = verify_source_unchanged(&transfer).await?;
+        let (source_path, manifest) = verify_source_unchanged(&transfer).await?;
         write_envelope(
             writer,
             &TransferControlEnvelope::TransferReady {
@@ -1250,39 +1742,60 @@ async fn serve_transfer(
         )
         .await?;
 
-        let mut file = tokio::fs::File::open(&source_path)
-            .await
-            .map_err(|error| error.to_string())?;
         let mut buffer = vec![0u8; TRANSFER_CHUNK_SIZE];
         let mut sent = 0u64;
         let started_at = Instant::now();
         let mut last_progress = Instant::now();
-        loop {
-            let count = file
-                .read(&mut buffer)
-                .await
-                .map_err(|error| error.to_string())?;
-            if count == 0 {
-                break;
-            }
-            tokio::time::timeout(TRANSFER_IO_TIMEOUT, writer.write_all(&buffer[..count]))
-                .await
-                .map_err(|_| "发送文件数据超时".to_string())?
-                .map_err(|error| error.to_string())?;
-            sent += count as u64;
-            if last_progress.elapsed() >= Duration::from_millis(150) || sent == transfer.total_bytes
-            {
-                emit_progress(
+        if transfer.kind == "directory" {
+            for item in &manifest.items {
+                if item.kind != "file" {
+                    continue;
+                }
+                let item_source = source_path.join(Path::new(&item.path));
+                send_manifest_file(
                     app_handle,
-                    &transfer.id,
-                    "transferring",
-                    "outgoing",
-                    sent,
-                    transfer.total_bytes,
+                    &transfer,
+                    writer,
+                    item,
+                    &item_source,
+                    &mut buffer,
+                    &mut sent,
                     started_at,
-                );
-                last_progress = Instant::now();
+                    &mut last_progress,
+                )
+                .await?;
             }
+        } else {
+            let item = manifest
+                .items
+                .first()
+                .ok_or_else(|| "文件传输清单为空".to_string())?;
+            send_manifest_file(
+                app_handle,
+                &transfer,
+                writer,
+                item,
+                &source_path,
+                &mut buffer,
+                &mut sent,
+                started_at,
+                &mut last_progress,
+            )
+            .await?;
+        }
+        if sent != transfer.total_bytes {
+            return Err("发送字节数与传输清单不一致".to_string());
+        }
+        if transfer.total_bytes == 0 {
+            emit_progress(
+                app_handle,
+                &transfer.id,
+                "transferring",
+                "outgoing",
+                0,
+                0,
+                started_at,
+            );
         }
         writer.flush().await.map_err(|error| error.to_string())?;
         match read_envelope(reader, TRANSFER_IO_TIMEOUT).await? {
@@ -1350,7 +1863,8 @@ pub(super) async fn handle_connection(
             transfer_protocol_version,
             offer,
         } => {
-            if protocol_version < PROTOCOL_VERSION
+            let min_protocol_version = transfer_min_protocol_version(&offer.kind);
+            if protocol_version < min_protocol_version
                 || transfer_protocol_version != TRANSFER_PROTOCOL_VERSION
             {
                 return Err("不兼容的文件传输协议版本".to_string());
@@ -1362,9 +1876,6 @@ pub(super) async fn handle_connection(
                 .clone()
                 .ok_or_else(|| "局域网身份尚未初始化".to_string())?;
             if offer.to_id != local_profile.id
-                || offer.kind != "file"
-                || offer.payload_format != "raw"
-                || offer.item_count != 1
                 || offer.total_bytes > MAX_TRANSFER_BYTES
                 || offer.content_hash.len() != 64
                 || !offer
@@ -1375,6 +1886,14 @@ pub(super) async fn handle_connection(
                 return Err("收到无效的文件传输请求".to_string());
             }
             validate_file_name(&offer.display_name)?;
+            parse_and_validate_manifest(
+                &offer.kind,
+                &offer.payload_format,
+                offer.item_count,
+                offer.total_bytes,
+                &offer.content_hash,
+                &offer.manifest,
+            )?;
             let conn = open_database(&db_path)?;
             let mut contact_changed =
                 upsert_legacy_contact(&conn, &offer.from_id, &offer.from_name, &remote_ip)?
@@ -1396,8 +1915,15 @@ pub(super) async fn handle_connection(
             }
             let transfer = transfer_from_offer(&offer);
             let inserted = insert_transfer(&conn, &transfer)?;
+            let auto_receive = inserted
+                && transfer.kind == "file"
+                && should_auto_receive_image(&transfer)
+                && super::load_local_settings(&conn)
+                    .map(|settings| settings.auto_receive_images)
+                    .unwrap_or(true);
             if inserted {
                 emit_changed(&app_handle, &transfer);
+                super::notify_incoming_transfer(&app_handle, &transfer, auto_receive);
             }
             write_envelope(
                 writer,
@@ -1406,12 +1932,7 @@ pub(super) async fn handle_connection(
                 },
             )
             .await?;
-            if inserted
-                && should_auto_receive_image(&transfer)
-                && super::load_local_settings(&conn)
-                    .map(|settings| settings.auto_receive_images)
-                    .unwrap_or(true)
-            {
+            if auto_receive {
                 let app_handle = app_handle.clone();
                 let transfer_id = transfer.id.clone();
                 tokio::spawn(async move {
@@ -1532,6 +2053,109 @@ mod tests {
         assert!(validate_file_name("image.png").is_ok());
         assert!(validate_file_name("../image.png").is_err());
         assert!(validate_file_name("folder\\image.png").is_err());
+    }
+
+    #[test]
+    fn directory_manifest_supports_nested_files_and_empty_directories() {
+        let directory =
+            std::env::temp_dir().join(format!("pm-center-transfer-tree-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(directory.join("empty")).unwrap();
+        fs::create_dir_all(directory.join("nested")).unwrap();
+        fs::write(directory.join("nested").join("hello.txt"), b"hello").unwrap();
+
+        let inspection = inspect_directory_source(fs::canonicalize(&directory).unwrap()).unwrap();
+        assert_eq!(inspection.kind, "directory");
+        assert_eq!(inspection.item_count, 3);
+        assert_eq!(inspection.total_bytes, 5);
+        let manifest = parse_and_validate_manifest(
+            &inspection.kind,
+            &inspection.payload_format,
+            inspection.item_count,
+            inspection.total_bytes,
+            &inspection.content_hash,
+            &inspection.manifest,
+        )
+        .unwrap();
+        assert!(manifest
+            .items
+            .iter()
+            .any(|item| item.path == "empty" && item.kind == "directory"));
+        assert!(manifest
+            .items
+            .iter()
+            .any(|item| item.path == "nested/hello.txt" && item.kind == "file"));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn directory_manifest_rejects_unsafe_or_conflicting_paths() {
+        fn validate(items: Vec<TransferManifestItem>, total_bytes: u64) -> Result<(), String> {
+            let manifest = TransferManifest {
+                version: 1,
+                kind: "directory".to_string(),
+                payload_format: "tree-v1".to_string(),
+                items,
+            };
+            let hash = manifest_hash(&manifest)?;
+            let value = serde_json::to_value(&manifest).map_err(|error| error.to_string())?;
+            parse_and_validate_manifest(
+                "directory",
+                "tree-v1",
+                manifest.items.len() as u64,
+                total_bytes,
+                &hash,
+                &value,
+            )
+            .map(|_| ())
+        }
+
+        let file = |path: &str| TransferManifestItem {
+            path: path.to_string(),
+            kind: "file".to_string(),
+            size_bytes: 1,
+            mime_type: None,
+            content_hash: Some("a".repeat(64)),
+            modified_at: 1,
+        };
+        assert!(validate(vec![file("../outside.txt")], 1).is_err());
+        assert!(validate(vec![file("Same.txt"), file("same.txt")], 2).is_err());
+        assert!(validate(vec![file("folder"), file("folder/nested.txt")], 2).is_err());
+    }
+
+    #[test]
+    fn legacy_file_manifest_without_item_kind_is_still_valid() {
+        let content_hash = "a".repeat(64);
+        let manifest = json!({
+            "version": 1,
+            "kind": "file",
+            "payloadFormat": "raw",
+            "items": [{
+                "path": "legacy.bin",
+                "sizeBytes": 4,
+                "mimeType": null,
+                "contentHash": content_hash,
+                "modifiedAt": 1,
+            }],
+        });
+        assert!(
+            parse_and_validate_manifest("file", "raw", 1, 4, &"a".repeat(64), &manifest,).is_ok()
+        );
+        assert_eq!(transfer_min_protocol_version("file"), 3);
+        assert_eq!(transfer_min_protocol_version("directory"), 4);
+    }
+
+    #[test]
+    fn temporary_directory_cleanup_removes_partial_tree() {
+        let directory = std::env::temp_dir().join(format!(
+            "pm-center-transfer-partial-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(directory.join("nested")).unwrap();
+        fs::write(directory.join("nested").join("partial.bin"), b"partial").unwrap();
+        {
+            let _cleanup = TemporaryTransferDirectory(directory.clone());
+        }
+        assert!(!directory.exists());
     }
 
     #[test]
