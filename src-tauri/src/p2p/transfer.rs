@@ -17,6 +17,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use walkdir::WalkDir;
 
 const TRANSFER_PROTOCOL_VERSION: u16 = 1;
+const LOBBY_TRANSFER_PROTOCOL_VERSION: u16 = 3;
 const TRANSFER_RETENTION_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 const TRANSFER_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 const TRANSFER_IO_TIMEOUT: Duration = Duration::from_secs(60);
@@ -25,6 +26,7 @@ const MAX_TRANSFER_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
 const MAX_AUTO_RECEIVE_IMAGE_BYTES: u64 = 100 * 1024 * 1024;
 const FILE_TRANSFER_MIN_PROTOCOL_VERSION: u16 = 3;
 const DIRECTORY_TRANSFER_MIN_PROTOCOL_VERSION: u16 = 4;
+const LOBBY_IMAGE_MIN_PROTOCOL_VERSION: u16 = 6;
 const MAX_DIRECTORY_ITEMS: usize = 20_000;
 const MAX_DIRECTORY_DEPTH: usize = 64;
 const MAX_RELATIVE_PATH_CHARS: usize = 2_048;
@@ -34,10 +36,13 @@ static RECEIVE_PATH_LOCK: Mutex<()> = Mutex::new(());
 #[serde(rename_all = "camelCase")]
 pub struct LanTransfer {
     pub id: String,
+    pub lobby_item_id: Option<String>,
     pub conversation_id: String,
     pub kind: String,
     pub from_id: String,
     pub from_name: String,
+    pub provider_id: String,
+    pub provider_name: String,
     pub to_id: String,
     pub display_name: String,
     pub item_count: u64,
@@ -69,8 +74,13 @@ pub struct LanTransferProgress {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OfferLanFilesRequest {
-    pub to_id: String,
+    #[serde(default)]
+    pub to_id: Option<String>,
+    #[serde(default)]
+    pub to_ids: Vec<String>,
     pub paths: Vec<String>,
+    #[serde(default)]
+    pub conversation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -98,19 +108,25 @@ pub struct RespondLanTransferRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct WireTransferOffer {
-    id: String,
-    kind: String,
-    from_id: String,
-    from_name: String,
-    to_id: String,
-    display_name: String,
-    item_count: u64,
-    total_bytes: u64,
-    mime_type: Option<String>,
-    content_hash: String,
-    payload_format: String,
-    manifest: serde_json::Value,
-    created_at: u64,
+    pub(super) id: String,
+    #[serde(default)]
+    pub(super) lobby_item_id: Option<String>,
+    pub(super) kind: String,
+    pub(super) from_id: String,
+    pub(super) from_name: String,
+    pub(super) provider_id: String,
+    pub(super) provider_name: String,
+    pub(super) to_id: String,
+    #[serde(default)]
+    pub(super) conversation_id: Option<String>,
+    pub(super) display_name: String,
+    pub(super) item_count: u64,
+    pub(super) total_bytes: u64,
+    pub(super) mime_type: Option<String>,
+    pub(super) content_hash: String,
+    pub(super) payload_format: String,
+    pub(super) manifest: serde_json::Value,
+    pub(super) created_at: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,6 +198,43 @@ pub(super) fn initialize_schema(conn: &Connection) -> Result<(), String> {
            ON lan_transfers(status);",
     )
     .map_err(|error| error.to_string())?;
+    let mut statement = conn
+        .prepare("PRAGMA table_info(lan_transfers)")
+        .map_err(|error| error.to_string())?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| error.to_string())?
+        .collect::<Result<HashSet<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    drop(statement);
+    if !columns.contains("lobby_item_id") {
+        conn.execute(
+            "ALTER TABLE lan_transfers ADD COLUMN lobby_item_id TEXT",
+            [],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    if !columns.contains("provider_id") {
+        conn.execute(
+            "ALTER TABLE lan_transfers ADD COLUMN provider_id TEXT NOT NULL DEFAULT ''",
+            [],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    if !columns.contains("provider_name") {
+        conn.execute(
+            "ALTER TABLE lan_transfers ADD COLUMN provider_name TEXT NOT NULL DEFAULT ''",
+            [],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    conn.execute_batch(
+        "UPDATE lan_transfers SET provider_id=from_id WHERE provider_id='';
+         UPDATE lan_transfers SET provider_name=from_name WHERE provider_name='';
+         CREATE INDEX IF NOT EXISTS idx_lan_transfers_lobby_item
+           ON lan_transfers(lobby_item_id);",
+    )
+    .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -231,33 +284,36 @@ pub(super) fn prune_staging_files(staging_dir: &Path) {
 }
 
 fn parse_transfer_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LanTransfer> {
-    let manifest_json: String = row.get(12)?;
+    let manifest_json: String = row.get(15)?;
     Ok(LanTransfer {
         id: row.get(0)?,
-        conversation_id: row.get(1)?,
-        kind: row.get(2)?,
-        from_id: row.get(3)?,
-        from_name: row.get(4)?,
-        to_id: row.get(5)?,
-        display_name: row.get(6)?,
-        item_count: row.get::<_, i64>(7)? as u64,
-        total_bytes: row.get::<_, i64>(8)? as u64,
-        mime_type: row.get(9)?,
-        content_hash: row.get(10)?,
-        payload_format: row.get(11)?,
+        lobby_item_id: row.get(1)?,
+        conversation_id: row.get(2)?,
+        kind: row.get(3)?,
+        from_id: row.get(4)?,
+        from_name: row.get(5)?,
+        provider_id: row.get(6)?,
+        provider_name: row.get(7)?,
+        to_id: row.get(8)?,
+        display_name: row.get(9)?,
+        item_count: row.get::<_, i64>(10)? as u64,
+        total_bytes: row.get::<_, i64>(11)? as u64,
+        mime_type: row.get(12)?,
+        content_hash: row.get(13)?,
+        payload_format: row.get(14)?,
         manifest: serde_json::from_str(&manifest_json).unwrap_or_else(|_| json!({})),
-        status: row.get(13)?,
-        direction: row.get(14)?,
-        source_path: row.get(15)?,
-        received_path: row.get(16)?,
-        error: row.get(17)?,
-        created_at: row.get::<_, i64>(18)? as u64,
-        updated_at: row.get::<_, i64>(19)? as u64,
+        status: row.get(16)?,
+        direction: row.get(17)?,
+        source_path: row.get(18)?,
+        received_path: row.get(19)?,
+        error: row.get(20)?,
+        created_at: row.get::<_, i64>(21)? as u64,
+        updated_at: row.get::<_, i64>(22)? as u64,
     })
 }
 
 const TRANSFER_COLUMNS: &str =
-    "id,conversation_id,kind,from_id,from_name,to_id,display_name,item_count,total_bytes,mime_type,content_hash,payload_format,manifest_json,status,direction,source_path,received_path,error,created_at,updated_at";
+    "id,lobby_item_id,conversation_id,kind,from_id,from_name,provider_id,provider_name,to_id,display_name,item_count,total_bytes,mime_type,content_hash,payload_format,manifest_json,status,direction,source_path,received_path,error,created_at,updated_at";
 
 pub(super) fn load_transfers(conn: &Connection) -> Result<Vec<LanTransfer>, String> {
     let query =
@@ -281,17 +337,28 @@ fn load_transfer(conn: &Connection, transfer_id: &str) -> Result<LanTransfer, St
 fn insert_transfer(conn: &Connection, transfer: &LanTransfer) -> Result<bool, String> {
     let manifest_json =
         serde_json::to_string(&transfer.manifest).map_err(|error| error.to_string())?;
+    let sql = if transfer.direction == "incoming" && transfer.lobby_item_id.is_some() {
+        "INSERT OR IGNORE INTO lan_transfers(
+           id,lobby_item_id,conversation_id,kind,from_id,from_name,provider_id,provider_name,to_id,display_name,item_count,total_bytes,mime_type,content_hash,payload_format,manifest_json,status,direction,source_path,received_path,error,created_at,updated_at
+         ) SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23
+         WHERE NOT EXISTS(SELECT 1 FROM lan_transfers WHERE lobby_item_id=?2)"
+    } else {
+        "INSERT OR IGNORE INTO lan_transfers(
+           id,lobby_item_id,conversation_id,kind,from_id,from_name,provider_id,provider_name,to_id,display_name,item_count,total_bytes,mime_type,content_hash,payload_format,manifest_json,status,direction,source_path,received_path,error,created_at,updated_at
+         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)"
+    };
     let inserted = conn
         .execute(
-            "INSERT OR IGNORE INTO lan_transfers(
-               id,conversation_id,kind,from_id,from_name,to_id,display_name,item_count,total_bytes,mime_type,content_hash,payload_format,manifest_json,status,direction,source_path,received_path,error,created_at,updated_at
-             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
+            sql,
             params![
                 transfer.id,
+                transfer.lobby_item_id,
                 transfer.conversation_id,
                 transfer.kind,
                 transfer.from_id,
                 transfer.from_name,
+                transfer.provider_id,
+                transfer.provider_name,
                 transfer.to_id,
                 transfer.display_name,
                 transfer.item_count as i64,
@@ -975,11 +1042,35 @@ fn transfer_target(contact_id: &str, min_protocol_version: u16) -> Result<Online
     Ok(peer)
 }
 
-fn transfer_min_protocol_version(kind: &str) -> u16 {
-    if kind == "directory" {
+fn transfer_min_protocol_version(kind: &str, conversation_id: Option<&str>) -> u16 {
+    if conversation_id == Some("lobby") {
+        LOBBY_IMAGE_MIN_PROTOCOL_VERSION
+    } else if kind == "directory" {
         DIRECTORY_TRANSFER_MIN_PROTOCOL_VERSION
     } else {
         FILE_TRANSFER_MIN_PROTOCOL_VERSION
+    }
+}
+
+fn resolve_offer_conversation(
+    offer: &WireTransferOffer,
+    protocol_version: u16,
+) -> Result<String, String> {
+    match offer.conversation_id.as_deref() {
+        None => Ok(format!("direct:{}", offer.from_id)),
+        Some("lobby")
+            if protocol_version >= LOBBY_IMAGE_MIN_PROTOCOL_VERSION
+                && offer.lobby_item_id.is_some()
+                && offer.kind == "file"
+                && offer
+                    .mime_type
+                    .as_deref()
+                    .is_some_and(|value| value.starts_with("image/")) =>
+        {
+            Ok("lobby".to_string())
+        }
+        Some("lobby") => Err("大厅仅支持由新版客户端发送图片".to_string()),
+        Some(_) => Err("收到无效的传输会话标识".to_string()),
     }
 }
 
@@ -1002,7 +1093,11 @@ async fn send_offer(ip: &str, offer: WireTransferOffer) -> Result<(), String> {
         &mut writer,
         &TransferControlEnvelope::TransferOffer {
             protocol_version: PROTOCOL_VERSION,
-            transfer_protocol_version: TRANSFER_PROTOCOL_VERSION,
+            transfer_protocol_version: if offer.conversation_id.as_deref() == Some("lobby") {
+                LOBBY_TRANSFER_PROTOCOL_VERSION
+            } else {
+                TRANSFER_PROTOCOL_VERSION
+            },
             offer: offer.clone(),
         },
     )
@@ -1017,17 +1112,63 @@ async fn send_offer(ip: &str, offer: WireTransferOffer) -> Result<(), String> {
     }
 }
 
+async fn retain_lobby_image(
+    app_handle: &tauri::AppHandle,
+    lobby_item_id: &str,
+    source: &SourceInspection,
+) -> Result<PathBuf, String> {
+    let root = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("lan_collaboration")
+        .join("lobby");
+    let item_directory = root.join(lobby_item_id);
+    tokio::fs::create_dir_all(&item_directory)
+        .await
+        .map_err(|error| format!("创建大厅图片副本目录失败：{error}"))?;
+    let target = item_directory.join(&source.display_name);
+    if let Err(error) = tokio::fs::copy(&source.path, &target).await {
+        let _ = tokio::fs::remove_dir_all(&item_directory).await;
+        return Err(format!("保存大厅图片副本失败：{error}"));
+    }
+    Ok(target)
+}
+
 #[tauri::command]
 pub async fn offer_lan_files(
     app_handle: tauri::AppHandle,
     request: OfferLanFilesRequest,
 ) -> Result<LanFileOfferResult, String> {
-    if request.paths.is_empty() {
+    let OfferLanFilesRequest {
+        to_id,
+        mut to_ids,
+        paths,
+        conversation_id: requested_conversation,
+    } = request;
+    if paths.is_empty() {
         return Err("请选择至少一个文件或目录".to_string());
     }
-    if request.paths.len() > 100 {
+    if paths.len() > 100 {
         return Err("一次最多发送 100 个文件或目录".to_string());
     }
+    if let Some(to_id) = to_id {
+        to_ids.push(to_id);
+    }
+    let mut seen_recipients = HashSet::new();
+    to_ids.retain(|recipient_id| {
+        !recipient_id.trim().is_empty() && seen_recipients.insert(recipient_id.clone())
+    });
+    let is_lobby = requested_conversation.as_deref() == Some("lobby");
+    if to_ids.is_empty() && !is_lobby {
+        return Err("没有可接收传输的在线联系人".to_string());
+    }
+    let conversation_id = match requested_conversation.as_deref() {
+        None if to_ids.len() == 1 => format!("direct:{}", to_ids[0]),
+        None => return Err("私聊传输只能选择一个联系人".to_string()),
+        Some("lobby") => "lobby".to_string(),
+        Some(_) => return Err("不支持的传输会话".to_string()),
+    };
     let profile = P2P_GLOBAL
         .lock()
         .map_err(|error| error.to_string())?
@@ -1038,8 +1179,8 @@ pub async fn offer_lan_files(
     let mut transfers = Vec::new();
     let mut failures = Vec::new();
 
-    for source_path in request.paths {
-        let inspection = match inspect_source(PathBuf::from(&source_path)).await {
+    for source_path in paths {
+        let mut inspection = match inspect_source(PathBuf::from(&source_path)).await {
             Ok(value) => value,
             Err(error) => {
                 failures.push(LanTransferFailure {
@@ -1049,75 +1190,151 @@ pub async fn offer_lan_files(
                 continue;
             }
         };
-        let peer = match transfer_target(
-            &request.to_id,
-            transfer_min_protocol_version(&inspection.kind),
-        ) {
-            Ok(value) => value,
-            Err(error) => {
-                failures.push(LanTransferFailure {
-                    path: source_path,
-                    error,
-                });
-                continue;
-            }
-        };
-        let transfer_id = uuid::Uuid::new_v4().to_string();
-        let created_at = now_millis();
-        let manifest = inspection.manifest.clone();
-        let offer = WireTransferOffer {
-            id: transfer_id.clone(),
-            kind: inspection.kind.clone(),
-            from_id: profile.id.clone(),
-            from_name: profile.display_name.clone(),
-            to_id: request.to_id.clone(),
-            display_name: inspection.display_name.clone(),
-            item_count: inspection.item_count,
-            total_bytes: inspection.total_bytes,
-            mime_type: inspection.mime_type.clone(),
-            content_hash: inspection.content_hash.clone(),
-            payload_format: inspection.payload_format.clone(),
-            manifest: manifest.clone(),
-            created_at,
-        };
-        let transfer = LanTransfer {
-            id: transfer_id.clone(),
-            conversation_id: format!("direct:{}", request.to_id),
-            kind: inspection.kind,
-            from_id: profile.id.clone(),
-            from_name: profile.display_name.clone(),
-            to_id: request.to_id.clone(),
-            display_name: inspection.display_name,
-            item_count: inspection.item_count,
-            total_bytes: inspection.total_bytes,
-            mime_type: inspection.mime_type,
-            content_hash: inspection.content_hash,
-            payload_format: inspection.payload_format,
-            manifest,
-            status: "waiting".to_string(),
-            direction: "outgoing".to_string(),
-            source_path: Some(inspection.path.to_string_lossy().to_string()),
-            received_path: None,
-            error: None,
-            created_at,
-            updated_at: created_at,
-        };
-        let conn = open_database(&db_path)?;
-        insert_transfer(&conn, &transfer)?;
-        if let Err(error) = send_offer(&peer.ip, offer).await {
-            conn.execute(
-                "DELETE FROM lan_transfers WHERE id=?1",
-                params![transfer.id],
-            )
-            .map_err(|database_error| database_error.to_string())?;
+        if is_lobby
+            && (inspection.kind != "file"
+                || !inspection
+                    .mime_type
+                    .as_deref()
+                    .is_some_and(|value| value.starts_with("image/")))
+        {
             failures.push(LanTransferFailure {
                 path: source_path,
-                error,
+                error: "局域网大厅只能发送图片，其他内容请在联系人私聊中发送".to_string(),
             });
             continue;
         }
-        emit_changed(&app_handle, &transfer);
-        transfers.push(transfer);
+        let lobby_item_id = is_lobby.then(|| uuid::Uuid::new_v4().to_string());
+        if let Some(item_id) = lobby_item_id.as_deref() {
+            let retained_path = match retain_lobby_image(&app_handle, item_id, &inspection).await {
+                Ok(path) => path,
+                Err(error) => {
+                    failures.push(LanTransferFailure {
+                        path: source_path,
+                        error,
+                    });
+                    continue;
+                }
+            };
+            inspection = match inspect_source(retained_path).await {
+                Ok(value) => value,
+                Err(error) => {
+                    failures.push(LanTransferFailure {
+                        path: source_path,
+                        error,
+                    });
+                    continue;
+                }
+            };
+        }
+        let created_at = now_millis();
+        if let Some(item_id) = lobby_item_id.as_ref() {
+            let canonical = LanTransfer {
+                id: item_id.clone(),
+                lobby_item_id: Some(item_id.clone()),
+                conversation_id: "lobby".to_string(),
+                kind: inspection.kind.clone(),
+                from_id: profile.id.clone(),
+                from_name: profile.display_name.clone(),
+                provider_id: profile.id.clone(),
+                provider_name: profile.display_name.clone(),
+                to_id: String::new(),
+                display_name: inspection.display_name.clone(),
+                item_count: inspection.item_count,
+                total_bytes: inspection.total_bytes,
+                mime_type: inspection.mime_type.clone(),
+                content_hash: inspection.content_hash.clone(),
+                payload_format: inspection.payload_format.clone(),
+                manifest: inspection.manifest.clone(),
+                status: "completed".to_string(),
+                direction: "outgoing".to_string(),
+                source_path: Some(inspection.path.to_string_lossy().to_string()),
+                received_path: None,
+                error: None,
+                created_at,
+                updated_at: created_at,
+            };
+            let conn = open_database(&db_path)?;
+            insert_transfer(&conn, &canonical)?;
+            emit_changed(&app_handle, &canonical);
+            transfers.push(canonical);
+        }
+        for recipient_id in &to_ids {
+            let peer = match transfer_target(
+                recipient_id,
+                transfer_min_protocol_version(&inspection.kind, is_lobby.then_some("lobby")),
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    failures.push(LanTransferFailure {
+                        path: source_path.clone(),
+                        error: format!("联系人 {recipient_id}：{error}"),
+                    });
+                    continue;
+                }
+            };
+            let transfer_id = uuid::Uuid::new_v4().to_string();
+            let manifest = inspection.manifest.clone();
+            let offer = WireTransferOffer {
+                id: transfer_id.clone(),
+                lobby_item_id: lobby_item_id.clone(),
+                kind: inspection.kind.clone(),
+                from_id: profile.id.clone(),
+                from_name: profile.display_name.clone(),
+                provider_id: profile.id.clone(),
+                provider_name: profile.display_name.clone(),
+                to_id: recipient_id.clone(),
+                conversation_id: requested_conversation.clone(),
+                display_name: inspection.display_name.clone(),
+                item_count: inspection.item_count,
+                total_bytes: inspection.total_bytes,
+                mime_type: inspection.mime_type.clone(),
+                content_hash: inspection.content_hash.clone(),
+                payload_format: inspection.payload_format.clone(),
+                manifest: manifest.clone(),
+                created_at,
+            };
+            let transfer = LanTransfer {
+                id: transfer_id.clone(),
+                lobby_item_id: lobby_item_id.clone(),
+                conversation_id: conversation_id.clone(),
+                kind: inspection.kind.clone(),
+                from_id: profile.id.clone(),
+                from_name: profile.display_name.clone(),
+                provider_id: profile.id.clone(),
+                provider_name: profile.display_name.clone(),
+                to_id: recipient_id.clone(),
+                display_name: inspection.display_name.clone(),
+                item_count: inspection.item_count,
+                total_bytes: inspection.total_bytes,
+                mime_type: inspection.mime_type.clone(),
+                content_hash: inspection.content_hash.clone(),
+                payload_format: inspection.payload_format.clone(),
+                manifest,
+                status: "waiting".to_string(),
+                direction: "outgoing".to_string(),
+                source_path: Some(inspection.path.to_string_lossy().to_string()),
+                received_path: None,
+                error: None,
+                created_at,
+                updated_at: created_at,
+            };
+            let conn = open_database(&db_path)?;
+            insert_transfer(&conn, &transfer)?;
+            if let Err(error) = send_offer(&peer.ip, offer).await {
+                conn.execute(
+                    "DELETE FROM lan_transfers WHERE id=?1",
+                    params![transfer.id],
+                )
+                .map_err(|database_error| database_error.to_string())?;
+                failures.push(LanTransferFailure {
+                    path: source_path.clone(),
+                    error: format!("{}：{error}", peer.display_name),
+                });
+                continue;
+            }
+            emit_changed(&app_handle, &transfer);
+            transfers.push(transfer);
+        }
     }
 
     Ok(LanFileOfferResult {
@@ -1501,8 +1718,11 @@ pub async fn respond_lan_transfer(
             let rejected = reject_incoming_transfer(&conn, &transfer.id)?;
             emit_changed(&app_handle, &rejected);
             let notification_error = match transfer_target(
-                &transfer.from_id,
-                transfer_min_protocol_version(&transfer.kind),
+                &transfer.provider_id,
+                transfer_min_protocol_version(
+                    &transfer.kind,
+                    Some(transfer.conversation_id.as_str()),
+                ),
             ) {
                 Ok(peer) => send_rejection(&peer.ip, &transfer.id, &profile.id)
                     .await
@@ -1524,8 +1744,11 @@ pub async fn respond_lan_transfer(
                 return Err("当前传输状态不能开始接收".to_string());
             }
             let peer = transfer_target(
-                &transfer.from_id,
-                transfer_min_protocol_version(&transfer.kind),
+                &transfer.provider_id,
+                transfer_min_protocol_version(
+                    &transfer.kind,
+                    Some(transfer.conversation_id.as_str()),
+                ),
             )?;
             let path_guard = RECEIVE_PATH_LOCK
                 .lock()
@@ -1578,6 +1801,19 @@ fn staging_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| error.to_string())
 }
 
+pub(super) fn clear_lobby_cache(app_handle: &tauri::AppHandle) -> Result<(), String> {
+    let directory = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("lan_collaboration")
+        .join("lobby");
+    if directory.exists() {
+        fs::remove_dir_all(&directory).map_err(|error| error.to_string())?;
+    }
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 pub async fn create_lan_transfer_staging_path(
     app_handle: tauri::AppHandle,
@@ -1618,14 +1854,17 @@ pub async fn discard_lan_transfer_staging_file(
     Ok(())
 }
 
-fn transfer_from_offer(offer: &WireTransferOffer) -> LanTransfer {
+fn transfer_from_offer(offer: &WireTransferOffer, conversation_id: String) -> LanTransfer {
     let received_at = now_millis();
     LanTransfer {
         id: offer.id.clone(),
-        conversation_id: format!("direct:{}", offer.from_id),
+        lobby_item_id: offer.lobby_item_id.clone(),
+        conversation_id,
         kind: offer.kind.clone(),
         from_id: offer.from_id.clone(),
         from_name: offer.from_name.clone(),
+        provider_id: offer.provider_id.clone(),
+        provider_name: offer.provider_name.clone(),
         to_id: offer.to_id.clone(),
         display_name: offer.display_name.clone(),
         item_count: offer.item_count,
@@ -1639,9 +1878,201 @@ fn transfer_from_offer(offer: &WireTransferOffer) -> LanTransfer {
         source_path: None,
         received_path: None,
         error: None,
-        created_at: received_at,
+        created_at: offer.created_at,
         updated_at: received_at,
     }
+}
+
+pub(super) fn known_lobby_image_ids(conn: &Connection) -> Result<HashSet<String>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT DISTINCT lobby_item_id FROM lan_transfers
+             WHERE conversation_id='lobby' AND lobby_item_id IS NOT NULL
+               AND status NOT IN ('failed','rejected')",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<HashSet<_>, _>>()
+        .map_err(|error| error.to_string())
+}
+
+pub(super) fn relayable_lobby_images(conn: &Connection) -> Result<Vec<LanTransfer>, String> {
+    let mut transfers = load_transfers(conn)?;
+    transfers.reverse();
+    let mut seen = HashSet::new();
+    transfers.retain(|transfer| {
+        let Some(item_id) = transfer.lobby_item_id.as_ref() else {
+            return false;
+        };
+        if transfer.conversation_id != "lobby" || !is_image_transfer(transfer) {
+            return false;
+        }
+        let has_copy = transfer
+            .received_path
+            .as_deref()
+            .filter(|path| Path::new(path).is_file())
+            .or_else(|| {
+                transfer
+                    .source_path
+                    .as_deref()
+                    .filter(|path| Path::new(path).is_file())
+            })
+            .is_some();
+        has_copy && seen.insert(item_id.clone())
+    });
+    Ok(transfers)
+}
+
+pub(super) async fn prepare_lobby_history_offer(
+    db_path: &Path,
+    source: &LanTransfer,
+    requester_id: &str,
+    provider: &super::LanProfile,
+) -> Result<WireTransferOffer, String> {
+    let item_id = source
+        .lobby_item_id
+        .clone()
+        .ok_or_else(|| "大厅图片缺少公共条目标识".to_string())?;
+    let local_path = source
+        .received_path
+        .as_deref()
+        .filter(|path| Path::new(path).is_file())
+        .or_else(|| {
+            source
+                .source_path
+                .as_deref()
+                .filter(|path| Path::new(path).is_file())
+        })
+        .ok_or_else(|| "大厅图片本地副本已不存在".to_string())?;
+    let inspection = inspect_source(PathBuf::from(local_path)).await?;
+    if inspection.kind != "file"
+        || !inspection
+            .mime_type
+            .as_deref()
+            .is_some_and(|value| value.starts_with("image/"))
+        || inspection.content_hash != source.content_hash
+    {
+        return Err("大厅历史图片副本已不存在或内容已变化".to_string());
+    }
+    let transfer_id = uuid::Uuid::new_v4().to_string();
+    let transfer = LanTransfer {
+        id: transfer_id.clone(),
+        lobby_item_id: Some(item_id.clone()),
+        conversation_id: "lobby".to_string(),
+        kind: inspection.kind.clone(),
+        from_id: source.from_id.clone(),
+        from_name: source.from_name.clone(),
+        provider_id: provider.id.clone(),
+        provider_name: provider.display_name.clone(),
+        to_id: requester_id.to_string(),
+        display_name: inspection.display_name.clone(),
+        item_count: inspection.item_count,
+        total_bytes: inspection.total_bytes,
+        mime_type: inspection.mime_type.clone(),
+        content_hash: inspection.content_hash.clone(),
+        payload_format: inspection.payload_format.clone(),
+        manifest: inspection.manifest.clone(),
+        status: "waiting".to_string(),
+        direction: "outgoing".to_string(),
+        source_path: Some(inspection.path.to_string_lossy().to_string()),
+        received_path: None,
+        error: None,
+        created_at: source.created_at,
+        updated_at: now_millis(),
+    };
+    insert_transfer(&open_database(db_path)?, &transfer)?;
+    Ok(WireTransferOffer {
+        id: transfer_id,
+        lobby_item_id: Some(item_id),
+        kind: transfer.kind,
+        from_id: transfer.from_id,
+        from_name: transfer.from_name,
+        provider_id: transfer.provider_id,
+        provider_name: transfer.provider_name,
+        to_id: transfer.to_id,
+        conversation_id: Some("lobby".to_string()),
+        display_name: transfer.display_name,
+        item_count: transfer.item_count,
+        total_bytes: transfer.total_bytes,
+        mime_type: transfer.mime_type,
+        content_hash: transfer.content_hash,
+        payload_format: transfer.payload_format,
+        manifest: transfer.manifest,
+        created_at: transfer.created_at,
+    })
+}
+
+pub(super) async fn accept_lobby_history_offers(
+    offers: Vec<WireTransferOffer>,
+    remote_ip: &str,
+    app_handle: &tauri::AppHandle,
+    db_path: &Path,
+) -> Result<usize, String> {
+    let local_profile = P2P_GLOBAL
+        .lock()
+        .map_err(|error| error.to_string())?
+        .profile
+        .clone()
+        .ok_or_else(|| "局域网身份尚未初始化".to_string())?;
+    let conn = open_database(db_path)?;
+    let mut inserted_count = 0usize;
+    for offer in offers {
+        if offer.to_id != local_profile.id
+            || offer.provider_id.is_empty()
+            || offer.lobby_item_id.is_none()
+            || resolve_offer_conversation(&offer, PROTOCOL_VERSION).as_deref() != Ok("lobby")
+        {
+            continue;
+        }
+        if validate_peer_ip(&offer.provider_id, remote_ip).is_err()
+            || parse_and_validate_manifest(
+                &offer.kind,
+                &offer.payload_format,
+                offer.item_count,
+                offer.total_bytes,
+                &offer.content_hash,
+                &offer.manifest,
+            )
+            .is_err()
+        {
+            continue;
+        }
+        let transfer = transfer_from_offer(&offer, "lobby".to_string());
+        if let Some(item_id) = transfer.lobby_item_id.as_deref() {
+            conn.execute(
+                "DELETE FROM lan_transfers
+                 WHERE lobby_item_id=?1 AND direction='incoming'
+                   AND status IN ('failed','rejected')",
+                params![item_id],
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        if !insert_transfer(&conn, &transfer)? {
+            let _ = send_rejection(remote_ip, &offer.id, &local_profile.id).await;
+            continue;
+        }
+        inserted_count += 1;
+        emit_changed(app_handle, &transfer);
+        if should_auto_receive_image(&transfer) {
+            let app_handle = app_handle.clone();
+            let transfer_id = transfer.id.clone();
+            tokio::spawn(async move {
+                tokio::task::yield_now().await;
+                let _ = respond_lan_transfer(
+                    app_handle,
+                    RespondLanTransferRequest {
+                        transfer_id,
+                        action: "accept".to_string(),
+                        destination_path: None,
+                    },
+                )
+                .await;
+            });
+        }
+    }
+    Ok(inserted_count)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1863,9 +2294,15 @@ pub(super) async fn handle_connection(
             transfer_protocol_version,
             offer,
         } => {
-            let min_protocol_version = transfer_min_protocol_version(&offer.kind);
+            let min_protocol_version =
+                transfer_min_protocol_version(&offer.kind, offer.conversation_id.as_deref());
+            let expected_transfer_protocol = if offer.conversation_id.as_deref() == Some("lobby") {
+                LOBBY_TRANSFER_PROTOCOL_VERSION
+            } else {
+                TRANSFER_PROTOCOL_VERSION
+            };
             if protocol_version < min_protocol_version
-                || transfer_protocol_version != TRANSFER_PROTOCOL_VERSION
+                || transfer_protocol_version != expected_transfer_protocol
             {
                 return Err("不兼容的文件传输协议版本".to_string());
             }
@@ -1876,6 +2313,7 @@ pub(super) async fn handle_connection(
                 .clone()
                 .ok_or_else(|| "局域网身份尚未初始化".to_string())?;
             if offer.to_id != local_profile.id
+                || offer.provider_id.is_empty()
                 || offer.total_bytes > MAX_TRANSFER_BYTES
                 || offer.content_hash.len() != 64
                 || !offer
@@ -1885,7 +2323,9 @@ pub(super) async fn handle_connection(
             {
                 return Err("收到无效的文件传输请求".to_string());
             }
+            validate_peer_ip(&offer.provider_id, &remote_ip)?;
             validate_file_name(&offer.display_name)?;
+            let conversation_id = resolve_offer_conversation(&offer, protocol_version)?;
             parse_and_validate_manifest(
                 &offer.kind,
                 &offer.payload_format,
@@ -1896,31 +2336,32 @@ pub(super) async fn handle_connection(
             )?;
             let conn = open_database(&db_path)?;
             let mut contact_changed =
-                upsert_legacy_contact(&conn, &offer.from_id, &offer.from_name, &remote_ip)?
-                    | set_online_legacy_peer(&offer.from_id, &offer.from_name, &remote_ip)?;
+                upsert_legacy_contact(&conn, &offer.provider_id, &offer.provider_name, &remote_ip)?
+                    | set_online_legacy_peer(&offer.provider_id, &offer.provider_name, &remote_ip)?;
             let updated_protocol = conn
                 .execute(
                     "UPDATE lan_contacts SET protocol_version=MAX(protocol_version,?2) WHERE id=?1 AND protocol_version<?2",
-                    params![offer.from_id, protocol_version as i64],
+                    params![offer.provider_id, protocol_version as i64],
                 )
                 .map_err(|error| error.to_string())?;
             contact_changed |= updated_protocol > 0;
             if let Ok(mut state) = P2P_GLOBAL.lock() {
-                if let Some(peer) = state.online_users.get_mut(&offer.from_id) {
+                if let Some(peer) = state.online_users.get_mut(&offer.provider_id) {
                     peer.protocol_version = peer.protocol_version.max(protocol_version);
                 }
             }
             if contact_changed {
                 emit_contacts_changed(&app_handle);
             }
-            let transfer = transfer_from_offer(&offer);
+            let transfer = transfer_from_offer(&offer, conversation_id);
             let inserted = insert_transfer(&conn, &transfer)?;
             let auto_receive = inserted
                 && transfer.kind == "file"
                 && should_auto_receive_image(&transfer)
-                && super::load_local_settings(&conn)
-                    .map(|settings| settings.auto_receive_images)
-                    .unwrap_or(true);
+                && (transfer.conversation_id == "lobby"
+                    || super::load_local_settings(&conn)
+                        .map(|settings| settings.auto_receive_images)
+                        .unwrap_or(true));
             if inserted {
                 emit_changed(&app_handle, &transfer);
                 super::notify_incoming_transfer(&app_handle, &transfer, auto_receive);
@@ -2021,10 +2462,13 @@ mod tests {
         initialize_schema(&conn).unwrap();
         let transfer = LanTransfer {
             id: "transfer-1".to_string(),
+            lobby_item_id: None,
             conversation_id: "direct:peer".to_string(),
             kind: "file".to_string(),
             from_id: "self".to_string(),
             from_name: "Self".to_string(),
+            provider_id: "self".to_string(),
+            provider_name: "Self".to_string(),
             to_id: "peer".to_string(),
             display_name: "test.bin".to_string(),
             item_count: 1,
@@ -2140,8 +2584,9 @@ mod tests {
         assert!(
             parse_and_validate_manifest("file", "raw", 1, 4, &"a".repeat(64), &manifest,).is_ok()
         );
-        assert_eq!(transfer_min_protocol_version("file"), 3);
-        assert_eq!(transfer_min_protocol_version("directory"), 4);
+        assert_eq!(transfer_min_protocol_version("file", None), 3);
+        assert_eq!(transfer_min_protocol_version("directory", None), 4);
+        assert_eq!(transfer_min_protocol_version("file", Some("lobby")), 6);
     }
 
     #[test]
@@ -2159,6 +2604,35 @@ mod tests {
     }
 
     #[test]
+    fn lobby_transfer_only_accepts_images_from_current_protocol() {
+        let mut offer = WireTransferOffer {
+            id: "lobby-image".to_string(),
+            lobby_item_id: Some("lobby-item".to_string()),
+            kind: "file".to_string(),
+            from_id: "sender".to_string(),
+            from_name: "Sender".to_string(),
+            provider_id: "sender".to_string(),
+            provider_name: "Sender".to_string(),
+            to_id: "receiver".to_string(),
+            conversation_id: Some("lobby".to_string()),
+            display_name: "image.png".to_string(),
+            item_count: 1,
+            total_bytes: 4,
+            mime_type: Some("image/png".to_string()),
+            content_hash: "a".repeat(64),
+            payload_format: "raw".to_string(),
+            manifest: json!({}),
+            created_at: 1,
+        };
+        assert_eq!(resolve_offer_conversation(&offer, 6).unwrap(), "lobby");
+        assert!(resolve_offer_conversation(&offer, 5).is_err());
+        offer.mime_type = Some("application/octet-stream".to_string());
+        assert!(resolve_offer_conversation(&offer, 6).is_err());
+        offer.kind = "directory".to_string();
+        assert!(resolve_offer_conversation(&offer, 6).is_err());
+    }
+
+    #[test]
     fn incoming_transfer_can_only_be_claimed_or_rejected_once() {
         let path = temp_db("claim");
         let conn = Connection::open(&path).unwrap();
@@ -2166,10 +2640,13 @@ mod tests {
 
         let mut transfer = LanTransfer {
             id: "incoming-claim".to_string(),
+            lobby_item_id: None,
             conversation_id: "direct:sender".to_string(),
             kind: "file".to_string(),
             from_id: "sender".to_string(),
             from_name: "Sender".to_string(),
+            provider_id: "sender".to_string(),
+            provider_name: "Sender".to_string(),
             to_id: "receiver".to_string(),
             display_name: "test.bin".to_string(),
             item_count: 1,
@@ -2213,6 +2690,49 @@ mod tests {
     }
 
     #[test]
+    fn lobby_images_are_deduplicated_across_multiple_providers() {
+        let path = temp_db("lobby-dedup");
+        let conn = Connection::open(&path).unwrap();
+        initialize_schema(&conn).unwrap();
+        let mut transfer = LanTransfer {
+            id: "offer-a".to_string(),
+            lobby_item_id: Some("shared-lobby-item".to_string()),
+            conversation_id: "lobby".to_string(),
+            kind: "file".to_string(),
+            from_id: "author".to_string(),
+            from_name: "Author".to_string(),
+            provider_id: "provider-a".to_string(),
+            provider_name: "Provider A".to_string(),
+            to_id: "receiver".to_string(),
+            display_name: "image.png".to_string(),
+            item_count: 1,
+            total_bytes: 4,
+            mime_type: Some("image/png".to_string()),
+            content_hash: "a".repeat(64),
+            payload_format: "raw".to_string(),
+            manifest: json!({ "version": 1 }),
+            status: "pending".to_string(),
+            direction: "incoming".to_string(),
+            source_path: None,
+            received_path: None,
+            error: None,
+            created_at: 1,
+            updated_at: 1,
+        };
+        assert!(insert_transfer(&conn, &transfer).unwrap());
+        transfer.id = "offer-b".to_string();
+        transfer.provider_id = "provider-b".to_string();
+        transfer.provider_name = "Provider B".to_string();
+        assert!(!insert_transfer(&conn, &transfer).unwrap());
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM lan_transfers", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        drop(conn);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn sender_names_are_safe_directory_names() {
         assert_eq!(sanitize_sender_directory(" Alice ", "peer"), "Alice");
         assert_eq!(sanitize_sender_directory("A/B:C*", "peer"), "A_B_C_");
@@ -2245,10 +2765,14 @@ mod tests {
             transfer_protocol_version: TRANSFER_PROTOCOL_VERSION,
             offer: WireTransferOffer {
                 id: "transfer-1".to_string(),
+                lobby_item_id: None,
                 kind: "file".to_string(),
                 from_id: "sender".to_string(),
                 from_name: "Sender".to_string(),
+                provider_id: "sender".to_string(),
+                provider_name: "Sender".to_string(),
                 to_id: "receiver".to_string(),
+                conversation_id: None,
                 display_name: "image.png".to_string(),
                 item_count: 1,
                 total_bytes: 4,

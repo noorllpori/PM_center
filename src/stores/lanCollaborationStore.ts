@@ -46,10 +46,13 @@ export interface LanMessage {
 
 export interface LanTransfer {
   id: string;
+  lobbyItemId: string | null;
   conversationId: string;
   kind: string;
   fromId: string;
   fromName: string;
+  providerId: string;
+  providerName: string;
   toId: string;
   displayName: string;
   itemCount: number;
@@ -157,7 +160,11 @@ interface LanCollaborationState {
   startDiscovery: () => Promise<void>;
   stopDiscovery: () => Promise<void>;
   sendMessage: (conversationId: string, content: string) => Promise<LanDeliveryResult>;
-  offerFiles: (contactId: string, paths: string[]) => Promise<LanFileOfferResult>;
+  offerFiles: (
+    contactIds: string | string[],
+    paths: string[],
+    conversationId?: 'lobby' | null,
+  ) => Promise<LanFileOfferResult>;
   respondTransfer: (transferId: string, action: 'accept' | 'reject', destinationPath?: string) => Promise<LanTransfer>;
   createTransferStagingPath: (fileName: string) => Promise<string>;
   discardTransferStagingFile: (path: string) => Promise<void>;
@@ -369,9 +376,15 @@ export const useLanCollaborationStore = create<LanCollaborationState>((set, get)
     return result;
   },
 
-  offerFiles: async (contactId, paths) => {
+  offerFiles: async (contactIds, paths, conversationId = null) => {
+    const recipients = Array.isArray(contactIds) ? contactIds : [contactIds];
     const result = await invoke<LanFileOfferResult>('offer_lan_files', {
-      request: { toId: contactId, paths },
+      request: {
+        toId: recipients.length === 1 ? recipients[0] : null,
+        toIds: recipients.length > 1 ? recipients : [],
+        paths,
+        conversationId,
+      },
     });
     await get().refresh();
     return result;

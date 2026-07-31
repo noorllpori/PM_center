@@ -36,6 +36,9 @@ function TransferIcon({ kind, mimeType }: { kind: string; mimeType: string | nul
 }
 
 function statusLabel(transfer: LanTransfer) {
+  if (transfer.conversationId === 'lobby'
+    && transfer.direction === 'outgoing'
+    && transfer.lobbyItemId === transfer.id) return '已发布';
   const autoReceivingImage = transfer.direction === 'incoming'
     && transfer.status === 'pending'
     && transfer.totalBytes <= 100 * 1024 * 1024
@@ -56,6 +59,7 @@ export function LanTransferCard({
   transfer,
   progress,
   avatar,
+  recipientName,
   busy = false,
   onAccept,
   onReject,
@@ -63,6 +67,7 @@ export function LanTransferCard({
   transfer: LanTransfer;
   progress?: LanTransferProgress;
   avatar?: React.ReactNode;
+  recipientName?: string | null;
   busy?: boolean;
   onAccept: (transfer: LanTransfer) => void;
   onReject: (transfer: LanTransfer) => void;
@@ -87,7 +92,11 @@ export function LanTransferCard({
     <div className={`flex gap-2.5 ${outgoing ? 'justify-end' : 'justify-start'}`}>
       {!outgoing ? avatar : null}
       <div className={`w-full max-w-[min(78%,520px)] ${outgoing ? 'items-end' : 'items-start'}`}>
-        {!outgoing ? <p className="mb-1 px-1 text-[11px] text-gray-500">{transfer.fromName}</p> : null}
+        {!outgoing ? (
+          <p className="mb-1 px-1 text-[11px] text-gray-500">{transfer.fromName}</p>
+        ) : recipientName ? (
+          <p className="mb-1 px-1 text-right text-[11px] text-gray-500">发送给 {recipientName}</p>
+        ) : null}
         <div className="overflow-hidden rounded-md border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
           {transfer.kind === 'file' && transfer.mimeType?.startsWith('image/') && localPath ? (
             <img

@@ -24,7 +24,7 @@ pub use transfer::{
 
 const DISCOVERY_PORT: u16 = 31523;
 const MESSAGE_PORT: u16 = 31524;
-const PROTOCOL_VERSION: u16 = 4;
+const PROTOCOL_VERSION: u16 = 6;
 const BROADCAST_INTERVAL: Duration = Duration::from_secs(4);
 const USER_TIMEOUT: Duration = Duration::from_secs(16);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -34,6 +34,8 @@ const MAX_CONTROL_BYTES: usize = 8 * 1024 * 1024;
 const MAX_AVATAR_SOURCE_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_AVATAR_BYTES: usize = 64 * 1024;
 const MESSAGE_RETENTION_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+const LOBBY_HISTORY_LIMIT: usize = 30;
+const LOBBY_HISTORY_SYNC_INTERVAL_MS: u64 = 30 * 1000;
 
 fn notification_preview(content: &str) -> String {
     const MAX_CHARS: usize = 120;
@@ -147,7 +149,9 @@ fn notify_incoming_transfer(
     transfer: &LanTransfer,
     auto_receiving: bool,
 ) {
-    let body = if transfer.kind == "directory" {
+    let body = if transfer.conversation_id == "lobby" {
+        format!("在大厅发来图片：{}，正在自动接收", transfer.display_name)
+    } else if transfer.kind == "directory" {
         format!(
             "发来目录：{}（{} 个项目），等待你接收",
             transfer.display_name, transfer.item_count
@@ -479,6 +483,16 @@ enum LanControlEnvelope {
         profile: WireProfile,
         avatar_base64: Option<String>,
     },
+    LobbyHistoryRequest {
+        requester_id: String,
+        #[serde(default)]
+        known_image_ids: Vec<String>,
+        limit: u16,
+    },
+    LobbyHistoryResponse {
+        messages: Vec<P2PMessage>,
+        image_offers: Vec<transfer::WireTransferOffer>,
+    },
 }
 
 #[derive(Clone)]
@@ -503,6 +517,7 @@ struct P2PStateInner {
     tcp_server_started: bool,
     announce_generation: u64,
     last_cleanup_at: u64,
+    last_history_sync: HashMap<String, u64>,
     service: LanServiceStatus,
 }
 
@@ -519,6 +534,7 @@ lazy_static::lazy_static! {
         tcp_server_started: false,
         announce_generation: 0,
         last_cleanup_at: 0,
+        last_history_sync: HashMap::new(),
         service: LanServiceStatus::default(),
     }));
 }
@@ -1140,6 +1156,21 @@ async fn run_discovery_loop(socket: UdpSocket, app_handle: tauri::AppHandle, db_
                             emit_service_status(&app_handle);
                         }
                     });
+                } else if protocol_version >= PROTOCOL_VERSION {
+                    let app_handle = app_handle.clone();
+                    let db_path = db_path.clone();
+                    let peer_id = profile.id.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) =
+                            sync_lobby_history(&peer_id, &ip, app_handle.clone(), db_path).await
+                        {
+                            if let Ok(mut state) = P2P_GLOBAL.lock() {
+                                state.service.last_error =
+                                    Some(format!("与 {ip} 同步大厅记录失败：{error}"));
+                            }
+                            emit_service_status(&app_handle);
+                        }
+                    });
                 }
             }
         }
@@ -1169,8 +1200,15 @@ async fn write_json_line<T: Serialize>(
 async fn read_json_line(
     reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>,
 ) -> Result<String, String> {
+    read_json_line_with_timeout(reader, DELIVERY_ACK_TIMEOUT).await
+}
+
+async fn read_json_line_with_timeout(
+    reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>,
+    timeout: Duration,
+) -> Result<String, String> {
     let mut line = String::new();
-    tokio::time::timeout(DELIVERY_ACK_TIMEOUT, reader.read_line(&mut line))
+    tokio::time::timeout(timeout, reader.read_line(&mut line))
         .await
         .map_err(|_| "等待对方响应超时".to_string())?
         .map_err(|error| error.to_string())?;
@@ -1202,7 +1240,7 @@ async fn send_hello_and_fetch(
     )
     .await?;
     let mut reader = BufReader::new(reader);
-    let line = read_json_line(&mut reader).await?;
+    let line = read_json_line_with_timeout(&mut reader, Duration::from_secs(60)).await?;
     let envelope: LanControlEnvelope =
         serde_json::from_str(line.trim()).map_err(|error| error.to_string())?;
     let LanControlEnvelope::HelloAck {
@@ -1221,7 +1259,11 @@ async fn send_hello_and_fetch(
     if changed {
         emit_contacts_changed(&app_handle);
     }
-    fetch_remote_avatar(ip, &remote_profile, app_handle, db_path).await
+    fetch_remote_avatar(ip, &remote_profile, app_handle.clone(), db_path.clone()).await?;
+    if protocol_version >= PROTOCOL_VERSION {
+        sync_lobby_history(&remote_profile.id, ip, app_handle, db_path).await?;
+    }
+    Ok(())
 }
 
 fn contact_avatar_is_current(
@@ -1312,6 +1354,189 @@ async fn fetch_remote_avatar(
     )
     .map_err(|error| error.to_string())?;
     emit_contacts_changed(&app_handle);
+    Ok(())
+}
+
+fn recent_lobby_messages(conn: &Connection) -> Result<Vec<P2PMessage>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT id,from_id,from_name,content,timestamp
+             FROM lan_messages
+             WHERE conversation_id='lobby' AND to_id IS NULL
+             ORDER BY timestamp DESC LIMIT ?1",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![LOBBY_HISTORY_LIMIT as i64], |row| {
+            Ok(P2PMessage {
+                id: row.get(0)?,
+                from_id: row.get(1)?,
+                from_name: row.get(2)?,
+                to_id: None,
+                content: row.get(3)?,
+                timestamp: row.get::<_, i64>(4)? as u64,
+                protocol_version: Some(PROTOCOL_VERSION),
+            })
+        })
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())
+}
+
+async fn build_lobby_history(
+    db_path: &Path,
+    requester_id: &str,
+    known_image_ids: &HashSet<String>,
+    requested_limit: u16,
+) -> Result<(Vec<P2PMessage>, Vec<transfer::WireTransferOffer>), String> {
+    enum HistoryEntry {
+        Message(P2PMessage),
+        Image(LanTransfer),
+    }
+
+    impl HistoryEntry {
+        fn timestamp(&self) -> u64 {
+            match self {
+                Self::Message(message) => message.timestamp,
+                Self::Image(transfer) => transfer.created_at,
+            }
+        }
+    }
+
+    let conn = open_database(db_path)?;
+    let mut entries = recent_lobby_messages(&conn)?
+        .into_iter()
+        .map(HistoryEntry::Message)
+        .chain(
+            transfer::relayable_lobby_images(&conn)?
+                .into_iter()
+                .map(HistoryEntry::Image),
+        )
+        .collect::<Vec<_>>();
+    drop(conn);
+    entries.sort_by_key(HistoryEntry::timestamp);
+    let limit = usize::from(requested_limit).clamp(1, LOBBY_HISTORY_LIMIT);
+    if entries.len() > limit {
+        entries.drain(..entries.len() - limit);
+    }
+
+    let provider = P2P_GLOBAL
+        .lock()
+        .map_err(|error| error.to_string())?
+        .profile
+        .clone()
+        .ok_or_else(|| "局域网身份尚未初始化".to_string())?;
+    let mut messages = Vec::new();
+    let mut image_offers = Vec::new();
+    for entry in entries {
+        match entry {
+            HistoryEntry::Message(message) => messages.push(message),
+            HistoryEntry::Image(transfer) => {
+                if transfer
+                    .lobby_item_id
+                    .as_ref()
+                    .is_some_and(|id| known_image_ids.contains(id))
+                {
+                    continue;
+                }
+                match transfer::prepare_lobby_history_offer(
+                    db_path,
+                    &transfer,
+                    requester_id,
+                    &provider,
+                )
+                .await
+                {
+                    Ok(offer) => image_offers.push(offer),
+                    Err(error) => eprintln!(
+                        "[P2P] 跳过无法提供的大厅图片 {}：{error}",
+                        transfer.display_name
+                    ),
+                }
+            }
+        }
+    }
+    Ok((messages, image_offers))
+}
+
+async fn sync_lobby_history(
+    peer_id: &str,
+    ip: &str,
+    app_handle: tauri::AppHandle,
+    db_path: PathBuf,
+) -> Result<(), String> {
+    let local_profile = {
+        let mut state = P2P_GLOBAL.lock().map_err(|error| error.to_string())?;
+        let now = now_millis();
+        if state
+            .last_history_sync
+            .get(peer_id)
+            .is_some_and(|last| now.saturating_sub(*last) < LOBBY_HISTORY_SYNC_INTERVAL_MS)
+        {
+            return Ok(());
+        }
+        state.last_history_sync.insert(peer_id.to_string(), now);
+        state
+            .profile
+            .clone()
+            .ok_or_else(|| "局域网身份尚未初始化".to_string())?
+    };
+    let known_image_ids = transfer::known_lobby_image_ids(&open_database(&db_path)?)?;
+    let stream = connect_to_peer(ip).await?;
+    let (reader, mut writer) = stream.into_split();
+    write_json_line(
+        &mut writer,
+        &LanControlEnvelope::LobbyHistoryRequest {
+            requester_id: local_profile.id.clone(),
+            known_image_ids: known_image_ids.into_iter().take(5_000).collect(),
+            limit: LOBBY_HISTORY_LIMIT as u16,
+        },
+    )
+    .await?;
+    let mut reader = BufReader::new(reader);
+    let line = read_json_line_with_timeout(&mut reader, Duration::from_secs(60)).await?;
+    let envelope: LanControlEnvelope =
+        serde_json::from_str(line.trim()).map_err(|error| error.to_string())?;
+    let LanControlEnvelope::LobbyHistoryResponse {
+        mut messages,
+        image_offers,
+    } = envelope
+    else {
+        return Err("对方未返回大厅历史".to_string());
+    };
+    if messages.len() + image_offers.len() > LOBBY_HISTORY_LIMIT {
+        return Err("对方返回的大厅历史超过限制".to_string());
+    }
+    messages.sort_by_key(|message| message.timestamp);
+    let conn = open_database(&db_path)?;
+    for message in messages {
+        if message.id.is_empty()
+            || message.to_id.is_some()
+            || message.content.trim().is_empty()
+            || message.content.as_bytes().len() > MAX_MESSAGE_BYTES
+        {
+            continue;
+        }
+        let direction = if message.from_id == local_profile.id {
+            "outgoing"
+        } else {
+            "incoming"
+        };
+        if insert_message(
+            &conn,
+            &message,
+            &local_profile.id,
+            direction,
+            "synced",
+            None,
+        )? {
+            let lan_message =
+                wire_to_lan_message(&message, &local_profile.id, direction, "synced", None);
+            let _ = app_handle.emit("pm-center:lan-message", &lan_message);
+        }
+    }
+    drop(conn);
+    transfer::accept_lobby_history_offers(image_offers, ip, &app_handle, &db_path).await?;
     Ok(())
 }
 
@@ -1443,9 +1668,33 @@ async fn handle_tcp_connection(
             )
             .await?;
             if profile.avatar_hash.is_some() {
-                let app_handle = app_handle.clone();
+                let avatar_app_handle = app_handle.clone();
+                let avatar_ip = ip.clone();
+                let avatar_profile = profile.clone();
+                let avatar_db_path = db_path.clone();
                 tokio::spawn(async move {
-                    let _ = fetch_remote_avatar(&ip, &profile, app_handle, db_path).await;
+                    let _ = fetch_remote_avatar(
+                        &avatar_ip,
+                        &avatar_profile,
+                        avatar_app_handle,
+                        avatar_db_path,
+                    )
+                    .await;
+                });
+            }
+            if protocol_version >= PROTOCOL_VERSION {
+                let history_app_handle = app_handle.clone();
+                let history_ip = ip.clone();
+                let history_peer_id = profile.id.clone();
+                let history_db_path = db_path.clone();
+                tokio::spawn(async move {
+                    let _ = sync_lobby_history(
+                        &history_peer_id,
+                        &history_ip,
+                        history_app_handle,
+                        history_db_path,
+                    )
+                    .await;
                 });
             }
         }
@@ -1473,6 +1722,35 @@ async fn handle_tcp_connection(
                 &LanControlEnvelope::ProfileResponse {
                     profile: WireProfile::from(&profile),
                     avatar_base64,
+                },
+            )
+            .await?;
+        }
+        LanControlEnvelope::LobbyHistoryRequest {
+            requester_id,
+            known_image_ids,
+            limit,
+        } => {
+            let requester_is_peer = P2P_GLOBAL
+                .lock()
+                .map_err(|error| error.to_string())?
+                .online_users
+                .get(&requester_id)
+                .is_some_and(|peer| peer.ip == ip && peer.protocol_version >= PROTOCOL_VERSION);
+            if !requester_is_peer {
+                return Err("大厅历史请求方身份无效".to_string());
+            }
+            let known_image_ids = known_image_ids
+                .into_iter()
+                .take(5_000)
+                .collect::<HashSet<_>>();
+            let (messages, image_offers) =
+                build_lobby_history(&db_path, &requester_id, &known_image_ids, limit).await?;
+            write_json_line(
+                &mut writer,
+                &LanControlEnvelope::LobbyHistoryResponse {
+                    messages,
+                    image_offers,
                 },
             )
             .await?;
@@ -1702,8 +1980,10 @@ pub async fn initialize_lan_collaboration(
     let db_path = app_data_dir.join("lan_collaboration.db");
     let avatars_dir = app_data_dir.join("lan_collaboration").join("avatars");
     let transfer_staging_dir = app_data_dir.join("lan_collaboration").join("staging");
+    let lobby_cache_dir = app_data_dir.join("lan_collaboration").join("lobby");
     fs::create_dir_all(&avatars_dir).map_err(|error| error.to_string())?;
     fs::create_dir_all(&transfer_staging_dir).map_err(|error| error.to_string())?;
+    fs::create_dir_all(&lobby_cache_dir).map_err(|error| error.to_string())?;
     let conn = open_database(&db_path)?;
     let default_receive_directory = app_handle
         .path()
@@ -1713,6 +1993,7 @@ pub async fn initialize_lan_collaboration(
     ensure_local_settings(&conn, &default_receive_directory)?;
     transfer::recover_interrupted(&conn)?;
     transfer::prune_staging_files(&transfer_staging_dir);
+    transfer::prune_staging_files(&lobby_cache_dir);
     let profile = load_or_create_profile(&conn, legacy_profile)?;
     prune_old_messages(&conn)?;
     {
@@ -1979,7 +2260,14 @@ async fn deliver_message(message: &P2PMessage) -> Result<P2PDeliveryResult, Stri
         }
     };
     if targets.is_empty() {
-        return Err("当前没有可接收消息的在线联系人".to_string());
+        if message.to_id.is_some() {
+            return Err("联系人当前离线，无法发送私聊".to_string());
+        }
+        return Ok(P2PDeliveryResult {
+            target_count: 0,
+            delivered_count: 0,
+            failures: Vec::new(),
+        });
     }
     let target_count = targets.len();
     let mut delivered_count = 0usize;
@@ -2011,8 +2299,32 @@ async fn send_and_store_message(
     if message.content.as_bytes().len() > MAX_MESSAGE_BYTES {
         return Err("消息过长，单条消息不能超过 16 KB".to_string());
     }
+    let local_profile = P2P_GLOBAL
+        .lock()
+        .map_err(|error| error.to_string())?
+        .profile
+        .clone()
+        .ok_or_else(|| "局域网身份尚未初始化".to_string())?;
+    let (db_path, _) = state_paths()?;
+    let conn = open_database(&db_path)?;
+    let is_lobby = message.to_id.is_none();
+    if is_lobby
+        && insert_message(
+            &conn,
+            &message,
+            &local_profile.id,
+            "outgoing",
+            "stored",
+            None,
+        )?
+    {
+        let stored = wire_to_lan_message(&message, &local_profile.id, "outgoing", "stored", None);
+        let _ = app_handle.emit("pm-center:lan-message", &stored);
+    }
     let result = deliver_message(&message).await?;
-    let status = if result.delivered_count == result.target_count {
+    let status = if result.target_count == 0 {
+        "stored"
+    } else if result.delivered_count == result.target_count {
         "delivered"
     } else if result.delivered_count > 0 {
         "partial"
@@ -2031,15 +2343,16 @@ async fn send_and_store_message(
                 .join("；"),
         )
     };
-    let local_profile = P2P_GLOBAL
-        .lock()
-        .map_err(|error| error.to_string())?
-        .profile
-        .clone()
-        .ok_or_else(|| "局域网身份尚未初始化".to_string())?;
-    let (db_path, _) = state_paths()?;
-    let conn = open_database(&db_path)?;
-    if insert_message(
+    if is_lobby {
+        conn.execute(
+            "UPDATE lan_messages SET delivery_status=?2,delivery_summary=?3 WHERE id=?1",
+            params![message.id, status, summary.as_deref()],
+        )
+        .map_err(|error| error.to_string())?;
+        let lan_message =
+            wire_to_lan_message(&message, &local_profile.id, "outgoing", status, summary);
+        let _ = app_handle.emit("pm-center:lan-message", &lan_message);
+    } else if insert_message(
         &conn,
         &message,
         &local_profile.id,
@@ -2135,6 +2448,9 @@ pub async fn clear_lan_conversation(
         )
         .map_err(|error| error.to_string())?;
     transaction.commit().map_err(|error| error.to_string())?;
+    if conversation_id == "lobby" {
+        transfer::clear_lobby_cache(&app_handle)?;
+    }
     let _ = app_handle.emit("pm-center:lan-read-state-changed", ());
     Ok(())
 }
@@ -2160,6 +2476,7 @@ pub async fn clear_lan_history(app_handle: tauri::AppHandle) -> Result<(), Strin
              DELETE FROM lan_conversation_reads;",
     )
     .map_err(|error| error.to_string())?;
+    transfer::clear_lobby_cache(&app_handle)?;
     let _ = app_handle.emit("pm-center:lan-read-state-changed", ());
     Ok(())
 }
@@ -2318,6 +2635,30 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM lan_messages", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 0);
+        drop(conn);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn lobby_history_returns_only_the_latest_thirty_messages() {
+        let path = temp_db("lobby-history");
+        let conn = open_database(&path).unwrap();
+        for index in 0..35u64 {
+            let message = P2PMessage {
+                id: format!("message-{index:02}"),
+                from_id: "peer".to_string(),
+                from_name: "Peer".to_string(),
+                to_id: None,
+                content: format!("message {index}"),
+                timestamp: index + 1,
+                protocol_version: Some(PROTOCOL_VERSION),
+            };
+            insert_message(&conn, &message, "self", "incoming", "delivered", None).unwrap();
+        }
+        let messages = recent_lobby_messages(&conn).unwrap();
+        assert_eq!(messages.len(), LOBBY_HISTORY_LIMIT);
+        assert_eq!(messages.first().unwrap().id, "message-34");
+        assert_eq!(messages.last().unwrap().id, "message-05");
         drop(conn);
         let _ = fs::remove_file(path);
     }

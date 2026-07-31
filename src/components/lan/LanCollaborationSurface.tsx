@@ -138,6 +138,12 @@ type LanTimelineItem =
   | { kind: 'message'; timestamp: number; message: LanMessage }
   | { kind: 'transfer'; timestamp: number; transfer: LanTransfer };
 
+const LOBBY_IMAGE_EXTENSIONS = /\.(?:png|jpe?g|gif|webp|bmp|tiff?|hdr|exr)$/i;
+
+function canSendPreparedImageToLobby(file: PreparedTransferFile) {
+  return LOBBY_IMAGE_EXTENSIONS.test(file.name.trim());
+}
+
 function NavigationButton({
   active,
   title,
@@ -333,10 +339,21 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
     () => messages.filter((message) => message.conversationId === selectedConversationId),
     [messages, selectedConversationId],
   );
-  const selectedTransfers = useMemo(
-    () => transfers.filter((transfer) => transfer.conversationId === selectedConversationId),
-    [selectedConversationId, transfers],
-  );
+  const selectedTransfers = useMemo(() => {
+    const matches = transfers.filter((transfer) => transfer.conversationId === selectedConversationId);
+    if (selectedConversationId !== 'lobby') return matches;
+    const byLobbyItem = new Map<string, LanTransfer>();
+    for (const transfer of matches) {
+      const key = transfer.lobbyItemId || transfer.id;
+      const previous = byLobbyItem.get(key);
+      const currentHasLocalCopy = Boolean(transfer.receivedPath || transfer.sourcePath);
+      const previousHasLocalCopy = Boolean(previous?.receivedPath || previous?.sourcePath);
+      if (!previous || (currentHasLocalCopy && !previousHasLocalCopy) || transfer.id === transfer.lobbyItemId) {
+        byLobbyItem.set(key, transfer);
+      }
+    }
+    return [...byLobbyItem.values()].sort((left, right) => left.createdAt - right.createdAt);
+  }, [selectedConversationId, transfers]);
   const selectedTimeline = useMemo<LanTimelineItem[]>(() => [
     ...selectedMessages.map((message) => ({ kind: 'message' as const, timestamp: message.timestamp, message })),
     ...selectedTransfers.map((transfer) => ({ kind: 'transfer' as const, timestamp: transfer.createdAt, transfer })),
@@ -441,10 +458,16 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
       setInput('');
       if (result.failures.length > 0) {
         showToast({
-          title: result.deliveredCount > 0 ? '消息部分送达' : '消息发送失败',
-          message: `已送达 ${result.deliveredCount}/${result.targetCount}；${result.failures.map((failure) => failure.userName).join('、')} 未收到`,
-          tone: result.deliveredCount > 0 ? 'warning' : 'error',
+          title: selectedConversationId === 'lobby'
+            ? '大厅消息已发布'
+            : result.deliveredCount > 0 ? '消息部分送达' : '消息发送失败',
+          message: selectedConversationId === 'lobby'
+            ? `消息已保存在本机；${result.failures.length} 台设备未即时收到，上线后会补齐。`
+            : `已送达 ${result.deliveredCount}/${result.targetCount}；${result.failures.map((failure) => failure.userName).join('、')} 未收到`,
+          tone: 'warning',
         });
+      } else if (selectedConversationId === 'lobby' && result.targetCount === 0) {
+        showToast({ title: '大厅消息已发布', message: '当前没有在线设备，设备上线后会自动同步。', tone: 'success' });
       }
     } catch (sendError) {
       showToast({ title: '消息发送失败', message: String(sendError), tone: 'error' });
@@ -474,23 +497,61 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
   };
 
   const offerPreparedFiles = async (prepared: PreparedTransferFile[]) => {
-    const contact = requireTransferContact();
-    if (!contact || prepared.length === 0 || isPreparingFiles) return;
+    const isLobby = selectedConversationId === 'lobby';
+    const onlineLobbyContacts = contacts.filter((contact) => contact.online);
+    const lobbyContacts = onlineLobbyContacts;
+    const contact = isLobby ? null : requireTransferContact();
+    if (isPreparingFiles) {
+      await Promise.all(prepared
+        .filter((item) => item.staged)
+        .map((item) => discardTransferStagingFile(item.path).catch(() => {})));
+      return;
+    }
+    const eligible = isLobby
+      ? prepared.filter(canSendPreparedImageToLobby)
+      : prepared;
+    const rejected = prepared.filter((item) => !eligible.includes(item));
+    if (rejected.length > 0) {
+      await Promise.all(rejected
+        .filter((item) => item.staged)
+        .map((item) => discardTransferStagingFile(item.path).catch(() => {})));
+      showToast({
+        title: '大厅只支持图片',
+        message: `${rejected.length} 项非图片内容未发送；普通文件和文件夹请在联系人私聊中发送。`,
+        tone: 'warning',
+      });
+    }
+    if ((!isLobby && !contact) || eligible.length === 0) return;
     setIsPreparingFiles(true);
     try {
-      const result = await offerFiles(contact.id, prepared.map((item) => item.path));
-      const failedPaths = new Set(result.failures.map((failure) => failure.path));
-      await Promise.all(prepared
-        .filter((item) => item.staged && failedPaths.has(item.path))
+      const recipients = isLobby ? lobbyContacts.map((item) => item.id) : contact!.id;
+      const result = await offerFiles(
+        recipients,
+        eligible.map((item) => item.path),
+        isLobby ? 'lobby' : null,
+      );
+      const successfulPaths = new Set(result.transfers
+        .map((transfer) => transfer.sourcePath?.toLocaleLowerCase())
+        .filter((path): path is string => Boolean(path)));
+      await Promise.all(eligible
+        .filter((item) => item.staged && !successfulPaths.has(item.path.toLocaleLowerCase()))
         .map((item) => discardTransferStagingFile(item.path).catch(() => {})));
       if (result.transfers.length > 0) {
+        const deliveredLobbyContacts = new Set(result.transfers
+          .filter((transfer) => transfer.toId)
+          .map((transfer) => transfer.toId)).size;
+        const missedLobbyContacts = Math.max(0, onlineLobbyContacts.length - deliveredLobbyContacts);
         showToast({
-          title: '传输请求已发送',
-          message: `${result.transfers.length} 项内容正在等待 ${contact.displayName} 接收。`,
+          title: isLobby ? '大厅图片已发布' : '传输请求已发送',
+          message: isLobby
+            ? deliveredLobbyContacts > 0
+              ? `已保存并向 ${deliveredLobbyContacts} 台在线设备同步 ${eligible.length} 张图片${missedLobbyContacts > 0 ? `；其余设备上线后会补齐` : ''}。`
+              : `已保存 ${eligible.length} 张图片，设备上线后会自动同步。`
+            : `${result.transfers.length} 项内容正在等待 ${contact!.displayName} 接收。`,
           tone: 'success',
         });
       }
-      if (result.failures.length > 0) {
+      if (result.failures.length > 0 && !isLobby) {
         showToast({
           title: result.transfers.length > 0 ? '部分文件未发送' : '文件发送失败',
           message: result.failures.slice(0, 3).map((failure) => `${failure.path.split(/[\\/]/).pop()}：${failure.error}`).join('；'),
@@ -498,21 +559,26 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
         });
       }
     } catch (offerError) {
-      await Promise.all(prepared
+      await Promise.all(eligible
         .filter((item) => item.staged)
         .map((item) => discardTransferStagingFile(item.path).catch(() => {})));
-      showToast({ title: '文件发送失败', message: String(offerError), tone: 'error' });
+      showToast({ title: isLobby ? '大厅图片发送失败' : '文件发送失败', message: String(offerError), tone: 'error' });
     } finally {
       setIsPreparingFiles(false);
     }
   };
 
   const handleChooseFiles = async () => {
-    if (!requireTransferContact()) return;
+    const isLobby = selectedConversationId === 'lobby';
+    if (!isLobby && !requireTransferContact()) return;
     const selected = await open({
-      title: '选择要发送的文件',
+      title: isLobby ? '选择要发送到大厅的图片' : '选择要发送的文件',
       multiple: true,
       directory: false,
+      filters: isLobby ? [{
+        name: '图片',
+        extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tif', 'tiff', 'hdr', 'exr'],
+      }] : undefined,
     });
     const paths = typeof selected === 'string' ? [selected] : selected;
     if (!paths?.length) return;
@@ -524,6 +590,10 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
   };
 
   const handleChooseDirectory = async () => {
+    if (selectedConversationId === 'lobby') {
+      showToast({ title: '大厅只支持图片', message: '文件夹请在联系人私聊中发送。', tone: 'warning' });
+      return;
+    }
     if (!requireTransferContact(4, '目录')) return;
     const selected = await open({
       title: '选择要发送的文件夹',
@@ -542,7 +612,8 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
     event.preventDefault();
     event.stopPropagation();
     setIsFileDragOver(false);
-    if (!requireTransferContact()) return;
+    const isLobby = selectedConversationId === 'lobby';
+    if (!isLobby && !requireTransferContact()) return;
     const internalPaths = getInternalDragPaths(event.dataTransfer);
     if (internalPaths.length > 0) {
       await offerPreparedFiles(internalPaths.map((path) => ({
@@ -560,6 +631,10 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
       return Boolean(entry?.isDirectory);
     });
     if (containsDirectory) {
+      if (isLobby) {
+        showToast({ title: '大厅只支持图片', message: '文件夹请在联系人私聊中发送。', tone: 'warning' });
+        return;
+      }
       if (!requireTransferContact(4, '目录')) return;
       const directoryPaths = files
         .map((file) => (file as File & { path?: string }).path)
@@ -580,8 +655,15 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
       return;
     }
     try {
+      const filesToPrepare = isLobby
+        ? files.filter((file) => file.type.startsWith('image/'))
+        : files;
+      if (filesToPrepare.length === 0) {
+        showToast({ title: '大厅只支持图片', message: '拖入的内容中没有可发送的图片。', tone: 'warning' });
+        return;
+      }
       const prepared = await prepareBrowserFiles(
-        files,
+        filesToPrepare,
         createTransferStagingPath,
         discardTransferStagingFile,
       );
@@ -595,7 +677,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
     const images = clipboardImageFiles(event.clipboardData);
     if (images.length === 0) return;
     event.preventDefault();
-    if (!requireTransferContact()) return;
+    if (selectedConversationId !== 'lobby' && !requireTransferContact()) return;
     try {
       const prepared = await prepareBrowserFiles(
         images,
@@ -740,13 +822,14 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
   const canSend = Boolean(
     profile
       && service.isRunning
-      && (selectedConversationId === 'lobby' ? service.onlineCount > 0 : selectedContact?.online),
+      && (selectedConversationId === 'lobby' || selectedContact?.online),
   );
   const canTransfer = Boolean(
     profile
       && service.isRunning
-      && selectedContact?.online
-      && selectedContact.protocolVersion >= 3,
+      && (selectedConversationId === 'lobby'
+        ? true
+        : selectedContact?.online && selectedContact.protocolVersion >= 3),
   );
 
   if (isLoading && !profile) {
@@ -903,8 +986,12 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
           <div className="pointer-events-none absolute inset-3 z-50 flex items-center justify-center rounded-md border-2 border-dashed border-blue-400 bg-blue-50/95 text-blue-700 shadow-sm dark:border-blue-600 dark:bg-blue-950/90 dark:text-blue-200">
             <div className="text-center">
               <Paperclip className="mx-auto h-7 w-7" />
-              <p className="mt-2 text-sm font-medium">拖到此处发送文件或文件夹</p>
-              <p className="mt-1 text-xs opacity-75">文件夹和普通文件由对方确认，图片会自动接收</p>
+              <p className="mt-2 text-sm font-medium">
+                {selectedConversationId === 'lobby' ? '拖到此处向大厅发送图片' : '拖到此处发送文件或文件夹'}
+              </p>
+              <p className="mt-1 text-xs opacity-75">
+                {selectedConversationId === 'lobby' ? '图片会保存到大厅，并在设备上线后自动补齐' : '文件夹和普通文件由对方确认，图片会自动接收'}
+              </p>
             </div>
           </div>
         ) : null}
@@ -918,7 +1005,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
                   title="局域网协同说明"
                   text={[
                     '消息和压缩头像仅在当前局域网内传输，不经过云端，但内容未加密，请只在可信网络中使用。',
-                    '文件和文件夹在联系人确认后保存到默认接收目录；图片会自动接收。所有内容都使用临时路径和 BLAKE3 完整性校验。',
+                    '私聊中的文件和文件夹在联系人确认后保存；大厅文字和图片会在设备间同步，新设备会从在线副本合并最近 30 条内容。图片使用临时路径和 BLAKE3 完整性校验。',
                     '无法互相发现时，请允许 PM Center 通过 Windows 专用网络防火墙访问 UDP 31523 和 TCP 31524。',
                   ]}
                   placement="bottom-start"
@@ -1027,7 +1114,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
                 : <LanAvatar id={selectedContact?.id || selectedConversation.id} name={selectedContact?.displayName || selectedConversation.title} avatarPath={selectedContact?.avatarPath} online={selectedContact?.online} />}
               <div className="min-w-0 flex-1">
                 <h2 className="truncate text-sm font-semibold">{selectedConversation.title}</h2>
-                <p className="truncate text-xs text-gray-500">{selectedConversation.id === 'lobby' ? `${service.onlineCount} 人在线 · 大厅消息发送给所有在线联系人` : selectedContact?.online ? `${selectedContact.department || '未分组'} · ${selectedContact.ip}` : formatLastSeen(selectedContact?.lastSeen || 0)}</p>
+                <p className="truncate text-xs text-gray-500">{selectedConversation.id === 'lobby' ? `${service.onlineCount} 人在线 · 自动同步并补齐最近 30 条大厅内容` : selectedContact?.online ? `${selectedContact.department || '未分组'} · ${selectedContact.ip}` : formatLastSeen(selectedContact?.lastSeen || 0)}</p>
               </div>
               <button type="button" onClick={() => setConfirmAction('conversation')} title="清空当前会话" className="flex h-8 w-8 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-red-600 dark:hover:bg-gray-800"><History className="h-4 w-4" /></button>
             </header>
@@ -1054,6 +1141,9 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
                         transfer={item.transfer}
                         progress={transferProgress[item.transfer.id]}
                         busy={transferActions.has(item.transfer.id)}
+                        recipientName={item.transfer.direction === 'outgoing'
+                          ? contactsById.get(item.transfer.toId)?.displayName
+                          : null}
                         avatar={(
                           <LanAvatar
                             id={item.transfer.fromId}
@@ -1085,19 +1175,21 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
                         }}
                         className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
                       >
-                        <FileUp className="h-4 w-4" />发送文件
+                        <FileUp className="h-4 w-4" />{selectedConversationId === 'lobby' ? '发送图片' : '发送文件'}
                       </button>
-                      <button
-                        type="button"
-                        disabled={Boolean(selectedContact && selectedContact.protocolVersion < 4)}
-                        onClick={() => {
-                          setShowAttachmentMenu(false);
-                          void handleChooseDirectory();
-                        }}
-                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-gray-200 dark:hover:bg-gray-800"
-                      >
-                        <FolderUp className="h-4 w-4" />发送文件夹
-                      </button>
+                      {selectedConversationId !== 'lobby' ? (
+                        <button
+                          type="button"
+                          disabled={Boolean(selectedContact && selectedContact.protocolVersion < 4)}
+                          onClick={() => {
+                            setShowAttachmentMenu(false);
+                            void handleChooseDirectory();
+                          }}
+                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-gray-200 dark:hover:bg-gray-800"
+                        >
+                          <FolderUp className="h-4 w-4" />发送文件夹
+                        </button>
+                      ) : null}
                     </div>
                   ) : null}
                   <button
@@ -1105,7 +1197,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
                     onClick={() => setShowAttachmentMenu((current) => !current)}
                     disabled={!canTransfer || isPreparingFiles}
                     title={selectedConversationId === 'lobby'
-                      ? '请先进入联系人私聊'
+                      ? '向大厅发送图片'
                       : selectedContact && selectedContact.protocolVersion < 3
                         ? '对方客户端版本不支持文件传输'
                         : '发送文件或文件夹'}
