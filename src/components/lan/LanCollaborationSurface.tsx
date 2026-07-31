@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import {
   ArrowLeft,
   Building2,
@@ -139,9 +140,76 @@ type LanTimelineItem =
   | { kind: 'transfer'; timestamp: number; transfer: LanTransfer };
 
 const LOBBY_IMAGE_EXTENSIONS = /\.(?:png|jpe?g|gif|webp|bmp|tiff?|hdr|exr)$/i;
+const MESSAGE_URL_PATTERN = /(?:https?:\/\/|www\.)[^\s<>"']+/gi;
+const TRAILING_URL_PUNCTUATION = new Set([
+  '.', ',', '!', '?', ';', ':',
+  '。', '，', '！', '？', '；', '：', '、',
+  ')', ']', '}', '）', '】', '》',
+]);
 
 function canSendPreparedImageToLobby(file: PreparedTransferFile) {
   return LOBBY_IMAGE_EXTENSIONS.test(file.name.trim());
+}
+
+function trimUrlPunctuation(value: string) {
+  let link = value;
+  let trailing = '';
+  while (link.length > 0) {
+    const character = link.slice(-1);
+    if (!TRAILING_URL_PUNCTUATION.has(character)) break;
+    if (character === ')' && (link.match(/\(/g)?.length || 0) >= (link.match(/\)/g)?.length || 0)) break;
+    if (character === ']' && (link.match(/\[/g)?.length || 0) >= (link.match(/\]/g)?.length || 0)) break;
+    if (character === '}' && (link.match(/\{/g)?.length || 0) >= (link.match(/\}/g)?.length || 0)) break;
+    trailing = character + trailing;
+    link = link.slice(0, -1);
+  }
+  return { link, trailing };
+}
+
+function normalizeMessageUrl(value: string) {
+  try {
+    const url = new URL(/^www\./i.test(value) ? `https://${value}` : value);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function MessageText({ content, mine }: { content: string; mine: boolean }) {
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+  for (const match of content.matchAll(MESSAGE_URL_PATTERN)) {
+    const index = match.index ?? 0;
+    if (index > cursor) parts.push(content.slice(cursor, index));
+    const raw = match[0];
+    const { link, trailing } = trimUrlPunctuation(raw);
+    const href = normalizeMessageUrl(link);
+    if (href) {
+      parts.push(
+        <a
+          key={`${index}:${link}`}
+          href={href}
+          title="使用默认浏览器打开"
+          onClick={(event) => {
+            event.preventDefault();
+            if (event.detail > 1) return;
+            void openUrl(href).catch((error) => {
+              console.warn('Failed to open LAN message link:', error);
+            });
+          }}
+          className={`cursor-pointer break-all underline decoration-1 underline-offset-2 ${mine ? 'text-blue-100 hover:text-white' : 'text-blue-600 hover:text-blue-700 dark:text-blue-300 dark:hover:text-blue-200'}`}
+        >
+          {link}
+        </a>,
+      );
+      if (trailing) parts.push(trailing);
+    } else {
+      parts.push(raw);
+    }
+    cursor = index + raw.length;
+  }
+  if (cursor < content.length) parts.push(content.slice(cursor));
+  return <>{parts}</>;
 }
 
 function NavigationButton({
@@ -232,7 +300,7 @@ function MessageBubble({
       <div className={`max-w-[min(72%,680px)] ${mine ? 'items-end' : 'items-start'}`}>
         {!mine ? <p className="mb-1 px-1 text-[11px] text-gray-500">{message.fromName}</p> : null}
         <div className={`whitespace-pre-wrap break-words rounded-md px-3 py-2 text-sm leading-6 ${mine ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-900 dark:bg-gray-800 dark:text-gray-100'}`}>
-          {message.content}
+          <MessageText content={message.content} mine={mine} />
         </div>
         <div className={`mt-1 flex items-center gap-2 px-1 text-[10px] text-gray-400 ${mine ? 'justify-end' : ''}`}>
           <span>{new Date(message.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</span>
