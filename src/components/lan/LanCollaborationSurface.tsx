@@ -4,12 +4,17 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import {
   ArrowLeft,
+  ArrowDownToLine,
+  ArrowUpFromLine,
   Building2,
+  CheckCircle2,
   CircleUserRound,
+  Clock3,
   ContactRound,
   Eraser,
   ExternalLink,
   FileUp,
+  Files,
   FolderOpen,
   FolderUp,
   Globe2,
@@ -23,6 +28,7 @@ import {
   Search,
   Send,
   Settings2,
+  SquareArrowOutUpRight,
   Trash2,
   UserRound,
   Wifi,
@@ -33,7 +39,12 @@ import { ConfirmDialog } from '../Dialog';
 import { HelpAssistant } from '../ui/HelpAssistant';
 import { useUiStore } from '../../stores/uiStore';
 import { getInternalDragPaths, hasInternalDragData } from '../file-manager/dragDrop';
-import { LanTransferCard } from './LanTransferCard';
+import {
+  formatLanTransferBytes,
+  getLanTransferStatusLabel,
+  LanTransferCard,
+  LanTransferIcon,
+} from './LanTransferCard';
 import { clipboardImageFiles, prepareBrowserFiles, type PreparedTransferFile } from './lanTransferFiles';
 import {
   useLanCollaborationStore,
@@ -43,7 +54,8 @@ import {
   type LanTransfer,
 } from '../../stores/lanCollaborationStore';
 
-type LanViewMode = 'messages' | 'contacts' | 'profile';
+type LanViewMode = 'messages' | 'contacts' | 'files' | 'profile';
+type LanTransferFilter = 'all' | 'active' | 'completed' | 'attention';
 
 interface LanCollaborationSurfaceProps {
   isActive?: boolean;
@@ -135,6 +147,29 @@ function lastTransferFor(conversationId: string, transfers: LanTransfer[]) {
     if (transfers[index].conversationId === conversationId) return transfers[index];
   }
   return null;
+}
+
+function isActiveTransfer(transfer: LanTransfer) {
+  return transfer.status === 'waiting'
+    || transfer.status === 'pending'
+    || transfer.status === 'transferring';
+}
+
+function isAttentionTransfer(transfer: LanTransfer) {
+  return transfer.status === 'failed' || transfer.status === 'rejected';
+}
+
+function transferStatusClass(transfer: LanTransfer) {
+  if (transfer.status === 'completed') {
+    return 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300';
+  }
+  if (transfer.status === 'failed' || transfer.status === 'rejected') {
+    return 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300';
+  }
+  if (isActiveTransfer(transfer)) {
+    return 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300';
+  }
+  return 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300';
 }
 
 type LanTimelineItem =
@@ -439,6 +474,205 @@ function MessageBubble({
   );
 }
 
+function LanFileManagementPanel({
+  transfer,
+  summary,
+  progress,
+  contactsById,
+  receiveDirectory,
+  busy,
+  onBack,
+  onOpenConversation,
+  onAccept,
+  onReject,
+}: {
+  transfer: LanTransfer | null;
+  summary: { total: number; active: number; completed: number; totalBytes: number };
+  progress?: { transferredBytes: number; totalBytes: number; bytesPerSecond: number };
+  contactsById: Map<string, LanContact>;
+  receiveDirectory?: string | null;
+  busy: boolean;
+  onBack: () => void;
+  onOpenConversation: (transfer: LanTransfer) => void;
+  onAccept: (transfer: LanTransfer) => void;
+  onReject: (transfer: LanTransfer) => void;
+}) {
+  const outgoing = transfer?.direction === 'outgoing';
+  const localPath = transfer
+    ? transfer.receivedPath || (outgoing ? transfer.sourcePath : null)
+    : null;
+  const contactName = transfer
+    ? transfer.conversationId === 'lobby'
+      ? '局域网大厅'
+      : outgoing
+        ? contactsById.get(transfer.toId)?.displayName || '未知联系人'
+        : transfer.fromName
+    : '';
+  const autoReceivingImage = Boolean(
+    transfer
+      && !outgoing
+      && transfer.status === 'pending'
+      && transfer.totalBytes <= 100 * 1024 * 1024
+      && transfer.mimeType?.startsWith('image/'),
+  );
+  const canRespond = Boolean(
+    transfer
+      && !outgoing
+      && !autoReceivingImage
+      && (transfer.status === 'pending' || transfer.status === 'failed'),
+  );
+  const transferredBytes = transfer?.status === 'completed'
+    ? transfer.totalBytes
+    : progress?.transferredBytes || 0;
+  const progressPercent = transfer && transfer.totalBytes > 0
+    ? Math.min(100, Math.round((transferredBytes / transfer.totalBytes) * 100))
+    : transfer?.status === 'completed' ? 100 : 0;
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <header className="flex h-16 shrink-0 items-center gap-3 border-b border-gray-200 px-4 dark:border-gray-800">
+        <button type="button" onClick={onBack} className="flex h-8 w-8 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 lg:hidden">
+          <ArrowLeft className="h-4 w-4" />
+        </button>
+        <div className="flex h-9 w-9 items-center justify-center rounded-md bg-blue-50 text-blue-600 dark:bg-blue-950/40 dark:text-blue-300">
+          <Files className="h-5 w-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <h2 className="truncate text-sm font-semibold">文件统筹</h2>
+          <p className="truncate text-xs text-gray-500">统一查看局域网收发记录与本地文件</p>
+        </div>
+        <button
+          type="button"
+          disabled={!receiveDirectory}
+          onClick={() => receiveDirectory && void invoke('open_path', { path: receiveDirectory })}
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-gray-300 px-2.5 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-900"
+        >
+          <FolderOpen className="h-3.5 w-3.5" />接收目录
+        </button>
+      </header>
+
+      <div className="grid shrink-0 grid-cols-2 border-b border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-gray-900/50 sm:grid-cols-4">
+        {[
+          { label: '传输记录', value: String(summary.total), icon: Files },
+          { label: '进行中', value: String(summary.active), icon: Clock3 },
+          { label: '已完成', value: String(summary.completed), icon: CheckCircle2 },
+          { label: '数据总量', value: formatLanTransferBytes(summary.totalBytes), icon: ArrowDownToLine },
+        ].map((item) => (
+          <div key={item.label} className="flex min-w-0 items-center gap-2.5 border-r border-gray-200 px-4 py-3 last:border-r-0 dark:border-gray-800">
+            <item.icon className="h-4 w-4 shrink-0 text-gray-400" />
+            <div className="min-w-0">
+              <p className="text-[10px] text-gray-500">{item.label}</p>
+              <p className="mt-0.5 truncate text-sm font-semibold">{item.value}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-auto">
+        {transfer ? (
+          <div className="mx-auto max-w-4xl px-5 py-5">
+            {transfer.kind === 'file' && transfer.mimeType?.startsWith('image/') && localPath ? (
+              <div className="mb-5 overflow-hidden rounded-md border border-gray-200 bg-gray-100 dark:border-gray-800 dark:bg-gray-900">
+                <img src={convertFileSrc(localPath)} alt="" className="max-h-72 w-full object-contain" />
+              </div>
+            ) : null}
+
+            <div className="flex items-start gap-3 border-b border-gray-200 pb-5 dark:border-gray-800">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md bg-blue-50 text-blue-600 dark:bg-blue-950/40 dark:text-blue-300">
+                <LanTransferIcon kind={transfer.kind} mimeType={transfer.mimeType} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="min-w-0 break-words text-base font-semibold">{transfer.displayName}</h3>
+                  <span className={`shrink-0 rounded px-2 py-0.5 text-xs ${transferStatusClass(transfer)}`}>
+                    {getLanTransferStatusLabel(transfer)}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-gray-500">
+                  {outgoing ? <ArrowUpFromLine className="mr-1 inline h-3.5 w-3.5" /> : <ArrowDownToLine className="mr-1 inline h-3.5 w-3.5" />}
+                  {outgoing ? '发送给' : '接收自'} {contactName}
+                </p>
+              </div>
+            </div>
+
+            <dl className="grid gap-x-8 gap-y-4 border-b border-gray-200 py-5 text-sm dark:border-gray-800 sm:grid-cols-2">
+              <div><dt className="text-xs text-gray-500">类型</dt><dd className="mt-1">{transfer.kind === 'directory' ? `文件夹 · ${transfer.itemCount} 个项目` : transfer.mimeType || '普通文件'}</dd></div>
+              <div><dt className="text-xs text-gray-500">大小</dt><dd className="mt-1">{formatLanTransferBytes(transfer.totalBytes)}</dd></div>
+              <div><dt className="text-xs text-gray-500">创建时间</dt><dd className="mt-1">{new Date(transfer.createdAt).toLocaleString('zh-CN')}</dd></div>
+              <div><dt className="text-xs text-gray-500">最近更新</dt><dd className="mt-1">{new Date(transfer.updatedAt).toLocaleString('zh-CN')}</dd></div>
+            </dl>
+
+            {isActiveTransfer(transfer) || transfer.status === 'completed' ? (
+              <div className="border-b border-gray-200 py-5 dark:border-gray-800">
+                <div className="flex items-center justify-between gap-4 text-xs">
+                  <span className="font-medium">传输进度</span>
+                  <span className="text-gray-500">
+                    {formatLanTransferBytes(transferredBytes)} / {formatLanTransferBytes(transfer.totalBytes)}
+                    {progress?.bytesPerSecond ? ` · ${formatLanTransferBytes(progress.bytesPerSecond)}/s` : ''}
+                  </span>
+                </div>
+                <div className="mt-2 h-2 overflow-hidden rounded bg-gray-200 dark:bg-gray-800">
+                  <div className="h-full bg-blue-500 transition-[width]" style={{ width: `${progressPercent}%` }} />
+                </div>
+              </div>
+            ) : null}
+
+            {transfer.error ? (
+              <div className="border-b border-gray-200 py-5 dark:border-gray-800">
+                <p className="text-xs font-medium text-red-600 dark:text-red-300">失败原因</p>
+                <p className="mt-1 break-words text-sm text-red-600 dark:text-red-300">{transfer.error}</p>
+              </div>
+            ) : null}
+
+            {localPath ? (
+              <div className="border-b border-gray-200 py-5 dark:border-gray-800">
+                <p className="text-xs text-gray-500">本地路径</p>
+                <p className="mt-1 break-all text-sm">{localPath}</p>
+              </div>
+            ) : null}
+
+            <div className="flex flex-wrap justify-end gap-2 pt-5">
+              <button type="button" onClick={() => onOpenConversation(transfer)} className="inline-flex h-9 items-center gap-1.5 rounded-md border border-gray-300 px-3 text-sm text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-900">
+                <MessageCircle className="h-4 w-4" />定位到会话
+              </button>
+              {canRespond ? (
+                <>
+                  <button type="button" disabled={busy} onClick={() => onReject(transfer)} className="inline-flex h-9 items-center gap-1.5 rounded-md border border-gray-300 px-3 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-900">
+                    <X className="h-4 w-4" />拒绝
+                  </button>
+                  <button type="button" disabled={busy} onClick={() => onAccept(transfer)} className="inline-flex h-9 items-center gap-1.5 rounded-md bg-blue-600 px-3 text-sm text-white hover:bg-blue-700 disabled:opacity-50">
+                    <ArrowDownToLine className="h-4 w-4" />{transfer.status === 'failed' ? '重新接收' : '接收'}
+                  </button>
+                </>
+              ) : null}
+              {localPath && transfer.kind === 'directory' ? (
+                <button type="button" onClick={() => void invoke('open_path', { path: localPath })} className="inline-flex h-9 items-center gap-1.5 rounded-md bg-blue-600 px-3 text-sm text-white hover:bg-blue-700">
+                  <FolderOpen className="h-4 w-4" />打开目录
+                </button>
+              ) : localPath ? (
+                <>
+                  <button type="button" onClick={() => void invoke('show_in_folder', { path: localPath })} className="inline-flex h-9 items-center gap-1.5 rounded-md border border-gray-300 px-3 text-sm text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-900">
+                    <FolderOpen className="h-4 w-4" />所在目录
+                  </button>
+                  <button type="button" onClick={() => void invoke('open_file', { path: localPath })} className="inline-flex h-9 items-center gap-1.5 rounded-md bg-blue-600 px-3 text-sm text-white hover:bg-blue-700">
+                    <SquareArrowOutUpRight className="h-4 w-4" />打开文件
+                  </button>
+                </>
+              ) : null}
+            </div>
+          </div>
+        ) : (
+          <div className="flex h-full min-h-64 flex-col items-center justify-center px-6 text-center text-gray-400">
+            <Files className="h-10 w-10" />
+            <p className="mt-3 text-sm font-medium text-gray-600 dark:text-gray-300">暂无文件传输记录</p>
+            <p className="mt-1 text-xs">在聊天中发送或接收文件后会统一显示在这里</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function LanCollaborationSurface({ isActive = true }: LanCollaborationSurfaceProps) {
   const {
     profile,
@@ -469,10 +703,13 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
     clearConversation,
     clearHistory,
     removeContact,
+    requestConversationNavigation,
     clearConversationNavigation,
   } = useLanCollaborationStore();
   const showToast = useUiStore((state) => state.showToast);
   const [mode, setMode] = useState<LanViewMode>('messages');
+  const [transferFilter, setTransferFilter] = useState<LanTransferFilter>('all');
+  const [selectedTransferId, setSelectedTransferId] = useState<string | null>(null);
   const [selectedConversationId, setSelectedConversationId] = useState('lobby');
   const [query, setQuery] = useState('');
   const [input, setInput] = useState('');
@@ -554,6 +791,56 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
     () => new Map(contacts.map((contact) => [contact.id, contact] as const)),
     [contacts],
   );
+  const displayTransfers = useMemo(() => {
+    const byItem = new Map<string, LanTransfer>();
+    for (const transfer of transfers) {
+      const key = transfer.conversationId === 'lobby'
+        ? `lobby:${transfer.lobbyItemId || transfer.id}`
+        : `direct:${transfer.id}`;
+      const previous = byItem.get(key);
+      const currentHasLocalCopy = Boolean(transfer.receivedPath || transfer.sourcePath);
+      const previousHasLocalCopy = Boolean(previous?.receivedPath || previous?.sourcePath);
+      if (!previous
+        || transfer.id === transfer.lobbyItemId
+        || (currentHasLocalCopy && !previousHasLocalCopy)
+        || (currentHasLocalCopy === previousHasLocalCopy && transfer.updatedAt > previous.updatedAt)) {
+        byItem.set(key, transfer);
+      }
+    }
+    return [...byItem.values()];
+  }, [transfers]);
+  const managedTransfers = useMemo(() => {
+    const normalized = query.trim().toLocaleLowerCase();
+    return [...displayTransfers]
+      .filter((transfer) => {
+        if (transferFilter === 'active' && !isActiveTransfer(transfer)) return false;
+        if (transferFilter === 'completed' && transfer.status !== 'completed') return false;
+        if (transferFilter === 'attention' && !isAttentionTransfer(transfer)) return false;
+        if (!normalized) return true;
+        const contactName = transfer.conversationId === 'lobby'
+          ? '局域网大厅'
+          : transfer.direction === 'outgoing'
+            ? contactsById.get(transfer.toId)?.displayName || ''
+            : transfer.fromName;
+        return [
+          transfer.displayName,
+          transfer.sourcePath || '',
+          transfer.receivedPath || '',
+          contactName,
+          getLanTransferStatusLabel(transfer),
+        ].some((value) => value.toLocaleLowerCase().includes(normalized));
+      })
+      .sort((left, right) => right.updatedAt - left.updatedAt || right.createdAt - left.createdAt);
+  }, [contactsById, displayTransfers, query, transferFilter]);
+  const selectedManagedTransfer = managedTransfers.find((transfer) => transfer.id === selectedTransferId)
+    || managedTransfers[0]
+    || null;
+  const transferSummary = useMemo(() => ({
+    total: displayTransfers.length,
+    active: displayTransfers.filter(isActiveTransfer).length,
+    completed: displayTransfers.filter((transfer) => transfer.status === 'completed').length,
+    totalBytes: displayTransfers.reduce((sum, transfer) => sum + Math.max(0, transfer.totalBytes || 0), 0),
+  }), [displayTransfers]);
 
   useEffect(() => {
     if (!isActive || !selectedConversation || selectedConversation.unreadCount === 0) return;
@@ -610,6 +897,10 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
     setScrollRequest((current) => current + 1);
   }, [isActive, navigationRequest]);
 
+  useEffect(() => {
+    if (mode !== 'messages') setIsFileDragOver(false);
+  }, [mode]);
+
   const filteredContacts = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
     if (!normalized) return contacts;
@@ -639,6 +930,10 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
     setMode('messages');
     setShowMobileConversation(true);
     setScrollRequest((current) => current + 1);
+  };
+
+  const openTransferConversation = (transfer: LanTransfer) => {
+    requestConversationNavigation(transfer.conversationId, null, transfer.id);
   };
 
   const handleSend = async () => {
@@ -1048,15 +1343,38 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder={mode === 'contacts' ? '搜索联系人...' : '搜索会话...'}
+              placeholder={mode === 'contacts'
+                ? '搜索联系人...'
+                : mode === 'files'
+                  ? '搜索文件、联系人或状态...'
+                  : '搜索会话...'}
               className="h-9 w-full rounded-md border border-gray-200 bg-gray-50 pl-8 pr-8 text-sm outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
             />
             {query ? <button type="button" onClick={() => setQuery('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400"><X className="h-4 w-4" /></button> : null}
           </div>
-          <button type="button" onClick={() => void refresh()} title="刷新联系人" className="flex h-9 w-9 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800">
+          <button type="button" onClick={() => void refresh()} title="刷新局域网数据" className="flex h-9 w-9 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800">
             <RefreshCw className="h-4 w-4" />
           </button>
         </div>
+        {mode === 'files' ? (
+          <div className="mt-2 grid grid-cols-4 gap-1 rounded-md bg-gray-100 p-1 dark:bg-gray-900">
+            {([
+              ['all', '全部'],
+              ['active', '进行中'],
+              ['completed', '已完成'],
+              ['attention', '异常'],
+            ] as const).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setTransferFilter(value)}
+                className={`h-7 rounded text-[11px] transition-colors ${transferFilter === value ? 'bg-white font-medium text-gray-900 shadow-sm dark:bg-gray-800 dark:text-gray-100' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        ) : null}
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto">
@@ -1117,6 +1435,58 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
               ))}
             </div>
           )) : <div className="px-4 py-12 text-center text-sm text-gray-400">没有匹配的联系人</div>
+        ) : mode === 'files' ? (
+          managedTransfers.length > 0 ? managedTransfers.map((transfer) => {
+            const outgoing = transfer.direction === 'outgoing';
+            const contactName = transfer.conversationId === 'lobby'
+              ? '局域网大厅'
+              : outgoing
+                ? contactsById.get(transfer.toId)?.displayName || '未知联系人'
+                : transfer.fromName;
+            const progress = transferProgress[transfer.id];
+            const progressPercent = transfer.totalBytes > 0
+              ? Math.min(100, Math.round(((progress?.transferredBytes || 0) / transfer.totalBytes) * 100))
+              : 0;
+            return (
+              <button
+                key={transfer.id}
+                type="button"
+                onClick={() => {
+                  setSelectedTransferId(transfer.id);
+                  setShowMobileConversation(true);
+                }}
+                className={`block w-full border-b border-gray-100 px-3 py-3 text-left transition-colors dark:border-gray-800 ${selectedManagedTransfer?.id === transfer.id ? 'bg-blue-50 dark:bg-blue-950/25' : 'hover:bg-gray-50 dark:hover:bg-gray-900/70'}`}
+              >
+                <span className="flex items-start gap-2.5">
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                    <LanTransferIcon kind={transfer.kind} mimeType={transfer.mimeType} />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-2">
+                      <span className="min-w-0 flex-1 truncate text-sm font-medium" title={transfer.displayName}>{transfer.displayName}</span>
+                      <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] ${transferStatusClass(transfer)}`}>
+                        {getLanTransferStatusLabel(transfer)}
+                      </span>
+                    </span>
+                    <span className="mt-1 flex items-center justify-between gap-2 text-[11px] text-gray-500">
+                      <span className="min-w-0 truncate">{outgoing ? '发往' : '来自'} {contactName}</span>
+                      <span className="shrink-0">{formatLanTransferBytes(transfer.totalBytes)}</span>
+                    </span>
+                    {transfer.status === 'transferring' ? (
+                      <span className="mt-2 block h-1 overflow-hidden rounded bg-gray-200 dark:bg-gray-800">
+                        <span className="block h-full bg-blue-500" style={{ width: `${progressPercent}%` }} />
+                      </span>
+                    ) : null}
+                  </span>
+                </span>
+              </button>
+            );
+          }) : (
+            <div className="flex h-full min-h-48 flex-col items-center justify-center px-5 text-center text-gray-400">
+              <Files className="h-8 w-8" />
+              <p className="mt-2 text-sm">没有匹配的传输记录</p>
+            </div>
+          )
         ) : (
           <div className="space-y-1 p-2">
             <button type="button" onClick={() => void handleToggleDiscovery()} className="flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800">
@@ -1138,12 +1508,13 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
       <aside className="flex w-14 shrink-0 flex-col items-center border-r border-gray-200 bg-gray-100 py-3 dark:border-gray-800 dark:bg-gray-900">
         <LanAvatar id={profile.id} name={profile.displayName} avatarPath={profile.avatarPath} size="md" />
         <div className="mt-5 flex flex-col gap-2">
-          <NavigationButton active={mode === 'messages'} title="最近消息" badge={unreadCount} onClick={() => { setMode('messages'); setShowMobileConversation(false); }}><MessageCircle className="h-5 w-5" /></NavigationButton>
-          <NavigationButton active={mode === 'contacts'} title="联系人" onClick={() => { setMode('contacts'); setShowMobileConversation(false); }}><ContactRound className="h-5 w-5" /></NavigationButton>
+          <NavigationButton active={mode === 'messages'} title="最近消息" badge={unreadCount} onClick={() => { setQuery(''); setMode('messages'); setShowMobileConversation(false); }}><MessageCircle className="h-5 w-5" /></NavigationButton>
+          <NavigationButton active={mode === 'contacts'} title="联系人" onClick={() => { setQuery(''); setMode('contacts'); setShowMobileConversation(false); }}><ContactRound className="h-5 w-5" /></NavigationButton>
+          <NavigationButton active={mode === 'files'} title="文件统筹" onClick={() => { setQuery(''); setMode('files'); setShowMobileConversation(false); }}><Files className="h-5 w-5" /></NavigationButton>
         </div>
         <div className="mt-auto flex flex-col items-center gap-2">
           <span title={service.isRunning ? '发现服务运行中' : '发现服务已停止'} className={`h-2.5 w-2.5 rounded-full ${service.isRunning ? 'bg-emerald-500' : 'bg-gray-400'}`} />
-          <NavigationButton active={mode === 'profile'} title="个人资料与设置" onClick={() => { setMode('profile'); setShowMobileConversation(true); }}><Settings2 className="h-5 w-5" /></NavigationButton>
+          <NavigationButton active={mode === 'profile'} title="个人资料与设置" onClick={() => { setQuery(''); setMode('profile'); setShowMobileConversation(true); }}><Settings2 className="h-5 w-5" /></NavigationButton>
         </div>
       </aside>
 
@@ -1152,7 +1523,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
       <main
         className={`${showMobileConversation ? 'flex' : 'hidden lg:flex'} relative min-w-0 flex-1 flex-col bg-white dark:bg-gray-950`}
         onDragEnter={(event) => {
-          if (mode === 'profile') return;
+          if (mode !== 'messages') return;
           const isFileDrag = hasInternalDragData(event.dataTransfer)
             || Array.from(event.dataTransfer.types || []).includes('Files');
           if (!isFileDrag) return;
@@ -1160,7 +1531,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
           setIsFileDragOver(true);
         }}
         onDragOver={(event) => {
-          if (mode === 'profile') return;
+          if (mode !== 'messages') return;
           const isFileDrag = hasInternalDragData(event.dataTransfer)
             || Array.from(event.dataTransfer.types || []).includes('Files');
           if (!isFileDrag) return;
@@ -1172,7 +1543,10 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
           if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
           setIsFileDragOver(false);
         }}
-        onDrop={(event) => void handleFileDrop(event)}
+        onDrop={(event) => {
+          if (mode !== 'messages') return;
+          void handleFileDrop(event);
+        }}
       >
         {isFileDragOver ? (
           <div className="pointer-events-none absolute inset-3 z-50 flex items-center justify-center rounded-md border-2 border-dashed border-blue-400 bg-blue-50/95 text-blue-700 shadow-sm dark:border-blue-600 dark:bg-blue-950/90 dark:text-blue-200">
@@ -1187,7 +1561,20 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
             </div>
           </div>
         ) : null}
-        {mode === 'profile' ? (
+        {mode === 'files' ? (
+          <LanFileManagementPanel
+            transfer={selectedManagedTransfer}
+            summary={transferSummary}
+            progress={selectedManagedTransfer ? transferProgress[selectedManagedTransfer.id] : undefined}
+            contactsById={contactsById}
+            receiveDirectory={localSettings?.receiveDirectory}
+            busy={Boolean(selectedManagedTransfer && transferActions.has(selectedManagedTransfer.id))}
+            onBack={() => setShowMobileConversation(false)}
+            onOpenConversation={openTransferConversation}
+            onAccept={(transfer) => void handleAcceptTransfer(transfer)}
+            onReject={(transfer) => void handleRejectTransfer(transfer)}
+          />
+        ) : mode === 'profile' ? (
           <div className="min-h-0 flex-1 overflow-auto">
             <div className="border-b border-gray-200 px-5 py-4 dark:border-gray-800">
               <div className="flex items-center gap-2">

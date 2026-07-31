@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import type { LanTransfer, LanTransferProgress } from '../../stores/lanCollaborationStore';
 
-function formatBytes(bytes: number) {
+export function formatLanTransferBytes(bytes: number) {
   if (!Number.isFinite(bytes) || bytes <= 0) return bytes === 0 ? '0 B' : '-';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   let value = bytes;
@@ -25,7 +25,7 @@ function formatBytes(bytes: number) {
   return `${value >= 10 || unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`;
 }
 
-function TransferIcon({ kind, mimeType }: { kind: string; mimeType: string | null }) {
+export function LanTransferIcon({ kind, mimeType }: { kind: string; mimeType: string | null }) {
   if (kind === 'directory') return <Folder className="h-5 w-5" />;
   if (mimeType?.startsWith('image/')) return <FileImage className="h-5 w-5" />;
   if (mimeType?.startsWith('video/')) return <FileVideo className="h-5 w-5" />;
@@ -35,7 +35,7 @@ function TransferIcon({ kind, mimeType }: { kind: string; mimeType: string | nul
   return <File className="h-5 w-5" />;
 }
 
-function statusLabel(transfer: LanTransfer) {
+export function getLanTransferStatusLabel(transfer: LanTransfer) {
   if (transfer.conversationId === 'lobby'
     && transfer.direction === 'outgoing'
     && transfer.lobbyItemId === transfer.id) return '已发布';
@@ -107,15 +107,15 @@ export function LanTransferCard({
           ) : null}
           <div className="flex items-start gap-3 p-3">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-blue-50 text-blue-600 dark:bg-blue-950/40 dark:text-blue-300">
-              <TransferIcon kind={transfer.kind} mimeType={transfer.mimeType} />
+              <LanTransferIcon kind={transfer.kind} mimeType={transfer.mimeType} />
             </div>
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-medium" title={transfer.displayName}>{transfer.displayName}</p>
               <p className="mt-0.5 text-xs text-gray-500">
                 {transfer.kind === 'directory' ? `目录 · ${transfer.itemCount} 个项目 · ` : ''}
-                {formatBytes(transfer.totalBytes)} · {statusLabel(transfer)}
+                {formatLanTransferBytes(transfer.totalBytes)} · {getLanTransferStatusLabel(transfer)}
                 {transfer.status === 'transferring' && progress?.bytesPerSecond
-                  ? ` · ${formatBytes(progress.bytesPerSecond)}/s`
+                  ? ` · ${formatLanTransferBytes(progress.bytesPerSecond)}/s`
                   : ''}
               </p>
               {transfer.error ? <p className="mt-1 line-clamp-2 text-xs text-red-500">{transfer.error}</p> : null}
