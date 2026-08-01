@@ -1104,6 +1104,15 @@ export function FileManager() {
         setIsBlenderFileParserOpen(true);
         break;
       }
+      case 'smart-clipboard':
+        void invoke('open_smart_clipboard').catch((error) => {
+          showToast({
+            title: '智能剪贴板打开失败',
+            message: String(error),
+            tone: 'error',
+          });
+        });
+        break;
     }
   }, [showToast]);
 

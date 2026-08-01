@@ -2,6 +2,7 @@ import type { LucideIcon } from 'lucide-react';
 import {
   Blocks,
   Clapperboard,
+  ClipboardList,
   Database,
   FileSearch,
   ListTodo,
@@ -21,7 +22,8 @@ export type BuiltinToolId =
   | 'task-center'
   | 'settings'
   | 'mdt-overview'
-  | 'blender-file-parser';
+  | 'blender-file-parser'
+  | 'smart-clipboard';
 
 export type BuiltinToolCategory = 'project' | 'workflow' | 'system' | 'communication';
 
@@ -140,6 +142,16 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     requiresProject: false,
     pinnable: true,
     keywords: ['blend', 'blender', '解析', '场景', '材质', '贴图'],
+  },
+  {
+    id: 'smart-clipboard',
+    title: '智能剪贴板',
+    description: '查看并恢复最近复制的文本、图像和文件。',
+    category: 'system',
+    icon: ClipboardList,
+    requiresProject: false,
+    pinnable: true,
+    keywords: ['clipboard', 'ditto', '剪贴板', '复制历史', 'Ctrl+`'],
   },
 ];
 

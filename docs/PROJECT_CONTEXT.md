@@ -1,6 +1,6 @@
 # PM Center 项目总览与开发约定
 
-> 当前基线：`2.7.1`。本文件是 PM Center 的长期开发上下文；新增、修改或排查功能前，先确认其归属模块和下面的固定交互规则。README 保留对外简介和较长的愿望清单，本文件记录当前实际架构与已确定的产品约束。
+> 当前基线：`2.8.0`。本文件是 PM Center 的长期开发上下文；新增、修改或排查功能前，先确认其归属模块和下面的固定交互规则。README 保留对外简介和较长的愿望清单，本文件记录当前实际架构与已确定的产品约束。
 
 ## 1. 产品定位
 
@@ -12,7 +12,7 @@ PM Center 是面向本地制作项目的 Windows 优先桌面工作台。一个�
 - Python 任务、项目脚本、插件和 Python 环境管理；
 - Blender 场景批渲染、帧队列、常驻 Worker、性能采样、ETA、帧预览及帧序列视频打包；
 - 局域网发现、消息和确认式传输能力；
-- 多窗口、会话恢复、系统托盘和全局唤醒。
+- 多窗口、会话恢复、系统托盘、全局唤醒和 Windows 原生智能剪贴板。
 
 业务项目可独立存在。PM Center 的项目级状态都放在项目根目录的 `.pm_center/`，此目录默认从文件树、扫描、插件扫描和渲染源扫描中排除。
 
@@ -25,6 +25,7 @@ PM Center 是面向本地制作项目的 Windows 优先桌面工作台。一个�
 | 前端 | React 19、TypeScript、Vite、Tailwind、Zustand | `src/main.tsx` -> `src/App.tsx` -> `FileManager` / `ProjectWorkspace`。 |
 | 本地配置 | `@tauri-apps/plugin-store` | `settingsStore`、任务状态、会话及部分调度预设。 |
 | 项目数据 | SQLite + 项目目录 | `.pm_center/data.db`、`.pm_center/tree_cache.db` 和缓存目录。 |
+| 应用级数据 | SQLite + 应用数据目录 | `smart_clipboard/clipboard_history.db`、图像载荷及局域网协作数据；不写入项目 `.pm_center`。 |
 
 开发命令：
 
@@ -57,6 +58,8 @@ React invoke/listen
     fs, db, watcher, tree_cache, thumbnail_cache
     file_details, cache_manager, render_center
     task, python, python_env, plugin, p2p, tools
+  Native Win32 thread (smart_clipboard)
+    clipboard listener + standalone history window + Ctrl+` hotkey
 ```
 
 前端命令的唯一注册表是 `src-tauri/src/lib.rs` 中的 `tauri::generate_handler!`。新增 `#[tauri::command]` 后必须在这里注册；前端参数使用 camelCase，Rust 结构体使用 `#[serde(rename_all = "camelCase")]`。
@@ -96,6 +99,7 @@ React invoke/listen
 | 渲染中心 | `RenderCenterSurface.tsx` | 批次、作业、帧、预设、性能、ETA、Worker、右键与视频打包入口。 |
 | 脚本/任务 | `ScriptRunner.tsx`、`TaskPanel/`、`taskStore.ts` | 用户脚本、日志、取消/重试与任务面板聚合。 |
 | 设置 | `SettingsPanel.tsx`、`settingsStore.ts` | 全局工具路径、Blender 版本、排除规则、启动偏好、插件等。 |
+| 功能中心 | `features/builtinTools.ts`、`components/file-manager/index.tsx` | `Alt+Q` 工具入口；智能剪贴板由此调用后端显示独立 Win32 窗口，不创建工作区标签或 WebView。 |
 | 说明组件 | `components/ui/HelpAssistant.tsx` | 复杂或不可逆概念旁的问号说明；支持文字、图片、视频及自动避让定位。 |
 
 状态 Store 的所有权：
@@ -126,6 +130,7 @@ React invoke/listen
 | 插件 | `plugin/mod.rs` | 插件发现、校验、启停、依赖、设置与动作。 |
 | 工具路径 | `tools.rs` | FFprobe、FFmpeg、Blender 路径校验与系统自动检测。 |
 | 局域网 | `p2p/mod.rs` | 全局联系人数据库、双向在线发现、个人资料/头像同步、大厅与私聊消息。 |
+| 智能剪贴板 | `smart_clipboard/` | Windows 剪贴板监听、历史 SQLite/图像载荷、原生窗口绘制、全局快捷键、内容恢复与自动粘贴。 |
 
 长耗时后端操作应避免阻塞 Tauri 主线程：使用 Tokio / `spawn_blocking`，向前端发进度事件，提供合理的取消与失败状态。Windows 子进程统一使用 `process_utils::{std_command, tokio_command}`，避免弹出控制台窗口。
 
@@ -146,7 +151,16 @@ React invoke/listen
 - 图标式或有副作用的动作应有 title/tooltip；陌生概念使用 `HelpAssistant`，不要把操作说明长期铺在主界面上。
 - 新工作区标签类型必须同步修改 `workspaceTabStore`、会话序列化/恢复、`ProjectWorkspace` 渲染分派和标签栏图标/关闭规则。
 
-### 7.3 渲染中心（重要）
+### 7.3 智能剪贴板
+
+- 仅在 Windows 启用，使用独立 Win32 消息线程、原生窗口和 GDI 绘制；功能中心只负责调用 `open_smart_clipboard`，不得改成 Tauri WebView 或工作区标签。
+- 应用在后台运行时通过 `AddClipboardFormatListener` 记录 `CF_UNICODETEXT`、`CF_DIB/CF_DIBV5` 和 `CF_HDROP`，并遵守 Windows 的剪贴板历史排除格式。
+- 历史属于软件级全局数据，最多 500 条、保留 30 天，使用 BLAKE3 去重；数据库和图像载荷位于应用数据目录的 `smart_clipboard/`，清理过期记录时同步清理孤立载荷。
+- 功能中心 `Alt+Q` 和全局 `Ctrl+\`` 均可打开窗口；快捷键注册冲突只禁用该快捷键，不能阻止 PM Center 启动。
+- 搜索框支持输入筛选；上下键选择，`Enter` 恢复并向之前的外部窗口粘贴，`Ctrl+Enter` 仅恢复，双击等同 `Enter`，`Delete` 删除，`Esc` 关闭。
+- 自动粘贴不得发送到 PM Center 自身。恢复历史前必须先验证文本、图像载荷或文件路径有效，再清空系统剪贴板。
+
+### 7.4 渲染中心（重要）
 
 渲染层级：`批次 (render_batch)` -> `作业 (render_job)` -> `帧 (render_frame)` -> `尝试/Worker`。
 
@@ -162,7 +176,7 @@ React invoke/listen
 - 每个任务可单独设置帧多开、执行模式、帧顺序、范围、场景、分辨率、格式；全局限制只约束实际资源占用。
 - 批次标题右键可以逐任务导出视频；任务卡片右键只导出该任务当前范围。视频默认 25 fps，支持 MP4/MOV/WebM；所有预期帧必须有效且尺寸一致，输出至 `renders/<批次>/videos/<时间戳>/`。
 
-### 7.4 工具、Python、插件和 P2P
+### 7.5 工具、Python、插件和 P2P
 
 - Blender 下拉选择来自设置中的 Blender 版本管理，不在渲染表单重复维护路径列表。
 - FFprobe 用于媒体详情；FFmpeg 用于序列帧打包。全局设置可以手动固定路径，后端在未指定时允许从系统 PATH 自动检测。前端不能只以“是否手动指定”判断工具可用性。

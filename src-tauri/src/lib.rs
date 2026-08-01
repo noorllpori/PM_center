@@ -20,6 +20,7 @@ mod process_utils;
 mod python;
 mod python_env;
 mod render_center;
+mod smart_clipboard;
 mod task;
 mod thumbnail_cache;
 mod tools;
@@ -39,8 +40,8 @@ use p2p::{
     discard_lan_transfer_staging_file, get_lan_collaboration_snapshot, init_p2p,
     initialize_lan_collaboration, mark_lan_conversation_read, offer_lan_files, remove_lan_contact,
     respond_lan_transfer, send_lan_message, send_p2p_message, set_lan_avatar, start_lan_discovery,
-    start_p2p_discovery, stop_lan_discovery, stop_p2p_discovery,
-    update_lan_profile, update_lan_receive_directory, update_p2p_user,
+    start_p2p_discovery, stop_lan_discovery, stop_p2p_discovery, update_lan_profile,
+    update_lan_receive_directory, update_p2p_user,
 };
 use plugin::{
     get_plugin_dirs, inspect_plugin_dependencies, install_plugin_dependencies, list_plugins,
@@ -1275,6 +1276,7 @@ async fn launch_program(path: String) -> Result<(), String> {
 #[tauri::command]
 fn exit_app(app: tauri::AppHandle) -> Result<(), String> {
     render_center::shutdown_all();
+    smart_clipboard::shutdown();
     app.exit(0);
     Ok(())
 }
@@ -1339,6 +1341,14 @@ pub fn run() {
         .manage(db_state_for_single)
         .setup(move |app| {
             watcher::set_app_handle(app.handle().clone());
+            match app.path().app_data_dir() {
+                Ok(app_data_dir) => {
+                    if let Err(error) = smart_clipboard::initialize(&app_data_dir) {
+                        eprintln!("[smart-clipboard] 初始化失败: {error}");
+                    }
+                }
+                Err(error) => eprintln!("[smart-clipboard] 获取应用数据目录失败: {error}"),
+            }
             tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
                 loop {
@@ -1379,6 +1389,7 @@ pub fn run() {
                     }
                     "quit" => {
                         render_center::shutdown_all();
+                        smart_clipboard::shutdown();
                         app.exit(0);
                     }
                     _ => {}
@@ -1421,6 +1432,7 @@ pub fn run() {
             cache_manager::check_project_cache,
             cache_manager::run_project_cache_action,
             cache_manager::cancel_cache_maintenance,
+            smart_clipboard::open_smart_clipboard,
             link_preview::get_link_preview,
             render_center::inspect_render_sources,
             render_center::create_render_batch,
