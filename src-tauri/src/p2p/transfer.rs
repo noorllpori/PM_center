@@ -9,10 +9,11 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 use tauri::{Emitter, Manager};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader, SeekFrom};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::watch;
 use walkdir::WalkDir;
@@ -28,7 +29,11 @@ const MAX_AUTO_RECEIVE_IMAGE_BYTES: u64 = 100 * 1024 * 1024;
 const FILE_TRANSFER_MIN_PROTOCOL_VERSION: u16 = 3;
 const DIRECTORY_TRANSFER_MIN_PROTOCOL_VERSION: u16 = 4;
 const LOBBY_IMAGE_MIN_PROTOCOL_VERSION: u16 = 6;
-const TRANSFER_CANCEL_MIN_PROTOCOL_VERSION: u16 = 6;
+const TRANSFER_CANCEL_MIN_PROTOCOL_VERSION: u16 = 7;
+const PARALLEL_TRANSFER_MIN_PROTOCOL_VERSION: u16 = 7;
+const TWO_STREAM_MIN_BYTES: u64 = 1024 * 1024;
+const FOUR_STREAM_MIN_BYTES: u64 = 10 * 1024 * 1024;
+const EIGHT_STREAM_MIN_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_DIRECTORY_ITEMS: usize = 20_000;
 const MAX_DIRECTORY_DEPTH: usize = 64;
 const MAX_RELATIVE_PATH_CHARS: usize = 2_048;
@@ -36,8 +41,15 @@ static RECEIVE_PATH_LOCK: Mutex<()> = Mutex::new(());
 const TRANSFER_CANCELLED_ERROR: &str = "传输已中断";
 
 lazy_static::lazy_static! {
-    static ref ACTIVE_TRANSFER_CANCELLATIONS: Mutex<HashMap<String, watch::Sender<bool>>> =
+    static ref ACTIVE_TRANSFER_CANCELLATIONS: Mutex<HashMap<String, ActiveTransferEntry>> =
         Mutex::new(HashMap::new());
+}
+
+struct ActiveTransferEntry {
+    cancellation: watch::Sender<bool>,
+    registrations: usize,
+    transferred_bytes: Arc<AtomicU64>,
+    started_at: Instant,
 }
 
 struct ActiveTransferGuard {
@@ -47,27 +59,64 @@ struct ActiveTransferGuard {
 impl Drop for ActiveTransferGuard {
     fn drop(&mut self) {
         if let Ok(mut active) = ACTIVE_TRANSFER_CANCELLATIONS.lock() {
-            active.remove(&self.transfer_id);
+            let remove = active
+                .get_mut(&self.transfer_id)
+                .map(|entry| {
+                    entry.registrations = entry.registrations.saturating_sub(1);
+                    entry.registrations == 0
+                })
+                .unwrap_or(false);
+            if remove {
+                active.remove(&self.transfer_id);
+            }
         }
     }
 }
 
 fn register_active_transfer(
     transfer_id: &str,
-) -> Result<(ActiveTransferGuard, watch::Receiver<bool>), String> {
+) -> Result<
+    (
+        ActiveTransferGuard,
+        watch::Receiver<bool>,
+        Arc<AtomicU64>,
+        Instant,
+    ),
+    String,
+> {
     let mut active = ACTIVE_TRANSFER_CANCELLATIONS
         .lock()
         .map_err(|error| error.to_string())?;
-    if active.contains_key(transfer_id) {
-        return Err("该文件已经在传输中".to_string());
-    }
-    let (sender, receiver) = watch::channel(false);
-    active.insert(transfer_id.to_string(), sender);
+    let (receiver, transferred_bytes, started_at) = if let Some(entry) = active.get_mut(transfer_id)
+    {
+        entry.registrations += 1;
+        (
+            entry.cancellation.subscribe(),
+            entry.transferred_bytes.clone(),
+            entry.started_at,
+        )
+    } else {
+        let (sender, receiver) = watch::channel(false);
+        let transferred_bytes = Arc::new(AtomicU64::new(0));
+        let started_at = Instant::now();
+        active.insert(
+            transfer_id.to_string(),
+            ActiveTransferEntry {
+                cancellation: sender,
+                registrations: 1,
+                transferred_bytes: transferred_bytes.clone(),
+                started_at,
+            },
+        );
+        (receiver, transferred_bytes, started_at)
+    };
     Ok((
         ActiveTransferGuard {
             transfer_id: transfer_id.to_string(),
         },
         receiver,
+        transferred_bytes,
+        started_at,
     ))
 }
 
@@ -75,7 +124,11 @@ fn signal_active_transfer_cancellation(transfer_id: &str) -> bool {
     ACTIVE_TRANSFER_CANCELLATIONS
         .lock()
         .ok()
-        .and_then(|active| active.get(transfer_id).cloned())
+        .and_then(|active| {
+            active
+                .get(transfer_id)
+                .map(|entry| entry.cancellation.clone())
+        })
         .is_some_and(|sender| sender.send(true).is_ok())
 }
 
@@ -229,6 +282,26 @@ pub(super) enum TransferControlEnvelope {
         transfer_id: String,
         total_bytes: u64,
         content_hash: String,
+    },
+    TransferRangeRequest {
+        transfer_id: String,
+        receiver_id: String,
+        offset: u64,
+        length: u64,
+    },
+    TransferRangeReady {
+        transfer_id: String,
+        offset: u64,
+        length: u64,
+    },
+    TransferParallelReceipt {
+        transfer_id: String,
+        receiver_id: String,
+        status: String,
+        error: Option<String>,
+    },
+    TransferParallelReceiptAck {
+        transfer_id: String,
     },
     TransferReceipt {
         transfer_id: String,
@@ -1681,6 +1754,287 @@ async fn receive_manifest_file(
     Ok(())
 }
 
+fn parallel_transfer_stream_count(total_bytes: u64) -> usize {
+    if total_bytes > EIGHT_STREAM_MIN_BYTES {
+        8
+    } else if total_bytes > FOUR_STREAM_MIN_BYTES {
+        4
+    } else if total_bytes > TWO_STREAM_MIN_BYTES {
+        2
+    } else {
+        1
+    }
+}
+
+fn parallel_transfer_ranges(total_bytes: u64) -> Vec<(u64, u64)> {
+    if total_bytes == 0 {
+        return Vec::new();
+    }
+    let stream_count = parallel_transfer_stream_count(total_bytes);
+    let base_length = total_bytes / stream_count as u64;
+    let remainder = total_bytes % stream_count as u64;
+    let mut offset = 0u64;
+    (0..stream_count)
+        .map(|index| {
+            let length = base_length + u64::from((index as u64) < remainder);
+            let range = (offset, length);
+            offset += length;
+            range
+        })
+        .collect()
+}
+
+async fn send_parallel_receipt(
+    ip: &str,
+    transfer_id: &str,
+    receiver_id: &str,
+    status: &str,
+    error: Option<String>,
+) -> Result<(), String> {
+    let stream = connect_to_peer(ip).await?;
+    let (reader, mut writer) = stream.into_split();
+    write_envelope(
+        &mut writer,
+        &TransferControlEnvelope::TransferParallelReceipt {
+            transfer_id: transfer_id.to_string(),
+            receiver_id: receiver_id.to_string(),
+            status: status.to_string(),
+            error,
+        },
+    )
+    .await?;
+    let mut reader = BufReader::new(reader);
+    match read_envelope(&mut reader, TRANSFER_HANDSHAKE_TIMEOUT).await? {
+        TransferControlEnvelope::TransferParallelReceiptAck {
+            transfer_id: ack_id,
+        } if ack_id == transfer_id => Ok(()),
+        _ => Err("发送方未确认并行传输结果".to_string()),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn receive_file_range(
+    app_handle: tauri::AppHandle,
+    transfer: LanTransfer,
+    peer_ip: String,
+    temp_path: PathBuf,
+    offset: u64,
+    length: u64,
+    mut cancellation: watch::Receiver<bool>,
+    received_total: Arc<AtomicU64>,
+    started_at: Instant,
+    last_progress_ms: Arc<AtomicU64>,
+) -> Result<(), String> {
+    ensure_transfer_not_cancelled(&cancellation)?;
+    let stream = connect_to_peer(&peer_ip).await?;
+    let (reader, mut writer) = stream.into_split();
+    write_envelope(
+        &mut writer,
+        &TransferControlEnvelope::TransferRangeRequest {
+            transfer_id: transfer.id.clone(),
+            receiver_id: transfer.to_id.clone(),
+            offset,
+            length,
+        },
+    )
+    .await?;
+    let mut reader = BufReader::new(reader);
+    match read_envelope(&mut reader, TRANSFER_IO_TIMEOUT).await? {
+        TransferControlEnvelope::TransferRangeReady {
+            transfer_id,
+            offset: ready_offset,
+            length: ready_length,
+        } if transfer_id == transfer.id && ready_offset == offset && ready_length == length => {}
+        TransferControlEnvelope::TransferError { error, .. } => return Err(error),
+        _ => return Err("发送方返回了无效的分段传输响应".to_string()),
+    }
+
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .open(&temp_path)
+        .await
+        .map_err(|error| format!("打开临时接收文件失败：{error}"))?;
+    file.seek(SeekFrom::Start(offset))
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut buffer = vec![0u8; TRANSFER_CHUNK_SIZE];
+    let mut range_received = 0u64;
+    while range_received < length {
+        let remaining = (length - range_received).min(buffer.len() as u64) as usize;
+        let count = tokio::select! {
+            _ = wait_for_transfer_cancellation(&mut cancellation) => {
+                return Err(TRANSFER_CANCELLED_ERROR.to_string());
+            }
+            result = tokio::time::timeout(TRANSFER_IO_TIMEOUT, reader.read(&mut buffer[..remaining])) => {
+                result
+                    .map_err(|_| "接收文件分段超时".to_string())?
+                    .map_err(|error| error.to_string())?
+            }
+        };
+        if count == 0 {
+            return Err("发送方提前结束了文件分段传输".to_string());
+        }
+        tokio::select! {
+            _ = wait_for_transfer_cancellation(&mut cancellation) => {
+                return Err(TRANSFER_CANCELLED_ERROR.to_string());
+            }
+            result = file.write_all(&buffer[..count]) => {
+                result.map_err(|error| error.to_string())?;
+            }
+        }
+        range_received += count as u64;
+        let received = received_total.fetch_add(count as u64, Ordering::Relaxed) + count as u64;
+        let elapsed_ms = started_at.elapsed().as_millis() as u64;
+        let last_ms = last_progress_ms.load(Ordering::Relaxed);
+        if received == transfer.total_bytes
+            || (elapsed_ms.saturating_sub(last_ms) >= 150
+                && last_progress_ms
+                    .compare_exchange(last_ms, elapsed_ms, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok())
+        {
+            emit_progress(
+                &app_handle,
+                &transfer.id,
+                "transferring",
+                "incoming",
+                received,
+                transfer.total_bytes,
+                started_at,
+            );
+        }
+    }
+    file.flush().await.map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+async fn download_file_parallel(
+    app_handle: &tauri::AppHandle,
+    transfer: &LanTransfer,
+    peer: &OnlinePeer,
+    item: &TransferManifestItem,
+    temp_path: &Path,
+    destination_path: &Path,
+    cancellation: &mut watch::Receiver<bool>,
+) -> Result<(), String> {
+    let _temp_cleanup = TemporaryTransferFile(temp_path.to_path_buf());
+    let file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(temp_path)
+        .await
+        .map_err(|error| format!("创建临时接收文件失败：{error}"))?;
+    file.set_len(transfer.total_bytes)
+        .await
+        .map_err(|error| format!("预分配临时接收文件失败：{error}"))?;
+    drop(file);
+
+    let started_at = Instant::now();
+    let received_total = Arc::new(AtomicU64::new(0));
+    let last_progress_ms = Arc::new(AtomicU64::new(0));
+    let mut tasks = tokio::task::JoinSet::new();
+    for (offset, length) in parallel_transfer_ranges(transfer.total_bytes) {
+        tasks.spawn(receive_file_range(
+            app_handle.clone(),
+            transfer.clone(),
+            peer.ip.clone(),
+            temp_path.to_path_buf(),
+            offset,
+            length,
+            cancellation.clone(),
+            received_total.clone(),
+            started_at,
+            last_progress_ms.clone(),
+        ));
+    }
+
+    let mut transfer_error = None;
+    while let Some(result) = tasks.join_next().await {
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                transfer_error = Some(error);
+                tasks.abort_all();
+                break;
+            }
+            Err(error) => {
+                transfer_error = Some(format!("文件分段任务异常结束：{error}"));
+                tasks.abort_all();
+                break;
+            }
+        }
+    }
+    while tasks.join_next().await.is_some() {}
+    if let Some(error) = transfer_error {
+        if error != TRANSFER_CANCELLED_ERROR {
+            let _ = send_parallel_receipt(
+                &peer.ip,
+                &transfer.id,
+                &transfer.to_id,
+                "failed",
+                Some(error.clone()),
+            )
+            .await;
+        }
+        return Err(error);
+    }
+    let finalize_result = async {
+        ensure_transfer_not_cancelled(cancellation)?;
+        if received_total.load(Ordering::Relaxed) != transfer.total_bytes {
+            return Err("并行接收字节数与文件清单不一致".to_string());
+        }
+
+        let sync_file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .open(temp_path)
+            .await
+            .map_err(|error| error.to_string())?;
+        sync_file
+            .sync_all()
+            .await
+            .map_err(|error| error.to_string())?;
+        drop(sync_file);
+        let hash_path = temp_path.to_path_buf();
+        let received_hash = tokio::task::spawn_blocking(move || hash_file(&hash_path))
+            .await
+            .map_err(|error| error.to_string())??;
+        let expected_hash = item
+            .content_hash
+            .as_deref()
+            .ok_or_else(|| "接收清单缺少文件完整性哈希".to_string())?;
+        if received_hash != expected_hash {
+            return Err("并行传输后的文件完整性校验失败".to_string());
+        }
+        if is_image_transfer(transfer) {
+            validate_received_image(temp_path).await?;
+        }
+        ensure_transfer_not_cancelled(cancellation)?;
+        atomic_replace_file(temp_path, destination_path)
+    }
+    .await;
+    match finalize_result {
+        Ok(()) => {
+            let _ =
+                send_parallel_receipt(&peer.ip, &transfer.id, &transfer.to_id, "completed", None)
+                    .await;
+            Ok(())
+        }
+        Err(error) => {
+            if error != TRANSFER_CANCELLED_ERROR {
+                let _ = send_parallel_receipt(
+                    &peer.ip,
+                    &transfer.id,
+                    &transfer.to_id,
+                    "failed",
+                    Some(error.clone()),
+                )
+                .await;
+            }
+            Err(error)
+        }
+    }
+}
+
 async fn download_transfer(
     app_handle: &tauri::AppHandle,
     transfer: &LanTransfer,
@@ -1719,6 +2073,26 @@ async fn download_transfer(
         let _ = tokio::fs::remove_dir_all(&temp_path).await;
     } else {
         let _ = tokio::fs::remove_file(&temp_path).await;
+    }
+
+    if transfer.kind == "file"
+        && parallel_transfer_stream_count(transfer.total_bytes) > 1
+        && peer.protocol_version >= PARALLEL_TRANSFER_MIN_PROTOCOL_VERSION
+    {
+        let item = manifest
+            .items
+            .first()
+            .ok_or_else(|| "文件传输清单为空".to_string())?;
+        return download_file_parallel(
+            app_handle,
+            transfer,
+            peer,
+            item,
+            &temp_path,
+            destination_path,
+            cancellation,
+        )
+        .await;
     }
 
     let stream = connect_to_peer(&peer.ip).await?;
@@ -1891,7 +2265,7 @@ pub async fn respond_lan_transfer(
                     Some(transfer.conversation_id.as_str()),
                 ),
             )?;
-            let (_active_guard, mut cancellation) = register_active_transfer(&transfer.id)?;
+            let (_active_guard, mut cancellation, _, _) = register_active_transfer(&transfer.id)?;
             let path_guard = RECEIVE_PATH_LOCK
                 .lock()
                 .map_err(|error| error.to_string())?;
@@ -2345,6 +2719,180 @@ async fn send_manifest_file(
     Ok(())
 }
 
+async fn serve_transfer_range(
+    transfer_id: &str,
+    receiver_id: &str,
+    remote_ip: &str,
+    offset: u64,
+    length: u64,
+    writer: &mut OwnedWriteHalf,
+    app_handle: &tauri::AppHandle,
+    db_path: &Path,
+) -> Result<(), String> {
+    validate_peer_ip(receiver_id, remote_ip)?;
+    let conn = open_database(db_path)?;
+    let transfer = load_transfer(&conn, transfer_id)?;
+    if transfer.direction != "outgoing"
+        || transfer.to_id != receiver_id
+        || transfer.kind != "file"
+        || parallel_transfer_stream_count(transfer.total_bytes) == 1
+    {
+        return Err("文件分段请求与发送记录不匹配".to_string());
+    }
+    let range_end = offset
+        .checked_add(length)
+        .ok_or_else(|| "文件分段范围无效".to_string())?;
+    if length == 0 || range_end > transfer.total_bytes {
+        return Err("文件分段范围无效".to_string());
+    }
+    let (_active_guard, mut cancellation, sent_total, started_at) =
+        register_active_transfer(transfer_id)?;
+    let claimed = conn
+        .execute(
+            "UPDATE lan_transfers SET status='transferring',error=NULL,updated_at=?2
+             WHERE id=?1 AND direction='outgoing' AND status IN ('waiting','failed','cancelled')",
+            params![transfer_id, now_millis() as i64],
+        )
+        .map_err(|error| error.to_string())?;
+    if claimed > 0 {
+        emit_changed(app_handle, &load_transfer(&conn, transfer_id)?);
+    } else if load_transfer(&conn, transfer_id)?.status != "transferring" {
+        return Err("该文件当前不能进行分段传输".to_string());
+    }
+
+    let manifest = parse_and_validate_manifest(
+        &transfer.kind,
+        &transfer.payload_format,
+        transfer.item_count,
+        transfer.total_bytes,
+        &transfer.content_hash,
+        &transfer.manifest,
+    )?;
+    let item = manifest
+        .items
+        .first()
+        .ok_or_else(|| "文件传输清单为空".to_string())?;
+    if item.kind != "file" || item.size_bytes != transfer.total_bytes {
+        return Err("文件传输清单与分段请求不匹配".to_string());
+    }
+    let source_path = PathBuf::from(
+        transfer
+            .source_path
+            .as_deref()
+            .ok_or_else(|| "发送记录缺少源文件路径".to_string())?,
+    );
+    let metadata = tokio::fs::symlink_metadata(&source_path)
+        .await
+        .map_err(|error| format!("无法读取发送源内容：{error}"))?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() != transfer.total_bytes
+        || metadata
+            .modified()
+            .map(system_time_millis)
+            .unwrap_or_default()
+            != item.modified_at
+    {
+        return Err("发送源内容已发生变化，请重新发送".to_string());
+    }
+    ensure_transfer_not_cancelled(&cancellation)?;
+    let mut file = tokio::fs::File::open(&source_path)
+        .await
+        .map_err(|error| format!("读取发送源失败：{error}"))?;
+    file.seek(SeekFrom::Start(offset))
+        .await
+        .map_err(|error| error.to_string())?;
+    write_envelope(
+        writer,
+        &TransferControlEnvelope::TransferRangeReady {
+            transfer_id: transfer.id.clone(),
+            offset,
+            length,
+        },
+    )
+    .await?;
+
+    let mut buffer = vec![0u8; TRANSFER_CHUNK_SIZE];
+    let mut range_sent = 0u64;
+    while range_sent < length {
+        let remaining = (length - range_sent).min(buffer.len() as u64) as usize;
+        let count = tokio::select! {
+            _ = wait_for_transfer_cancellation(&mut cancellation) => {
+                return Err(TRANSFER_CANCELLED_ERROR.to_string());
+            }
+            result = file.read(&mut buffer[..remaining]) => {
+                result.map_err(|error| error.to_string())?
+            }
+        };
+        if count == 0 {
+            return Err("发送源文件在分段传输前被截断".to_string());
+        }
+        tokio::select! {
+            _ = wait_for_transfer_cancellation(&mut cancellation) => {
+                return Err(TRANSFER_CANCELLED_ERROR.to_string());
+            }
+            result = tokio::time::timeout(TRANSFER_IO_TIMEOUT, writer.write_all(&buffer[..count])) => {
+                result
+                    .map_err(|_| "发送文件分段超时".to_string())?
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        range_sent += count as u64;
+        let sent = sent_total.fetch_add(count as u64, Ordering::Relaxed) + count as u64;
+        emit_progress(
+            app_handle,
+            &transfer.id,
+            "transferring",
+            "outgoing",
+            sent.min(transfer.total_bytes),
+            transfer.total_bytes,
+            started_at,
+        );
+    }
+    writer.flush().await.map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+async fn complete_parallel_transfer(
+    transfer_id: &str,
+    receiver_id: &str,
+    remote_ip: &str,
+    status: &str,
+    error: Option<&str>,
+    writer: &mut OwnedWriteHalf,
+    app_handle: &tauri::AppHandle,
+    db_path: &Path,
+) -> Result<(), String> {
+    validate_peer_ip(receiver_id, remote_ip)?;
+    let conn = open_database(db_path)?;
+    let transfer = load_transfer(&conn, transfer_id)?;
+    if transfer.direction != "outgoing" || transfer.to_id != receiver_id {
+        return Err("并行传输结果与发送记录不匹配".to_string());
+    }
+    let updated = match status {
+        "completed" => update_transfer(&conn, transfer_id, "completed", None, None)?,
+        "failed" => {
+            signal_active_transfer_cancellation(transfer_id);
+            update_transfer(
+                &conn,
+                transfer_id,
+                "failed",
+                Some(error.unwrap_or("接收方报告并行文件传输失败")),
+                None,
+            )?
+        }
+        _ => return Err("接收方返回了无效的并行传输状态".to_string()),
+    };
+    emit_changed(app_handle, &updated);
+    write_envelope(
+        writer,
+        &TransferControlEnvelope::TransferParallelReceiptAck {
+            transfer_id: transfer_id.to_string(),
+        },
+    )
+    .await
+}
+
 async fn serve_transfer(
     transfer_id: &str,
     receiver_id: &str,
@@ -2360,7 +2908,7 @@ async fn serve_transfer(
     if transfer.direction != "outgoing" || transfer.to_id != receiver_id {
         return Err("文件传输请求与发送记录不匹配".to_string());
     }
-    let (_active_guard, mut cancellation) = register_active_transfer(transfer_id)?;
+    let (_active_guard, mut cancellation, _, _) = register_active_transfer(transfer_id)?;
     let claimed = conn
         .execute(
             "UPDATE lan_transfers SET status='transferring',error=NULL,updated_at=?2
@@ -2669,6 +3217,42 @@ pub(super) async fn handle_connection(
             )
             .await
         }
+        TransferControlEnvelope::TransferRangeRequest {
+            transfer_id,
+            receiver_id,
+            offset,
+            length,
+        } => {
+            serve_transfer_range(
+                &transfer_id,
+                &receiver_id,
+                &remote_ip,
+                offset,
+                length,
+                writer,
+                &app_handle,
+                &db_path,
+            )
+            .await
+        }
+        TransferControlEnvelope::TransferParallelReceipt {
+            transfer_id,
+            receiver_id,
+            status,
+            error,
+        } => {
+            complete_parallel_transfer(
+                &transfer_id,
+                &receiver_id,
+                &remote_ip,
+                &status,
+                error.as_deref(),
+                writer,
+                &app_handle,
+                &db_path,
+            )
+            .await
+        }
         TransferControlEnvelope::TransferCancel {
             transfer_id,
             requester_id,
@@ -2706,6 +3290,59 @@ mod tests {
             "pm-center-transfer-{name}-{}.db",
             uuid::Uuid::new_v4()
         ))
+    }
+
+    #[test]
+    fn parallel_ranges_cover_file_without_gaps_or_overlap() {
+        let total_bytes = EIGHT_STREAM_MIN_BYTES + 3;
+        let ranges = parallel_transfer_ranges(total_bytes);
+        assert_eq!(ranges.len(), 8);
+        let mut expected_offset = 0u64;
+        for (offset, length) in ranges {
+            assert_eq!(offset, expected_offset);
+            assert!(length > 0);
+            expected_offset += length;
+        }
+        assert_eq!(expected_offset, total_bytes);
+    }
+
+    #[test]
+    fn parallel_stream_count_uses_size_tiers() {
+        assert_eq!(parallel_transfer_stream_count(TWO_STREAM_MIN_BYTES), 1);
+        assert_eq!(parallel_transfer_stream_count(TWO_STREAM_MIN_BYTES + 1), 2);
+        assert_eq!(parallel_transfer_stream_count(FOUR_STREAM_MIN_BYTES), 2);
+        assert_eq!(parallel_transfer_stream_count(FOUR_STREAM_MIN_BYTES + 1), 4);
+        assert_eq!(parallel_transfer_stream_count(EIGHT_STREAM_MIN_BYTES), 4);
+        assert_eq!(
+            parallel_transfer_stream_count(EIGHT_STREAM_MIN_BYTES + 1),
+            8
+        );
+    }
+
+    #[test]
+    fn active_transfer_registrations_share_cancellation_and_progress() {
+        let transfer_id = format!("parallel-test-{}", uuid::Uuid::new_v4());
+        let (first_guard, first_cancellation, first_progress, first_started_at) =
+            register_active_transfer(&transfer_id).unwrap();
+        let (second_guard, second_cancellation, second_progress, second_started_at) =
+            register_active_transfer(&transfer_id).unwrap();
+        assert!(Arc::ptr_eq(&first_progress, &second_progress));
+        assert_eq!(first_started_at, second_started_at);
+        assert!(!*first_cancellation.borrow());
+        assert!(!*second_cancellation.borrow());
+        assert!(signal_active_transfer_cancellation(&transfer_id));
+        assert!(*first_cancellation.borrow());
+        assert!(*second_cancellation.borrow());
+        drop(first_guard);
+        assert!(ACTIVE_TRANSFER_CANCELLATIONS
+            .lock()
+            .unwrap()
+            .contains_key(&transfer_id));
+        drop(second_guard);
+        assert!(!ACTIVE_TRANSFER_CANCELLATIONS
+            .lock()
+            .unwrap()
+            .contains_key(&transfer_id));
     }
 
     #[test]
@@ -2960,7 +3597,7 @@ mod tests {
     #[test]
     fn active_transfer_cancellation_signal_reaches_the_stream_worker() {
         let transfer_id = format!("cancel-signal-{}", uuid::Uuid::new_v4());
-        let (_guard, receiver) = register_active_transfer(&transfer_id).unwrap();
+        let (_guard, receiver, _, _) = register_active_transfer(&transfer_id).unwrap();
         assert!(!*receiver.borrow());
         assert!(signal_active_transfer_cancellation(&transfer_id));
         assert!(*receiver.borrow());

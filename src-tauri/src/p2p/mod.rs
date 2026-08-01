@@ -24,7 +24,8 @@ pub use transfer::{
 
 const DISCOVERY_PORT: u16 = 31523;
 const MESSAGE_PORT: u16 = 31524;
-const PROTOCOL_VERSION: u16 = 6;
+const PROTOCOL_VERSION: u16 = 7;
+const LOBBY_SYNC_MIN_PROTOCOL_VERSION: u16 = 6;
 const BROADCAST_INTERVAL: Duration = Duration::from_secs(4);
 const USER_TIMEOUT: Duration = Duration::from_secs(16);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -1306,7 +1307,7 @@ async fn run_discovery_loop(socket: UdpSocket, app_handle: tauri::AppHandle, db_
                             emit_service_status(&app_handle);
                         }
                     });
-                } else if protocol_version >= PROTOCOL_VERSION {
+                } else if protocol_version >= LOBBY_SYNC_MIN_PROTOCOL_VERSION {
                     let app_handle = app_handle.clone();
                     let db_path = db_path.clone();
                     let peer_id = profile.id.clone();
@@ -1410,7 +1411,7 @@ async fn send_hello_and_fetch(
         emit_contacts_changed(&app_handle);
     }
     fetch_remote_avatar(ip, &remote_profile, app_handle.clone(), db_path.clone()).await?;
-    if protocol_version >= PROTOCOL_VERSION {
+    if protocol_version >= LOBBY_SYNC_MIN_PROTOCOL_VERSION {
         sync_lobby_history(&remote_profile.id, ip, app_handle, db_path).await?;
     }
     Ok(())
@@ -1832,7 +1833,7 @@ async fn handle_tcp_connection(
                     .await;
                 });
             }
-            if protocol_version >= PROTOCOL_VERSION {
+            if protocol_version >= LOBBY_SYNC_MIN_PROTOCOL_VERSION {
                 let history_app_handle = app_handle.clone();
                 let history_ip = ip.clone();
                 let history_peer_id = profile.id.clone();
@@ -1886,7 +1887,9 @@ async fn handle_tcp_connection(
                 .map_err(|error| error.to_string())?
                 .online_users
                 .get(&requester_id)
-                .is_some_and(|peer| peer.ip == ip && peer.protocol_version >= PROTOCOL_VERSION);
+                .is_some_and(|peer| {
+                    peer.ip == ip && peer.protocol_version >= LOBBY_SYNC_MIN_PROTOCOL_VERSION
+                });
             if !requester_is_peer {
                 return Err("大厅历史请求方身份无效".to_string());
             }
