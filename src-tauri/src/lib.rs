@@ -39,8 +39,9 @@ use p2p::{
     clear_lan_conversation, clear_lan_history, create_lan_transfer_staging_path,
     discard_lan_transfer_staging_file, get_lan_collaboration_snapshot, init_p2p,
     initialize_lan_collaboration, mark_lan_conversation_read, offer_lan_files, remove_lan_contact,
-    respond_lan_transfer, send_lan_message, send_p2p_message, set_lan_avatar, start_lan_discovery,
-    start_p2p_discovery, stop_lan_discovery, stop_p2p_discovery, update_lan_profile,
+    respond_lan_transfer, scan_lan_discovery_subnet, send_lan_message, send_p2p_message,
+    set_lan_avatar, start_lan_discovery, start_p2p_discovery, stop_lan_discovery,
+    stop_p2p_discovery, update_lan_discovery_subnet, update_lan_profile,
     update_lan_receive_directory, update_p2p_user,
 };
 use plugin::{
@@ -1541,6 +1542,8 @@ pub fn run() {
             get_lan_collaboration_snapshot,
             update_lan_profile,
             update_lan_receive_directory,
+            update_lan_discovery_subnet,
+            scan_lan_discovery_subnet,
             set_lan_avatar,
             start_lan_discovery,
             stop_lan_discovery,

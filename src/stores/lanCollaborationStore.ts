@@ -15,6 +15,13 @@ export interface LanProfile {
 export interface LanLocalSettings {
   receiveDirectory: string;
   autoReceiveImages: boolean;
+  discoverySubnet: string;
+}
+
+export interface LanDiscoverySubnetScanResult {
+  discoverySubnet: string;
+  targetCount: number;
+  sentCount: number;
 }
 
 export interface LanContact {
@@ -156,6 +163,8 @@ interface LanCollaborationState {
   refresh: () => Promise<void>;
   updateProfile: (displayName: string, department: string) => Promise<void>;
   updateReceiveDirectory: (receiveDirectory: string) => Promise<void>;
+  updateDiscoverySubnet: (discoverySubnet: string) => Promise<LanDiscoverySubnetScanResult>;
+  scanDiscoverySubnet: () => Promise<LanDiscoverySubnetScanResult>;
   setAvatar: (imagePath: string | null) => Promise<void>;
   startDiscovery: () => Promise<void>;
   stopDiscovery: () => Promise<void>;
@@ -347,6 +356,20 @@ export const useLanCollaborationStore = create<LanCollaborationState>((set, get)
     });
     set({ localSettings });
     await get().refresh();
+  },
+
+  updateDiscoverySubnet: async (discoverySubnet) => {
+    const result = await invoke<LanDiscoverySubnetScanResult>('update_lan_discovery_subnet', {
+      request: { discoverySubnet },
+    });
+    await get().refresh();
+    return result;
+  },
+
+  scanDiscoverySubnet: async () => {
+    const result = await invoke<LanDiscoverySubnetScanResult>('scan_lan_discovery_subnet');
+    await get().refresh();
+    return result;
   },
 
   setAvatar: async (imagePath) => {

@@ -691,6 +691,8 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
     refresh,
     updateProfile,
     updateReceiveDirectory,
+    updateDiscoverySubnet,
+    scanDiscoverySubnet,
     setAvatar,
     startDiscovery,
     stopDiscovery,
@@ -725,6 +727,8 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
   const [isProfileDraftDirty, setIsProfileDraftDirty] = useState(false);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [isUpdatingReceiveDirectory, setIsUpdatingReceiveDirectory] = useState(false);
+  const [discoverySubnet, setDiscoverySubnet] = useState('');
+  const [isScanningSubnet, setIsScanningSubnet] = useState(false);
   const [confirmAction, setConfirmAction] = useState<'conversation' | 'history' | null>(null);
   const [scrollRequest, setScrollRequest] = useState(0);
   const messagesViewportRef = useRef<HTMLDivElement | null>(null);
@@ -758,6 +762,10 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
     setProfileName(profile.displayName);
     setProfileDepartment(profile.department);
   }, [isProfileDraftDirty, profile]);
+
+  useEffect(() => {
+    setDiscoverySubnet(localSettings?.discoverySubnet || '');
+  }, [localSettings?.discoverySubnet]);
 
   const selectedContactId = selectedConversationId.startsWith('direct:')
     ? selectedConversationId.slice('direct:'.length)
@@ -1298,6 +1306,43 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
     }
   };
 
+  const handleSaveAndScanSubnet = async () => {
+    if (isScanningSubnet) return;
+    setIsScanningSubnet(true);
+    try {
+      const result = await updateDiscoverySubnet(discoverySubnet);
+      setDiscoverySubnet(result.discoverySubnet);
+      showToast({
+        title: result.discoverySubnet ? '隧道网段已保存并扫描' : '隧道网段已清除',
+        message: result.discoverySubnet
+          ? `已向 ${result.sentCount}/${result.targetCount} 个可用地址发送发现请求。`
+          : '后续只使用原有局域网广播发现。',
+        tone: 'success',
+      });
+    } catch (scanError) {
+      showToast({ title: '保存或扫描网段失败', message: String(scanError), tone: 'error' });
+    } finally {
+      setIsScanningSubnet(false);
+    }
+  };
+
+  const handleScanSubnet = async () => {
+    if (isScanningSubnet) return;
+    setIsScanningSubnet(true);
+    try {
+      const result = await scanDiscoverySubnet();
+      showToast({
+        title: '网段扫描已发送',
+        message: `已向 ${result.sentCount}/${result.targetCount} 个可用地址发送发现请求。`,
+        tone: 'success',
+      });
+    } catch (scanError) {
+      showToast({ title: '扫描网段失败', message: String(scanError), tone: 'error' });
+    } finally {
+      setIsScanningSubnet(false);
+    }
+  };
+
   const handleRemoveAvatar = async () => {
     try {
       await setAvatar(null);
@@ -1667,7 +1712,20 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
               <div className="mt-8 border-t border-gray-200 pt-5 dark:border-gray-800">
                 <div className="flex items-center justify-between gap-4">
                   <div>
-                    <h3 className="text-sm font-semibold">网络诊断</h3>
+                    <div className="flex items-center gap-1.5">
+                      <h3 className="text-sm font-semibold">网络诊断</h3>
+                      <HelpAssistant
+                        title="局域网发现方式"
+                        text={[
+                          'PMC 默认每 4 秒通过 UDP 31523 在当前局域网广播，收到请求的设备会单播回复；消息和文件使用 TCP 31524。',
+                          'WireGuard、Tailscale 等隧道通常不转发广播，可另外配置隧道 CIDR 并手动发送一次单播发现请求。',
+                          '隧道两端不必都登记：任意一端扫描成功后，接收方会记住扫描方并回复，因此双方都会建立联系人。',
+                          '发现成功后只会对已知设备 IP 发送轻量保活，不会继续遍历整个隧道网段。设备或地址变化时再手动扫描一次即可。',
+                        ]}
+                        placement="bottom-start"
+                        width={360}
+                      />
+                    </div>
                     <p className="mt-1 text-xs text-gray-500">UDP 31523 · TCP 31524 · {service.onlineCount} 人在线</p>
                   </div>
                   <button type="button" onClick={() => void handleToggleDiscovery()} className={`rounded-md px-3 py-2 text-sm ${service.isRunning ? 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-200' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
@@ -1680,6 +1738,51 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
                   <div className="sm:col-span-2"><dt className="text-xs text-gray-500">本机地址</dt><dd className="mt-0.5 break-all">{service.localAddresses.join('、') || '等待网络探测'}</dd></div>
                   <div className="sm:col-span-2"><dt className="text-xs text-gray-500">最近发现</dt><dd className="mt-0.5">{service.lastDiscoveryAt ? new Date(service.lastDiscoveryAt).toLocaleString('zh-CN') : '尚未发现其他设备'}</dd></div>
                 </dl>
+                <div className="mt-5 border-t border-gray-200 pt-4 dark:border-gray-800">
+                  <div className="flex items-center gap-1.5">
+                    <label htmlFor="lan-discovery-subnet" className="text-xs font-medium text-gray-700 dark:text-gray-200">隧道扫描网段</label>
+                    <HelpAssistant
+                      title="设置隧道 CIDR"
+                      text={[
+                        '填写 WireGuard 隧道所在的 IPv4 CIDR，例如 10.13.13.0/24。输入 10.13.13.8/24 也会自动规范为 10.13.13.0/24。',
+                        '为避免界面和网络持续产生负担，仅支持 /24 到 /30，单次最多扫描 254 个主机地址；网络地址、广播地址和本机地址会自动跳过。',
+                        '“保存并扫描”会保存后立即执行一次；之后每次 PMC 启动会自动扫描一次，“扫描网段”可随时手动扫描已保存配置。这里不会后台循环扫描。',
+                        '扫描发现设备后，常规发现循环只对该已知 IP 保持在线状态，不会重复扫描其他地址。',
+                        '远端仍无法出现时，请确认隧道路由可达，并在 Windows 防火墙对应的 WireGuard/公用网络配置中允许 PMC 的 UDP 31523 与 TCP 31524。',
+                      ]}
+                      placement="top-start"
+                      width={380}
+                    />
+                  </div>
+                  <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+                    <input
+                      id="lan-discovery-subnet"
+                      value={discoverySubnet}
+                      onChange={(event) => setDiscoverySubnet(event.target.value)}
+                      placeholder="10.13.13.0/24"
+                      spellCheck={false}
+                      className="h-9 min-w-0 flex-1 rounded-md border border-gray-300 px-3 font-mono text-sm outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-900"
+                    />
+                    <div className="flex shrink-0 gap-2">
+                      <button
+                        type="button"
+                        disabled={isScanningSubnet}
+                        onClick={() => void handleSaveAndScanSubnet()}
+                        className="inline-flex h-9 items-center gap-1.5 rounded-md bg-blue-600 px-3 text-xs text-white hover:bg-blue-700 disabled:opacity-50"
+                      >
+                        <CheckCircle2 className="h-3.5 w-3.5" />{isScanningSubnet ? '扫描中...' : '保存并扫描'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isScanningSubnet || !localSettings?.discoverySubnet}
+                        onClick={() => void handleScanSubnet()}
+                        className="inline-flex h-9 items-center gap-1.5 rounded-md border border-gray-300 px-3 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-900"
+                      >
+                        <RefreshCw className={`h-3.5 w-3.5 ${isScanningSubnet ? 'animate-spin' : ''}`} />扫描网段
+                      </button>
+                    </div>
+                  </div>
+                </div>
                 {service.lastError || error ? <p className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">{service.lastError || error}</p> : null}
               </div>
             </div>
