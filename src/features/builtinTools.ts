@@ -31,6 +31,7 @@ export interface BuiltinToolDefinition {
   id: BuiltinToolId;
   title: string;
   description: string;
+  help: string[];
   category: BuiltinToolCategory;
   icon: LucideIcon;
   requiresProject: boolean;
@@ -57,6 +58,11 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     id: 'render-center',
     title: '渲染与批处理',
     description: '管理 Blender 渲染批次、队列、帧结果与视频打包。',
+    help: [
+      '用于把当前项目中的 .blend 文件加入渲染批次，管理作业、帧队列、失败重试、暂停和继续。',
+      '加入队列、调整顺序或重试帧不会自动开始渲染；需要明确点击“开始/继续队列”。',
+      '支持常驻 Worker、逐帧兼容模式、任务级并发、性能统计和 ETA。完成帧及打包视频默认写入项目 renders/。',
+    ],
     category: 'workflow',
     icon: Clapperboard,
     requiresProject: true,
@@ -67,6 +73,11 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     id: 'cache-manager',
     title: '缓存管理',
     description: '检查、清理和重建当前项目的 .pm_center 缓存。',
+    help: [
+      '查看当前项目的目录索引、缩略图和文件解析缓存占用，并执行快速检查或深度检查。',
+      '清理只会处理可重新生成的缩略图和解析缓存；data.db、项目脚本、插件及渲染资料属于受保护数据。',
+      '目录索引出现缺失或异常时使用“重建”，系统会原子替换索引，避免项目停留在无索引状态。',
+    ],
     category: 'project',
     icon: Database,
     requiresProject: true,
@@ -77,6 +88,11 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     id: 'p2p-chat',
     title: '局域网主面板',
     description: '打开全局联系人、大厅和私聊主面板。',
+    help: [
+      '这是软件级局域网入口，用于查看在线设备、联系人、大厅消息和一对一私聊，不依赖当前项目。',
+      '联系人、消息和头像保存在 PM Center 应用数据目录，不会写入项目的 .pm_center。',
+      '文件发送需要对方确认；接收位置和自动接收规则可在局域网个人资料设置中管理。',
+    ],
     category: 'communication',
     icon: MessageCircle,
     requiresProject: false,
@@ -87,6 +103,11 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     id: 'p2p-project',
     title: '局域网项目功能',
     description: '打开当前项目中的局域网功能预留标签。',
+    help: [
+      '在当前项目工作区中打开局域网功能标签，并随该项目的工作区会话一起恢复。',
+      '这个入口用于后续项目协同、资源同步和渲染协作扩展；联系人、大厅和私聊仍由“局域网主面板”承载。',
+      '当前没有打开项目时不可使用，且不会把全局联系人或聊天记录写入项目目录。',
+    ],
     category: 'communication',
     icon: Network,
     requiresProject: true,
@@ -97,6 +118,11 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     id: 'python-environments',
     title: 'Python 环境',
     description: '检测、创建和管理 PMC 使用的 Python 环境及依赖。',
+    help: [
+      '检测 PMC 内置 Python、系统 Python、虚拟环境和 Blender 自带 Python，并查看解释器版本与可用状态。',
+      '可以创建或删除 venv、安装和卸载依赖包。项目脚本与插件会使用这里可用或已选择的环境。',
+      '调整环境或依赖可能影响正在使用它的脚本和插件；执行删除或卸载前应先确认相关任务已停止。',
+    ],
     category: 'system',
     icon: Terminal,
     requiresProject: false,
@@ -107,6 +133,11 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     id: 'task-center',
     title: '任务中心',
     description: '查看脚本、插件、文件操作和渲染任务的运行状态。',
+    help: [
+      '集中显示脚本、插件动作、文件操作和其他后台任务的状态、进度与运行日志。',
+      '可以查看失败原因，并对支持的任务执行取消或重试；关闭任务中心不会终止仍在后台运行的任务。',
+      '渲染批次的创建与帧管理仍在“渲染与批处理”中完成，任务中心主要用于观察执行过程。',
+    ],
     category: 'workflow',
     icon: ListTodo,
     requiresProject: false,
@@ -117,6 +148,11 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     id: 'settings',
     title: '设置中心',
     description: '管理全局工具、Blender 版本、插件和当前项目设置。',
+    help: [
+      '管理 FFmpeg/FFprobe、Blender 版本、Python、开机启动、窗口行为和插件等软件级设置。',
+      '打开项目后还可调整当前项目的排除规则及项目级插件设置；项目设置不会自动应用到其他项目。',
+      '工具路径留空时 PM Center 会尝试从系统 PATH 自动检测，手动指定路径则优先使用指定版本。',
+    ],
     category: 'system',
     icon: Settings,
     requiresProject: false,
@@ -127,6 +163,11 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     id: 'mdt-overview',
     title: 'MDT 项目概览',
     description: '汇总当前项目的 MDT 任务、日志、引用文件和媒体。',
+    help: [
+      '汇总当前项目中的 MDT 待办、时间记录、日志、图片或视频，以及任务引用的项目文件。',
+      '适合按项目查看近期任务和关联资料；具体内容仍保存在对应 MDT 文档及项目文件中。',
+      '该功能依赖当前项目，切换项目后会显示新项目自己的 MDT 数据。',
+    ],
     category: 'project',
     icon: NotebookTabs,
     requiresProject: true,
@@ -137,6 +178,11 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     id: 'blender-file-parser',
     title: 'Blender 文件解析器',
     description: '读取 .blend 的场景、对象、材质、贴图和外部依赖。',
+    help: [
+      '选择一个 .blend 文件后，使用可用的 Blender 版本读取场景、对象、集合、材质、贴图和外部依赖。',
+      '解析过程以只读方式检查文件，不会修改或保存 .blend；文件更新后可手动重新解析最新信息。',
+      '可以用于排查缺失贴图、外链资源和场景结构，也可在未打开项目时分析项目外的 Blender 文件。',
+    ],
     category: 'workflow',
     icon: FileSearch,
     requiresProject: false,
@@ -147,6 +193,11 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     id: 'smart-clipboard',
     title: '智能剪贴板',
     description: '查看并恢复最近复制的文本、图像和文件。',
+    help: [
+      'PM Center 在后台运行时记录最近复制的文本、图像、文件和文件夹，最多保存 500 条并保留 30 天。',
+      '使用 Ctrl+` 可在任意位置打开原生 Windows 历史窗口；输入文字搜索，上下键选择，Delete 删除，Esc 关闭。',
+      'Enter 或双击会恢复内容并粘贴到之前的外部窗口；Ctrl+Enter 只恢复到系统剪贴板，不自动粘贴。',
+    ],
     category: 'system',
     icon: ClipboardList,
     requiresProject: false,

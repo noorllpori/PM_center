@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import { GripVertical, Pin, PinOff, Search, Wrench } from 'lucide-react';
 import { Dialog } from './Dialog';
+import { HelpAssistant } from './ui/HelpAssistant';
 import {
   BUILTIN_TOOL_BY_ID,
   BUILTIN_TOOL_CATEGORY_LABELS,
@@ -55,7 +56,7 @@ export function BuiltinToolsCenter({
     }
 
     return BUILTIN_TOOLS.filter((tool) => {
-      const searchable = [tool.title, tool.description, ...tool.keywords]
+      const searchable = [tool.title, tool.description, ...tool.help, ...tool.keywords]
         .join(' ')
         .toLocaleLowerCase();
       return searchable.includes(normalizedQuery);
@@ -190,6 +191,12 @@ export function BuiltinToolsCenter({
                     <Icon className="h-4 w-4 shrink-0" />
                     <span className="max-w-28 truncate">{tool.title}</span>
                   </button>
+                  <HelpAssistant
+                    title={tool.title}
+                    text={tool.help}
+                    placement="bottom-start"
+                    width={350}
+                  />
                   <button
                     type="button"
                     onClick={() => void togglePinned(tool.id)}
@@ -240,16 +247,24 @@ export function BuiltinToolsCenter({
                           </span>
                         </span>
                       </button>
-                      {tool.pinnable ? (
-                        <button
-                          type="button"
-                          onClick={() => void togglePinned(tool.id)}
-                          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors ${pinned ? 'bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/40 dark:text-blue-300' : 'text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-200'}`}
-                          title={pinned ? '取消固定' : '固定到快捷栏'}
-                        >
-                          {pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
-                        </button>
-                      ) : null}
+                      <div className="flex shrink-0 items-center gap-1">
+                        <HelpAssistant
+                          title={tool.title}
+                          text={tool.help}
+                          placement="left-start"
+                          width={350}
+                        />
+                        {tool.pinnable ? (
+                          <button
+                            type="button"
+                            onClick={() => void togglePinned(tool.id)}
+                            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors ${pinned ? 'bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/40 dark:text-blue-300' : 'text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-200'}`}
+                            title={pinned ? '取消固定' : '固定到快捷栏'}
+                          >
+                            {pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
+                          </button>
+                        ) : null}
+                      </div>
                     </div>
                   );
                 })}
