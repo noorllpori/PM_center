@@ -188,6 +188,16 @@ const TRAILING_URL_PUNCTUATION = new Set([
   ')', ']', '}', '）', '】', '》',
 ]);
 
+function transferPathKey(path: string) {
+  let normalized = path.replace(/\//g, '\\');
+  if (normalized.startsWith('\\\\?\\UNC\\')) {
+    normalized = `\\\\${normalized.slice(8)}`;
+  } else if (normalized.startsWith('\\\\?\\')) {
+    normalized = normalized.slice(4);
+  }
+  return normalized.toLocaleLowerCase();
+}
+
 function canSendPreparedImageToLobby(file: PreparedTransferFile) {
   return LOBBY_IMAGE_EXTENSIONS.test(file.name.trim());
 }
@@ -1060,10 +1070,10 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
         isLobby ? 'lobby' : null,
       );
       const successfulPaths = new Set(result.transfers
-        .map((transfer) => transfer.sourcePath?.toLocaleLowerCase())
+        .map((transfer) => transfer.sourcePath ? transferPathKey(transfer.sourcePath) : null)
         .filter((path): path is string => Boolean(path)));
       await Promise.all(eligible
-        .filter((item) => item.staged && !successfulPaths.has(item.path.toLocaleLowerCase()))
+        .filter((item) => item.staged && !successfulPaths.has(transferPathKey(item.path)))
         .map((item) => discardTransferStagingFile(item.path).catch(() => {})));
       if (result.transfers.length > 0) {
         const deliveredLobbyContacts = new Set(result.transfers
