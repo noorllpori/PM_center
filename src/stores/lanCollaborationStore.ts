@@ -175,6 +175,7 @@ interface LanCollaborationState {
     conversationId?: 'lobby' | null,
   ) => Promise<LanFileOfferResult>;
   respondTransfer: (transferId: string, action: 'accept' | 'reject', destinationPath?: string) => Promise<LanTransfer>;
+  cancelTransfer: (transferId: string) => Promise<LanTransfer>;
   createTransferStagingPath: (fileName: string) => Promise<string>;
   discardTransferStagingFile: (path: string) => Promise<void>;
   markConversationRead: (conversationId: string) => Promise<void>;
@@ -414,8 +415,28 @@ export const useLanCollaborationStore = create<LanCollaborationState>((set, get)
   },
 
   respondTransfer: async (transferId, action, destinationPath) => {
+    if (action === 'accept') {
+      set((state) => {
+        const transferProgress = { ...state.transferProgress };
+        delete transferProgress[transferId];
+        return { transferProgress };
+      });
+    }
     const transfer = await invoke<LanTransfer>('respond_lan_transfer', {
       request: { transferId, action, destinationPath: destinationPath || null },
+    });
+    await get().refresh();
+    return transfer;
+  },
+
+  cancelTransfer: async (transferId) => {
+    const transfer = await invoke<LanTransfer>('cancel_lan_transfer', {
+      request: { transferId },
+    });
+    set((state) => {
+      const transferProgress = { ...state.transferProgress };
+      delete transferProgress[transferId];
+      return { transferProgress };
     });
     await get().refresh();
     return transfer;

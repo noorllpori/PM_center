@@ -9,6 +9,7 @@ import {
   Building2,
   CheckCircle2,
   CircleUserRound,
+  CircleStop,
   Clock3,
   ContactRound,
   Eraser,
@@ -156,7 +157,7 @@ function isActiveTransfer(transfer: LanTransfer) {
 }
 
 function isAttentionTransfer(transfer: LanTransfer) {
-  return transfer.status === 'failed' || transfer.status === 'rejected';
+  return transfer.status === 'failed' || transfer.status === 'rejected' || transfer.status === 'cancelled';
 }
 
 function transferStatusClass(transfer: LanTransfer) {
@@ -165,6 +166,9 @@ function transferStatusClass(transfer: LanTransfer) {
   }
   if (transfer.status === 'failed' || transfer.status === 'rejected') {
     return 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300';
+  }
+  if (transfer.status === 'cancelled') {
+    return 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300';
   }
   if (isActiveTransfer(transfer)) {
     return 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300';
@@ -485,6 +489,8 @@ function LanFileManagementPanel({
   onOpenConversation,
   onAccept,
   onReject,
+  onCancel,
+  cancelling,
 }: {
   transfer: LanTransfer | null;
   summary: { total: number; active: number; completed: number; totalBytes: number };
@@ -496,6 +502,8 @@ function LanFileManagementPanel({
   onOpenConversation: (transfer: LanTransfer) => void;
   onAccept: (transfer: LanTransfer) => void;
   onReject: (transfer: LanTransfer) => void;
+  onCancel: (transfer: LanTransfer) => void;
+  cancelling: boolean;
 }) {
   const outgoing = transfer?.direction === 'outgoing';
   const localPath = transfer
@@ -519,8 +527,9 @@ function LanFileManagementPanel({
     transfer
       && !outgoing
       && !autoReceivingImage
-      && (transfer.status === 'pending' || transfer.status === 'failed'),
+      && (transfer.status === 'pending' || transfer.status === 'failed' || transfer.status === 'cancelled'),
   );
+  const canCancel = transfer?.status === 'transferring';
   const transferredBytes = transfer?.status === 'completed'
     ? transfer.totalBytes
     : progress?.transferredBytes || 0;
@@ -571,7 +580,7 @@ function LanFileManagementPanel({
       <div className="min-h-0 flex-1 overflow-auto">
         {transfer ? (
           <div className="mx-auto max-w-4xl px-5 py-5">
-            {transfer.kind === 'file' && transfer.mimeType?.startsWith('image/') && localPath ? (
+            {transfer.status === 'completed' && transfer.kind === 'file' && transfer.mimeType?.startsWith('image/') && localPath ? (
               <div className="mb-5 overflow-hidden rounded-md border border-gray-200 bg-gray-100 dark:border-gray-800 dark:bg-gray-900">
                 <img src={convertFileSrc(localPath)} alt="" className="max-h-72 w-full object-contain" />
               </div>
@@ -641,15 +650,37 @@ function LanFileManagementPanel({
                     <X className="h-4 w-4" />拒绝
                   </button>
                   <button type="button" disabled={busy} onClick={() => onAccept(transfer)} className="inline-flex h-9 items-center gap-1.5 rounded-md bg-blue-600 px-3 text-sm text-white hover:bg-blue-700 disabled:opacity-50">
-                    <ArrowDownToLine className="h-4 w-4" />{transfer.status === 'failed' ? '重新接收' : '接收'}
+                    <ArrowDownToLine className="h-4 w-4" />{transfer.status === 'failed' || transfer.status === 'cancelled' ? '重新接收' : '接收'}
                   </button>
                 </>
               ) : null}
-              {localPath && transfer.kind === 'directory' ? (
+              {canCancel ? (
+                <div className="inline-flex items-center gap-1.5">
+                  <HelpAssistant
+                    title="中断文件传输"
+                    text={[
+                      '发送方或接收方都可以立即中断正在进行的传输，对方会同步显示为“已中断”。',
+                      '接收端只写入临时文件或临时目录；中断后未完成内容会自动清理，不会覆盖最终目标。',
+                      '已中断的接收记录可以点击“重新接收”从头开始，目前不支持从已有字节断点续传。',
+                    ]}
+                    placement="top-end"
+                    width={340}
+                  />
+                  <button
+                    type="button"
+                    disabled={cancelling}
+                    onClick={() => onCancel(transfer)}
+                    className="inline-flex h-9 items-center gap-1.5 rounded-md border border-red-200 px-3 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-900/60 dark:text-red-300 dark:hover:bg-red-950/30"
+                  >
+                    <CircleStop className="h-4 w-4" />{cancelling ? '中断中...' : '中断传输'}
+                  </button>
+                </div>
+              ) : null}
+              {transfer.status === 'completed' && localPath && transfer.kind === 'directory' ? (
                 <button type="button" onClick={() => void invoke('open_path', { path: localPath })} className="inline-flex h-9 items-center gap-1.5 rounded-md bg-blue-600 px-3 text-sm text-white hover:bg-blue-700">
                   <FolderOpen className="h-4 w-4" />打开目录
                 </button>
-              ) : localPath ? (
+              ) : transfer.status === 'completed' && localPath ? (
                 <>
                   <button type="button" onClick={() => void invoke('show_in_folder', { path: localPath })} className="inline-flex h-9 items-center gap-1.5 rounded-md border border-gray-300 px-3 text-sm text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-900">
                     <FolderOpen className="h-4 w-4" />所在目录
@@ -699,6 +730,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
     sendMessage,
     offerFiles,
     respondTransfer,
+    cancelTransfer,
     createTransferStagingPath,
     discardTransferStagingFile,
     markConversationRead,
@@ -721,6 +753,8 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
   const [isFileDragOver, setIsFileDragOver] = useState(false);
   const [transferActions, setTransferActions] = useState<Set<string>>(() => new Set());
   const transferActionsRef = useRef<Set<string>>(new Set());
+  const [cancellingTransfers, setCancellingTransfers] = useState<Set<string>>(() => new Set());
+  const cancelledByUserRef = useRef<Set<string>>(new Set());
   const [showMobileConversation, setShowMobileConversation] = useState(false);
   const [profileName, setProfileName] = useState('');
   const [profileDepartment, setProfileDepartment] = useState('');
@@ -1204,6 +1238,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
 
   const handleAcceptTransfer = async (transfer: LanTransfer) => {
     if (!beginTransferAction(transfer.id)) return;
+    cancelledByUserRef.current.delete(transfer.id);
     try {
       const completed = await respondTransfer(transfer.id, 'accept');
       showToast({
@@ -1212,7 +1247,14 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
         tone: 'success',
       });
     } catch (acceptError) {
-      showToast({ title: transfer.kind === 'directory' ? '目录接收失败' : '文件接收失败', message: String(acceptError), tone: 'error' });
+      const message = String(acceptError);
+      if (!cancelledByUserRef.current.delete(transfer.id)) {
+        showToast({
+          title: message.includes('传输已中断') ? '文件传输已被对方中断' : transfer.kind === 'directory' ? '目录接收失败' : '文件接收失败',
+          message,
+          tone: message.includes('传输已中断') ? 'warning' : 'error',
+        });
+      }
     } finally {
       endTransferAction(transfer.id);
     }
@@ -1303,6 +1345,29 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
       }
     } catch (discoveryError) {
       showToast({ title: '切换局域网发现失败', message: String(discoveryError), tone: 'error' });
+    }
+  };
+
+  const handleCancelTransfer = async (transfer: LanTransfer) => {
+    if (cancellingTransfers.has(transfer.id)) return;
+    cancelledByUserRef.current.add(transfer.id);
+    setCancellingTransfers((current) => new Set(current).add(transfer.id));
+    try {
+      await cancelTransfer(transfer.id);
+      showToast({
+        title: '文件传输已中断',
+        message: `${transfer.displayName} 的未完成传输已停止。`,
+        tone: 'warning',
+      });
+    } catch (cancelError) {
+      cancelledByUserRef.current.delete(transfer.id);
+      showToast({ title: '中断文件传输失败', message: String(cancelError), tone: 'error' });
+    } finally {
+      setCancellingTransfers((current) => {
+        const next = new Set(current);
+        next.delete(transfer.id);
+        return next;
+      });
     }
   };
 
@@ -1614,10 +1679,12 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
             contactsById={contactsById}
             receiveDirectory={localSettings?.receiveDirectory}
             busy={Boolean(selectedManagedTransfer && transferActions.has(selectedManagedTransfer.id))}
+            cancelling={Boolean(selectedManagedTransfer && cancellingTransfers.has(selectedManagedTransfer.id))}
             onBack={() => setShowMobileConversation(false)}
             onOpenConversation={openTransferConversation}
             onAccept={(transfer) => void handleAcceptTransfer(transfer)}
             onReject={(transfer) => void handleRejectTransfer(transfer)}
+            onCancel={(transfer) => void handleCancelTransfer(transfer)}
           />
         ) : mode === 'profile' ? (
           <div className="min-h-0 flex-1 overflow-auto">
@@ -1823,6 +1890,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
                         transfer={item.transfer}
                         progress={transferProgress[item.transfer.id]}
                         busy={transferActions.has(item.transfer.id)}
+                        cancelling={cancellingTransfers.has(item.transfer.id)}
                         recipientName={item.transfer.direction === 'outgoing'
                           ? contactsById.get(item.transfer.toId)?.displayName
                           : null}
@@ -1836,6 +1904,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
                         )}
                         onAccept={(transfer) => void handleAcceptTransfer(transfer)}
                         onReject={(transfer) => void handleRejectTransfer(transfer)}
+                        onCancel={(transfer) => void handleCancelTransfer(transfer)}
                       />
                     </div>
                   ))}

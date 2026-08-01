@@ -18,8 +18,8 @@ use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
 mod transfer;
 pub use transfer::{
-    create_lan_transfer_staging_path, discard_lan_transfer_staging_file, offer_lan_files,
-    respond_lan_transfer, LanTransfer,
+    cancel_lan_transfer, create_lan_transfer_staging_path, discard_lan_transfer_staging_file,
+    offer_lan_files, respond_lan_transfer, LanTransfer,
 };
 
 const DISCOVERY_PORT: u16 = 31523;

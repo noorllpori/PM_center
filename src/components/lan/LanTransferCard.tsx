@@ -1,6 +1,7 @@
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import {
   Archive,
+  CircleStop,
   Download,
   File,
   FileImage,
@@ -50,6 +51,7 @@ export function getLanTransferStatusLabel(transfer: LanTransfer) {
     case 'transferring': return transfer.direction === 'incoming' ? '正在接收' : '正在发送';
     case 'completed': return transfer.direction === 'incoming' ? '已接收' : '已发送';
     case 'rejected': return '已拒绝';
+    case 'cancelled': return '已中断';
     case 'failed': return '传输失败';
     default: return transfer.status;
   }
@@ -63,6 +65,8 @@ export function LanTransferCard({
   busy = false,
   onAccept,
   onReject,
+  onCancel,
+  cancelling = false,
 }: {
   transfer: LanTransfer;
   progress?: LanTransferProgress;
@@ -71,6 +75,8 @@ export function LanTransferCard({
   busy?: boolean;
   onAccept: (transfer: LanTransfer) => void;
   onReject: (transfer: LanTransfer) => void;
+  onCancel: (transfer: LanTransfer) => void;
+  cancelling?: boolean;
 }) {
   const outgoing = transfer.direction === 'outgoing';
   const localPath = transfer.receivedPath || (outgoing ? transfer.sourcePath : null);
@@ -86,7 +92,8 @@ export function LanTransferCard({
     && transfer.mimeType?.startsWith('image/');
   const canRespond = !outgoing
     && !autoReceivingImage
-    && (transfer.status === 'pending' || transfer.status === 'failed');
+    && (transfer.status === 'pending' || transfer.status === 'failed' || transfer.status === 'cancelled');
+  const canCancel = transfer.status === 'transferring';
 
   return (
     <div className={`flex gap-2.5 ${outgoing ? 'justify-end' : 'justify-start'}`}>
@@ -126,14 +133,26 @@ export function LanTransferCard({
               <div className="h-full bg-blue-500 transition-[width]" style={{ width: `${progressPercent}%` }} />
             </div>
           ) : null}
-          {canRespond ? (
+          {canCancel ? (
+            <div className="flex justify-end border-t border-gray-100 px-3 py-2 dark:border-gray-800">
+              <button
+                type="button"
+                title="立即中断当前传输；未完成的临时接收内容会被清理，之后可以重新接收"
+                disabled={cancelling}
+                onClick={() => onCancel(transfer)}
+                className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-red-300 dark:hover:bg-red-950/30"
+              >
+                <CircleStop className="h-3.5 w-3.5" />{cancelling ? '中断中...' : '中断传输'}
+              </button>
+            </div>
+          ) : canRespond ? (
             <div className="flex justify-end gap-2 border-t border-gray-100 px-3 py-2 dark:border-gray-800">
               <button type="button" disabled={busy} onClick={() => onReject(transfer)} className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-gray-300 dark:hover:bg-gray-800">
                 <X className="h-3.5 w-3.5" />拒绝
               </button>
               <button type="button" disabled={busy} onClick={() => onAccept(transfer)} className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-2.5 py-1.5 text-xs text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">
-                {transfer.status === 'failed' ? <RefreshCw className="h-3.5 w-3.5" /> : <Download className="h-3.5 w-3.5" />}
-                {transfer.status === 'failed' ? '重新接收' : '接收'}
+                {transfer.status === 'failed' || transfer.status === 'cancelled' ? <RefreshCw className="h-3.5 w-3.5" /> : <Download className="h-3.5 w-3.5" />}
+                {transfer.status === 'failed' || transfer.status === 'cancelled' ? '重新接收' : '接收'}
               </button>
             </div>
           ) : localPath && transfer.status === 'completed' && transfer.kind === 'directory' ? (
