@@ -376,6 +376,10 @@ async fn connection_loop(
         if *cancel.borrow() {
             return;
         }
+        let error = result.err();
+        let pause_reconnect = error
+            .as_deref()
+            .is_some_and(should_pause_automatic_reconnect);
         if let Ok(mut runtime) = SERVER_RUNTIME.lock() {
             for (_, cancellation) in runtime.transfer_cancellations.drain() {
                 let _ = cancellation.send(true);
@@ -384,11 +388,14 @@ async fn connection_loop(
             runtime.status.connected = false;
             runtime.status.connecting = false;
             runtime.status.online_count = 0;
-            runtime.status.last_error = result.err();
+            runtime.status.last_error = error;
             runtime.outbound = None;
             runtime.online_ids.clear();
         }
         emit_changed(&app_handle);
+        if pause_reconnect {
+            return;
+        }
         tokio::select! {
             _ = tokio::time::sleep(RECONNECT_DELAY) => {
                 if let Ok(mut runtime) = SERVER_RUNTIME.lock() { runtime.status.connecting = true; }
@@ -397,6 +404,13 @@ async fn connection_loop(
             _ = cancel.changed() => return,
         }
     }
+}
+
+fn should_pause_automatic_reconnect(error: &str) -> bool {
+    error.contains("共享密码错误")
+        || error.contains("设备凭据")
+        || error.contains("拒绝冒用")
+        || error.contains("429 Too Many Requests")
 }
 
 async fn connect_once(
@@ -1626,4 +1640,19 @@ pub async fn test_pmc_server_speed(
     }
     emit_changed(&app_handle);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_pause_automatic_reconnect;
+
+    #[test]
+    fn authentication_failures_pause_automatic_reconnect() {
+        assert!(should_pause_automatic_reconnect("共享密码错误"));
+        assert!(should_pause_automatic_reconnect(
+            "HTTP error: 429 Too Many Requests"
+        ));
+        assert!(should_pause_automatic_reconnect("设备凭据无效"));
+        assert!(!should_pause_automatic_reconnect("连接服务器超时"));
+    }
 }

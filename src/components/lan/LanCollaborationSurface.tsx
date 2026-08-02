@@ -781,6 +781,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
   const [serverPassword, setServerPassword] = useState('');
   const [clearSavedServerPassword, setClearSavedServerPassword] = useState(false);
   const [serverEnabled, setServerEnabled] = useState(false);
+  const [isServerDraftDirty, setIsServerDraftDirty] = useState(false);
   const [isSavingServer, setIsSavingServer] = useState(false);
   const [isTestingServer, setIsTestingServer] = useState(false);
   const [nextTransport, setNextTransport] = useState<'auto' | 'lan' | 'server'>('auto');
@@ -819,10 +820,10 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
   }, [isProfileDraftDirty, profile]);
 
   useEffect(() => {
-    if (!serverSettings) return;
+    if (!serverSettings || isServerDraftDirty) return;
     setServerAddress(serverSettings.address);
     setServerEnabled(serverSettings.enabled);
-  }, [serverSettings]);
+  }, [isServerDraftDirty, serverSettings]);
 
   const selectedContactId = selectedConversationId.startsWith('direct:')
     ? selectedConversationId.slice('direct:'.length)
@@ -1389,8 +1390,8 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
         clearSavedServerPassword ? '' : serverPassword || null,
         serverEnabled,
       );
-      setServerPassword('');
       setClearSavedServerPassword(false);
+      setIsServerDraftDirty(false);
       showToast({ title: '服务器设置已保存', message: serverEnabled ? '客户端正在连接 PMC Server。' : '服务器连接已关闭。', tone: 'success' });
     } catch (serverError) {
       showToast({ title: '保存服务器设置失败', message: String(serverError), tone: 'error' });
@@ -1845,7 +1846,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
                 <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_180px]">
                   <label className="block">
                     <span className="mb-1 block text-xs text-gray-500">服务器地址</span>
-                    <input value={serverAddress} onChange={(event) => { setServerAddress(event.target.value); setClearSavedServerPassword(false); }} placeholder="pmc.example.com 或 192.168.1.10:7412" spellCheck={false} className="h-9 w-full rounded-md border border-gray-300 px-3 font-mono text-sm outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-900" />
+                    <input value={serverAddress} onChange={(event) => { setServerAddress(event.target.value); setClearSavedServerPassword(false); setIsServerDraftDirty(true); }} placeholder="pmc.example.com 或 192.168.1.10:7412" spellCheck={false} className="h-9 w-full rounded-md border border-gray-300 px-3 font-mono text-sm outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-900" />
                   </label>
                   <label className="block">
                     <span className="mb-1 flex items-center justify-between text-xs text-gray-500">
@@ -1857,6 +1858,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
                           onClick={() => {
                             setClearSavedServerPassword((current) => !current);
                             setServerPassword('');
+                            setIsServerDraftDirty(true);
                           }}
                           className={`flex h-5 w-5 items-center justify-center rounded text-gray-400 hover:bg-gray-100 hover:text-red-600 dark:hover:bg-gray-800 ${clearSavedServerPassword ? 'bg-red-50 text-red-600 dark:bg-red-950/30' : ''}`}
                         >
@@ -1864,12 +1866,12 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
                         </button>
                       ) : null}
                     </span>
-                    <input type="password" disabled={clearSavedServerPassword} value={serverPassword} onChange={(event) => { setServerPassword(event.target.value); setClearSavedServerPassword(false); }} placeholder={clearSavedServerPassword ? '保存后清除' : serverSettings?.passwordConfigured ? '已保存，留空不修改' : '可选'} className="h-9 w-full rounded-md border border-gray-300 px-3 text-sm outline-none focus:border-blue-500 disabled:bg-gray-100 disabled:text-gray-400 dark:border-gray-700 dark:bg-gray-900 dark:disabled:bg-gray-800" />
+                    <input type="password" disabled={clearSavedServerPassword} value={serverPassword} onChange={(event) => { setServerPassword(event.target.value); setClearSavedServerPassword(false); setIsServerDraftDirty(true); }} placeholder={clearSavedServerPassword ? '保存后清除' : serverSettings?.passwordConfigured ? '已保存，留空不修改' : '可选'} className="h-9 w-full rounded-md border border-gray-300 px-3 text-sm outline-none focus:border-blue-500 disabled:bg-gray-100 disabled:text-gray-400 dark:border-gray-700 dark:bg-gray-900 dark:disabled:bg-gray-800" />
                   </label>
                 </div>
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   <label className="inline-flex items-center gap-2 text-xs text-gray-700 dark:text-gray-200">
-                    <input type="checkbox" checked={serverEnabled} onChange={(event) => setServerEnabled(event.target.checked)} className="h-4 w-4 rounded border-gray-300" />启用并自动连接
+                    <input type="checkbox" checked={serverEnabled} onChange={(event) => { setServerEnabled(event.target.checked); setIsServerDraftDirty(true); }} className="h-4 w-4 rounded border-gray-300" />启用并自动连接
                   </label>
                   <div className="flex-1" />
                   <button type="button" disabled={isSavingServer} onClick={() => void handleSaveServer()} className="h-8 rounded-md bg-blue-600 px-3 text-xs text-white hover:bg-blue-700 disabled:opacity-50">{isSavingServer ? '保存中...' : '保存设置'}</button>
