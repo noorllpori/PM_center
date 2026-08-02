@@ -93,7 +93,8 @@ export function LanTransferCard({
   const canRespond = !outgoing
     && !autoReceivingImage
     && (transfer.status === 'pending' || transfer.status === 'failed' || transfer.status === 'cancelled');
-  const canCancel = transfer.status === 'transferring';
+  const canCancel = transfer.status === 'transferring'
+    || (transfer.transport === 'server' && outgoing && transfer.status === 'waiting');
 
   return (
     <div className={`flex gap-2.5 ${outgoing ? 'justify-end' : 'justify-start'}`}>

@@ -136,10 +136,15 @@ fn show_lan_notification(
 }
 
 fn notify_incoming_message(app_handle: &tauri::AppHandle, message: &LanMessage) {
-    let title = if message.to_id.is_some() {
-        format!("{} · 局域网私聊", message.from_name)
+    let source = if message.transport == "server" {
+        "服务器"
     } else {
-        format!("局域网大厅 · {}", message.from_name)
+        "局域网"
+    };
+    let title = if message.to_id.is_some() {
+        format!("{} · {source}私聊", message.from_name)
+    } else {
+        format!("{source}大厅 · {}", message.from_name)
     };
     show_lan_notification(
         app_handle,

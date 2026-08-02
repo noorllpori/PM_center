@@ -816,7 +816,25 @@ async fn handle_server_event(
             }
         }
         ServerMessage::Message { message } => {
-            persist_message(&message, local_id, server_id, "delivered")?
+            persist_message(&message, local_id, server_id, "delivered")?;
+            if message.from_id != local_id {
+                let incoming = LanMessage {
+                    id: message.id.clone(),
+                    conversation_id: normalized_conversation(&message, local_id, server_id),
+                    from_id: message.from_id.clone(),
+                    from_name: message.from_name.clone(),
+                    to_id: message.to_id.clone(),
+                    content: message.content.clone(),
+                    timestamp: message.timestamp,
+                    direction: "incoming".to_string(),
+                    delivery_status: "delivered".to_string(),
+                    delivery_summary: None,
+                    transport: "server".to_string(),
+                    server_id: Some(server_id.to_string()),
+                };
+                let _ = app_handle.emit("pm-center:lan-message", &incoming);
+                super::notify_incoming_message(app_handle, &incoming);
+            }
         }
         ServerMessage::MessageAck { message_id } => {
             let db_path = state_paths()?.0;
@@ -841,12 +859,13 @@ async fn handle_server_event(
             let transfer = offer_to_transfer(offer, server_id);
             let conn = open_database(&state_paths()?.0)?;
             insert_server_transfer(&conn, &transfer)?;
-            if transfer
+            let auto_receive = transfer
                 .mime_type
                 .as_deref()
                 .is_some_and(|value| value.starts_with("image/"))
-                && transfer.total_bytes <= 100 * 1024 * 1024
-            {
+                && transfer.total_bytes <= 100 * 1024 * 1024;
+            super::notify_incoming_transfer(app_handle, &transfer, auto_receive);
+            if auto_receive {
                 let app_handle = app_handle.clone();
                 let transfer_id = transfer.id.clone();
                 tauri::async_runtime::spawn(async move {
@@ -950,17 +969,19 @@ async fn handle_server_event(
                 .and_then(|conn| load_server_transfer(&conn, &transfer_id).ok())
                 .map(|transfer| transfer.direction)
                 .unwrap_or_else(|| "outgoing".to_string());
-            let _ = app_handle.emit(
-                "pm-center:lan-transfer-progress",
-                LanTransferProgress {
-                    transfer_id,
-                    status: "transferring".to_string(),
-                    direction,
-                    transferred_bytes: forwarded_bytes,
-                    total_bytes,
-                    bytes_per_second: speed,
-                },
-            );
+            if direction == "outgoing" {
+                let _ = app_handle.emit(
+                    "pm-center:lan-transfer-progress",
+                    LanTransferProgress {
+                        transfer_id,
+                        status: "transferring".to_string(),
+                        direction,
+                        transferred_bytes: forwarded_bytes,
+                        total_bytes,
+                        bytes_per_second: speed,
+                    },
+                );
+            }
         }
         ServerMessage::FileComplete { transfer_id } => {
             if let Ok(conn) = open_database(&state_paths()?.0) {

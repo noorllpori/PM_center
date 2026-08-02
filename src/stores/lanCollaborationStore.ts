@@ -324,12 +324,16 @@ async function setupListeners() {
     unlisteners.push(await listen<LanTransferProgress>('pm-center:lan-transfer-progress', (event) => {
       const progress = event.payload;
       if (!progress?.transferId) return;
-      useLanCollaborationStore.setState((state) => ({
-        transferProgress: {
-          ...state.transferProgress,
-          [progress.transferId]: progress,
-        },
-      }));
+      useLanCollaborationStore.setState((state) => {
+        const previous = state.transferProgress[progress.transferId];
+        if (previous && progress.transferredBytes < previous.transferredBytes) return state;
+        return {
+          transferProgress: {
+            ...state.transferProgress,
+            [progress.transferId]: progress,
+          },
+        };
+      });
     }));
   })();
   return listenersPromise;

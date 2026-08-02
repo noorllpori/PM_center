@@ -540,7 +540,10 @@ function LanFileManagementPanel({
       && !autoReceivingImage
       && (transfer.status === 'pending' || transfer.status === 'failed' || transfer.status === 'cancelled'),
   );
-  const canCancel = transfer?.status === 'transferring';
+  const canCancel = Boolean(transfer && (
+    transfer.status === 'transferring'
+      || (transfer.transport === 'server' && outgoing && transfer.status === 'waiting')
+  ));
   const transferredBytes = transfer?.status === 'completed'
     ? transfer.totalBytes
     : progress?.transferredBytes || 0;

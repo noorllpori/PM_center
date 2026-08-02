@@ -24,15 +24,12 @@ use std::{
     env,
     net::{IpAddr, SocketAddr},
     path::PathBuf,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     io::{AsyncWriteExt, DuplexStream},
-    sync::{mpsc, RwLock},
+    sync::{mpsc, watch, RwLock},
 };
 use tokio_util::io::ReaderStream;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
@@ -56,7 +53,7 @@ struct TransferSession {
     offer: FileOffer,
     token: String,
     writer: tokio::sync::Mutex<Option<DuplexStream>>,
-    cancelled: AtomicBool,
+    cancellation: watch::Sender<bool>,
 }
 
 #[derive(Clone)]
@@ -588,11 +585,12 @@ async fn handle_client_message(state: &AppState, device_id: &str, message: Clien
                 .await;
                 return;
             }
+            let (cancellation, _) = watch::channel(false);
             let session = Arc::new(TransferSession {
                 offer: offer.clone(),
                 token: uuid::Uuid::new_v4().to_string(),
                 writer: tokio::sync::Mutex::new(None),
-                cancelled: AtomicBool::new(false),
+                cancellation,
             });
             state
                 .transfers
@@ -615,7 +613,7 @@ async fn handle_client_message(state: &AppState, device_id: &str, message: Clien
             }
             if !accepted {
                 state.transfers.write().await.remove(&transfer_id);
-                session.cancelled.store(true, Ordering::SeqCst);
+                let _ = session.cancellation.send(true);
                 send_to(
                     state,
                     &session.offer.from_id,
@@ -701,7 +699,7 @@ async fn send_to(state: &AppState, device_id: &str, message: ServerMessage) {
 async fn cancel_transfer(state: &AppState, transfer_id: &str, reason: &str) {
     let session = state.transfers.write().await.remove(transfer_id);
     if let Some(session) = session {
-        session.cancelled.store(true, Ordering::SeqCst);
+        let _ = session.cancellation.send(true);
         session.writer.lock().await.take();
         let event = ServerMessage::FileCancelled {
             transfer_id: transfer_id.to_string(),
@@ -709,6 +707,35 @@ async fn cancel_transfer(state: &AppState, transfer_id: &str, reason: &str) {
         };
         send_to(state, &session.offer.from_id, event.clone()).await;
         send_to(state, &session.offer.to_id, event).await;
+    }
+}
+
+async fn wait_for_transfer_cancellation(cancellation: &mut watch::Receiver<bool>) {
+    if *cancellation.borrow() {
+        return;
+    }
+    while cancellation.changed().await.is_ok() {
+        if *cancellation.borrow() {
+            return;
+        }
+    }
+    std::future::pending::<()>().await;
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum TransferWriteError {
+    Cancelled,
+    Closed,
+}
+
+async fn write_transfer_chunk(
+    writer: &mut DuplexStream,
+    chunk: &[u8],
+    cancellation: &mut watch::Receiver<bool>,
+) -> Result<(), TransferWriteError> {
+    tokio::select! {
+        _ = wait_for_transfer_cancellation(cancellation) => Err(TransferWriteError::Cancelled),
+        result = writer.write_all(chunk) => result.map_err(|_| TransferWriteError::Closed),
     }
 }
 
@@ -782,12 +809,18 @@ async fn upload_transfer(
     let Some(mut writer) = session.writer.lock().await.take() else {
         return (StatusCode::CONFLICT, "receiver is not ready").into_response();
     };
+    let mut cancellation = session.cancellation.subscribe();
     let mut stream = request.into_body().into_data_stream();
     let mut forwarded = 0u64;
-    while let Some(chunk) = stream.next().await {
-        if session.cancelled.load(Ordering::SeqCst) {
-            return StatusCode::GONE.into_response();
-        }
+    let mut last_progress = Instant::now();
+    loop {
+        let chunk = tokio::select! {
+            _ = wait_for_transfer_cancellation(&mut cancellation) => return StatusCode::GONE.into_response(),
+            chunk = stream.next() => chunk,
+        };
+        let Some(chunk) = chunk else {
+            break;
+        };
         let chunk = match chunk {
             Ok(value) => value,
             Err(_) => {
@@ -796,17 +829,30 @@ async fn upload_transfer(
             }
         };
         forwarded = forwarded.saturating_add(chunk.len() as u64);
-        if forwarded > session.offer.total_bytes || writer.write_all(&chunk).await.is_err() {
-            cancel_transfer(&state, &transfer_id, "接收流已断开").await;
-            return StatusCode::BAD_GATEWAY.into_response();
+        if forwarded > session.offer.total_bytes {
+            cancel_transfer(&state, &transfer_id, "上传字节数超过报价").await;
+            return StatusCode::BAD_REQUEST.into_response();
         }
-        let event = ServerMessage::FileProgress {
-            transfer_id: transfer_id.clone(),
-            forwarded_bytes: forwarded,
-            total_bytes: session.offer.total_bytes,
-        };
-        send_to(&state, &session.offer.from_id, event.clone()).await;
-        send_to(&state, &session.offer.to_id, event).await;
+        match write_transfer_chunk(&mut writer, &chunk, &mut cancellation).await {
+            Ok(()) => {}
+            Err(TransferWriteError::Cancelled) => return StatusCode::GONE.into_response(),
+            Err(TransferWriteError::Closed) => {
+                cancel_transfer(&state, &transfer_id, "接收流已断开").await;
+                return StatusCode::BAD_GATEWAY.into_response();
+            }
+        }
+        if last_progress.elapsed() >= Duration::from_millis(150)
+            || forwarded == session.offer.total_bytes
+        {
+            let event = ServerMessage::FileProgress {
+                transfer_id: transfer_id.clone(),
+                forwarded_bytes: forwarded,
+                total_bytes: session.offer.total_bytes,
+            };
+            send_to(&state, &session.offer.from_id, event.clone()).await;
+            send_to(&state, &session.offer.to_id, event).await;
+            last_progress = Instant::now();
+        }
     }
     let _ = writer.shutdown().await;
     if forwarded != session.offer.total_bytes {
@@ -1212,5 +1258,22 @@ mod tests {
         assert!(!directory.join("hello.txt").exists());
         server.abort();
         let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_a_blocked_relay_write() {
+        let (mut writer, _reader) = tokio::io::duplex(1);
+        let (cancellation, mut receiver) = watch::channel(false);
+        let write =
+            tokio::spawn(
+                async move { write_transfer_chunk(&mut writer, &[1, 2], &mut receiver).await },
+            );
+        tokio::task::yield_now().await;
+        cancellation.send(true).unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(1), write)
+            .await
+            .expect("blocked relay write did not stop after cancellation")
+            .unwrap();
+        assert_eq!(result, Err(TransferWriteError::Cancelled));
     }
 }

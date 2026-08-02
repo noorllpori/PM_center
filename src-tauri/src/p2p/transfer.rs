@@ -1296,6 +1296,7 @@ where
     let temp_path = parent.join(temp_name);
     let mut buffer = vec![0u8; TRANSFER_CHUNK_SIZE];
     let started_at = Instant::now();
+    let mut last_progress = Instant::now();
     let mut received_total = 0u64;
     if transfer.kind == "directory" {
         let _cleanup = TemporaryTransferDirectory(temp_path.clone());
@@ -1336,15 +1337,20 @@ where
                 hasher.update(&buffer[..count]);
                 item_received += count as u64;
                 received_total += count as u64;
-                emit_progress(
-                    app_handle,
-                    &transfer.id,
-                    "transferring",
-                    "incoming",
-                    received_total,
-                    transfer.total_bytes,
-                    started_at,
-                );
+                if last_progress.elapsed() >= Duration::from_millis(150)
+                    || received_total == transfer.total_bytes
+                {
+                    emit_progress(
+                        app_handle,
+                        &transfer.id,
+                        "transferring",
+                        "incoming",
+                        received_total,
+                        transfer.total_bytes,
+                        started_at,
+                    );
+                    last_progress = Instant::now();
+                }
             }
             file.flush().await.map_err(|error| error.to_string())?;
             if hasher.finalize().to_hex().as_str()
@@ -1383,15 +1389,20 @@ where
                 .map_err(|error| error.to_string())?;
             hasher.update(&buffer[..count]);
             received_total += count as u64;
-            emit_progress(
-                app_handle,
-                &transfer.id,
-                "transferring",
-                "incoming",
-                received_total,
-                transfer.total_bytes,
-                started_at,
-            );
+            if last_progress.elapsed() >= Duration::from_millis(150)
+                || received_total == transfer.total_bytes
+            {
+                emit_progress(
+                    app_handle,
+                    &transfer.id,
+                    "transferring",
+                    "incoming",
+                    received_total,
+                    transfer.total_bytes,
+                    started_at,
+                );
+                last_progress = Instant::now();
+            }
         }
         file.flush().await.map_err(|error| error.to_string())?;
         file.sync_all().await.map_err(|error| error.to_string())?;
