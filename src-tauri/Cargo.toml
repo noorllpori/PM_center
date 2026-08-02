@@ -1,6 +1,6 @@
 [package]
 name = "pm_center"
-version = "2.8.2"
+version = "2.8.3"
 description = "A Tauri App"
 authors = ["章知涵@Ninniku"]
 edition = "2021"
