@@ -1,0 +1,21 @@
+[Unit]
+Description=PMC collaboration server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pmc
+Group=pmc
+EnvironmentFile=-/etc/pmc-server.env
+Environment=PMC_SERVER_BIND=0.0.0.0:7412
+Environment=PMC_DATA_DIR=/var/lib/pmc-server
+ExecStart=/usr/local/bin/pmc-server
+Restart=on-failure
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/pmc-server
+
+[Install]
+WantedBy=multi-user.target
+

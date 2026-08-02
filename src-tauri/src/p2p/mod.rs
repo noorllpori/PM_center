@@ -16,7 +16,13 @@ use tauri_plugin_notification::NotificationExt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
+mod server_client;
 mod transfer;
+pub use server_client::{
+    cancel_server_transfer, connect_pmc_server, disconnect_pmc_server, offer_server_files,
+    respond_server_transfer, send_server_message, test_pmc_server_speed,
+    update_pmc_server_settings,
+};
 pub use transfer::{
     cancel_lan_transfer, create_lan_transfer_staging_path, discard_lan_transfer_staging_file,
     offer_lan_files, respond_lan_transfer, LanTransfer,
@@ -37,8 +43,6 @@ const MAX_AVATAR_BYTES: usize = 64 * 1024;
 const MESSAGE_RETENTION_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 const LOBBY_HISTORY_LIMIT: usize = 30;
 const LOBBY_HISTORY_SYNC_INTERVAL_MS: u64 = 30 * 1000;
-const MIN_DISCOVERY_SUBNET_PREFIX: u8 = 24;
-const MAX_DISCOVERY_SUBNET_PREFIX: u8 = 30;
 
 fn notification_preview(content: &str) -> String {
     const MAX_CHARS: usize = 120;
@@ -197,7 +201,6 @@ pub struct LanProfile {
 pub struct LanLocalSettings {
     pub receive_directory: String,
     pub auto_receive_images: bool,
-    pub discovery_subnet: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,6 +213,9 @@ pub struct LanContact {
     pub avatar_path: Option<String>,
     pub ip: String,
     pub online: bool,
+    pub lan_online: bool,
+    pub server_online: bool,
+    pub server_id: Option<String>,
     pub first_seen: u64,
     pub last_seen: u64,
     pub protocol_version: u16,
@@ -253,6 +259,8 @@ pub struct LanMessage {
     pub direction: String,
     pub delivery_status: String,
     pub delivery_summary: Option<String>,
+    pub transport: String,
+    pub server_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -303,6 +311,9 @@ pub struct LanSnapshot {
     pub conversations: Vec<LanConversation>,
     pub unread_count: u64,
     pub service: LanServiceStatus,
+    pub server_settings: server_client::PmcServerSettings,
+    pub server_status: server_client::PmcServerStatus,
+    pub server_speed_test: Option<pmc_protocol::SpeedTestResult>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -316,20 +327,6 @@ pub struct UpdateLanProfileRequest {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateLanReceiveDirectoryRequest {
     pub receive_directory: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateLanDiscoverySubnetRequest {
-    pub discovery_subnet: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LanDiscoverySubnetScanResult {
-    pub discovery_subnet: String,
-    pub target_count: usize,
-    pub sent_count: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -615,13 +612,13 @@ fn open_database(path: &Path) -> Result<Connection, String> {
            singleton INTEGER PRIMARY KEY CHECK(singleton=1),
            receive_directory TEXT NOT NULL,
            auto_receive_images INTEGER NOT NULL DEFAULT 1,
-           discovery_subnet TEXT NOT NULL DEFAULT '',
            updated_at INTEGER NOT NULL
          );",
     )
     .map_err(|error| error.to_string())?;
     ensure_local_settings_schema(&conn)?;
     transfer::initialize_schema(&conn)?;
+    server_client::initialize_schema(&conn)?;
     Ok(conn)
 }
 
@@ -634,10 +631,20 @@ fn ensure_local_settings_schema(conn: &Connection) -> Result<(), String> {
         .map_err(|error| error.to_string())?
         .collect::<Result<HashSet<_>, _>>()
         .map_err(|error| error.to_string())?;
-    if !columns.contains("discovery_subnet") {
-        conn.execute(
-            "ALTER TABLE lan_local_settings ADD COLUMN discovery_subnet TEXT NOT NULL DEFAULT ''",
-            [],
+    if columns.contains("discovery_subnet") {
+        conn.execute_batch(
+            "BEGIN IMMEDIATE;
+             CREATE TABLE lan_local_settings_new (
+               singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+               receive_directory TEXT NOT NULL,
+               auto_receive_images INTEGER NOT NULL DEFAULT 1,
+               updated_at INTEGER NOT NULL
+             );
+             INSERT INTO lan_local_settings_new(singleton,receive_directory,auto_receive_images,updated_at)
+               SELECT singleton,receive_directory,auto_receive_images,updated_at FROM lan_local_settings;
+             DROP TABLE lan_local_settings;
+             ALTER TABLE lan_local_settings_new RENAME TO lan_local_settings;
+             COMMIT;",
         )
         .map_err(|error| error.to_string())?;
     }
@@ -646,13 +653,12 @@ fn ensure_local_settings_schema(conn: &Connection) -> Result<(), String> {
 
 fn load_local_settings(conn: &Connection) -> Result<LanLocalSettings, String> {
     conn.query_row(
-        "SELECT receive_directory,auto_receive_images,discovery_subnet FROM lan_local_settings WHERE singleton=1",
+        "SELECT receive_directory,auto_receive_images FROM lan_local_settings WHERE singleton=1",
         [],
         |row| {
             Ok(LanLocalSettings {
                 receive_directory: row.get(0)?,
                 auto_receive_images: row.get::<_, i64>(1)? != 0,
-                discovery_subnet: row.get(2)?,
             })
         },
     )
@@ -664,8 +670,8 @@ fn ensure_local_settings(conn: &Connection, default_directory: &Path) -> Result<
         .map_err(|error| format!("创建默认局域网接收目录失败：{error}"))?;
     conn.execute(
         "INSERT OR IGNORE INTO lan_local_settings(
-           singleton,receive_directory,auto_receive_images,discovery_subnet,updated_at
-         ) VALUES(1,?1,1,'',?2)",
+           singleton,receive_directory,auto_receive_images,updated_at
+         ) VALUES(1,?1,1,?2)",
         params![default_directory.to_string_lossy(), now_millis() as i64],
     )
     .map_err(|error| error.to_string())?;
@@ -832,6 +838,8 @@ fn wire_to_lan_message(
         direction: direction.to_string(),
         delivery_status: delivery_status.to_string(),
         delivery_summary,
+        transport: "lan".to_string(),
+        server_id: None,
     }
 }
 
@@ -1072,107 +1080,6 @@ fn discovery_targets() -> (Vec<SocketAddr>, Vec<String>) {
     let mut local_addresses: Vec<_> = local_addresses.into_iter().collect();
     local_addresses.sort();
     (targets, local_addresses)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Ipv4DiscoverySubnet {
-    network: u32,
-    broadcast: u32,
-    prefix: u8,
-}
-
-impl Ipv4DiscoverySubnet {
-    fn normalized(self) -> String {
-        format!("{}/{}", Ipv4Addr::from(self.network), self.prefix)
-    }
-
-    fn targets(self, local_addresses: &HashSet<Ipv4Addr>) -> Vec<Ipv4Addr> {
-        ((self.network + 1)..self.broadcast)
-            .map(Ipv4Addr::from)
-            .filter(|address| !local_addresses.contains(address))
-            .collect()
-    }
-}
-
-fn parse_discovery_subnet(value: &str) -> Result<Ipv4DiscoverySubnet, String> {
-    let value = value.trim();
-    let (address, prefix) = value
-        .split_once('/')
-        .ok_or_else(|| "请输入 IPv4 CIDR 网段，例如 10.13.13.0/24".to_string())?;
-    let address = address
-        .parse::<Ipv4Addr>()
-        .map_err(|_| "网段地址不是有效的 IPv4 地址".to_string())?;
-    let prefix = prefix
-        .parse::<u8>()
-        .map_err(|_| "CIDR 前缀必须是 24 到 30 的整数".to_string())?;
-    if !(MIN_DISCOVERY_SUBNET_PREFIX..=MAX_DISCOVERY_SUBNET_PREFIX).contains(&prefix) {
-        return Err(format!(
-            "扫描网段仅支持 /{MIN_DISCOVERY_SUBNET_PREFIX} 到 /{MAX_DISCOVERY_SUBNET_PREFIX}，单次最多探测 254 个地址"
-        ));
-    }
-    let mask = u32::MAX << (32 - prefix);
-    let network = u32::from(address) & mask;
-    Ok(Ipv4DiscoverySubnet {
-        network,
-        broadcast: network | !mask,
-        prefix,
-    })
-}
-
-fn local_ipv4_addresses() -> HashSet<Ipv4Addr> {
-    get_if_addrs()
-        .map(|interfaces| {
-            interfaces
-                .into_iter()
-                .filter_map(|interface| match interface.addr {
-                    IfAddr::V4(address) => Some(address.ip),
-                    IfAddr::V6(_) => None,
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-async fn scan_discovery_subnet_value(
-    discovery_subnet: &str,
-) -> Result<LanDiscoverySubnetScanResult, String> {
-    let subnet = parse_discovery_subnet(discovery_subnet)?;
-    let (profile, running) = {
-        let state = P2P_GLOBAL.lock().map_err(|error| error.to_string())?;
-        (state.profile.clone(), state.is_running)
-    };
-    if !running {
-        return Err("请先开启局域网发现，再扫描隧道网段".to_string());
-    }
-    let profile = profile.ok_or_else(|| "局域网协同尚未初始化".to_string())?;
-    let targets = subnet.targets(&local_ipv4_addresses());
-    let packet = serde_json::to_vec(&discovery_packet(&profile, false))
-        .map_err(|error| error.to_string())?;
-    let socket = UdpSocket::bind("0.0.0.0:0")
-        .await
-        .map_err(|error| format!("创建网段扫描套接字失败：{error}"))?;
-    let mut sent_count = 0usize;
-    let mut last_error = None;
-    for address in &targets {
-        match socket
-            .send_to(
-                &packet,
-                SocketAddr::new(IpAddr::V4(*address), DISCOVERY_PORT),
-            )
-            .await
-        {
-            Ok(_) => sent_count += 1,
-            Err(error) => last_error = Some(error.to_string()),
-        }
-    }
-    if sent_count == 0 && !targets.is_empty() {
-        return Err(last_error.unwrap_or_else(|| "未能发送网段探测包".to_string()));
-    }
-    Ok(LanDiscoverySubnetScanResult {
-        discovery_subnet: subnet.normalized(),
-        target_count: targets.len(),
-        sent_count,
-    })
 }
 
 async fn broadcast_profile(
@@ -1942,6 +1849,9 @@ fn load_contacts(
             let id: String = row.get(0)?;
             Ok(LanContact {
                 online: online.contains_key(&id),
+                lan_online: online.contains_key(&id),
+                server_online: false,
+                server_id: None,
                 id,
                 display_name: row.get(1)?,
                 department: row.get(2)?,
@@ -1980,6 +1890,8 @@ fn load_messages(conn: &Connection) -> Result<Vec<LanMessage>, String> {
                 direction: row.get(7)?,
                 delivery_status: row.get(8)?,
                 delivery_summary: row.get(9)?,
+                transport: "lan".to_string(),
+                server_id: None,
             })
         })
         .map_err(|error| error.to_string())?;
@@ -2103,11 +2015,20 @@ fn snapshot() -> Result<LanSnapshot, String> {
     };
     let conn = open_database(&db_path)?;
     let local_settings = load_local_settings(&conn)?;
-    let contacts = load_contacts(&conn, &online)?;
-    let messages = load_messages(&conn)?;
-    let transfers = transfer::load_transfers(&conn)?;
+    let mut contacts = load_contacts(&conn, &online)?;
+    let mut messages = load_messages(&conn)?;
+    let mut transfers = transfer::load_transfers(&conn)?;
     let unread = unread_counts(&conn)?;
-    let conversations = build_conversations(&contacts, &messages, &transfers, &unread);
+    let mut conversations = build_conversations(&contacts, &messages, &transfers, &unread);
+    let mut unread_count = unread.values().sum();
+    server_client::augment_snapshot(
+        &conn,
+        &mut contacts,
+        &mut messages,
+        &mut transfers,
+        &mut conversations,
+        &mut unread_count,
+    )?;
     Ok(LanSnapshot {
         profile,
         local_settings,
@@ -2115,8 +2036,11 @@ fn snapshot() -> Result<LanSnapshot, String> {
         messages,
         transfers,
         conversations,
-        unread_count: unread.values().sum(),
+        unread_count,
         service,
+        server_settings: server_client::settings(&conn)?,
+        server_status: server_client::status(),
+        server_speed_test: server_client::speed_test_result(),
     })
 }
 
@@ -2145,6 +2069,7 @@ pub async fn initialize_lan_collaboration(
         .join("PM Center 接收文件");
     ensure_local_settings(&conn, &default_receive_directory)?;
     transfer::recover_interrupted(&conn)?;
+    server_client::recover_interrupted(&conn)?;
     transfer::prune_staging_files(&transfer_staging_dir);
     transfer::prune_staging_files(&lobby_cache_dir);
     let profile = load_or_create_profile(&conn, legacy_profile)?;
@@ -2156,18 +2081,9 @@ pub async fn initialize_lan_collaboration(
         state.avatars_dir = Some(avatars_dir);
         state.last_cleanup_at = now_millis();
     }
+    server_client::initialize(app_handle.clone(), &conn)?;
     match start_lan_discovery(app_handle.clone()).await {
-        Ok(()) => {
-            let discovery_subnet = load_local_settings(&conn)?.discovery_subnet;
-            if !discovery_subnet.is_empty() {
-                if let Err(error) = scan_discovery_subnet_value(&discovery_subnet).await {
-                    if let Ok(mut state) = P2P_GLOBAL.lock() {
-                        state.service.last_error = Some(format!("启动时扫描隧道网段失败：{error}"));
-                    }
-                    emit_service_status(&app_handle);
-                }
-            }
-        }
+        Ok(()) => {}
         Err(error) => {
             if let Ok(mut state) = P2P_GLOBAL.lock() {
                 state.service.last_error = Some(error);
@@ -2225,6 +2141,7 @@ pub async fn update_lan_profile(
         state.announce_generation = state.announce_generation.wrapping_add(1);
     }
     let _ = app_handle.emit("pm-center:lan-profile-changed", &profile);
+    server_client::refresh_profile(app_handle.clone());
     Ok(profile)
 }
 
@@ -2257,54 +2174,6 @@ pub async fn update_lan_receive_directory(
     let settings = load_local_settings(&conn)?;
     let _ = app_handle.emit("pm-center:lan-settings-changed", &settings);
     Ok(settings)
-}
-
-#[tauri::command]
-pub async fn update_lan_discovery_subnet(
-    app_handle: tauri::AppHandle,
-    request: UpdateLanDiscoverySubnetRequest,
-) -> Result<LanDiscoverySubnetScanResult, String> {
-    let requested = request.discovery_subnet.trim();
-    let normalized = if requested.is_empty() {
-        String::new()
-    } else {
-        parse_discovery_subnet(requested)?.normalized()
-    };
-    if !normalized.is_empty()
-        && !P2P_GLOBAL
-            .lock()
-            .map_err(|error| error.to_string())?
-            .is_running
-    {
-        return Err("请先开启局域网发现，再保存并扫描隧道网段".to_string());
-    }
-    let (db_path, _) = state_paths()?;
-    let conn = open_database(&db_path)?;
-    conn.execute(
-        "UPDATE lan_local_settings SET discovery_subnet=?1,updated_at=?2 WHERE singleton=1",
-        params![normalized, now_millis() as i64],
-    )
-    .map_err(|error| error.to_string())?;
-    let settings = load_local_settings(&conn)?;
-    let _ = app_handle.emit("pm-center:lan-settings-changed", &settings);
-    if settings.discovery_subnet.is_empty() {
-        return Ok(LanDiscoverySubnetScanResult {
-            discovery_subnet: String::new(),
-            target_count: 0,
-            sent_count: 0,
-        });
-    }
-    scan_discovery_subnet_value(&settings.discovery_subnet).await
-}
-
-#[tauri::command]
-pub async fn scan_lan_discovery_subnet() -> Result<LanDiscoverySubnetScanResult, String> {
-    let (db_path, _) = state_paths()?;
-    let settings = load_local_settings(&open_database(&db_path)?)?;
-    if settings.discovery_subnet.is_empty() {
-        return Err("请先设置要扫描的隧道网段".to_string());
-    }
-    scan_discovery_subnet_value(&settings.discovery_subnet).await
 }
 
 fn create_avatar(source_path: &Path) -> Result<(Vec<u8>, String), String> {
@@ -2375,6 +2244,7 @@ pub async fn set_lan_avatar(
         state.announce_generation = state.announce_generation.wrapping_add(1);
     }
     let _ = app_handle.emit("pm-center:lan-profile-changed", &profile);
+    server_client::refresh_profile(app_handle.clone());
     Ok(profile)
 }
 
@@ -2633,8 +2503,8 @@ pub async fn clear_lan_conversation(
     let mut conn = open_database(&db_path)?;
     let active_transfers: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM lan_transfers
-             WHERE conversation_id=?1 AND status IN ('waiting','pending','transferring')",
+            "SELECT (SELECT COUNT(*) FROM lan_transfers WHERE conversation_id=?1 AND status IN ('waiting','pending','transferring'))
+                  + (SELECT COUNT(*) FROM pmc_server_transfers WHERE conversation_id=?1 AND status IN ('waiting','pending','transferring'))",
             params![conversation_id],
             |row| row.get(0),
         )
@@ -2652,6 +2522,18 @@ pub async fn clear_lan_conversation(
     transaction
         .execute(
             "DELETE FROM lan_transfers WHERE conversation_id=?1",
+            params![conversation_id],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM pmc_server_messages WHERE conversation_id=?1",
+            params![conversation_id],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM pmc_server_transfers WHERE conversation_id=?1",
             params![conversation_id],
         )
         .map_err(|error| error.to_string())?;
@@ -2675,8 +2557,8 @@ pub async fn clear_lan_history(app_handle: tauri::AppHandle) -> Result<(), Strin
     let conn = open_database(&db_path)?;
     let active_transfers: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM lan_transfers
-             WHERE status IN ('waiting','pending','transferring')",
+            "SELECT (SELECT COUNT(*) FROM lan_transfers WHERE status IN ('waiting','pending','transferring'))
+                  + (SELECT COUNT(*) FROM pmc_server_transfers WHERE status IN ('waiting','pending','transferring'))",
             [],
             |row| row.get(0),
         )
@@ -2687,6 +2569,8 @@ pub async fn clear_lan_history(app_handle: tauri::AppHandle) -> Result<(), Strin
     conn.execute_batch(
         "DELETE FROM lan_messages;
              DELETE FROM lan_transfers;
+             DELETE FROM pmc_server_messages;
+             DELETE FROM pmc_server_transfers;
              DELETE FROM lan_conversation_reads;",
     )
     .map_err(|error| error.to_string())?;
@@ -2721,7 +2605,7 @@ pub async fn remove_lan_contact(
         .map_err(|error| error.to_string())?
         .online_users
         .contains_key(&contact_id);
-    if is_online {
+    if is_online || server_client::is_contact_online(&contact_id) {
         return Err("在线联系人不能删除；停止发现或等待对方离线后再试".to_string());
     }
     let (db_path, _) = state_paths()?;
@@ -2737,6 +2621,11 @@ pub async fn remove_lan_contact(
         .flatten();
     conn.execute("DELETE FROM lan_contacts WHERE id=?1", params![contact_id])
         .map_err(|error| error.to_string())?;
+    conn.execute(
+        "DELETE FROM pmc_server_contacts WHERE device_id=?1",
+        params![contact_id],
+    )
+    .map_err(|error| error.to_string())?;
     cleanup_orphan_avatar(&conn, avatar_path);
     emit_contacts_changed(&app_handle);
     Ok(())
@@ -2887,29 +2776,9 @@ mod tests {
         let settings = load_local_settings(&conn).unwrap();
         assert_eq!(PathBuf::from(settings.receive_directory), receive_directory);
         assert!(settings.auto_receive_images);
-        assert!(settings.discovery_subnet.is_empty());
         drop(conn);
         let _ = fs::remove_file(path);
         let _ = fs::remove_dir_all(receive_directory);
-    }
-
-    #[test]
-    fn discovery_subnet_is_normalized_and_excludes_reserved_addresses() {
-        let subnet = parse_discovery_subnet("10.13.13.8/24").unwrap();
-        assert_eq!(subnet.normalized(), "10.13.13.0/24");
-        let local = HashSet::from([Ipv4Addr::new(10, 13, 13, 8)]);
-        let targets = subnet.targets(&local);
-        assert_eq!(targets.len(), 253);
-        assert_eq!(targets.first(), Some(&Ipv4Addr::new(10, 13, 13, 1)));
-        assert_eq!(targets.last(), Some(&Ipv4Addr::new(10, 13, 13, 254)));
-        assert!(!targets.contains(&Ipv4Addr::new(10, 13, 13, 8)));
-        assert!(!targets.contains(&Ipv4Addr::new(10, 13, 13, 255)));
-    }
-
-    #[test]
-    fn discovery_subnet_rejects_sweeps_larger_than_a_class_c() {
-        assert!(parse_discovery_subnet("10.13.0.0/16").is_err());
-        assert!(parse_discovery_subnet("10.13.13.0/31").is_err());
     }
 
     #[test]
@@ -2921,16 +2790,24 @@ mod tests {
                singleton INTEGER PRIMARY KEY CHECK(singleton=1),
                receive_directory TEXT NOT NULL,
                auto_receive_images INTEGER NOT NULL DEFAULT 1,
+               discovery_subnet TEXT NOT NULL DEFAULT '',
                updated_at INTEGER NOT NULL
              );
-             INSERT INTO lan_local_settings(singleton,receive_directory,auto_receive_images,updated_at)
-             VALUES(1,'C:\\Temp',1,0);",
+             INSERT INTO lan_local_settings(singleton,receive_directory,auto_receive_images,discovery_subnet,updated_at)
+             VALUES(1,'C:\\Temp',1,'10.13.13.0/24',0);",
         )
         .unwrap();
         drop(conn);
         let conn = open_database(&path).unwrap();
-        let settings = load_local_settings(&conn).unwrap();
-        assert!(settings.discovery_subnet.is_empty());
+        let _settings = load_local_settings(&conn).unwrap();
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(lan_local_settings)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(!columns.iter().any(|column| column == "discovery_subnet"));
         drop(conn);
         let _ = fs::remove_file(path);
     }

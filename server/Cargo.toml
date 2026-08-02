@@ -1,0 +1,27 @@
+[package]
+name = "pmc-server"
+version = "1.0.0"
+edition = "2021"
+license = "GPL-2.0-only"
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", features = ["ws"] }
+base64 = "0.22"
+blake3 = "1"
+bytes = "1"
+futures-util = "0.3"
+pmc-protocol = { path = "../shared/pmc-protocol" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+tokio-tungstenite = "0.29"

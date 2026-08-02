@@ -1,6 +1,8 @@
 # PM Center
 
-PM Center 是一个基于 `Tauri v2 + React 19 + Rust` 的桌面项目管理器，目标是把项目浏览、脚本任务、Python 环境、局域网协作和轻量编辑能力放到一个应用里。
+PM Center 是一个基于 `Tauri v2 + React 19 + Rust` 的桌面项目管理器，目标是把项目浏览、脚本任务、Python 环境、设备协作和轻量编辑能力放到一个应用里。
+
+设备协作同时支持无需服务器的局域网 UDP 发现/TCP 直连，以及可选的独立 PMC Server。Linux 服务端、Docker Compose、systemd 和 Caddy 示例位于 [`server/`](server/README.md)。
 
 作者：章知涵@Ninniku
 联系：QQ：2143178235

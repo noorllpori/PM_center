@@ -172,8 +172,9 @@ export function LanTransferCard({
             </div>
           ) : null}
         </div>
-        <p className={`mt-1 px-1 text-[10px] text-gray-400 ${outgoing ? 'text-right' : ''}`}>
-          {new Date(transfer.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+        <p className={`mt-1 flex items-center gap-1.5 px-1 text-[10px] text-gray-400 ${outgoing ? 'justify-end' : ''}`}>
+          <span>{new Date(transfer.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</span>
+          <span className="rounded bg-gray-100 px-1 py-0.5 text-[9px] text-gray-500 dark:bg-gray-800">{transfer.transport === 'server' ? '服务器' : '局域网'}</span>
         </p>
       </div>
     </div>

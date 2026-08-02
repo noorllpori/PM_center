@@ -24,7 +24,7 @@ const HOME_TAB: ShellTab = {
 const LAN_SHELL_TAB: ShellTab = {
   id: LAN_SHELL_TAB_ID,
   type: 'lan',
-  title: '局域网主面板',
+  title: '设备协作',
   closable: true,
 };
 

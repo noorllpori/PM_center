@@ -40,6 +40,7 @@ chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
 lazy_static = "1"
 base64 = "0.22"
+bytes = "1"
 image = { version = "0.24", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff", "hdr", "openexr"] }
 infer = "0.19"
 kamadak-exif = "0.6"
@@ -58,3 +59,9 @@ if-addrs = "0.13"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "charset", "gzip", "brotli", "deflate", "stream"] }
 scraper = "0.22"
 url = "2"
+futures-util = "0.3"
+keyring = "3"
+pmc-protocol = { path = "../shared/pmc-protocol" }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tokio-stream = "0.1"

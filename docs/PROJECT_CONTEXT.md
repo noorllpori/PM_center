@@ -25,7 +25,7 @@ PM Center 是面向本地制作项目的 Windows 优先桌面工作台。一个�
 | 前端 | React 19、TypeScript、Vite、Tailwind、Zustand | `src/main.tsx` -> `src/App.tsx` -> `FileManager` / `ProjectWorkspace`。 |
 | 本地配置 | `@tauri-apps/plugin-store` | `settingsStore`、任务状态、会话及部分调度预设。 |
 | 项目数据 | SQLite + 项目目录 | `.pm_center/data.db`、`.pm_center/tree_cache.db` 和缓存目录。 |
-| 应用级数据 | SQLite + 应用数据目录 | `smart_clipboard/clipboard_history.db`、图像载荷及局域网协作数据；不写入项目 `.pm_center`。 |
+| 应用级数据 | SQLite + 应用数据目录 | `smart_clipboard/clipboard_history.db`、图像载荷及设备协作数据；不写入项目 `.pm_center`。 |
 
 开发命令：
 
@@ -191,7 +191,9 @@ React invoke/listen
 - 目录与项目同步的分层、manifest 规则、冲突处理和扩展阶段详见 `docs/LAN_TRANSFER_ARCHITECTURE.md`；实现新同步功能前必须先更新该契约。
 - 浏览器无法提供真实路径的拖入文件和剪贴板图片暂存在应用数据目录 `lan_collaboration/staging/`，不写入项目 `.pm_center`；失败暂存立即清理，其余记录和暂存按 30 天生命周期维护。
 - 局域网接收根目录是本机私有设置，默认位于系统下载目录的 `PM Center 接收文件/`，在“个人资料与局域网状态”中修改，绝不通过联系人资料广播。接收内容按安全化后的发送者名称分目录保存，同名自动编号；100 MB 以内且通过格式校验的图片自动接收，其他文件仍需用户确认。
-- WireGuard 等不转发 UDP 广播的隧道可配置一个 `/24` 到 `/30` 的 IPv4 CIDR。保存配置时单次扫描，之后每次 PMC 启动自动扫描一次，也允许随时手动扫描；不得后台持续遍历。扫描复用 UDP 31523 发现包，跳过网络地址、广播地址和本机地址，单次最多探测 254 个目标。一端发起扫描即可通过现有单播响应让双方互相登记；发现后常规循环只向在线联系人的已知 IP 发送保活，不重复遍历网段。
+- 跨网络协作使用可选的独立 PMC Server。服务器不可用时，UDP 31523 局域网发现、TCP 31524 私聊与文件直传保持完整可用。
+- 同一设备按稳定 `deviceId` 合并局域网与服务器在线来源。文本默认局域网优先并可回退服务器；文件在报价前固定通道，失败不自动切换。
+- PMC Server 使用 Axum、Tokio 与 SQLite WAL；消息每个会话保留最近 30 条，文件仅通过有界内存流式转发，不写入服务端磁盘。
 
 ## 8. 扩展流程
 

@@ -15,13 +15,6 @@ export interface LanProfile {
 export interface LanLocalSettings {
   receiveDirectory: string;
   autoReceiveImages: boolean;
-  discoverySubnet: string;
-}
-
-export interface LanDiscoverySubnetScanResult {
-  discoverySubnet: string;
-  targetCount: number;
-  sentCount: number;
 }
 
 export interface LanContact {
@@ -32,6 +25,9 @@ export interface LanContact {
   avatarPath: string | null;
   ip: string;
   online: boolean;
+  lanOnline: boolean;
+  serverOnline: boolean;
+  serverId: string | null;
   firstSeen: number;
   lastSeen: number;
   protocolVersion: number;
@@ -49,6 +45,8 @@ export interface LanMessage {
   direction: 'incoming' | 'outgoing' | string;
   deliveryStatus: 'delivered' | 'partial' | 'failed' | string;
   deliverySummary: string | null;
+  transport: 'lan' | 'server' | string;
+  serverId: string | null;
 }
 
 export interface LanTransfer {
@@ -75,6 +73,8 @@ export interface LanTransfer {
   error: string | null;
   createdAt: number;
   updatedAt: number;
+  transport: 'lan' | 'server' | string;
+  serverId: string | null;
 }
 
 export interface LanTransferProgress {
@@ -115,6 +115,34 @@ export interface LanServiceStatus {
   lastError: string | null;
 }
 
+export interface PmcServerSettings {
+  address: string;
+  enabled: boolean;
+  serverId: string | null;
+  passwordConfigured: boolean;
+}
+
+export interface PmcServerStatus {
+  connected: boolean;
+  connecting: boolean;
+  serverId: string | null;
+  serverName: string | null;
+  protocolVersion: number | null;
+  requiresPassword: boolean;
+  insecureHttp: boolean;
+  onlineCount: number;
+  latencyMs: number | null;
+  lastError: string | null;
+}
+
+export interface PmcServerSpeedTest {
+  latencyMs: number;
+  downloadBytesPerSecond: number;
+  uploadBytesPerSecond: number;
+  testedAt: number;
+  error: string | null;
+}
+
 export interface LanSnapshot {
   profile: LanProfile;
   localSettings: LanLocalSettings;
@@ -124,6 +152,9 @@ export interface LanSnapshot {
   conversations: LanConversation[];
   unreadCount: number;
   service: LanServiceStatus;
+  serverSettings: PmcServerSettings;
+  serverStatus: PmcServerStatus;
+  serverSpeedTest: PmcServerSpeedTest | null;
 }
 
 export interface LanDeliveryFailure {
@@ -155,6 +186,9 @@ interface LanCollaborationState {
   conversations: LanConversation[];
   unreadCount: number;
   service: LanServiceStatus;
+  serverSettings: PmcServerSettings | null;
+  serverStatus: PmcServerStatus;
+  serverSpeedTest: PmcServerSpeedTest | null;
   navigationRequest: LanConversationNavigationRequest | null;
   isLoading: boolean;
   isInitialized: boolean;
@@ -163,16 +197,19 @@ interface LanCollaborationState {
   refresh: () => Promise<void>;
   updateProfile: (displayName: string, department: string) => Promise<void>;
   updateReceiveDirectory: (receiveDirectory: string) => Promise<void>;
-  updateDiscoverySubnet: (discoverySubnet: string) => Promise<LanDiscoverySubnetScanResult>;
-  scanDiscoverySubnet: () => Promise<LanDiscoverySubnetScanResult>;
   setAvatar: (imagePath: string | null) => Promise<void>;
   startDiscovery: () => Promise<void>;
   stopDiscovery: () => Promise<void>;
-  sendMessage: (conversationId: string, content: string) => Promise<LanDeliveryResult>;
+  sendMessage: (conversationId: string, content: string, transport?: 'auto' | 'lan' | 'server') => Promise<LanDeliveryResult>;
+  updateServerSettings: (address: string, password: string | null, enabled: boolean) => Promise<void>;
+  connectServer: () => Promise<void>;
+  disconnectServer: () => Promise<void>;
+  testServerSpeed: () => Promise<PmcServerSpeedTest>;
   offerFiles: (
     contactIds: string | string[],
     paths: string[],
     conversationId?: 'lobby' | null,
+    transport?: 'auto' | 'lan' | 'server',
   ) => Promise<LanFileOfferResult>;
   respondTransfer: (transferId: string, action: 'accept' | 'reject', destinationPath?: string) => Promise<LanTransfer>;
   cancelTransfer: (transferId: string) => Promise<LanTransfer>;
@@ -200,6 +237,19 @@ const EMPTY_SERVICE: LanServiceStatus = {
   lastError: null,
 };
 
+const EMPTY_SERVER_STATUS: PmcServerStatus = {
+  connected: false,
+  connecting: false,
+  serverId: null,
+  serverName: null,
+  protocolVersion: null,
+  requiresPassword: false,
+  insecureHttp: false,
+  onlineCount: 0,
+  latencyMs: null,
+  lastError: null,
+};
+
 const LEGACY_STORE_FILE = 'p2p-settings.json';
 const LEGACY_USER_ID_KEY = 'p2p-user-id';
 const LEGACY_USER_NAME_KEY = 'p2p-user-name';
@@ -221,6 +271,9 @@ function applySnapshot(snapshot: LanSnapshot) {
     conversations: snapshot.conversations,
     unreadCount: snapshot.unreadCount,
     service: snapshot.service,
+    serverSettings: snapshot.serverSettings,
+    serverStatus: snapshot.serverStatus,
+    serverSpeedTest: snapshot.serverSpeedTest,
     isInitialized: true,
     isLoading: false,
     error: null,
@@ -263,6 +316,7 @@ async function setupListeners() {
       'pm-center:lan-read-state-changed',
       'pm-center:lan-service-status',
       'pm-center:lan-transfer-changed',
+      'pm-center:server-collaboration-changed',
     ];
     for (const eventName of eventNames) {
       unlisteners.push(await listen(eventName, () => scheduleRefresh()));
@@ -291,6 +345,9 @@ export const useLanCollaborationStore = create<LanCollaborationState>((set, get)
   conversations: [],
   unreadCount: 0,
   service: EMPTY_SERVICE,
+  serverSettings: null,
+  serverStatus: EMPTY_SERVER_STATUS,
+  serverSpeedTest: null,
   navigationRequest: null,
   isLoading: false,
   isInitialized: false,
@@ -359,20 +416,6 @@ export const useLanCollaborationStore = create<LanCollaborationState>((set, get)
     await get().refresh();
   },
 
-  updateDiscoverySubnet: async (discoverySubnet) => {
-    const result = await invoke<LanDiscoverySubnetScanResult>('update_lan_discovery_subnet', {
-      request: { discoverySubnet },
-    });
-    await get().refresh();
-    return result;
-  },
-
-  scanDiscoverySubnet: async () => {
-    const result = await invoke<LanDiscoverySubnetScanResult>('scan_lan_discovery_subnet');
-    await get().refresh();
-    return result;
-  },
-
   setAvatar: async (imagePath) => {
     const profile = await invoke<LanProfile>('set_lan_avatar', { imagePath });
     set({ profile });
@@ -389,20 +432,57 @@ export const useLanCollaborationStore = create<LanCollaborationState>((set, get)
     await get().refresh();
   },
 
-  sendMessage: async (conversationId, content) => {
+  sendMessage: async (conversationId, content, transport = 'auto') => {
     const toId = conversationId.startsWith('direct:')
       ? conversationId.slice('direct:'.length)
       : null;
-    const result = await invoke<LanDeliveryResult>('send_lan_message', {
-      request: { toId, content },
-    });
+    const contact = toId ? get().contacts.find((item) => item.id === toId) : null;
+    const isServerLobby = conversationId.startsWith('server:') && conversationId.endsWith(':lobby');
+    const useServer = isServerLobby || transport === 'server' || (transport === 'auto' && Boolean(contact?.serverOnline && !contact?.lanOnline));
+    let result: LanDeliveryResult;
+    if (useServer) {
+      result = await invoke<LanDeliveryResult>('send_server_message', { request: { toId, content } });
+    } else {
+      try {
+        result = await invoke<LanDeliveryResult>('send_lan_message', { request: { toId, content } });
+        if (transport === 'auto' && toId && contact?.serverOnline && result.deliveredCount === 0) {
+          result = await invoke<LanDeliveryResult>('send_server_message', { request: { toId, content } });
+        }
+      } catch (error) {
+        if (transport !== 'auto' || !contact?.serverOnline) throw error;
+        result = await invoke<LanDeliveryResult>('send_server_message', { request: { toId, content } });
+      }
+    }
     await get().refresh();
     return result;
   },
 
-  offerFiles: async (contactIds, paths, conversationId = null) => {
+  updateServerSettings: async (address, password, enabled) => {
+    await invoke<PmcServerSettings>('update_pmc_server_settings', { request: { address, password, enabled } });
+    await get().refresh();
+  },
+
+  connectServer: async () => {
+    await invoke('connect_pmc_server');
+    await get().refresh();
+  },
+
+  disconnectServer: async () => {
+    await invoke('disconnect_pmc_server');
+    await get().refresh();
+  },
+
+  testServerSpeed: async () => {
+    const result = await invoke<PmcServerSpeedTest>('test_pmc_server_speed');
+    await get().refresh();
+    return result;
+  },
+
+  offerFiles: async (contactIds, paths, conversationId = null, transport = 'auto') => {
     const recipients = Array.isArray(contactIds) ? contactIds : [contactIds];
-    const result = await invoke<LanFileOfferResult>('offer_lan_files', {
+    const contact = recipients.length === 1 ? get().contacts.find((item) => item.id === recipients[0]) : null;
+    const useServer = conversationId !== 'lobby' && (transport === 'server' || (transport === 'auto' && Boolean(contact?.serverOnline && !contact?.lanOnline)));
+    const result = await invoke<LanFileOfferResult>(useServer ? 'offer_server_files' : 'offer_lan_files', {
       request: {
         toId: recipients.length === 1 ? recipients[0] : null,
         toIds: recipients.length > 1 ? recipients : [],
@@ -422,7 +502,8 @@ export const useLanCollaborationStore = create<LanCollaborationState>((set, get)
         return { transferProgress };
       });
     }
-    const transfer = await invoke<LanTransfer>('respond_lan_transfer', {
+    const current = get().transfers.find((item) => item.id === transferId);
+    const transfer = await invoke<LanTransfer>(current?.transport === 'server' ? 'respond_server_transfer' : 'respond_lan_transfer', {
       request: { transferId, action, destinationPath: destinationPath || null },
     });
     await get().refresh();
@@ -430,7 +511,8 @@ export const useLanCollaborationStore = create<LanCollaborationState>((set, get)
   },
 
   cancelTransfer: async (transferId) => {
-    const transfer = await invoke<LanTransfer>('cancel_lan_transfer', {
+    const current = get().transfers.find((item) => item.id === transferId);
+    const transfer = await invoke<LanTransfer>(current?.transport === 'server' ? 'cancel_server_transfer' : 'cancel_lan_transfer', {
       request: { transferId },
     });
     set((state) => {

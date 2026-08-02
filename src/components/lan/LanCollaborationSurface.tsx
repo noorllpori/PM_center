@@ -477,6 +477,7 @@ function MessageBubble({
         {previewUrl ? <LinkPreviewCard url={previewUrl} /> : null}
         <div className={`mt-1 flex items-center gap-2 px-1 text-[10px] text-gray-400 ${mine ? 'justify-end' : ''}`}>
           <span>{new Date(message.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</span>
+          <span className="rounded bg-gray-100 px-1 py-0.5 text-[9px] text-gray-500 dark:bg-gray-800">{message.transport === 'server' ? '服务器' : '局域网'}</span>
           {mine && message.deliveryStatus !== 'delivered' ? (
             <span className={message.deliveryStatus === 'failed' ? 'text-red-500' : 'text-amber-600'}>
               {message.deliveryStatus === 'failed' ? '发送失败' : '部分送达'}
@@ -725,6 +726,9 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
     conversations,
     unreadCount,
     service,
+    serverSettings,
+    serverStatus,
+    serverSpeedTest,
     navigationRequest,
     isLoading,
     error,
@@ -732,12 +736,14 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
     refresh,
     updateProfile,
     updateReceiveDirectory,
-    updateDiscoverySubnet,
-    scanDiscoverySubnet,
     setAvatar,
     startDiscovery,
     stopDiscovery,
     sendMessage,
+    updateServerSettings,
+    connectServer,
+    disconnectServer,
+    testServerSpeed,
     offerFiles,
     respondTransfer,
     cancelTransfer,
@@ -771,8 +777,13 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
   const [isProfileDraftDirty, setIsProfileDraftDirty] = useState(false);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [isUpdatingReceiveDirectory, setIsUpdatingReceiveDirectory] = useState(false);
-  const [discoverySubnet, setDiscoverySubnet] = useState('');
-  const [isScanningSubnet, setIsScanningSubnet] = useState(false);
+  const [serverAddress, setServerAddress] = useState('');
+  const [serverPassword, setServerPassword] = useState('');
+  const [clearSavedServerPassword, setClearSavedServerPassword] = useState(false);
+  const [serverEnabled, setServerEnabled] = useState(false);
+  const [isSavingServer, setIsSavingServer] = useState(false);
+  const [isTestingServer, setIsTestingServer] = useState(false);
+  const [nextTransport, setNextTransport] = useState<'auto' | 'lan' | 'server'>('auto');
   const [confirmAction, setConfirmAction] = useState<'conversation' | 'history' | null>(null);
   const [scrollRequest, setScrollRequest] = useState(0);
   const messagesViewportRef = useRef<HTMLDivElement | null>(null);
@@ -808,14 +819,17 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
   }, [isProfileDraftDirty, profile]);
 
   useEffect(() => {
-    setDiscoverySubnet(localSettings?.discoverySubnet || '');
-  }, [localSettings?.discoverySubnet]);
+    if (!serverSettings) return;
+    setServerAddress(serverSettings.address);
+    setServerEnabled(serverSettings.enabled);
+  }, [serverSettings]);
 
   const selectedContactId = selectedConversationId.startsWith('direct:')
     ? selectedConversationId.slice('direct:'.length)
     : null;
   const selectedContact = contacts.find((contact) => contact.id === selectedContactId) || null;
   const selectedConversation = conversations.find((conversation) => conversation.id === selectedConversationId) || conversations[0] || null;
+  const isServerLobby = selectedConversationId.startsWith('server:') && selectedConversationId.endsWith(':lobby');
   const selectedMessages = useMemo(
     () => messages.filter((message) => message.conversationId === selectedConversationId),
     [messages, selectedConversationId],
@@ -993,8 +1007,9 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
     if (!content || isSending) return;
     setIsSending(true);
     try {
-      const result = await sendMessage(selectedConversationId, content);
+      const result = await sendMessage(selectedConversationId, content, nextTransport);
       setInput('');
+      setNextTransport('auto');
       if (result.failures.length > 0) {
         showToast({
           title: selectedConversationId === 'lobby'
@@ -1020,7 +1035,12 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
       showToast({ title: '请选择联系人', message: '文件传输需要在联系人私聊中发起。', tone: 'warning' });
       return null;
     }
-    if (!selectedContact.online) {
+    const routeOnline = nextTransport === 'server'
+      ? selectedContact.serverOnline
+      : nextTransport === 'lan'
+        ? selectedContact.lanOnline
+        : selectedContact.lanOnline || selectedContact.serverOnline;
+    if (!routeOnline) {
       showToast({ title: '联系人离线', message: '对方在线后才能接收文件传输请求。', tone: 'warning' });
       return null;
     }
@@ -1037,7 +1057,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
 
   const offerPreparedFiles = async (prepared: PreparedTransferFile[]) => {
     const isLobby = selectedConversationId === 'lobby';
-    const onlineLobbyContacts = contacts.filter((contact) => contact.online);
+    const onlineLobbyContacts = contacts.filter((contact) => contact.lanOnline);
     const lobbyContacts = onlineLobbyContacts;
     const contact = isLobby ? null : requireTransferContact();
     if (isPreparingFiles) {
@@ -1068,7 +1088,9 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
         recipients,
         eligible.map((item) => item.path),
         isLobby ? 'lobby' : null,
+        isLobby ? 'lan' : nextTransport,
       );
+      if (!isLobby) setNextTransport('auto');
       const successfulPaths = new Set(result.transfers
         .map((transfer) => transfer.sourcePath ? transferPathKey(transfer.sourcePath) : null)
         .filter((path): path is string => Boolean(path)));
@@ -1358,6 +1380,47 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
     }
   };
 
+  const handleSaveServer = async () => {
+    if (isSavingServer) return;
+    setIsSavingServer(true);
+    try {
+      await updateServerSettings(
+        serverAddress,
+        clearSavedServerPassword ? '' : serverPassword || null,
+        serverEnabled,
+      );
+      setServerPassword('');
+      setClearSavedServerPassword(false);
+      showToast({ title: '服务器设置已保存', message: serverEnabled ? '客户端正在连接 PMC Server。' : '服务器连接已关闭。', tone: 'success' });
+    } catch (serverError) {
+      showToast({ title: '保存服务器设置失败', message: String(serverError), tone: 'error' });
+    } finally {
+      setIsSavingServer(false);
+    }
+  };
+
+  const handleToggleServerConnection = async () => {
+    try {
+      if (serverStatus.connected || serverStatus.connecting) await disconnectServer();
+      else await connectServer();
+    } catch (serverError) {
+      showToast({ title: '切换服务器连接失败', message: String(serverError), tone: 'error' });
+    }
+  };
+
+  const handleTestServerSpeed = async () => {
+    if (isTestingServer) return;
+    setIsTestingServer(true);
+    try {
+      await testServerSpeed();
+      showToast({ title: '服务器测速完成', message: '结果已更新。', tone: 'success' });
+    } catch (speedError) {
+      showToast({ title: '服务器测速失败', message: String(speedError), tone: 'error' });
+    } finally {
+      setIsTestingServer(false);
+    }
+  };
+
   const handleCancelTransfer = async (transfer: LanTransfer) => {
     if (cancellingTransfers.has(transfer.id)) return;
     cancelledByUserRef.current.add(transfer.id);
@@ -1381,43 +1444,6 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
     }
   };
 
-  const handleSaveAndScanSubnet = async () => {
-    if (isScanningSubnet) return;
-    setIsScanningSubnet(true);
-    try {
-      const result = await updateDiscoverySubnet(discoverySubnet);
-      setDiscoverySubnet(result.discoverySubnet);
-      showToast({
-        title: result.discoverySubnet ? '隧道网段已保存并扫描' : '隧道网段已清除',
-        message: result.discoverySubnet
-          ? `已向 ${result.sentCount}/${result.targetCount} 个可用地址发送发现请求。`
-          : '后续只使用原有局域网广播发现。',
-        tone: 'success',
-      });
-    } catch (scanError) {
-      showToast({ title: '保存或扫描网段失败', message: String(scanError), tone: 'error' });
-    } finally {
-      setIsScanningSubnet(false);
-    }
-  };
-
-  const handleScanSubnet = async () => {
-    if (isScanningSubnet) return;
-    setIsScanningSubnet(true);
-    try {
-      const result = await scanDiscoverySubnet();
-      showToast({
-        title: '网段扫描已发送',
-        message: `已向 ${result.sentCount}/${result.targetCount} 个可用地址发送发现请求。`,
-        tone: 'success',
-      });
-    } catch (scanError) {
-      showToast({ title: '扫描网段失败', message: String(scanError), tone: 'error' });
-    } finally {
-      setIsScanningSubnet(false);
-    }
-  };
-
   const handleRemoveAvatar = async () => {
     try {
       await setAvatar(null);
@@ -1428,15 +1454,18 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
 
   const canSend = Boolean(
     profile
-      && service.isRunning
-      && (selectedConversationId === 'lobby' || selectedContact?.online),
+      && (isServerLobby
+        ? serverStatus.connected
+        : selectedConversationId === 'lobby'
+          ? service.isRunning
+          : selectedContact?.lanOnline || selectedContact?.serverOnline),
   );
   const canTransfer = Boolean(
     profile
-      && service.isRunning
+      && !isServerLobby
       && (selectedConversationId === 'lobby'
-        ? true
-        : selectedContact?.online && selectedContact.protocolVersion >= 3),
+        ? service.isRunning
+        : (selectedContact?.lanOnline && selectedContact.protocolVersion >= 3) || selectedContact?.serverOnline),
   );
 
   if (isLoading && !profile) {
@@ -1501,7 +1530,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
         {mode === 'messages' ? (
           <>
             {conversations
-              .filter((conversation) => conversation.id === 'lobby' || conversation.lastMessageAt || contacts.some((contact) => contact.id === conversation.contactId && contact.online))
+              .filter((conversation) => conversation.id === 'lobby' || conversation.id.startsWith('server:') || conversation.lastMessageAt || contacts.some((contact) => contact.id === conversation.contactId && contact.online))
               .filter((conversation) => conversation.title.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
               .map((conversation) => {
                 const contact = conversation.contactId ? contacts.find((item) => item.id === conversation.contactId) : null;
@@ -1517,7 +1546,9 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
                       : lastMessage
                         ? `${lastMessage.fromId === profile.id ? '我：' : ''}${lastMessage.content}`
                         : conversation.id === 'lobby'
-                          ? '所有在线联系人都能看到'
+                          ? '当前局域网在线设备都能看到'
+                          : conversation.id.startsWith('server:')
+                            ? serverStatus.connected ? `${serverStatus.onlineCount} 台服务器设备在线` : '服务器未连接'
                           : contact?.online ? '在线' : formatLastSeen(contact?.lastSeen || 0)}
                     time={formatClock(conversation.lastMessageAt)}
                     unread={conversation.unreadCount}
@@ -1525,6 +1556,8 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
                     onClick={() => selectConversation(conversation.id)}
                     avatar={conversation.id === 'lobby'
                       ? <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-600 text-white"><Radio className="h-5 w-5" /></div>
+                      : conversation.id.startsWith('server:')
+                        ? <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white"><Globe2 className="h-5 w-5" /></div>
                       : <LanAvatar id={contact?.id || conversation.id} name={contact?.displayName || conversation.title} avatarPath={contact?.avatarPath} online={contact?.online} />}
                   />
                 );
@@ -1543,7 +1576,11 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
                     <LanAvatar id={contact.id} name={contact.displayName} avatarPath={contact.avatarPath} online={contact.online} />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm font-medium text-gray-900 dark:text-gray-100">{contact.displayName}</span>
-                      <span className="mt-0.5 block truncate text-xs text-gray-500">{contact.online ? `${contact.ip} · 在线` : formatLastSeen(contact.lastSeen)}</span>
+                      <span className="mt-1 flex flex-wrap gap-1 text-[10px]">
+                        {contact.lanOnline ? <span className="rounded bg-blue-50 px-1.5 py-0.5 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">局域网</span> : null}
+                        {contact.serverOnline ? <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">服务器</span> : null}
+                        {!contact.online ? <span className="text-gray-500">{formatLastSeen(contact.lastSeen)}</span> : null}
+                      </span>
                     </span>
                   </button>
                   {!contact.online ? (
@@ -1633,7 +1670,10 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
           <NavigationButton active={mode === 'files'} title="文件统筹" onClick={() => { setQuery(''); setMode('files'); setShowMobileConversation(false); }}><Files className="h-5 w-5" /></NavigationButton>
         </div>
         <div className="mt-auto flex flex-col items-center gap-2">
-          <span title={service.isRunning ? '发现服务运行中' : '发现服务已停止'} className={`h-2.5 w-2.5 rounded-full ${service.isRunning ? 'bg-emerald-500' : 'bg-gray-400'}`} />
+          <span className="flex gap-1" title={`局域网：${service.isRunning ? '运行中' : '已停止'}；服务器：${serverStatus.connected ? '已连接' : '未连接'}`}>
+            <span className={`h-2.5 w-2.5 rounded-full ${service.isRunning ? 'bg-blue-500' : 'bg-gray-400'}`} />
+            <span className={`h-2.5 w-2.5 rounded-full ${serverStatus.connected ? 'bg-emerald-500' : 'bg-gray-400'}`} />
+          </span>
           <NavigationButton active={mode === 'profile'} title="个人资料与设置" onClick={() => { setQuery(''); setMode('profile'); setShowMobileConversation(true); }}><Settings2 className="h-5 w-5" /></NavigationButton>
         </div>
       </aside>
@@ -1701,11 +1741,11 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
             <div className="border-b border-gray-200 px-5 py-4 dark:border-gray-800">
               <div className="flex items-center gap-2">
                 <CircleUserRound className="h-5 w-5 text-blue-600" />
-                <h2 className="text-base font-semibold">个人资料与局域网状态</h2>
+                <h2 className="text-base font-semibold">个人资料与设备协作</h2>
                 <HelpAssistant
-                  title="局域网协同说明"
+                  title="设备协作说明"
                   text={[
-                    '消息和压缩头像仅在当前局域网内传输，不经过云端，但内容未加密，请只在可信网络中使用。',
+                    '局域网通道不经过外部服务端；服务器通道用于连接跨网络设备。联系人按稳定 deviceId 合并，并显示两个在线来源。',
                     '私聊中的文件和文件夹在联系人确认后保存；大厅文字和图片会在设备间同步，新设备会从在线副本合并最近 30 条内容。图片使用临时路径和 BLAKE3 完整性校验。',
                     '无法互相发现时，请允许 PM Center 通过 Windows 专用网络防火墙访问 UDP 31523 和 TCP 31524。',
                   ]}
@@ -1787,6 +1827,71 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
               </div>
 
               <div className="mt-8 border-t border-gray-200 pt-5 dark:border-gray-800">
+                <div className="flex items-center gap-1.5">
+                  <Globe2 className="h-4 w-4 text-emerald-600" />
+                  <h3 className="text-sm font-semibold">独立 PMC Server</h3>
+                  <HelpAssistant
+                    title="服务器协作"
+                    text={[
+                      '局域网协作不需要服务器。填写独立服务端后，可额外看到跨网络在线设备、服务器大厅并发送私聊。',
+                      '地址不写协议时会按 http://地址:7412 解析。HTTP 内容未加密，仅适合可信网络；公网应使用 Caddy 提供 HTTPS/WSS。',
+                      '共享密码和自动签发的设备凭据保存在系统凭据库，不写入本地 SQLite。一个设备凭据只允许对应一个 deviceId。',
+                      '同一联系人同时通过局域网和服务器在线时，文字默认优先走局域网；局域网发送失败会尝试服务器。',
+                    ]}
+                    placement="bottom-start"
+                    width={380}
+                  />
+                </div>
+                <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_180px]">
+                  <label className="block">
+                    <span className="mb-1 block text-xs text-gray-500">服务器地址</span>
+                    <input value={serverAddress} onChange={(event) => { setServerAddress(event.target.value); setClearSavedServerPassword(false); }} placeholder="pmc.example.com 或 192.168.1.10:7412" spellCheck={false} className="h-9 w-full rounded-md border border-gray-300 px-3 font-mono text-sm outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-900" />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 flex items-center justify-between text-xs text-gray-500">
+                      <span>共享密码</span>
+                      {serverSettings?.passwordConfigured && serverAddress === serverSettings.address ? (
+                        <button
+                          type="button"
+                          title={clearSavedServerPassword ? '取消清除共享密码' : '清除已保存的共享密码'}
+                          onClick={() => {
+                            setClearSavedServerPassword((current) => !current);
+                            setServerPassword('');
+                          }}
+                          className={`flex h-5 w-5 items-center justify-center rounded text-gray-400 hover:bg-gray-100 hover:text-red-600 dark:hover:bg-gray-800 ${clearSavedServerPassword ? 'bg-red-50 text-red-600 dark:bg-red-950/30' : ''}`}
+                        >
+                          {clearSavedServerPassword ? <X className="h-3.5 w-3.5" /> : <Trash2 className="h-3.5 w-3.5" />}
+                        </button>
+                      ) : null}
+                    </span>
+                    <input type="password" disabled={clearSavedServerPassword} value={serverPassword} onChange={(event) => { setServerPassword(event.target.value); setClearSavedServerPassword(false); }} placeholder={clearSavedServerPassword ? '保存后清除' : serverSettings?.passwordConfigured ? '已保存，留空不修改' : '可选'} className="h-9 w-full rounded-md border border-gray-300 px-3 text-sm outline-none focus:border-blue-500 disabled:bg-gray-100 disabled:text-gray-400 dark:border-gray-700 dark:bg-gray-900 dark:disabled:bg-gray-800" />
+                  </label>
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <label className="inline-flex items-center gap-2 text-xs text-gray-700 dark:text-gray-200">
+                    <input type="checkbox" checked={serverEnabled} onChange={(event) => setServerEnabled(event.target.checked)} className="h-4 w-4 rounded border-gray-300" />启用并自动连接
+                  </label>
+                  <div className="flex-1" />
+                  <button type="button" disabled={isSavingServer} onClick={() => void handleSaveServer()} className="h-8 rounded-md bg-blue-600 px-3 text-xs text-white hover:bg-blue-700 disabled:opacity-50">{isSavingServer ? '保存中...' : '保存设置'}</button>
+                  <button type="button" disabled={!serverSettings?.address} onClick={() => void handleToggleServerConnection()} className="h-8 rounded-md border border-gray-300 px-3 text-xs hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:hover:bg-gray-900">{serverStatus.connected || serverStatus.connecting ? '断开' : '连接'}</button>
+                  <button type="button" disabled={!serverStatus.connected || isTestingServer} onClick={() => void handleTestServerSpeed()} className="inline-flex h-8 items-center gap-1.5 rounded-md border border-gray-300 px-3 text-xs hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:hover:bg-gray-900"><RefreshCw className={`h-3.5 w-3.5 ${isTestingServer ? 'animate-spin' : ''}`} />测试速度</button>
+                </div>
+                <dl className="mt-4 grid gap-x-6 gap-y-2 text-xs sm:grid-cols-3">
+                  <div><dt className="text-gray-500">状态</dt><dd className="mt-0.5 font-medium">{serverStatus.connected ? `已连接 · ${serverStatus.serverName || 'PMC Server'}` : serverStatus.connecting ? '连接中...' : '未连接'}</dd></div>
+                  <div><dt className="text-gray-500">协议 / 在线</dt><dd className="mt-0.5">{serverStatus.protocolVersion ? `v${serverStatus.protocolVersion} · ${serverStatus.onlineCount} 台` : '-'}</dd></div>
+                  <div><dt className="text-gray-500">延迟</dt><dd className="mt-0.5">{serverStatus.latencyMs == null ? '-' : `${serverStatus.latencyMs.toFixed(1)} ms`}</dd></div>
+                  {serverSpeedTest && !serverSpeedTest.error ? <>
+                    <div><dt className="text-gray-500">下载</dt><dd className="mt-0.5">{(serverSpeedTest.downloadBytesPerSecond / 1_000_000).toFixed(2)} MB/s · {(serverSpeedTest.downloadBytesPerSecond * 8 / 1_000_000).toFixed(2)} Mbps</dd></div>
+                    <div><dt className="text-gray-500">上传</dt><dd className="mt-0.5">{(serverSpeedTest.uploadBytesPerSecond / 1_000_000).toFixed(2)} MB/s · {(serverSpeedTest.uploadBytesPerSecond * 8 / 1_000_000).toFixed(2)} Mbps</dd></div>
+                    <div><dt className="text-gray-500">测试时间</dt><dd className="mt-0.5">{new Date(serverSpeedTest.testedAt).toLocaleString('zh-CN')}</dd></div>
+                  </> : null}
+                </dl>
+                {serverSpeedTest?.error ? <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">测速失败：{serverSpeedTest.error} · {new Date(serverSpeedTest.testedAt).toLocaleString('zh-CN')}</p> : null}
+                {serverStatus.insecureHttp ? <p className="mt-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">当前使用 HTTP/WS，密码、消息和文件传输不会被 TLS 加密。仅在可信网络中使用，公网请配置 HTTPS。</p> : null}
+                {serverStatus.lastError ? <p className="mt-2 rounded-md bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">{serverStatus.lastError}</p> : null}
+              </div>
+
+              <div className="mt-8 border-t border-gray-200 pt-5 dark:border-gray-800">
                 <div className="flex items-center justify-between gap-4">
                   <div>
                     <div className="flex items-center gap-1.5">
@@ -1795,9 +1900,8 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
                         title="局域网发现方式"
                         text={[
                           'PMC 默认每 4 秒通过 UDP 31523 在当前局域网广播，收到请求的设备会单播回复；消息和文件使用 TCP 31524。',
-                          'WireGuard、Tailscale 等隧道通常不转发广播，可另外配置隧道 CIDR 并手动发送一次单播发现请求。',
-                          '隧道两端不必都登记：任意一端扫描成功后，接收方会记住扫描方并回复，因此双方都会建立联系人。',
-                          '发现成功后只会对已知设备 IP 发送轻量保活，不会继续遍历整个隧道网段。设备或地址变化时再手动扫描一次即可。',
+                          '局域网设备不依赖外部服务器。发现成功后会对已知设备 IP 发送轻量单播保活。',
+                          '跨网络设备请使用上方独立 PMC Server；服务器不可用不会影响局域网消息和文件直传。',
                         ]}
                         placement="bottom-start"
                         width={360}
@@ -1815,51 +1919,6 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
                   <div className="sm:col-span-2"><dt className="text-xs text-gray-500">本机地址</dt><dd className="mt-0.5 break-all">{service.localAddresses.join('、') || '等待网络探测'}</dd></div>
                   <div className="sm:col-span-2"><dt className="text-xs text-gray-500">最近发现</dt><dd className="mt-0.5">{service.lastDiscoveryAt ? new Date(service.lastDiscoveryAt).toLocaleString('zh-CN') : '尚未发现其他设备'}</dd></div>
                 </dl>
-                <div className="mt-5 border-t border-gray-200 pt-4 dark:border-gray-800">
-                  <div className="flex items-center gap-1.5">
-                    <label htmlFor="lan-discovery-subnet" className="text-xs font-medium text-gray-700 dark:text-gray-200">隧道扫描网段</label>
-                    <HelpAssistant
-                      title="设置隧道 CIDR"
-                      text={[
-                        '填写 WireGuard 隧道所在的 IPv4 CIDR，例如 10.13.13.0/24。输入 10.13.13.8/24 也会自动规范为 10.13.13.0/24。',
-                        '为避免界面和网络持续产生负担，仅支持 /24 到 /30，单次最多扫描 254 个主机地址；网络地址、广播地址和本机地址会自动跳过。',
-                        '“保存并扫描”会保存后立即执行一次；之后每次 PMC 启动会自动扫描一次，“扫描网段”可随时手动扫描已保存配置。这里不会后台循环扫描。',
-                        '扫描发现设备后，常规发现循环只对该已知 IP 保持在线状态，不会重复扫描其他地址。',
-                        '远端仍无法出现时，请确认隧道路由可达，并在 Windows 防火墙对应的 WireGuard/公用网络配置中允许 PMC 的 UDP 31523 与 TCP 31524。',
-                      ]}
-                      placement="top-start"
-                      width={380}
-                    />
-                  </div>
-                  <div className="mt-2 flex flex-col gap-2 sm:flex-row">
-                    <input
-                      id="lan-discovery-subnet"
-                      value={discoverySubnet}
-                      onChange={(event) => setDiscoverySubnet(event.target.value)}
-                      placeholder="10.13.13.0/24"
-                      spellCheck={false}
-                      className="h-9 min-w-0 flex-1 rounded-md border border-gray-300 px-3 font-mono text-sm outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-900"
-                    />
-                    <div className="flex shrink-0 gap-2">
-                      <button
-                        type="button"
-                        disabled={isScanningSubnet}
-                        onClick={() => void handleSaveAndScanSubnet()}
-                        className="inline-flex h-9 items-center gap-1.5 rounded-md bg-blue-600 px-3 text-xs text-white hover:bg-blue-700 disabled:opacity-50"
-                      >
-                        <CheckCircle2 className="h-3.5 w-3.5" />{isScanningSubnet ? '扫描中...' : '保存并扫描'}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={isScanningSubnet || !localSettings?.discoverySubnet}
-                        onClick={() => void handleScanSubnet()}
-                        className="inline-flex h-9 items-center gap-1.5 rounded-md border border-gray-300 px-3 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-900"
-                      >
-                        <RefreshCw className={`h-3.5 w-3.5 ${isScanningSubnet ? 'animate-spin' : ''}`} />扫描网段
-                      </button>
-                    </div>
-                  </div>
-                </div>
                 {service.lastError || error ? <p className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">{service.lastError || error}</p> : null}
               </div>
             </div>
@@ -1870,10 +1929,12 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
               <button type="button" onClick={() => setShowMobileConversation(false)} className="flex h-8 w-8 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 lg:hidden"><ArrowLeft className="h-4 w-4" /></button>
               {selectedConversation.id === 'lobby'
                 ? <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-600 text-white"><Radio className="h-5 w-5" /></div>
+                : selectedConversation.id.startsWith('server:')
+                  ? <div className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-600 text-white"><Globe2 className="h-5 w-5" /></div>
                 : <LanAvatar id={selectedContact?.id || selectedConversation.id} name={selectedContact?.displayName || selectedConversation.title} avatarPath={selectedContact?.avatarPath} online={selectedContact?.online} />}
               <div className="min-w-0 flex-1">
                 <h2 className="truncate text-sm font-semibold">{selectedConversation.title}</h2>
-                <p className="truncate text-xs text-gray-500">{selectedConversation.id === 'lobby' ? `${service.onlineCount} 人在线 · 自动同步并补齐最近 30 条大厅内容` : selectedContact?.online ? `${selectedContact.department || '未分组'} · ${selectedContact.ip}` : formatLastSeen(selectedContact?.lastSeen || 0)}</p>
+                <p className="truncate text-xs text-gray-500">{selectedConversation.id === 'lobby' ? `${service.onlineCount} 人在线 · 局域网大厅` : selectedConversation.id.startsWith('server:') ? `${serverStatus.onlineCount} 台在线 · 服务器保留最近 30 条` : selectedContact?.online ? `${selectedContact.department || '未分组'} · ${selectedContact.lanOnline ? '局域网' : ''}${selectedContact.lanOnline && selectedContact.serverOnline ? ' + ' : ''}${selectedContact.serverOnline ? '服务器' : ''}` : formatLastSeen(selectedContact?.lastSeen || 0)}</p>
               </div>
               <button type="button" onClick={() => setConfirmAction('conversation')} title="清空当前会话" className="flex h-8 w-8 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-red-600 dark:hover:bg-gray-800"><History className="h-4 w-4" /></button>
             </header>
@@ -1924,6 +1985,17 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
             </div>
 
             <footer className="shrink-0 border-t border-gray-200 p-3 dark:border-gray-800">
+              {selectedContact?.lanOnline && selectedContact?.serverOnline ? (
+                <div className="mx-auto mb-2 flex max-w-4xl items-center justify-end gap-2">
+                  <span className="text-[10px] text-gray-500">下一条通道</span>
+                  <div className="inline-flex rounded-md bg-gray-100 p-0.5 dark:bg-gray-900">
+                    {([['auto', '自动'], ['lan', '局域网'], ['server', '服务器']] as const).map(([value, label]) => (
+                      <button key={value} type="button" onClick={() => setNextTransport(value)} className={`h-6 rounded px-2 text-[10px] ${nextTransport === value ? 'bg-white font-medium text-gray-900 shadow-sm dark:bg-gray-800 dark:text-gray-100' : 'text-gray-500'}`}>{label}</button>
+                    ))}
+                  </div>
+                  <HelpAssistant title="临时发送通道" text="自动模式优先局域网，局域网文字发送失败时尝试服务器。手动选择只影响下一条消息，发送后恢复自动。文件通道在报价前固定，失败不会自动切换。" placement="top-end" width={330} />
+                </div>
+              ) : null}
               <div className="mx-auto flex max-w-4xl items-end gap-2">
                 <div ref={attachmentMenuRef} className="relative shrink-0">
                   {showAttachmentMenu ? (
@@ -1979,7 +2051,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
                   }}
                   rows={2}
                   disabled={!canSend}
-                  placeholder={!service.isRunning ? '发现服务已停止' : selectedContact && !selectedContact.online ? '联系人离线，暂时无法发送' : '输入消息或粘贴图片，Enter 发送'}
+                  placeholder={!canSend ? '当前通道不可用' : '输入消息或粘贴图片，Enter 发送'}
                   className="min-h-[44px] max-h-32 flex-1 resize-none rounded-md border border-gray-300 bg-white px-3 py-2 text-sm leading-5 outline-none focus:border-blue-500 disabled:bg-gray-100 disabled:text-gray-400 dark:border-gray-700 dark:bg-gray-900 dark:disabled:bg-gray-900"
                 />
                 <button type="button" onClick={() => void handleSend()} disabled={!canSend || !input.trim() || isSending} title="发送消息" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:bg-gray-300 dark:disabled:bg-gray-700">

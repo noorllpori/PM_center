@@ -2,6 +2,7 @@ use super::{
     connect_to_peer, emit_contacts_changed, now_millis, open_database, set_online_legacy_peer,
     state_paths, upsert_legacy_contact, OnlinePeer, P2P_GLOBAL, PROTOCOL_VERSION,
 };
+use bytes::Bytes;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -15,7 +16,7 @@ use std::time::{Duration, Instant, SystemTime};
 use tauri::{Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader, SeekFrom};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use walkdir::WalkDir;
 
 const TRANSFER_PROTOCOL_VERSION: u16 = 1;
@@ -179,6 +180,8 @@ pub struct LanTransfer {
     pub error: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
+    pub transport: String,
+    pub server_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -463,6 +466,8 @@ fn parse_transfer_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LanTransfer> 
         error: row.get(20)?,
         created_at: row.get::<_, i64>(21)? as u64,
         updated_at: row.get::<_, i64>(22)? as u64,
+        transport: "lan".to_string(),
+        server_id: None,
     })
 }
 
@@ -1170,6 +1175,239 @@ async fn inspect_source(path: PathBuf) -> Result<SourceInspection, String> {
     .map_err(|error| error.to_string())?
 }
 
+pub(super) async fn prepare_server_transfer(
+    source_path: String,
+    recipient_id: String,
+    server_id: String,
+) -> Result<LanTransfer, String> {
+    let inspection = inspect_source(PathBuf::from(&source_path)).await?;
+    let profile = P2P_GLOBAL
+        .lock()
+        .map_err(|error| error.to_string())?
+        .profile
+        .clone()
+        .ok_or_else(|| "设备身份尚未初始化".to_string())?;
+    let created_at = now_millis();
+    Ok(LanTransfer {
+        id: uuid::Uuid::new_v4().to_string(),
+        lobby_item_id: None,
+        conversation_id: format!("direct:{recipient_id}"),
+        kind: inspection.kind,
+        from_id: profile.id.clone(),
+        from_name: profile.display_name.clone(),
+        provider_id: profile.id,
+        provider_name: profile.display_name,
+        to_id: recipient_id,
+        display_name: inspection.display_name,
+        item_count: inspection.item_count,
+        total_bytes: inspection.total_bytes,
+        mime_type: inspection.mime_type,
+        content_hash: inspection.content_hash,
+        payload_format: inspection.payload_format,
+        manifest: inspection.manifest,
+        status: "waiting".to_string(),
+        direction: "outgoing".to_string(),
+        source_path: Some(inspection.path.to_string_lossy().to_string()),
+        received_path: None,
+        error: None,
+        created_at,
+        updated_at: created_at,
+        transport: "server".to_string(),
+        server_id: Some(server_id),
+    })
+}
+
+pub(super) fn allocate_server_destination(
+    conn: &Connection,
+    transfer: &LanTransfer,
+) -> Result<PathBuf, String> {
+    allocate_default_destination(conn, transfer)
+}
+
+pub(super) async fn stream_server_payload(
+    transfer: LanTransfer,
+    sender: mpsc::Sender<Bytes>,
+    mut cancellation: watch::Receiver<bool>,
+) -> Result<(), String> {
+    let (source_root, manifest) = verify_source_unchanged(&transfer).await?;
+    let mut buffer = vec![0u8; TRANSFER_CHUNK_SIZE];
+    for item in manifest.items.iter().filter(|item| item.kind == "file") {
+        ensure_transfer_not_cancelled(&cancellation)?;
+        let path = if transfer.kind == "file" {
+            source_root.clone()
+        } else {
+            source_root.join(Path::new(&item.path))
+        };
+        let mut file = tokio::fs::File::open(&path)
+            .await
+            .map_err(|error| format!("无法读取发送源内容：{error}"))?;
+        let mut sent = 0u64;
+        while sent < item.size_bytes {
+            let remaining = (item.size_bytes - sent).min(buffer.len() as u64) as usize;
+            let count = tokio::select! {
+                _ = wait_for_transfer_cancellation(&mut cancellation) => return Err(TRANSFER_CANCELLED_ERROR.to_string()),
+                result = file.read(&mut buffer[..remaining]) => result.map_err(|error| error.to_string())?,
+            };
+            if count == 0 {
+                return Err(format!("发送源文件提前结束：{}", item.path));
+            }
+            tokio::select! {
+                _ = wait_for_transfer_cancellation(&mut cancellation) => return Err(TRANSFER_CANCELLED_ERROR.to_string()),
+                result = sender.send(Bytes::copy_from_slice(&buffer[..count])) => result.map_err(|_| "服务器上传流已关闭".to_string())?,
+            }
+            sent += count as u64;
+        }
+    }
+    Ok(())
+}
+
+pub(super) async fn receive_server_payload<R>(
+    app_handle: &tauri::AppHandle,
+    transfer: &LanTransfer,
+    destination_path: &Path,
+    reader: &mut R,
+    cancellation: &mut watch::Receiver<bool>,
+) -> Result<(), String>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let manifest = parse_and_validate_manifest(
+        &transfer.kind,
+        &transfer.payload_format,
+        transfer.item_count,
+        transfer.total_bytes,
+        &transfer.content_hash,
+        &transfer.manifest,
+    )?;
+    let parent = destination_path
+        .parent()
+        .ok_or_else(|| "保存位置没有有效的父目录".to_string())?;
+    tokio::fs::create_dir_all(parent)
+        .await
+        .map_err(|error| error.to_string())?;
+    let temp_name = format!(
+        ".{}.{}.pm-transfer.part",
+        destination_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("received"),
+        transfer.id
+    );
+    let temp_path = parent.join(temp_name);
+    let mut buffer = vec![0u8; TRANSFER_CHUNK_SIZE];
+    let started_at = Instant::now();
+    let mut received_total = 0u64;
+    if transfer.kind == "directory" {
+        let _cleanup = TemporaryTransferDirectory(temp_path.clone());
+        let _ = tokio::fs::remove_dir_all(&temp_path).await;
+        tokio::fs::create_dir_all(&temp_path)
+            .await
+            .map_err(|error| error.to_string())?;
+        for item in &manifest.items {
+            let target = temp_path.join(Path::new(&item.path));
+            if item.kind == "directory" {
+                tokio::fs::create_dir_all(&target)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                continue;
+            }
+            if let Some(parent) = target.parent() {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+            let mut file = tokio::fs::File::create(&target)
+                .await
+                .map_err(|error| error.to_string())?;
+            let mut item_received = 0u64;
+            let mut hasher = blake3::Hasher::new();
+            while item_received < item.size_bytes {
+                let remaining = (item.size_bytes - item_received).min(buffer.len() as u64) as usize;
+                let count = tokio::select! {
+                    _ = wait_for_transfer_cancellation(cancellation) => return Err(TRANSFER_CANCELLED_ERROR.to_string()),
+                    result = tokio::time::timeout(TRANSFER_IO_TIMEOUT, reader.read(&mut buffer[..remaining])) => result.map_err(|_| "接收服务器文件数据超时".to_string())?.map_err(|error| error.to_string())?,
+                };
+                if count == 0 {
+                    return Err("服务器文件流提前结束".to_string());
+                }
+                file.write_all(&buffer[..count])
+                    .await
+                    .map_err(|error| error.to_string())?;
+                hasher.update(&buffer[..count]);
+                item_received += count as u64;
+                received_total += count as u64;
+                emit_progress(
+                    app_handle,
+                    &transfer.id,
+                    "transferring",
+                    "incoming",
+                    received_total,
+                    transfer.total_bytes,
+                    started_at,
+                );
+            }
+            file.flush().await.map_err(|error| error.to_string())?;
+            if hasher.finalize().to_hex().as_str()
+                != item.content_hash.as_deref().unwrap_or_default()
+            {
+                return Err(format!("文件完整性校验失败：{}", item.path));
+            }
+        }
+        if received_total != transfer.total_bytes {
+            return Err("目录接收字节数与清单不一致".to_string());
+        }
+        ensure_transfer_not_cancelled(cancellation)?;
+        atomic_commit_directory(&temp_path, destination_path)?;
+    } else {
+        let _cleanup = TemporaryTransferFile(temp_path.clone());
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        let item = manifest
+            .items
+            .first()
+            .ok_or_else(|| "文件清单为空".to_string())?;
+        let mut file = tokio::fs::File::create(&temp_path)
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut hasher = blake3::Hasher::new();
+        while received_total < item.size_bytes {
+            let remaining = (item.size_bytes - received_total).min(buffer.len() as u64) as usize;
+            let count = tokio::select! {
+                _ = wait_for_transfer_cancellation(cancellation) => return Err(TRANSFER_CANCELLED_ERROR.to_string()),
+                result = tokio::time::timeout(TRANSFER_IO_TIMEOUT, reader.read(&mut buffer[..remaining])) => result.map_err(|_| "接收服务器文件数据超时".to_string())?.map_err(|error| error.to_string())?,
+            };
+            if count == 0 {
+                return Err("服务器文件流提前结束".to_string());
+            }
+            file.write_all(&buffer[..count])
+                .await
+                .map_err(|error| error.to_string())?;
+            hasher.update(&buffer[..count]);
+            received_total += count as u64;
+            emit_progress(
+                app_handle,
+                &transfer.id,
+                "transferring",
+                "incoming",
+                received_total,
+                transfer.total_bytes,
+                started_at,
+            );
+        }
+        file.flush().await.map_err(|error| error.to_string())?;
+        file.sync_all().await.map_err(|error| error.to_string())?;
+        drop(file);
+        if hasher.finalize().to_hex().as_str() != transfer.content_hash {
+            return Err("文件完整性校验失败".to_string());
+        }
+        if is_image_transfer(transfer) {
+            validate_received_image(&temp_path).await?;
+        }
+        ensure_transfer_not_cancelled(cancellation)?;
+        atomic_replace_file(&temp_path, destination_path)?;
+    }
+    Ok(())
+}
+
 async fn write_envelope(
     writer: &mut OwnedWriteHalf,
     envelope: &TransferControlEnvelope,
@@ -1425,6 +1663,8 @@ pub async fn offer_lan_files(
                 error: None,
                 created_at,
                 updated_at: created_at,
+                transport: "lan".to_string(),
+                server_id: None,
             };
             let conn = open_database(&db_path)?;
             insert_transfer(&conn, &canonical)?;
@@ -1490,6 +1730,8 @@ pub async fn offer_lan_files(
                 error: None,
                 created_at,
                 updated_at: created_at,
+                transport: "lan".to_string(),
+                server_id: None,
             };
             let conn = open_database(&db_path)?;
             insert_transfer(&conn, &transfer)?;
@@ -2457,6 +2699,8 @@ fn transfer_from_offer(offer: &WireTransferOffer, conversation_id: String) -> La
         error: None,
         created_at: offer.created_at,
         updated_at: received_at,
+        transport: "lan".to_string(),
+        server_id: None,
     }
 }
 
@@ -2558,6 +2802,8 @@ pub(super) async fn prepare_lobby_history_offer(
         error: None,
         created_at: source.created_at,
         updated_at: now_millis(),
+        transport: "lan".to_string(),
+        server_id: None,
     };
     insert_transfer(&open_database(db_path)?, &transfer)?;
     Ok(WireTransferOffer {
@@ -3377,6 +3623,8 @@ mod tests {
             error: None,
             created_at: 1,
             updated_at: 1,
+            transport: "lan".to_string(),
+            server_id: None,
         };
         insert_transfer(&conn, &transfer).unwrap();
         recover_interrupted(&conn).unwrap();
@@ -3555,6 +3803,8 @@ mod tests {
             error: None,
             created_at: 1,
             updated_at: 1,
+            transport: "lan".to_string(),
+            server_id: None,
         };
         insert_transfer(&conn, &transfer).unwrap();
         assert_eq!(
@@ -3634,6 +3884,8 @@ mod tests {
             error: None,
             created_at: 1,
             updated_at: 1,
+            transport: "lan".to_string(),
+            server_id: None,
         };
         assert!(insert_transfer(&conn, &transfer).unwrap());
         transfer.id = "offer-b".to_string();
