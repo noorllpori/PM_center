@@ -627,7 +627,7 @@ function LanFileManagementPanel({
                   <span className="font-medium">传输进度</span>
                   <span className="text-gray-500">
                     {formatLanTransferBytes(transferredBytes)} / {formatLanTransferBytes(transfer.totalBytes)}
-                    {progress?.bytesPerSecond ? ` · ${formatLanTransferBytes(progress.bytesPerSecond)}/s` : ''}
+                    {!outgoing && progress?.bytesPerSecond ? ` · ${formatLanTransferBytes(progress.bytesPerSecond)}/s` : ''}
                   </span>
                 </div>
                 <div className="mt-2 h-2 overflow-hidden rounded bg-gray-200 dark:bg-gray-800">

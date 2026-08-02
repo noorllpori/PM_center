@@ -121,7 +121,7 @@ export function LanTransferCard({
               <p className="mt-0.5 text-xs text-gray-500">
                 {transfer.kind === 'directory' ? `目录 · ${transfer.itemCount} 个项目 · ` : ''}
                 {formatLanTransferBytes(transfer.totalBytes)} · {getLanTransferStatusLabel(transfer)}
-                {transfer.status === 'transferring' && progress?.bytesPerSecond
+                {!outgoing && transfer.status === 'transferring' && progress?.bytesPerSecond
                   ? ` · ${formatLanTransferBytes(progress.bytesPerSecond)}/s`
                   : ''}
               </p>

@@ -31,6 +31,7 @@ const DIRECTORY_TRANSFER_MIN_PROTOCOL_VERSION: u16 = 4;
 const LOBBY_IMAGE_MIN_PROTOCOL_VERSION: u16 = 6;
 const TRANSFER_CANCEL_MIN_PROTOCOL_VERSION: u16 = 7;
 const PARALLEL_TRANSFER_MIN_PROTOCOL_VERSION: u16 = 7;
+const ENABLE_PARALLEL_FILE_TRANSFER: bool = false;
 const TWO_STREAM_MIN_BYTES: u64 = 1024 * 1024;
 const FOUR_STREAM_MIN_BYTES: u64 = 10 * 1024 * 1024;
 const EIGHT_STREAM_MIN_BYTES: u64 = 50 * 1024 * 1024;
@@ -2076,6 +2077,7 @@ async fn download_transfer(
     }
 
     if transfer.kind == "file"
+        && ENABLE_PARALLEL_FILE_TRANSFER
         && parallel_transfer_stream_count(transfer.total_bytes) > 1
         && peer.protocol_version >= PARALLEL_TRANSFER_MIN_PROTOCOL_VERSION
     {
