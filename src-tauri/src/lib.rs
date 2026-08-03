@@ -15,6 +15,7 @@ mod fs;
 mod icon_extractor;
 mod link_preview;
 mod p2p;
+mod platform;
 mod plugin;
 mod process_utils;
 mod python;
@@ -1275,11 +1276,21 @@ async fn launch_program(path: String) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-fn exit_app(app: tauri::AppHandle) -> Result<(), String> {
+async fn shutdown_application(app: tauri::AppHandle) {
+    if let Some(runtime) = app.try_state::<platform::PlatformRuntime>() {
+        let manager = runtime.manager.clone();
+        for error in manager.shutdown_all().await {
+            eprintln!("[platform] 退出清理警告: {error}");
+        }
+    }
     render_center::shutdown_all();
     smart_clipboard::shutdown();
     app.exit(0);
+}
+
+#[tauri::command]
+async fn exit_app(app: tauri::AppHandle) -> Result<(), String> {
+    shutdown_application(app).await;
     Ok(())
 }
 
@@ -1345,6 +1356,14 @@ pub fn run() {
             watcher::set_app_handle(app.handle().clone());
             match app.path().app_data_dir() {
                 Ok(app_data_dir) => {
+                    let runtime = platform::PlatformRuntime::initialize(&app_data_dir)?;
+                    let manager = runtime.manager.clone();
+                    app.manage(runtime);
+                    tauri::async_runtime::spawn(async move {
+                        for error in manager.restore_desired_modules().await {
+                            eprintln!("[platform] 恢复模块失败: {error}");
+                        }
+                    });
                     if let Err(error) = smart_clipboard::initialize(&app_data_dir) {
                         eprintln!("[smart-clipboard] 初始化失败: {error}");
                     }
@@ -1390,9 +1409,10 @@ pub fn run() {
                         }
                     }
                     "quit" => {
-                        render_center::shutdown_all();
-                        smart_clipboard::shutdown();
-                        app.exit(0);
+                        let app = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            shutdown_application(app).await;
+                        });
                     }
                     _ => {}
                 })
@@ -1434,6 +1454,16 @@ pub fn run() {
             cache_manager::check_project_cache,
             cache_manager::run_project_cache_action,
             cache_manager::cancel_cache_maintenance,
+            platform::list_platform_modules,
+            platform::get_platform_module,
+            platform::preview_disable_platform_module,
+            platform::enable_platform_module,
+            platform::disable_platform_module,
+            platform::restart_platform_module,
+            platform::run_platform_module_health_check,
+            platform::configure_platform_module_failure,
+            platform::get_platform_module_failure_injections,
+            platform::run_platform_module_diagnostic,
             smart_clipboard::open_smart_clipboard,
             link_preview::get_link_preview,
             render_center::inspect_render_sources,

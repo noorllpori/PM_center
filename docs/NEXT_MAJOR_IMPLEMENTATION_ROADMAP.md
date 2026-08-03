@@ -64,8 +64,8 @@ D0 架构记录
 | --- | --- | --- | --- | --- |
 | D0 | 架构资料与目标边界 | accepted | 无 | 2026-08-03 已确认开始实施 |
 | R0 | 当前行为与资源基线 | verifying | D0 | 已补一组真实恢复会话资源样本，完整人工流程仍待确认 |
-| R1 | Module/Profile/Component/Workflow 协议 | verifying | R0 | schema v1 候选与自动验收已完成，等待产品冻结 |
-| R2 | Module Manager 与 ResourceRegistry | pending | R1 | 需要确认启停语义 |
+| R1 | Module/Profile/Component/Workflow 协议 | accepted | R0 | 2026-08-03 已确认按当前设计继续 R2 |
+| R2 | Module Manager 与 ResourceRegistry | verifying | R1 | 内核和自动验收完成，等待诊断页人工验收 |
 | R3 | Capability 权限网关 | pending | R1、R2 | 需要确认权限提示方式 |
 | R4 | 现有模块生命周期接入 | pending | R2、R3 | 按模块逐项验收 |
 | R5 | 前端 Contribution Registry | pending | R1、R2 | 需要确认界面动态装配规则 |
@@ -207,7 +207,7 @@ git diff --check
 
 ## 7. R1：冻结核心协议与 schema v1
 
-当前合同候选、自动检查和待确认项见 `docs/NEXT_MAJOR_SCHEMA_V1.md`。实现位于 `shared/pmc-platform`，当前仅建立无副作用的合同层，不接入模块运行时；R0 和 R1 未转为 `accepted` 前不会开始 R2。
+当前合同、自动检查和确认项见 `docs/NEXT_MAJOR_SCHEMA_V1.md`。实现位于 `shared/pmc-platform`。2026-08-03 已确认按当前设计继续 R2，R1 转为 `accepted`；R0 剩余真实渲染和双机样本继续作为并行兼容性证据，不阻塞隔离诊断模块的 R2 内核验证，但必须在真实模块迁移前补齐。
 
 2026-08-03 已完成：
 
@@ -257,6 +257,22 @@ git diff --check
 - 后续里程碑不得自行添加未登记的平行配置格式。
 
 ## 8. R2：Module Manager 与 ResourceRegistry
+
+状态：`verifying`
+
+实现与验收记录见 `docs/NEXT_MAJOR_R2_MODULE_RUNTIME.md`。
+
+2026-08-03 已完成：
+
+- 后端模块注册表、八态状态机、依赖拓扑、冲突和可选依赖诊断；
+- 事务启动、失败回滚、停用预检、优雅/级联/强制停止；
+- ResourceRegistry 逆序释放、资源超时与失败诊断；
+- `module-runtime.json` 期望状态持久化和异常退出恢复；
+- 应用退出先走 Module Manager 反向清理，再执行旧模块兼容清理；
+- 四个隔离诊断模块、故障注入和设置页模块诊断界面；
+- 依赖顺序、循环、冲突、可选依赖、回滚、停止超时、异常恢复及 100 次启停无泄漏测试。
+
+当前没有把局域网、渲染、智能剪贴板、Watcher 或项目数据库伪装成已托管模块；这些真实资源仍按 R4 逐项迁移。
 
 ### 目标
 
