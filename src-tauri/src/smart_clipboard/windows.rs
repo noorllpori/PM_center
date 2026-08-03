@@ -2,7 +2,7 @@ use std::fs;
 use std::mem::size_of;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -43,14 +43,14 @@ use ::windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetGUIThreadInfo, GetMessageW, GetWindowLongPtrW, GetWindowTextLengthW,
     GetWindowTextW, GetWindowThreadProcessId, IsChild, LoadCursorW, MoveWindow, PostMessageW,
     PostQuitMessage, RegisterClassW, SendMessageW, SetForegroundWindow, SetWindowLongPtrW,
-    SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage, CREATESTRUCTW, CS_DBLCLKS,
-    CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, EN_CHANGE, ES_AUTOHSCROLL, GUITHREADINFO, GWLP_USERDATA,
-    HMENU, IDC_ARROW, MSG, SWP_NOZORDER, SW_HIDE, SW_SHOWNORMAL, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_ACTIVATE, WM_CLIPBOARDUPDATE, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_HOTKEY,
-    WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY,
-    WM_PAINT, WM_SETFONT, WM_SIZE, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_THICKFRAME,
-    WS_VISIBLE,
+    SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage, UnregisterClassW, CREATESTRUCTW,
+    CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, EN_CHANGE, ES_AUTOHSCROLL, GUITHREADINFO,
+    GWLP_USERDATA, HMENU, IDC_ARROW, MSG, SWP_NOZORDER, SW_HIDE, SW_SHOWNORMAL, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WM_ACTIVATE, WM_CLIPBOARDUPDATE, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY,
+    WM_HOTKEY, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_MOUSEWHEEL, WM_NCCREATE,
+    WM_NCDESTROY, WM_PAINT, WM_SETFONT, WM_SIZE, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD,
+    WS_CLIPCHILDREN, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP,
+    WS_THICKFRAME, WS_VISIBLE,
 };
 use chrono::{Local, TimeZone, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -74,10 +74,11 @@ const FOOTER_HEIGHT: i32 = 28;
 const HOTKEY_ID: i32 = 0x504D43;
 const EM_SETCUEBANNER: u32 = 0x1501;
 
-static CONTROLLER: OnceLock<Controller> = OnceLock::new();
+static CONTROLLER: OnceLock<Mutex<Option<Controller>>> = OnceLock::new();
 
 struct Controller {
     hwnd: isize,
+    thread: thread::JoinHandle<Result<(), String>>,
 }
 
 unsafe impl Send for Controller {}
@@ -582,34 +583,62 @@ impl Drop for WindowState {
 }
 
 pub fn initialize(app_data_dir: &Path) -> Result<(), String> {
-    if CONTROLLER.get().is_some() {
-        return Ok(());
+    let controller = CONTROLLER.get_or_init(|| Mutex::new(None));
+    let mut controller = controller
+        .lock()
+        .map_err(|_| "智能剪贴板控制器锁已损坏".to_string())?;
+    if let Some(current) = controller.as_ref() {
+        if !current.thread.is_finished() {
+            return Ok(());
+        }
+    }
+    if let Some(finished) = controller.take() {
+        if let Err(error) = join_controller(finished) {
+            eprintln!("[smart-clipboard] 回收已退出线程失败，准备重新启动: {error}");
+        }
     }
 
     let root = app_data_dir.join("smart_clipboard");
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
-    thread::Builder::new()
+    let window_thread = thread::Builder::new()
         .name("pm-center-smart-clipboard".to_string())
         .spawn(move || {
-            if let Err(error) = run_window_thread(&root, ready_tx) {
+            let result = run_window_thread(&root, ready_tx);
+            if let Err(error) = &result {
                 eprintln!("[smart-clipboard] 原生窗口线程退出: {error}");
             }
+            result
         })
         .map_err(|error| error.to_string())?;
 
-    let hwnd = ready_rx
-        .recv_timeout(Duration::from_secs(5))
-        .map_err(|_| "智能剪贴板窗口初始化超时".to_string())??;
-    CONTROLLER
-        .set(Controller { hwnd })
-        .map_err(|_| "智能剪贴板已经初始化".to_string())?;
+    let hwnd = match ready_rx.recv_timeout(Duration::from_secs(5)) {
+        Ok(result) => result?,
+        Err(_) => {
+            if window_thread.is_finished() {
+                return join_controller(Controller {
+                    hwnd: 0,
+                    thread: window_thread,
+                });
+            }
+            return Err("智能剪贴板窗口初始化超时".to_string());
+        }
+    };
+    *controller = Some(Controller {
+        hwnd,
+        thread: window_thread,
+    });
     Ok(())
 }
 
 pub fn show() -> Result<(), String> {
     let controller = CONTROLLER
-        .get()
-        .ok_or_else(|| "智能剪贴板尚未初始化".to_string())?;
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .map_err(|_| "智能剪贴板控制器锁已损坏".to_string())?;
+    let controller = controller
+        .as_ref()
+        .filter(|controller| !controller.thread.is_finished())
+        .ok_or_else(|| "智能剪贴板监听线程未运行".to_string())?;
     unsafe {
         PostMessageW(HWND(controller.hwnd), WM_APP_SHOW, WPARAM(0), LPARAM(0))
             .map_err(|error| error.to_string())?;
@@ -617,13 +646,67 @@ pub fn show() -> Result<(), String> {
     Ok(())
 }
 
-pub fn shutdown() {
+pub fn is_running() -> bool {
+    CONTROLLER
+        .get()
+        .and_then(|controller| controller.lock().ok())
+        .and_then(|controller| {
+            controller
+                .as_ref()
+                .map(|controller| !controller.thread.is_finished())
+        })
+        .unwrap_or(false)
+}
+
+pub fn shutdown() -> Result<(), String> {
     let Some(controller) = CONTROLLER.get() else {
-        return;
+        return Ok(());
     };
-    unsafe {
-        let _ = PostMessageW(HWND(controller.hwnd), WM_APP_SHUTDOWN, WPARAM(0), LPARAM(0));
+    let controller = controller
+        .lock()
+        .map_err(|_| "智能剪贴板控制器锁已损坏".to_string())?
+        .take();
+    let Some(controller) = controller else {
+        return Ok(());
+    };
+
+    if !controller.thread.is_finished() && controller.hwnd != 0 {
+        if let Err(error) =
+            unsafe { PostMessageW(HWND(controller.hwnd), WM_APP_SHUTDOWN, WPARAM(0), LPARAM(0)) }
+        {
+            if !controller.thread.is_finished() {
+                CONTROLLER
+                    .get()
+                    .expect("controller initialized")
+                    .lock()
+                    .map_err(|_| "智能剪贴板控制器锁已损坏".to_string())?
+                    .replace(controller);
+                return Err(format!("请求智能剪贴板线程退出失败: {error}"));
+            }
+        }
     }
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !controller.thread.is_finished() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    if !controller.thread.is_finished() {
+        CONTROLLER
+            .get()
+            .expect("controller initialized")
+            .lock()
+            .map_err(|_| "智能剪贴板控制器锁已损坏".to_string())?
+            .replace(controller);
+        return Err("等待智能剪贴板监听线程退出超时".to_string());
+    }
+    join_controller(controller)
+}
+
+fn join_controller(controller: Controller) -> Result<(), String> {
+    controller
+        .thread
+        .join()
+        .map_err(|_| "智能剪贴板监听线程发生 panic".to_string())?
 }
 
 fn run_window_thread(
@@ -685,6 +768,7 @@ fn run_window_thread(
     if hwnd.0 == 0 {
         unsafe {
             drop(Box::from_raw(state_ptr));
+            let _ = UnregisterClassW(WINDOW_CLASS, HINSTANCE(instance.0));
         }
         let error = ::windows::core::Error::from_win32().to_string();
         let _ = ready_tx.send(Err(error.clone()));
@@ -702,6 +786,7 @@ fn run_window_thread(
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
+        let _ = UnregisterClassW(WINDOW_CLASS, HINSTANCE(instance.0));
     }
     Ok(())
 }

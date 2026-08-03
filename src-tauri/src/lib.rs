@@ -1284,7 +1284,6 @@ async fn shutdown_application(app: tauri::AppHandle) {
         }
     }
     render_center::shutdown_all();
-    smart_clipboard::shutdown();
     app.exit(0);
 }
 
@@ -1364,11 +1363,8 @@ pub fn run() {
                             eprintln!("[platform] 恢复模块失败: {error}");
                         }
                     });
-                    if let Err(error) = smart_clipboard::initialize(&app_data_dir) {
-                        eprintln!("[smart-clipboard] 初始化失败: {error}");
-                    }
                 }
-                Err(error) => eprintln!("[smart-clipboard] 获取应用数据目录失败: {error}"),
+                Err(error) => eprintln!("[platform] 获取应用数据目录失败: {error}"),
             }
             tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));

@@ -141,9 +141,14 @@ export function ModuleDiagnosticsSection() {
   );
 
   const modules = useMemo(
-    () => overview?.modules.filter((module) => module.diagnostic) || [],
+    () =>
+      [...(overview?.modules || [])].sort(
+        (left, right) => Number(left.diagnostic) - Number(right.diagnostic),
+      ),
     [overview],
   );
+  const managedModuleCount = modules.filter((module) => !module.diagnostic).length;
+  const diagnosticModuleCount = modules.length - managedModuleCount;
 
   return (
     <section className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
@@ -151,13 +156,13 @@ export function ModuleDiagnosticsSection() {
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <Activity className="h-4 w-4 text-blue-500" />
-            <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">模块诊断</h4>
+            <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">后台模块</h4>
             <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-500 dark:bg-gray-800 dark:text-gray-400">
-              R2
+              R4
             </span>
           </div>
           <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            当前只管理隔离的诊断模块；局域网、渲染、剪贴板等现有模块将在 R4 逐项接入。
+            智能剪贴板已由模块生命周期托管；停用会释放监听线程、原生窗口和快捷键，但保留历史数据。
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -184,7 +189,8 @@ export function ModuleDiagnosticsSection() {
 
       {overview && (
         <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 border-y border-gray-100 py-2 text-xs text-gray-500 dark:border-gray-800 dark:text-gray-400">
-          <span>{modules.length} 个诊断模块</span>
+          <span>{managedModuleCount} 个已接入模块</span>
+          <span>{diagnosticModuleCount} 个诊断模块</span>
           <span>{overview.resourceCount} 个已登记资源</span>
           <span className="min-w-0 truncate" title={overview.persistencePath}>状态：{overview.persistencePath}</span>
         </div>
@@ -200,12 +206,18 @@ export function ModuleDiagnosticsSection() {
       )}
 
       <div className="mt-3 divide-y divide-gray-100 border-y border-gray-100 dark:divide-gray-800 dark:border-gray-800">
-        {modules.map((module) => {
+        {modules.map((module, index) => {
           const moduleId = module.manifest.id;
           const busy = pending?.startsWith(moduleId) || false;
           const running = module.state === 'running';
           return (
-            <div key={moduleId} className="py-3">
+            <div key={moduleId}>
+              {(index === 0 || modules[index - 1]?.diagnostic !== module.diagnostic) && (
+                <div className="border-b border-gray-100 py-2 text-xs font-medium text-gray-500 dark:border-gray-800 dark:text-gray-400">
+                  {module.diagnostic ? '隔离诊断模块' : '已接入后台模块'}
+                </div>
+              )}
+              <div className="py-3">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
@@ -343,6 +355,7 @@ export function ModuleDiagnosticsSection() {
                   </button>
                 </div>
               )}
+              </div>
             </div>
           );
         })}
@@ -355,7 +368,7 @@ export function ModuleDiagnosticsSection() {
               {testResult.message}
             </span>
           ) : (
-            '停用只释放运行资源，不删除模块数据。'
+            '模块停用只释放运行资源，不删除模块数据；100 次检查仅针对隔离诊断模块。'
           )}
         </div>
         <button

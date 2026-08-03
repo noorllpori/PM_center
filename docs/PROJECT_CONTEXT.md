@@ -133,7 +133,7 @@ React invoke/listen
 | 工具路径 | `tools.rs` | FFprobe、FFmpeg、Blender 路径校验与系统自动检测。 |
 | 局域网 | `p2p/mod.rs` | 全局联系人数据库、双向在线发现、个人资料/头像同步、大厅与私聊消息。 |
 | 智能剪贴板 | `smart_clipboard/` | Windows 剪贴板监听、历史 SQLite/图像载荷、原生窗口绘制、全局快捷键、内容恢复与自动粘贴。 |
-| 模块与权限运行时 | `platform/` | R2 Module Manager/ResourceRegistry 与 R3 CapabilityGateway，负责状态、资源、授权、短期 token、路径边界和审计。真实业务模块在 R4 接入。 |
+| 模块与权限运行时 | `platform/` | R2 Module Manager/ResourceRegistry 与 R3 CapabilityGateway，负责状态、资源、授权、短期 token、路径边界和审计；R4 已接入首个真实模块 `builtin.smart-clipboard`。 |
 
 长耗时后端操作应避免阻塞 Tauri 主线程：使用 Tokio / `spawn_blocking`，向前端发进度事件，提供合理的取消与失败状态。Windows 子进程统一使用 `process_utils::{std_command, tokio_command}`，避免弹出控制台窗口。
 
@@ -160,6 +160,8 @@ React invoke/listen
 - 应用在后台运行时通过 `AddClipboardFormatListener` 记录 `CF_UNICODETEXT`、`CF_DIB/CF_DIBV5` 和 `CF_HDROP`，并遵守 Windows 的剪贴板历史排除格式。
 - 历史属于软件级全局数据，最多 500 条、保留 30 天，使用 BLAKE3 去重；数据库和图像载荷位于应用数据目录的 `smart_clipboard/`，清理过期记录时同步清理孤立载荷。
 - 功能中心 `Alt+Q` 和全局 `Ctrl+\`` 均可打开窗口；快捷键注册冲突只禁用该快捷键，不能阻止 PM Center 启动。
+- 智能剪贴板由 `builtin.smart-clipboard` 模块生命周期托管。首次升级默认启用；用户停用后会关闭原生窗口、注销监听和快捷键并等待线程退出，历史数据库与载荷继续保留；再次启用读取原数据。
+- `open_smart_clipboard` 必须验证模块处于 `running`，停用后旧入口也不能绕过模块管理直接唤起窗口。
 - 搜索框支持输入筛选；上下键选择，`Enter` 恢复并向之前的外部窗口粘贴，`Ctrl+Enter` 仅恢复，双击等同 `Enter`，`Delete` 删除，`Esc` 关闭。
 - 自动粘贴不得发送到 PM Center 自身。恢复历史前必须先验证文本、图像载荷或文件路径有效，再清空系统剪贴板。
 

@@ -5,8 +5,10 @@ mod resource_registry;
 
 pub use module_manager::{
     DisablePreview, ModuleDiagnosticSnapshot, ModuleManager, ModuleManagerError,
-    ModuleRuntimeOverview, StopStrategy,
+    ModuleRuntimeOverview, ModuleState, StopStrategy,
 };
+
+pub use builtin_modules::SMART_CLIPBOARD_MODULE_ID;
 
 pub use capability_gateway::{
     CapabilityDecisionRequest, CapabilityGatewayError, CapabilityGatewayOverview,
@@ -15,7 +17,8 @@ pub use capability_gateway::{
 };
 
 use builtin_modules::{
-    diagnostic_components, diagnostic_modules, DiagnosticControls, DIAGNOSTIC_BASE_ID,
+    diagnostic_components, diagnostic_modules, smart_clipboard_component, smart_clipboard_module,
+    DiagnosticControls, DIAGNOSTIC_BASE_ID,
 };
 use capability_gateway::{run_security_diagnostic, CapabilityGateway};
 use serde::{Deserialize, Serialize};
@@ -34,14 +37,15 @@ pub struct PlatformRuntime {
 impl PlatformRuntime {
     pub fn initialize(app_data_dir: &Path) -> Result<Self, ModuleManagerError> {
         let controls = Arc::new(DiagnosticControls::default());
-        let manager = ModuleManager::new(
-            app_data_dir.join("module-runtime.json"),
-            diagnostic_modules(controls.clone()),
-        )?;
+        let mut modules = diagnostic_modules(controls.clone());
+        modules.push(smart_clipboard_module(app_data_dir.to_path_buf()));
+        let manager = ModuleManager::new(app_data_dir.join("module-runtime.json"), modules)?;
+        let mut components = diagnostic_components();
+        components.push(smart_clipboard_component());
         let gateway = CapabilityGateway::new(
             app_data_dir.join("capability-gateway.db"),
             manager.clone(),
-            diagnostic_components(),
+            components,
             app_data_dir.join("capability-diagnostics"),
         )
         .map_err(|error| {

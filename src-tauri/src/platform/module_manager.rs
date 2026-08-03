@@ -371,6 +371,11 @@ impl ModuleManager {
         let mut runtime = BTreeMap::new();
         for id in modules.keys() {
             let mut record = ModuleRuntimeRecord::disabled();
+            record.desired_enabled = modules
+                .get(id)
+                .and_then(|module| module.manifest.extensions.get("defaultEnabled"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
             if let Some(persisted) = persistence.modules.get(id) {
                 record.desired_enabled = persisted.desired_enabled;
                 record.last_error = persisted.last_error.clone();
@@ -745,7 +750,7 @@ impl ModuleManager {
         .await;
         let cleanup = self
             .resources
-            .cleanup_module(module_id, Duration::from_secs(2))
+            .cleanup_module(module_id, module.lifecycle.stop_timeout())
             .await;
 
         let lifecycle_error = match stop_result {
@@ -1582,6 +1587,74 @@ mod tests {
             "pm-center-module-manager-{name}-{}.json",
             Uuid::new_v4()
         ))
+    }
+
+    #[test]
+    fn new_modules_can_opt_into_default_enabled_state() {
+        let log = Arc::new(StdMutex::new(Vec::new()));
+        let active = Arc::new(AtomicUsize::new(0));
+        let path = state_path("default-enabled");
+        let mut registered = module(
+            "test.default-enabled",
+            &[],
+            RecordingLifecycle::new("default-enabled", log, active),
+        );
+        registered
+            .manifest
+            .extensions
+            .insert("defaultEnabled".into(), serde_json::Value::Bool(true));
+
+        let manager = ModuleManager::new(path.clone(), vec![registered]).unwrap();
+        assert!(
+            manager
+                .snapshot("test.default-enabled")
+                .unwrap()
+                .desired_enabled
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn persisted_disabled_choice_overrides_module_default() {
+        let path = state_path("persisted-disabled");
+        let create_module = || {
+            let mut registered = module(
+                "test.persisted-disabled",
+                &[],
+                RecordingLifecycle::new(
+                    "persisted-disabled",
+                    Arc::new(StdMutex::new(Vec::new())),
+                    Arc::new(AtomicUsize::new(0)),
+                ),
+            );
+            registered
+                .manifest
+                .extensions
+                .insert("defaultEnabled".into(), serde_json::Value::Bool(true));
+            registered
+        };
+
+        let manager = ModuleManager::new(path.clone(), vec![create_module()]).unwrap();
+        assert!(
+            manager
+                .snapshot("test.persisted-disabled")
+                .unwrap()
+                .desired_enabled
+        );
+        manager
+            .disable_module("test.persisted-disabled", StopStrategy::Graceful)
+            .await
+            .unwrap();
+        drop(manager);
+
+        let restored = ModuleManager::new(path.clone(), vec![create_module()]).unwrap();
+        assert!(
+            !restored
+                .snapshot("test.persisted-disabled")
+                .unwrap()
+                .desired_enabled
+        );
+        let _ = fs::remove_file(path);
     }
 
     #[tokio::test]
