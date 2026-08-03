@@ -791,6 +791,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
   const [confirmAction, setConfirmAction] = useState<'conversation' | 'history' | null>(null);
   const [scrollRequest, setScrollRequest] = useState(0);
   const messagesViewportRef = useRef<HTMLDivElement | null>(null);
+  const handledNavigationRequestRef = useRef<number | null>(null);
   const attachmentMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -921,13 +922,13 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
     if (!isActive) return;
     const viewport = messagesViewportRef.current;
     if (!viewport) return;
+    const pendingNavigationRequest = navigationRequest?.conversationId === selectedConversationId
+      && handledNavigationRequestRef.current !== navigationRequest.requestId
+      ? navigationRequest
+      : null;
     const scrollToDestination = () => {
-      const targetMessageId = navigationRequest?.conversationId === selectedConversationId
-        ? navigationRequest.messageId
-        : null;
-      const targetTransferId = navigationRequest?.conversationId === selectedConversationId
-        ? navigationRequest.transferId
-        : null;
+      const targetMessageId = pendingNavigationRequest?.messageId ?? null;
+      const targetTransferId = pendingNavigationRequest?.transferId ?? null;
       const target = targetMessageId
         ? viewport.querySelector<HTMLElement>(`[data-lan-message-id="${CSS.escape(targetMessageId)}"]`)
         : targetTransferId
@@ -935,6 +936,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
           : null;
       if (target) {
         target.scrollIntoView({ block: 'center' });
+        handledNavigationRequestRef.current = pendingNavigationRequest?.requestId ?? null;
       } else {
         viewport.scrollTop = viewport.scrollHeight;
       }
@@ -1009,11 +1011,13 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
   const handleSend = async () => {
     const content = input.trim();
     if (!content || isSending) return;
+    clearConversationNavigation();
     setIsSending(true);
     try {
       const result = await sendMessage(selectedConversationId, content, nextTransport);
       setInput('');
       setNextTransport('auto');
+      setScrollRequest((current) => current + 1);
       if (result.failures.length > 0) {
         showToast({
           title: selectedConversationId === 'lobby'

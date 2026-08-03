@@ -259,6 +259,8 @@ export function FileManager() {
     () => tabs.find((tab) => tab.id === activeTabId) ?? tabs[0],
     [activeTabId, tabs],
   );
+  const hasLanTab = tabs.some((tab) => tab.type === 'lan');
+  const isLanTabActive = activeShellTab?.type === 'lan';
 
   const [isPythonEnvOpen, setIsPythonEnvOpen] = useState(false);
   const [isTaskCenterOpen, setIsTaskCenterOpen] = useState(false);
@@ -1163,21 +1165,24 @@ export function FileManager() {
       />
 
       <div className="flex-1 min-h-0 overflow-hidden">
-        {activeShellTab?.type === 'lan' ? (
-          <LanCollaborationSurface />
-        ) : activeProjectSession ? (
+        {hasLanTab ? (
+          <div className={isLanTabActive ? 'h-full' : 'hidden'}>
+            <LanCollaborationSurface isActive={isLanTabActive} />
+          </div>
+        ) : null}
+        {!isLanTabActive && activeProjectSession ? (
           <ProjectSessionProvider
             projectStore={activeProjectSession.projectStore}
             workspaceTabStore={activeProjectSession.workspaceTabStore}
           >
             <ProjectWorkspace />
           </ProjectSessionProvider>
-        ) : (
+        ) : !isLanTabActive ? (
           <WelcomeScreen
             onOpenProject={handleOpenProject}
             settingsLoaded={isSettingsLoaded}
           />
-        )}
+        ) : null}
       </div>
 
       <PythonEnvManager
