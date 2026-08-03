@@ -36,6 +36,7 @@ import {
 } from 'lucide-react';
 import { AlertDialog, ConfirmDialog, Dialog } from './Dialog';
 import { ModuleDiagnosticsSection } from './settings/ModuleDiagnosticsSection';
+import { CapabilityDiagnosticsSection } from './settings/CapabilityDiagnosticsSection';
 import { useOptionalProjectStoreShallow } from '../stores/projectStore';
 import { BlenderInstallationInfo, ToolPaths, useSettingsStore } from '../stores/settingsStore';
 import {
@@ -2073,6 +2074,8 @@ export function SettingsPanel({
       </section>
 
       <ModuleDiagnosticsSection />
+
+      <CapabilityDiagnosticsSection />
 
       <section className="rounded-xl border border-red-200 dark:border-red-900/40 bg-white dark:bg-gray-900 p-4">
         <div className="flex items-center gap-2 mb-3">

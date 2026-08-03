@@ -133,7 +133,7 @@ React invoke/listen
 | 工具路径 | `tools.rs` | FFprobe、FFmpeg、Blender 路径校验与系统自动检测。 |
 | 局域网 | `p2p/mod.rs` | 全局联系人数据库、双向在线发现、个人资料/头像同步、大厅与私聊消息。 |
 | 智能剪贴板 | `smart_clipboard/` | Windows 剪贴板监听、历史 SQLite/图像载荷、原生窗口绘制、全局快捷键、内容恢复与自动粘贴。 |
-| 模块运行时 | `platform/` | R2 Module Manager、ResourceRegistry、状态持久化、依赖/冲突解析、退出反向清理和隔离诊断模块。真实业务模块在 R4 接入。 |
+| 模块与权限运行时 | `platform/` | R2 Module Manager/ResourceRegistry 与 R3 CapabilityGateway，负责状态、资源、授权、短期 token、路径边界和审计。真实业务模块在 R4 接入。 |
 
 长耗时后端操作应避免阻塞 Tauri 主线程：使用 Tokio / `spawn_blocking`，向前端发进度事件，提供合理的取消与失败状态。Windows 子进程统一使用 `process_utils::{std_command, tokio_command}`，避免弹出控制台窗口。
 

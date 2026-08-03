@@ -65,8 +65,8 @@ D0 架构记录
 | D0 | 架构资料与目标边界 | accepted | 无 | 2026-08-03 已确认开始实施 |
 | R0 | 当前行为与资源基线 | verifying | D0 | 已补一组真实恢复会话资源样本，完整人工流程仍待确认 |
 | R1 | Module/Profile/Component/Workflow 协议 | accepted | R0 | 2026-08-03 已确认按当前设计继续 R2 |
-| R2 | Module Manager 与 ResourceRegistry | verifying | R1 | 内核和自动验收完成，等待诊断页人工验收 |
-| R3 | Capability 权限网关 | pending | R1、R2 | 需要确认权限提示方式 |
+| R2 | Module Manager 与 ResourceRegistry | accepted | R1 | 2026-08-03 已完成诊断页和泄漏检查验收 |
+| R3 | Capability 权限网关 | verifying | R1、R2 | 内核、审批界面和安全自检完成，等待人工验收 |
 | R4 | 现有模块生命周期接入 | pending | R2、R3 | 按模块逐项验收 |
 | R5 | 前端 Contribution Registry | pending | R1、R2 | 需要确认界面动态装配规则 |
 | R6 | 装配方案运行时与兼容迁移 | pending | R4、R5 | 需要确认迁移结果 |
@@ -258,7 +258,7 @@ git diff --check
 
 ## 8. R2：Module Manager 与 ResourceRegistry
 
-状态：`verifying`
+状态：`accepted`
 
 实现与验收记录见 `docs/NEXT_MAJOR_R2_MODULE_RUNTIME.md`。
 
@@ -273,6 +273,8 @@ git diff --check
 - 依赖顺序、循环、冲突、可选依赖、回滚、停止超时、异常恢复及 100 次启停无泄漏测试。
 
 当前没有把局域网、渲染、智能剪贴板、Watcher 或项目数据库伪装成已托管模块；这些真实资源仍按 R4 逐项迁移。
+
+2026-08-03 已完成诊断页、故障注入、依赖停用和 100 次泄漏检查人工验收，R2 转为 `accepted`。
 
 ### 目标
 
@@ -307,6 +309,22 @@ git diff --check
 虚拟模块连续启停 100 次无资源泄漏；启动失败、停止超时和强制退出都有可解释状态。
 
 ## 9. R3：Capability 权限网关
+
+状态：`verifying`
+
+实现与验收记录见 `docs/NEXT_MAJOR_R3_CAPABILITY_GATEWAY.md`。
+
+2026-08-03 已完成：
+
+- 模块状态、manifest、组件归属和版本守卫；
+- 首次使用审批、仅本次、长期授权和撤销；
+- 60 秒单次 token 及跨组件、跨能力、跨操作、跨路径拒绝；
+- 项目、资料库、缓存、接收目录、staging 和外部路径范围模型；
+- SQLite 授权与审计、版本失效和 5000 条保留上限；
+- 6 个静态 Tauri adapter、设置页审批界面和隔离安全自检；
+- 模块未运行、未声明、token 伪造/过期/复用、路径穿越、绝对路径、符号链接逃逸和只读越权测试。
+
+真实局域网、渲染、剪贴板、项目、Python 和插件命令仍在 R4 按领域迁移。
 
 ### 目标
 

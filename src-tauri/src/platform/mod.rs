@@ -1,4 +1,5 @@
 mod builtin_modules;
+mod capability_gateway;
 mod module_manager;
 mod resource_registry;
 
@@ -7,7 +8,16 @@ pub use module_manager::{
     ModuleRuntimeOverview, StopStrategy,
 };
 
-use builtin_modules::{diagnostic_modules, DiagnosticControls, DIAGNOSTIC_BASE_ID};
+pub use capability_gateway::{
+    CapabilityDecisionRequest, CapabilityGatewayError, CapabilityGatewayOverview,
+    CapabilityOperationResult, CapabilitySecurityDiagnosticResult, CapabilityTokenRequest,
+    CapabilityTokenResponse,
+};
+
+use builtin_modules::{
+    diagnostic_components, diagnostic_modules, DiagnosticControls, DIAGNOSTIC_BASE_ID,
+};
+use capability_gateway::{run_security_diagnostic, CapabilityGateway};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -17,6 +27,7 @@ use uuid::Uuid;
 
 pub struct PlatformRuntime {
     pub manager: Arc<ModuleManager>,
+    pub gateway: Arc<CapabilityGateway>,
     controls: Arc<DiagnosticControls>,
 }
 
@@ -27,7 +38,24 @@ impl PlatformRuntime {
             app_data_dir.join("module-runtime.json"),
             diagnostic_modules(controls.clone()),
         )?;
-        Ok(Self { manager, controls })
+        let gateway = CapabilityGateway::new(
+            app_data_dir.join("capability-gateway.db"),
+            manager.clone(),
+            diagnostic_components(),
+            app_data_dir.join("capability-diagnostics"),
+        )
+        .map_err(|error| {
+            ModuleManagerError::new(
+                module_manager::ModuleErrorCode::ModulePersistenceError,
+                None,
+                error.to_string(),
+            )
+        })?;
+        Ok(Self {
+            manager,
+            gateway,
+            controls,
+        })
     }
 }
 
@@ -163,6 +191,84 @@ pub async fn run_platform_module_diagnostic(
     match action {
         PlatformDiagnosticAction::CycleLeakTest => run_cycle_leak_test().await,
     }
+}
+
+#[tauri::command]
+pub fn get_capability_gateway_overview(
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<CapabilityGatewayOverview, CapabilityGatewayError> {
+    runtime.gateway.overview()
+}
+
+#[tauri::command]
+pub fn request_platform_capability(
+    request: CapabilityTokenRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<CapabilityTokenResponse, CapabilityGatewayError> {
+    runtime.gateway.request_token(request)
+}
+
+#[tauri::command]
+pub fn decide_platform_capability(
+    request: CapabilityDecisionRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<CapabilityTokenResponse, CapabilityGatewayError> {
+    runtime.gateway.decide(request)
+}
+
+#[tauri::command]
+pub fn revoke_platform_capability_grant(
+    grant_id: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<(), CapabilityGatewayError> {
+    runtime.gateway.revoke_grant(&grant_id)
+}
+
+#[tauri::command]
+pub fn run_platform_capability_operation(
+    token: String,
+    request: CapabilityTokenRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<CapabilityOperationResult, CapabilityGatewayError> {
+    runtime.gateway.run_diagnostic_operation(&token, request)
+}
+
+#[tauri::command]
+pub async fn run_platform_capability_diagnostic(
+) -> Result<CapabilitySecurityDiagnosticResult, CapabilityGatewayError> {
+    let root = std::env::temp_dir().join(format!(
+        "pm-center-capability-diagnostic-{}",
+        Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&root).map_err(|error| {
+        CapabilityGatewayError::new(
+            capability_gateway::CapabilityErrorCode::CapabilityDiagnosticFailed,
+            format!("创建权限安全自检目录失败: {error}"),
+        )
+    })?;
+    let controls = Arc::new(DiagnosticControls::default());
+    let manager = ModuleManager::new(
+        root.join("module-runtime.json"),
+        diagnostic_modules(controls),
+    )
+    .map_err(|error| {
+        CapabilityGatewayError::new(
+            capability_gateway::CapabilityErrorCode::CapabilityDiagnosticFailed,
+            error.to_string(),
+        )
+    })?;
+    let gateway = CapabilityGateway::new(
+        root.join("capability-gateway.db"),
+        manager.clone(),
+        diagnostic_components(),
+        root.join("diagnostics"),
+    )?;
+    let result = run_security_diagnostic(manager.clone(), gateway.clone()).await;
+    let _ = manager.shutdown_all().await;
+    drop(gateway);
+    drop(manager);
+    let _ = std::fs::remove_dir_all(root);
+    result
 }
 
 async fn run_cycle_leak_test() -> Result<PlatformDiagnosticResult, ModuleManagerError> {

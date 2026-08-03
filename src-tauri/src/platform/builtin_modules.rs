@@ -1,11 +1,12 @@
+use super::capability_gateway::CapabilityComponentRegistration;
 use super::module_manager::{
     LifecycleFuture, ModuleContext, ModuleHealth, ModuleHealthLevel, ModuleLifecycle,
     RegisteredModule,
 };
 use super::resource_registry::ResourceKind;
 use pmc_platform::{
-    ExtensionFields, ModuleContributions, ModuleDataPolicy, ModuleDependency, ModuleManifestV1,
-    ModuleScope,
+    Capability, ExtensionFields, ModuleContributions, ModuleDataPolicy, ModuleDependency,
+    ModuleManifestV1, ModuleScope,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -180,6 +181,7 @@ pub fn diagnostic_modules(controls: Arc<DiagnosticControls>) -> Vec<RegisteredMo
             DiagnosticKind::Base,
             &[],
             &[],
+            &[Capability::AppSettingsRead],
             controls.clone(),
         ),
         diagnostic_module(
@@ -189,6 +191,7 @@ pub fn diagnostic_modules(controls: Arc<DiagnosticControls>) -> Vec<RegisteredMo
             DiagnosticKind::Worker,
             &[(DIAGNOSTIC_BASE_ID, "*")],
             &[(DIAGNOSTIC_SLOW_STOP_ID, "*")],
+            &[Capability::ProjectFilesRead],
             controls.clone(),
         ),
         diagnostic_module(
@@ -198,6 +201,7 @@ pub fn diagnostic_modules(controls: Arc<DiagnosticControls>) -> Vec<RegisteredMo
             DiagnosticKind::Failing,
             &[(DIAGNOSTIC_BASE_ID, "*")],
             &[],
+            &[Capability::ProjectFilesWrite],
             controls.clone(),
         ),
         diagnostic_module(
@@ -207,6 +211,7 @@ pub fn diagnostic_modules(controls: Arc<DiagnosticControls>) -> Vec<RegisteredMo
             DiagnosticKind::SlowStop,
             &[],
             &[],
+            &[Capability::FilesystemExternalWrite],
             controls,
         ),
     ]
@@ -219,6 +224,7 @@ fn diagnostic_module(
     kind: DiagnosticKind,
     required: &[(&str, &str)],
     optional: &[(&str, &str)],
+    capabilities: &[Capability],
     controls: Arc<DiagnosticControls>,
 ) -> RegisteredModule {
     let mut extensions = ExtensionFields::new();
@@ -248,7 +254,7 @@ fn diagnostic_module(
                 })
                 .collect(),
             conflicts: Vec::new(),
-            capabilities: Vec::new(),
+            capabilities: capabilities.to_vec(),
             background_services: vec!["diagnostic-heartbeat".into()],
             contributes: ModuleContributions::default(),
             data_policy: ModuleDataPolicy::default(),
@@ -257,4 +263,37 @@ fn diagnostic_module(
         lifecycle: Arc::new(DiagnosticLifecycle::new(kind, controls)),
         diagnostic: true,
     }
+}
+
+pub fn diagnostic_components() -> Vec<CapabilityComponentRegistration> {
+    vec![
+        CapabilityComponentRegistration {
+            id: "diagnostic.component-base".into(),
+            name: "基础设置读取组件".into(),
+            version: "1.0.0".into(),
+            module_id: DIAGNOSTIC_BASE_ID.into(),
+            capabilities: vec![Capability::AppSettingsRead],
+        },
+        CapabilityComponentRegistration {
+            id: "diagnostic.component-worker".into(),
+            name: "项目只读诊断组件".into(),
+            version: "1.0.0".into(),
+            module_id: DIAGNOSTIC_WORKER_ID.into(),
+            capabilities: vec![Capability::ProjectFilesRead],
+        },
+        CapabilityComponentRegistration {
+            id: "diagnostic.component-failing".into(),
+            name: "项目写入诊断组件".into(),
+            version: "1.0.0".into(),
+            module_id: DIAGNOSTIC_FAILING_ID.into(),
+            capabilities: vec![Capability::ProjectFilesWrite],
+        },
+        CapabilityComponentRegistration {
+            id: "diagnostic.component-slow-stop".into(),
+            name: "外部暂存诊断组件".into(),
+            version: "1.0.0".into(),
+            module_id: DIAGNOSTIC_SLOW_STOP_ID.into(),
+            capabilities: vec![Capability::FilesystemExternalWrite],
+        },
+    ]
 }
