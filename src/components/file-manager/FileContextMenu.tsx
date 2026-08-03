@@ -79,6 +79,7 @@ interface OpenPluginSubmenu {
 
 const CONTEXT_MENU_MIN_WIDTH = 220;
 const CONTEXT_MENU_VIEWPORT_PADDING = 8;
+const CONTEXT_MENU_TRIGGER_GAP = 2;
 const CONTEXT_SUBMENU_GAP = 4;
 
 function useContextMenuDismiss(
@@ -121,13 +122,15 @@ function getMenuStyle(
 ): React.CSSProperties {
   const maxHeight = Math.max(160, window.innerHeight - CONTEXT_MENU_VIEWPORT_PADDING * 2);
   const clampedHeight = Math.min(height, maxHeight);
+  const preferredLeft = x + CONTEXT_MENU_TRIGGER_GAP;
+  const fallbackLeft = x - width - CONTEXT_MENU_TRIGGER_GAP;
+  const left = preferredLeft + width <= window.innerWidth - CONTEXT_MENU_VIEWPORT_PADDING
+    ? preferredLeft
+    : Math.max(CONTEXT_MENU_VIEWPORT_PADDING, fallbackLeft);
 
   return {
     position: 'fixed',
-    left: Math.max(
-      CONTEXT_MENU_VIEWPORT_PADDING,
-      Math.min(x, window.innerWidth - width - CONTEXT_MENU_VIEWPORT_PADDING),
-    ),
+    left,
     top: Math.max(
       CONTEXT_MENU_VIEWPORT_PADDING,
       Math.min(y, window.innerHeight - clampedHeight - CONTEXT_MENU_VIEWPORT_PADDING),
