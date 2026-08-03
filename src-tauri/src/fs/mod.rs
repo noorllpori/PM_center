@@ -1011,28 +1011,39 @@ pub async fn reveal_in_explorer(path: String) -> Result<(), String> {
 // 用系统默认程序打开文件
 #[tauri::command]
 pub async fn open_file(path: String) -> Result<(), String> {
+    let working_directory = PathBuf::from(&path)
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(PathBuf::from);
+
     #[cfg(target_os = "windows")]
     {
-        std_command("cmd")
-            .args(["/C", "start", "", &path])
-            .spawn()
-            .map_err(|e| e.to_string())?;
+        let mut command = std_command("cmd");
+        command.args(["/C", "start", "", &path]);
+        if let Some(working_directory) = &working_directory {
+            command.current_dir(working_directory);
+        }
+        command.spawn().map_err(|e| e.to_string())?;
     }
 
     #[cfg(target_os = "macos")]
     {
-        std_command("open")
-            .arg(&path)
-            .spawn()
-            .map_err(|e| e.to_string())?;
+        let mut command = std_command("open");
+        command.arg(&path);
+        if let Some(working_directory) = &working_directory {
+            command.current_dir(working_directory);
+        }
+        command.spawn().map_err(|e| e.to_string())?;
     }
 
     #[cfg(target_os = "linux")]
     {
-        std_command("xdg-open")
-            .arg(&path)
-            .spawn()
-            .map_err(|e| e.to_string())?;
+        let mut command = std_command("xdg-open");
+        command.arg(&path);
+        if let Some(working_directory) = &working_directory {
+            command.current_dir(working_directory);
+        }
+        command.spawn().map_err(|e| e.to_string())?;
     }
 
     Ok(())
@@ -1060,8 +1071,15 @@ pub async fn open_file_with_program(program_path: String, file_path: String) -> 
         return Err("未找到要打开的文件".to_string());
     }
 
-    std_command(program_path)
-        .arg(file_path)
+    let mut command = std_command(program_path);
+    command.arg(file_path);
+    if let Some(working_directory) = PathBuf::from(file_path)
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        command.current_dir(working_directory);
+    }
+    command
         .spawn()
         .map_err(|error| format!("打开文件失败: {}", error))?;
 
