@@ -1,12 +1,10 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager, Runtime,
 };
-use tokio::sync::Mutex;
 
 mod cache_manager;
 mod db;
@@ -18,6 +16,7 @@ mod p2p;
 mod platform;
 mod plugin;
 mod process_utils;
+mod project_resources;
 mod python;
 mod python_env;
 mod render_center;
@@ -62,32 +61,13 @@ use python_env::{
 use tauri_plugin_global_shortcut::ShortcutState;
 use tools::{inspect_blender_executable, inspect_tool_paths, scan_blender_installations};
 
-#[derive(Default)]
-struct DbStateInner {
-    databases: HashMap<String, Database>,
-}
-
-type DbState = Arc<Mutex<DbStateInner>>;
+type DbState = project_resources::ProjectDatabaseState;
 
 async fn get_or_create_db(
     db_state: &tauri::State<'_, DbState>,
     project_path: &str,
 ) -> Result<Database, String> {
-    let project_key = tree_cache::normalize_path_key(project_path);
-    {
-        let state = db_state.lock().await;
-        if let Some(database) = state.databases.get(&project_key) {
-            return Ok(database.clone());
-        }
-    }
-
-    let database = Database::new(project_path).map_err(|e| e.to_string())?;
-    let mut state = db_state.lock().await;
-    Ok(state
-        .databases
-        .entry(project_key)
-        .or_insert_with(|| database.clone())
-        .clone())
+    project_resources::get_or_create_database(db_state.inner(), project_path).await
 }
 
 fn ensure_project_support_files(project_path: &str) -> Result<(), String> {
@@ -112,17 +92,15 @@ async fn init_project(
     project_path: String,
     exclude_patterns: Option<Vec<String>>,
 ) -> Result<(), String> {
+    project_resources::wait_for_module_enabled(std::time::Duration::from_secs(15)).await?;
     ensure_project_support_files(&project_path)?;
     render_center::init_project_storage(&project_path)?;
-    let db = get_or_create_db(&db_state, &project_path).await?;
-    let _ = tree_cache::get_or_create_project_cache(&project_path)?;
-    watcher::set_active_project(
+    open_project_resources(
+        db_state.inner(),
         &project_path,
-        &db,
         exclude_patterns.as_deref().unwrap_or(&[]),
-    )?;
-
-    Ok(())
+    )
+    .await
 }
 
 #[tauri::command]
@@ -131,15 +109,41 @@ async fn activate_project(
     project_path: String,
     exclude_patterns: Option<Vec<String>>,
 ) -> Result<(), String> {
+    project_resources::wait_for_module_enabled(std::time::Duration::from_secs(15)).await?;
     render_center::init_project_storage(&project_path)?;
-    let db = get_or_create_db(&db_state, &project_path).await?;
-    let _ = tree_cache::get_or_create_project_cache(&project_path)?;
-    watcher::set_active_project(
+    open_project_resources(
+        db_state.inner(),
         &project_path,
-        &db,
         exclude_patterns.as_deref().unwrap_or(&[]),
-    )?;
-    Ok(())
+    )
+    .await
+}
+
+async fn open_project_resources(
+    db_state: &DbState,
+    project_path: &str,
+    exclude_patterns: &[String],
+) -> Result<(), String> {
+    if !PathBuf::from(project_path).is_dir() {
+        return Err("项目目录不存在或不可访问".into());
+    }
+
+    let already_registered = project_resources::register_project(project_path, exclude_patterns)?;
+    let result = async {
+        let db = project_resources::get_or_create_database(db_state, project_path).await?;
+        let _ = tree_cache::get_or_create_project_cache(project_path)?;
+        project_resources::clear_active_project();
+        watcher::set_active_project(project_path, &db, exclude_patterns)?;
+        project_resources::mark_active_project(project_path)?;
+        Ok(())
+    }
+    .await;
+
+    if result.is_err() && !already_registered {
+        project_resources::unregister_project(project_path);
+        let _ = project_resources::release_project_handles(db_state, project_path).await;
+    }
+    result
 }
 
 /// Releases process-local resources after an outer project tab is closed.
@@ -149,17 +153,10 @@ async fn release_project_resources(
     db_state: tauri::State<'_, DbState>,
     project_path: String,
 ) -> Result<(), String> {
-    // Drop the watcher first so its worker stops retaining a Database clone.
-    watcher::clear_active_project_if_matches(&project_path);
-
-    let project_key = tree_cache::normalize_path_key(&project_path);
-    {
-        let mut state = db_state.lock().await;
-        state.databases.remove(&project_key);
-    }
-    tree_cache::release_project_cache(&project_path)?;
-
-    Ok(())
+    // Revoke the project lease before dropping handles so late async work cannot
+    // recreate the SQLite connections after the outer project tab has closed.
+    project_resources::unregister_project(&project_path);
+    project_resources::release_project_handles(db_state.inner(), &project_path).await
 }
 
 fn ensure_project_default_scripts(scripts_dir: &std::path::Path) -> Result<(), String> {
@@ -1318,8 +1315,9 @@ fn show_window<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), Box<dyn std:
 }
 
 pub fn run() {
-    let db_state: DbState = Arc::new(Mutex::new(DbStateInner::default()));
+    let db_state: DbState = project_resources::new_database_state();
     let db_state_for_single = db_state.clone();
+    let db_state_for_platform = db_state.clone();
 
     let global_shortcut_plugin = tauri_plugin_global_shortcut::Builder::new()
         .with_shortcut("Ctrl+Alt+S")
@@ -1355,7 +1353,11 @@ pub fn run() {
             watcher::set_app_handle(app.handle().clone());
             match app.path().app_data_dir() {
                 Ok(app_data_dir) => {
-                    let runtime = platform::PlatformRuntime::initialize(&app_data_dir)?;
+                    let runtime = platform::PlatformRuntime::initialize(
+                        &app_data_dir,
+                        app.handle().clone(),
+                        db_state_for_platform.clone(),
+                    )?;
                     let manager = runtime.manager.clone();
                     app.manage(runtime);
                     tauri::async_runtime::spawn(async move {
@@ -1366,19 +1368,6 @@ pub fn run() {
                 }
                 Err(error) => eprintln!("[platform] 获取应用数据目录失败: {error}"),
             }
-            tauri::async_runtime::spawn(async move {
-                let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
-                loop {
-                    interval.tick().await;
-                    let Some(project_path) = watcher::get_active_project_path() else {
-                        continue;
-                    };
-                    if cache_manager::is_project_under_maintenance(&project_path) {
-                        continue;
-                    }
-                    let _ = tree_cache::process_project_dirty_dirs(&project_path, 25);
-                }
-            });
             let window = app.get_webview_window("main").unwrap();
 
             // 创建托盘菜单

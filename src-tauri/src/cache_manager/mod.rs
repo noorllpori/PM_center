@@ -197,6 +197,65 @@ pub fn is_project_under_maintenance(project_path: &str) -> bool {
         .unwrap_or(false)
 }
 
+pub fn active_cache_maintenance_count() -> usize {
+    ACTIVE_PROJECTS
+        .lock()
+        .map(|active| active.len())
+        .unwrap_or_default()
+}
+
+pub fn cancel_project_cache_maintenance(project_path: &str) -> Result<(), String> {
+    let project_key = tree_cache::normalize_path_key(project_path);
+    let operation_id = ACTIVE_PROJECTS
+        .lock()
+        .map_err(|error| error.to_string())?
+        .get(&project_key)
+        .cloned();
+    if let Some(operation_id) = operation_id {
+        CANCELLED_OPERATIONS
+            .lock()
+            .map_err(|error| error.to_string())?
+            .insert(operation_id);
+    }
+    Ok(())
+}
+
+pub fn cancel_all_cache_maintenance() -> Result<(), String> {
+    let operation_ids = ACTIVE_PROJECTS
+        .lock()
+        .map_err(|error| error.to_string())?
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    CANCELLED_OPERATIONS
+        .lock()
+        .map_err(|error| error.to_string())?
+        .extend(operation_ids);
+    Ok(())
+}
+
+pub async fn wait_for_project_cache_maintenance(project_path: &str, timeout: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    while is_project_under_maintenance(project_path) {
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    true
+}
+
+pub async fn wait_for_all_cache_maintenance(timeout: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    while active_cache_maintenance_count() > 0 {
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    true
+}
+
 pub fn queue_cache_event(project_path: &str, path: &str, is_dir: bool, affects_tree: bool) {
     let project_key = tree_cache::normalize_path_key(project_path);
     let path_key = tree_cache::normalize_path_key(path);
@@ -1247,6 +1306,7 @@ fn run_action(
 
 #[tauri::command]
 pub async fn get_project_cache_report(project_path: String) -> Result<CacheReport, String> {
+    crate::project_resources::ensure_project_access(&project_path)?;
     tokio::task::spawn_blocking(move || compute_cache_report(&project_path))
         .await
         .map_err(|error| error.to_string())?
@@ -1260,6 +1320,7 @@ pub async fn check_project_cache(
     operation_id: Option<String>,
     exclude_patterns: Option<Vec<String>>,
 ) -> Result<CacheCheckReport, String> {
+    crate::project_resources::ensure_project_access(&project_path)?;
     tokio::task::spawn_blocking(move || match mode {
         CacheCheckMode::Quick => quick_check(&project_path),
         CacheCheckMode::Deep => {
@@ -1286,6 +1347,7 @@ pub async fn run_project_cache_action(
     operation_id: String,
     exclude_patterns: Option<Vec<String>>,
 ) -> Result<CacheActionResult, String> {
+    crate::project_resources::ensure_project_access(&project_path)?;
     if operation_id.trim().is_empty() {
         return Err("缓存维护缺少 operationId".to_string());
     }

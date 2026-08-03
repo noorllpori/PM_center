@@ -51,6 +51,13 @@ pub struct ThumbnailCacheUpdatedEvent {
     pub updated_count: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct WatcherRuntimeStatus {
+    pub active_project: Option<String>,
+    pub watcher_running: bool,
+    pub worker_running: bool,
+}
+
 #[derive(Debug)]
 struct PendingEvent {
     path: PathBuf,
@@ -80,6 +87,7 @@ pub fn set_active_project(
     db: &Database,
     exclude_patterns: &[String],
 ) -> Result<(), String> {
+    crate::project_resources::ensure_project_access(path)?;
     let project_root = PathBuf::from(path);
     if !project_root.is_dir() {
         return Err("项目目录不存在或不可访问".to_string());
@@ -130,6 +138,31 @@ pub fn set_active_project(
 
 pub fn get_active_project_path() -> Option<String> {
     ACTIVE_PROJECT.lock().ok().and_then(|path| path.clone())
+}
+
+pub fn runtime_status() -> WatcherRuntimeStatus {
+    let active_project = get_active_project_path();
+    let watcher_running = ACTIVE_WATCHER
+        .lock()
+        .map(|watcher| watcher.is_some())
+        .unwrap_or(false);
+    let worker_running = ACTIVE_WATCHER_WORKER
+        .lock()
+        .map(|worker| worker.as_ref().is_some_and(|worker| !worker.is_finished()))
+        .unwrap_or(false);
+    WatcherRuntimeStatus {
+        active_project,
+        watcher_running,
+        worker_running,
+    }
+}
+
+pub fn stop_active_project() {
+    let _state_guard = match WATCHER_STATE_LOCK.lock() {
+        Ok(guard) => guard,
+        Err(_) => return,
+    };
+    stop_active_watcher();
 }
 
 /// Stops the active watcher only when it belongs to the project being closed.

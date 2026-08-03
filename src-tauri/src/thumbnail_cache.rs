@@ -59,6 +59,9 @@ pub fn queue_directory_thumbnail_generation(
     directory_path: String,
     sources: Vec<ThumbnailSource>,
 ) {
+    if crate::project_resources::ensure_project_access(&project_path).is_err() {
+        return;
+    }
     if is_project_under_maintenance(&project_path) {
         return;
     }
@@ -137,6 +140,9 @@ fn generate_thumbnail_jobs(project_path: &str, jobs: &[ThumbnailJob]) -> Result<
 
     let mut updated_count = 0usize;
     for job in jobs {
+        if crate::project_resources::ensure_project_access(project_path).is_err() {
+            continue;
+        }
         if is_project_under_maintenance(project_path) {
             continue;
         }
@@ -159,7 +165,9 @@ fn generate_thumbnail_jobs(project_path: &str, jobs: &[ThumbnailJob]) -> Result<
             }
         };
 
-        if is_project_under_maintenance(project_path) {
+        if crate::project_resources::ensure_project_access(project_path).is_err()
+            || is_project_under_maintenance(project_path)
+        {
             continue;
         }
         persist_thumbnail_png(&job.target_path, &job.cache_prefix, &png_bytes)?;
@@ -174,6 +182,7 @@ pub fn store_thumbnail_png(
     source: &ThumbnailSource,
     png_bytes: &[u8],
 ) -> Result<Option<String>, String> {
+    crate::project_resources::ensure_project_access(project_path)?;
     let Some(relative_path) = build_thumbnail_relative_path(project_path, source) else {
         return Ok(None);
     };

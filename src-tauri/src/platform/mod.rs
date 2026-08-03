@@ -8,7 +8,7 @@ pub use module_manager::{
     ModuleRuntimeOverview, ModuleState, StopStrategy,
 };
 
-pub use builtin_modules::SMART_CLIPBOARD_MODULE_ID;
+pub use builtin_modules::{PROJECT_RESOURCES_MODULE_ID, SMART_CLIPBOARD_MODULE_ID};
 
 pub use capability_gateway::{
     CapabilityDecisionRequest, CapabilityGatewayError, CapabilityGatewayOverview,
@@ -17,8 +17,9 @@ pub use capability_gateway::{
 };
 
 use builtin_modules::{
-    diagnostic_components, diagnostic_modules, smart_clipboard_component, smart_clipboard_module,
-    DiagnosticControls, DIAGNOSTIC_BASE_ID,
+    diagnostic_components, diagnostic_modules, lan_collaboration_component,
+    lan_collaboration_module, project_resources_component, project_resources_module,
+    smart_clipboard_component, smart_clipboard_module, DiagnosticControls, DIAGNOSTIC_BASE_ID,
 };
 use capability_gateway::{run_security_diagnostic, CapabilityGateway};
 use serde::{Deserialize, Serialize};
@@ -35,13 +36,29 @@ pub struct PlatformRuntime {
 }
 
 impl PlatformRuntime {
-    pub fn initialize(app_data_dir: &Path) -> Result<Self, ModuleManagerError> {
+    pub fn initialize(
+        app_data_dir: &Path,
+        app_handle: tauri::AppHandle,
+        project_databases: crate::project_resources::ProjectDatabaseState,
+    ) -> Result<Self, ModuleManagerError> {
+        crate::project_resources::initialize_lifecycle_control();
         let controls = Arc::new(DiagnosticControls::default());
         let mut modules = diagnostic_modules(controls.clone());
         modules.push(smart_clipboard_module(app_data_dir.to_path_buf()));
+        modules.push(lan_collaboration_module(
+            app_data_dir.to_path_buf(),
+            app_handle,
+        ));
+        modules.push(project_resources_module(project_databases));
         let manager = ModuleManager::new(app_data_dir.join("module-runtime.json"), modules)?;
+        let project_resources_desired = manager
+            .snapshot(PROJECT_RESOURCES_MODULE_ID)?
+            .desired_enabled;
+        crate::project_resources::set_initial_desired_enabled(project_resources_desired);
         let mut components = diagnostic_components();
         components.push(smart_clipboard_component());
+        components.push(lan_collaboration_component());
+        components.push(project_resources_component());
         let gateway = CapabilityGateway::new(
             app_data_dir.join("capability-gateway.db"),
             manager.clone(),

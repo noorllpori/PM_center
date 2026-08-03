@@ -26,6 +26,9 @@ function App() {
     initTaskEventListeners();
     void initRenderEventListeners();
     void useLanCollaborationStore.getState().initialize().catch((error) => {
+      if (String(error).includes('LAN_COLLABORATION_MODULE_DISABLED')) {
+        return;
+      }
       console.error('Failed to initialize LAN collaboration:', error);
     });
     document.documentElement.classList.remove('dark');

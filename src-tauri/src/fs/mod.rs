@@ -429,6 +429,9 @@ pub async fn read_directory(
     force_refresh: Option<bool>,
     include_pm_center: Option<bool>,
 ) -> Result<Vec<FileInfo>, String> {
+    if let Some(project_path) = project_path.as_deref() {
+        crate::project_resources::ensure_project_access(project_path)?;
+    }
     let force_refresh = force_refresh.unwrap_or(false);
     let include_pm_center = include_pm_center.unwrap_or(false);
 
@@ -503,6 +506,9 @@ pub async fn get_directory_tree(
     force_refresh: Option<bool>,
     include_pm_center: Option<bool>,
 ) -> Result<TreeNode, String> {
+    if let Some(project_path) = project_path.as_deref() {
+        crate::project_resources::ensure_project_access(project_path)?;
+    }
     let force_refresh = force_refresh.unwrap_or(false);
     let include_pm_center = include_pm_center.unwrap_or(false);
 
@@ -909,6 +915,7 @@ pub async fn store_cached_thumbnail(
     source_path: String,
     png_bytes: Vec<u8>,
 ) -> Result<Option<String>, String> {
+    crate::project_resources::ensure_project_access(&project_path)?;
     let metadata = tokio::fs::metadata(&source_path)
         .await
         .map_err(|error| error.to_string())?;

@@ -131,9 +131,9 @@ React invoke/listen
 | Python | `python/mod.rs`、`python_env/mod.rs` | PMC 内置/系统 Python、Blender 解析、venv 与 pip 管理。 |
 | 插件 | `plugin/mod.rs` | 插件发现、校验、启停、依赖、设置与动作。 |
 | 工具路径 | `tools.rs` | FFprobe、FFmpeg、Blender 路径校验与系统自动检测。 |
-| 局域网 | `p2p/mod.rs` | 全局联系人数据库、双向在线发现、个人资料/头像同步、大厅与私聊消息。 |
+| 局域网 | `p2p/mod.rs` | 全局联系人数据库、双向在线发现、个人资料/头像同步、大厅与私聊消息；由 `builtin.lan-collaboration` 生命周期统一管理 UDP/TCP、服务器连接和传输取消。 |
 | 智能剪贴板 | `smart_clipboard/` | Windows 剪贴板监听、历史 SQLite/图像载荷、原生窗口绘制、全局快捷键、内容恢复与自动粘贴。 |
-| 模块与权限运行时 | `platform/` | R2 Module Manager/ResourceRegistry 与 R3 CapabilityGateway，负责状态、资源、授权、短期 token、路径边界和审计；R4 已接入首个真实模块 `builtin.smart-clipboard`。 |
+| 模块与权限运行时 | `platform/` | R2 Module Manager/ResourceRegistry 与 R3 CapabilityGateway，负责状态、资源、授权、短期 token、路径边界和审计；R4 已接入智能剪贴板、局域网协同，并正在接入项目资源。 |
 
 长耗时后端操作应避免阻塞 Tauri 主线程：使用 Tokio / `spawn_blocking`，向前端发进度事件，提供合理的取消与失败状态。Windows 子进程统一使用 `process_utils::{std_command, tokio_command}`，避免弹出控制台窗口。
 
@@ -188,6 +188,8 @@ React invoke/listen
 - Python 运行优先 PMC 内置 Python 或所选 Blender 自带 Python；插件不应自行创建第三套不透明运行时。
 - 插件 API、项目脚本与用户数据均视为受保护数据。新增插件能力要经 `plugin` 模块暴露，不直接由任意 UI 执行未知脚本。
 - 局域网联系人、消息和头像属于软件级全局数据，保存在应用数据目录的 `lan_collaboration.db` 与头像缓存中，不写入项目 `.pm_center`。外层 Shell 的“局域网主面板”承载联系人、大厅和私聊；项目内 `p2p` 标签是独立的功能预留入口，暂不承载聊天界面。
+- `builtin.lan-collaboration` 默认启用并统一拥有 UDP 31523、TCP 31524、Server 连接和活动传输。停用先拒绝新命令，再取消传输、关闭连接并等待监听任务退出；联系人、聊天、头像、接收文件和设置继续保留。
+- `builtin.project-resources` 默认启用并管理已打开项目的 `data.db` 注册表、TreeCache 注册表、当前活动项目 watcher 和脏目录修复任务。关闭外层项目标签先撤销项目租约，再释放句柄，防止迟到异步任务重新占用 `.pm_center`。
 - 局域网提供两个稳定入口：主面板与主页、项目标签同级并保持全局单例；项目功能标签在每个项目内保持单例并参与项目会话恢复。当前不提供无项目独立窗口入口。
 - 局域网消息保留一个大厅与一对一私聊，记录默认保留 30 天；联系人离线后继续保留。任何文件传输、远程执行或渲染农场扩展都必须先定义权限、路径边界、失败恢复和用户确认。
 - 局域网传输使用独立于聊天消息的 `lan_transfers` 记录和 `offer -> accept/reject -> request -> stream -> verify -> receipt` 状态机。首版仅在私聊开放文件、多文件拖入、文件选择和剪贴板图片；对方确认并选择保存位置前不发送文件内容。

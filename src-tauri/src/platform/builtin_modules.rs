@@ -16,10 +16,349 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const SMART_CLIPBOARD_MODULE_ID: &str = "builtin.smart-clipboard";
+pub const LAN_COLLABORATION_MODULE_ID: &str = "builtin.lan-collaboration";
+pub use crate::project_resources::PROJECT_RESOURCES_MODULE_ID;
 pub const DIAGNOSTIC_BASE_ID: &str = "diagnostic.runtime-base";
 pub const DIAGNOSTIC_WORKER_ID: &str = "diagnostic.runtime-worker";
 pub const DIAGNOSTIC_FAILING_ID: &str = "diagnostic.runtime-failing";
 pub const DIAGNOSTIC_SLOW_STOP_ID: &str = "diagnostic.runtime-slow-stop";
+
+struct ProjectResourcesLifecycle {
+    databases: crate::project_resources::ProjectDatabaseState,
+}
+
+impl ProjectResourcesLifecycle {
+    fn new(databases: crate::project_resources::ProjectDatabaseState) -> Self {
+        Self { databases }
+    }
+}
+
+impl ModuleLifecycle for ProjectResourcesLifecycle {
+    fn start<'a>(&'a self, context: ModuleContext) -> LifecycleFuture<'a, ()> {
+        Box::pin(async move {
+            crate::project_resources::set_module_enabled(true);
+
+            let mut database_details = BTreeMap::new();
+            database_details.insert("dataDbRegistry".into(), "按已打开项目复用连接".into());
+            database_details.insert("treeCacheRegistry".into(), "按已打开项目复用连接".into());
+            database_details.insert("watcher".into(), "仅监听当前活动项目".into());
+            let databases = self.databases.clone();
+            context.resources.register(
+                context.module_id.clone(),
+                ResourceKind::Database,
+                "项目数据库、目录索引与 watcher 协调器",
+                database_details,
+                Box::new(move || {
+                    Box::pin(async move {
+                        crate::project_resources::release_all_handles(&databases).await
+                    })
+                }),
+            );
+
+            let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
+            let repair_task = tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(2));
+                loop {
+                    tokio::select! {
+                        _ = &mut stop_rx => break,
+                        _ = interval.tick() => {
+                            let Some(project_path) = crate::watcher::get_active_project_path() else {
+                                continue;
+                            };
+                            if crate::cache_manager::is_project_under_maintenance(&project_path) {
+                                continue;
+                            }
+                            let _ = crate::tree_cache::process_project_dirty_dirs(&project_path, 25);
+                        }
+                    }
+                }
+            });
+            let mut task_details = BTreeMap::new();
+            task_details.insert("interval".into(), "2s".into());
+            task_details.insert("maxDirectoriesPerTick".into(), "25".into());
+            context.resources.register(
+                context.module_id,
+                ResourceKind::TokioTask,
+                "活动项目脏目录修复任务",
+                task_details,
+                Box::new(move || {
+                    Box::pin(async move {
+                        let _ = stop_tx.send(());
+                        repair_task
+                            .await
+                            .map_err(|error| format!("等待脏目录修复任务退出失败: {error}"))?;
+                        Ok(())
+                    })
+                }),
+            );
+
+            for error in crate::project_resources::restore_registered_handles(&self.databases).await
+            {
+                eprintln!("[project-resources] {error}");
+            }
+            Ok(())
+        })
+    }
+
+    fn stop<'a>(&'a self, _context: ModuleContext) -> LifecycleFuture<'a, ()> {
+        Box::pin(async {
+            crate::project_resources::set_module_enabled(false);
+            crate::cache_manager::cancel_all_cache_maintenance()?;
+            Ok(())
+        })
+    }
+
+    fn health<'a>(&'a self, _context: ModuleContext) -> LifecycleFuture<'a, ModuleHealth> {
+        Box::pin(async move {
+            if !crate::project_resources::is_module_enabled() {
+                return Ok(ModuleHealth {
+                    level: ModuleHealthLevel::Unhealthy,
+                    message: "项目资源模块当前未启用".into(),
+                    checked_at: Some(chrono::Utc::now().timestamp_millis()),
+                });
+            }
+
+            let snapshot = crate::project_resources::health_snapshot(&self.databases).await;
+            if snapshot.registered_projects == 0 {
+                return Ok(ModuleHealth::healthy(
+                    "等待项目打开，当前没有 SQLite 或 watcher 句柄",
+                ));
+            }
+
+            let database_ready = snapshot.database_count == snapshot.registered_projects;
+            let cache_ready = snapshot.tree_cache_count == snapshot.registered_projects;
+            let watcher_ready = snapshot.active_project.is_none()
+                || (snapshot.watcher_running && snapshot.watcher_worker_running);
+            let message = format!(
+                "项目 {} 个，data.db {} 个，TreeCache {} 个，watcher={}，缓存维护 {} 个",
+                snapshot.registered_projects,
+                snapshot.database_count,
+                snapshot.tree_cache_count,
+                if watcher_ready { "正常" } else { "缺失" },
+                snapshot.active_maintenance
+            );
+            if database_ready && cache_ready && watcher_ready {
+                Ok(ModuleHealth::healthy(message))
+            } else {
+                Ok(ModuleHealth {
+                    level: ModuleHealthLevel::Degraded,
+                    message,
+                    checked_at: Some(chrono::Utc::now().timestamp_millis()),
+                })
+            }
+        })
+    }
+
+    fn start_timeout(&self) -> Duration {
+        Duration::from_secs(15)
+    }
+
+    fn stop_timeout(&self) -> Duration {
+        Duration::from_secs(10)
+    }
+}
+
+fn project_resource_capabilities() -> Vec<Capability> {
+    vec![
+        Capability::ProjectOpen,
+        Capability::ProjectFilesRead,
+        Capability::ProjectFilesWrite,
+        Capability::ProjectMetadataRead,
+        Capability::ProjectMetadataWrite,
+    ]
+}
+
+pub fn project_resources_module(
+    databases: crate::project_resources::ProjectDatabaseState,
+) -> RegisteredModule {
+    let mut extensions = ExtensionFields::new();
+    extensions.insert("defaultEnabled".into(), Value::Bool(true));
+    RegisteredModule {
+        manifest: ModuleManifestV1 {
+            schema_version: 1,
+            id: PROJECT_RESOURCES_MODULE_ID.into(),
+            name: "项目资源".into(),
+            description: "管理项目数据库、目录索引、文件监听和项目关闭后的资源释放。".into(),
+            version: "1.0.0".into(),
+            api_version: "1".into(),
+            scope: ModuleScope::Project,
+            builtin: true,
+            requires_modules: Vec::new(),
+            optional_modules: Vec::new(),
+            conflicts: Vec::new(),
+            capabilities: project_resource_capabilities(),
+            background_services: vec![
+                "project-database-registry".into(),
+                "tree-cache-registry".into(),
+                "active-project-watcher".into(),
+                "dirty-directory-repair".into(),
+            ],
+            contributes: ModuleContributions::default(),
+            data_policy: ModuleDataPolicy::default(),
+            extensions,
+        },
+        lifecycle: Arc::new(ProjectResourcesLifecycle::new(databases)),
+        diagnostic: false,
+    }
+}
+
+pub fn project_resources_component() -> CapabilityComponentRegistration {
+    CapabilityComponentRegistration {
+        id: "builtin.project-resources.service".into(),
+        name: "项目资源协调组件".into(),
+        version: "1.0.0".into(),
+        module_id: PROJECT_RESOURCES_MODULE_ID.into(),
+        capabilities: project_resource_capabilities(),
+    }
+}
+
+struct LanCollaborationLifecycle {
+    app_data_dir: PathBuf,
+    app_handle: tauri::AppHandle,
+}
+
+impl LanCollaborationLifecycle {
+    fn new(app_data_dir: PathBuf, app_handle: tauri::AppHandle) -> Self {
+        Self {
+            app_data_dir,
+            app_handle,
+        }
+    }
+}
+
+impl ModuleLifecycle for LanCollaborationLifecycle {
+    fn start<'a>(&'a self, context: ModuleContext) -> LifecycleFuture<'a, ()> {
+        Box::pin(async move {
+            crate::p2p::start_managed_service(self.app_handle.clone(), self.app_data_dir.clone())
+                .await?;
+
+            let mut details = BTreeMap::new();
+            details.insert("udpDiscovery".into(), "0.0.0.0:31523".into());
+            details.insert("tcpMessages".into(), "0.0.0.0:31524".into());
+            details.insert("serverConnection".into(), "按全局设置连接".into());
+            details.insert("activeTransfers".into(), "停用时统一取消".into());
+            let app_handle = self.app_handle.clone();
+            context.resources.register(
+                context.module_id,
+                ResourceKind::NetworkListener,
+                "局域网协同网络服务",
+                details,
+                Box::new(move || {
+                    Box::pin(async move { crate::p2p::stop_managed_service(app_handle).await })
+                }),
+            );
+            Ok(())
+        })
+    }
+
+    fn stop<'a>(&'a self, _context: ModuleContext) -> LifecycleFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn health<'a>(&'a self, _context: ModuleContext) -> LifecycleFuture<'a, ModuleHealth> {
+        Box::pin(async {
+            let health = crate::p2p::managed_service_health();
+            if !crate::p2p::is_managed_service_enabled() || !health.initialized {
+                return Ok(ModuleHealth {
+                    level: ModuleHealthLevel::Unhealthy,
+                    message: "局域网数据库或设备身份尚未初始化".into(),
+                    checked_at: Some(chrono::Utc::now().timestamp_millis()),
+                });
+            }
+            if health.udp_bound && health.tcp_bound {
+                return Ok(ModuleHealth::healthy(format!(
+                    "UDP/TCP 监听正常，活动传输 {} 个，服务器连接{}",
+                    health.active_transfers,
+                    if health.server_connected {
+                        "正常"
+                    } else {
+                        "未启用或未连接"
+                    }
+                )));
+            }
+            Ok(ModuleHealth {
+                level: ModuleHealthLevel::Degraded,
+                message: health.last_error.unwrap_or_else(|| {
+                    format!(
+                        "局域网监听不完整：UDP={}，TCP={}",
+                        health.udp_bound, health.tcp_bound
+                    )
+                }),
+                checked_at: Some(chrono::Utc::now().timestamp_millis()),
+            })
+        })
+    }
+
+    fn start_timeout(&self) -> Duration {
+        Duration::from_secs(15)
+    }
+
+    fn stop_timeout(&self) -> Duration {
+        Duration::from_secs(10)
+    }
+}
+
+fn lan_capabilities() -> Vec<Capability> {
+    vec![
+        Capability::AppProfileRead,
+        Capability::AppProfileWrite,
+        Capability::AppSettingsRead,
+        Capability::AppSettingsWrite,
+        Capability::NotificationSend,
+        Capability::FilesystemExternalRead,
+        Capability::FilesystemExternalWrite,
+        Capability::NetworkHttpRequest,
+        Capability::NetworkLanDiscover,
+        Capability::NetworkLanMessage,
+        Capability::NetworkLanTransfer,
+        Capability::NetworkServerConnect,
+    ]
+}
+
+pub fn lan_collaboration_module(
+    app_data_dir: PathBuf,
+    app_handle: tauri::AppHandle,
+) -> RegisteredModule {
+    let mut extensions = ExtensionFields::new();
+    extensions.insert("defaultEnabled".into(), Value::Bool(true));
+    RegisteredModule {
+        manifest: ModuleManifestV1 {
+            schema_version: 1,
+            id: LAN_COLLABORATION_MODULE_ID.into(),
+            name: "局域网协同".into(),
+            description: "管理联系人发现、局域网消息、文件传输和可选服务器连接。".into(),
+            version: "1.0.0".into(),
+            api_version: "1".into(),
+            scope: ModuleScope::Global,
+            builtin: true,
+            requires_modules: Vec::new(),
+            optional_modules: Vec::new(),
+            conflicts: Vec::new(),
+            capabilities: lan_capabilities(),
+            background_services: vec![
+                "udp-discovery".into(),
+                "tcp-message-server".into(),
+                "server-client".into(),
+                "transfer-supervisor".into(),
+            ],
+            contributes: ModuleContributions::default(),
+            data_policy: ModuleDataPolicy::default(),
+            extensions,
+        },
+        lifecycle: Arc::new(LanCollaborationLifecycle::new(app_data_dir, app_handle)),
+        diagnostic: false,
+    }
+}
+
+pub fn lan_collaboration_component() -> CapabilityComponentRegistration {
+    CapabilityComponentRegistration {
+        id: "builtin.lan-collaboration.service".into(),
+        name: "局域网协同服务组件".into(),
+        version: "1.0.0".into(),
+        module_id: LAN_COLLABORATION_MODULE_ID.into(),
+        capabilities: lan_capabilities(),
+    }
+}
 
 struct SmartClipboardLifecycle {
     app_data_dir: PathBuf,
@@ -472,5 +811,29 @@ mod tests {
             .exists());
         drop(manager);
         let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
+mod project_resource_tests {
+    use super::*;
+
+    #[test]
+    fn project_resource_manifest_declares_project_scope_and_default_enablement() {
+        let module = project_resources_module(crate::project_resources::new_database_state());
+        assert_eq!(module.manifest.id, PROJECT_RESOURCES_MODULE_ID);
+        assert_eq!(module.manifest.scope, ModuleScope::Project);
+        assert_eq!(
+            module.manifest.extensions.get("defaultEnabled"),
+            Some(&Value::Bool(true))
+        );
+        assert!(module
+            .manifest
+            .capabilities
+            .contains(&Capability::ProjectMetadataWrite));
+        assert!(module
+            .manifest
+            .background_services
+            .contains(&"active-project-watcher".to_string()));
     }
 }

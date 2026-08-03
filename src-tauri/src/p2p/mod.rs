@@ -8,6 +8,7 @@ use std::fs;
 use std::io::Cursor;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
@@ -15,6 +16,7 @@ use tauri::{Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use tokio::sync::watch;
 
 mod server_client;
 mod transfer;
@@ -43,6 +45,15 @@ const MAX_AVATAR_BYTES: usize = 64 * 1024;
 const MESSAGE_RETENTION_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 const LOBBY_HISTORY_LIMIT: usize = 30;
 const LOBBY_HISTORY_SYNC_INTERVAL_MS: u64 = 30 * 1000;
+const LAN_MODULE_DISABLED_ERROR: &str =
+    "LAN_COLLABORATION_MODULE_DISABLED: 局域网协同模块已停用，请先在设置的后台模块中启用";
+
+static LAN_SERVICE_ENABLED: AtomicBool = AtomicBool::new(false);
+
+lazy_static::lazy_static! {
+    static ref LAN_SERVICE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::new(());
+    static ref LAN_NETWORK_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::new(());
+}
 
 fn notification_preview(content: &str) -> String {
     const MAX_CHARS: usize = 120;
@@ -535,6 +546,10 @@ struct P2PStateInner {
     is_running: bool,
     discovery_worker_started: bool,
     tcp_server_started: bool,
+    discovery_cancel: Option<watch::Sender<bool>>,
+    discovery_task: Option<tokio::task::JoinHandle<()>>,
+    tcp_cancel: Option<watch::Sender<bool>>,
+    tcp_task: Option<tokio::task::JoinHandle<()>>,
     announce_generation: u64,
     last_cleanup_at: u64,
     last_history_sync: HashMap<String, u64>,
@@ -552,11 +567,27 @@ lazy_static::lazy_static! {
         is_running: false,
         discovery_worker_started: false,
         tcp_server_started: false,
+        discovery_cancel: None,
+        discovery_task: None,
+        tcp_cancel: None,
+        tcp_task: None,
         announce_generation: 0,
         last_cleanup_at: 0,
         last_history_sync: HashMap::new(),
         service: LanServiceStatus::default(),
     }));
+}
+
+pub(super) fn ensure_service_enabled() -> Result<(), String> {
+    if LAN_SERVICE_ENABLED.load(Ordering::SeqCst) {
+        Ok(())
+    } else {
+        Err(LAN_MODULE_DISABLED_ERROR.to_string())
+    }
+}
+
+pub(crate) fn is_managed_service_enabled() -> bool {
+    LAN_SERVICE_ENABLED.load(Ordering::SeqCst)
 }
 
 fn now_millis() -> u64 {
@@ -763,6 +794,22 @@ fn load_or_create_profile(
     Ok(profile)
 }
 
+fn load_legacy_profile_from_store(app_data_dir: &Path) -> Option<LegacyLanProfile> {
+    let value = fs::read_to_string(app_data_dir.join("p2p-settings.json"))
+        .ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())?;
+    Some(LegacyLanProfile {
+        user_id: value
+            .get("p2p-user-id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        user_name: value
+            .get("p2p-user-name")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+    })
+}
+
 fn prune_old_messages(conn: &Connection) -> Result<(), String> {
     let cutoff = now_millis().saturating_sub(MESSAGE_RETENTION_MS);
     conn.execute(
@@ -775,6 +822,7 @@ fn prune_old_messages(conn: &Connection) -> Result<(), String> {
 }
 
 fn state_paths() -> Result<(PathBuf, PathBuf), String> {
+    ensure_service_enabled()?;
     let state = P2P_GLOBAL.lock().map_err(|error| error.to_string())?;
     let db_path = state
         .db_path
@@ -1118,14 +1166,26 @@ async fn broadcast_profile(
     Ok(local_addresses)
 }
 
-async fn run_discovery_loop(socket: UdpSocket, app_handle: tauri::AppHandle, db_path: PathBuf) {
+async fn run_discovery_loop(
+    socket: UdpSocket,
+    app_handle: tauri::AppHandle,
+    db_path: PathBuf,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    if !is_managed_service_enabled() {
+        return;
+    }
     let mut buffer = vec![0u8; 4096];
     let mut tick = tokio::time::interval(Duration::from_millis(250));
     let mut last_broadcast = Instant::now() - BROADCAST_INTERVAL;
     let mut seen_generation = 0u64;
 
     loop {
+        if *shutdown.borrow() {
+            break;
+        }
         tokio::select! {
+            _ = shutdown.changed() => break,
             _ = tick.tick() => {
                 let (profile, running, generation, removed) = {
                     let mut state = match P2P_GLOBAL.lock() {
@@ -1211,27 +1271,37 @@ async fn run_discovery_loop(socket: UdpSocket, app_handle: tauri::AppHandle, db_
                 if protocol_version >= 2 && changed {
                     let app_handle = app_handle.clone();
                     let db_path = db_path.clone();
+                    let mut sync_shutdown = shutdown.clone();
                     tokio::spawn(async move {
-                        if let Err(error) = send_hello_and_fetch(&ip, app_handle.clone(), db_path).await {
-                            if let Ok(mut state) = P2P_GLOBAL.lock() {
-                                state.service.last_error = Some(format!("与 {ip} 同步联系人资料失败：{error}"));
+                        tokio::select! {
+                            _ = sync_shutdown.changed() => {}
+                            result = send_hello_and_fetch(&ip, app_handle.clone(), db_path) => {
+                                if let Err(error) = result {
+                                    if let Ok(mut state) = P2P_GLOBAL.lock() {
+                                        state.service.last_error = Some(format!("与 {ip} 同步联系人资料失败：{error}"));
+                                    }
+                                    emit_service_status(&app_handle);
+                                }
                             }
-                            emit_service_status(&app_handle);
                         }
                     });
                 } else if protocol_version >= LOBBY_SYNC_MIN_PROTOCOL_VERSION {
                     let app_handle = app_handle.clone();
                     let db_path = db_path.clone();
                     let peer_id = profile.id.clone();
+                    let mut sync_shutdown = shutdown.clone();
                     tokio::spawn(async move {
-                        if let Err(error) =
-                            sync_lobby_history(&peer_id, &ip, app_handle.clone(), db_path).await
-                        {
-                            if let Ok(mut state) = P2P_GLOBAL.lock() {
-                                state.service.last_error =
-                                    Some(format!("与 {ip} 同步大厅记录失败：{error}"));
+                        tokio::select! {
+                            _ = sync_shutdown.changed() => {}
+                            result = sync_lobby_history(&peer_id, &ip, app_handle.clone(), db_path) => {
+                                if let Err(error) = result {
+                                    if let Ok(mut state) = P2P_GLOBAL.lock() {
+                                        state.service.last_error =
+                                            Some(format!("与 {ip} 同步大厅记录失败：{error}"));
+                                    }
+                                    emit_service_status(&app_handle);
+                                }
                             }
-                            emit_service_status(&app_handle);
                         }
                     });
                 }
@@ -1603,26 +1673,41 @@ async fn sync_lobby_history(
     Ok(())
 }
 
-async fn run_tcp_server(listener: TcpListener, app_handle: tauri::AppHandle, db_path: PathBuf) {
+async fn run_tcp_server(
+    listener: TcpListener,
+    app_handle: tauri::AppHandle,
+    db_path: PathBuf,
+    mut shutdown: watch::Receiver<bool>,
+) {
     loop {
-        match listener.accept().await {
-            Ok((stream, address)) => {
-                let app_handle = app_handle.clone();
-                let db_path = db_path.clone();
-                tokio::spawn(async move {
-                    if let Err(error) =
-                        handle_tcp_connection(stream, address, app_handle, db_path).await
-                    {
-                        eprintln!("[P2P] 处理连接失败：{error}");
-                    }
-                });
-            }
-            Err(error) => {
-                if let Ok(mut state) = P2P_GLOBAL.lock() {
-                    state.service.last_error = Some(format!("接受局域网连接失败：{error}"));
+        if *shutdown.borrow() {
+            break;
+        }
+        tokio::select! {
+            _ = shutdown.changed() => break,
+            accepted = listener.accept() => match accepted {
+                Ok((stream, address)) => {
+                    let app_handle = app_handle.clone();
+                    let db_path = db_path.clone();
+                    let mut connection_shutdown = shutdown.clone();
+                    tokio::spawn(async move {
+                        tokio::select! {
+                            _ = connection_shutdown.changed() => {}
+                            result = handle_tcp_connection(stream, address, app_handle, db_path) => {
+                                if let Err(error) = result {
+                                    eprintln!("[P2P] 处理连接失败：{error}");
+                                }
+                            }
+                        }
+                    });
                 }
-                emit_service_status(&app_handle);
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                Err(error) => {
+                    if let Ok(mut state) = P2P_GLOBAL.lock() {
+                        state.service.last_error = Some(format!("接受局域网连接失败：{error}"));
+                    }
+                    emit_service_status(&app_handle);
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
             }
         }
     }
@@ -2049,15 +2134,11 @@ fn snapshot() -> Result<LanSnapshot, String> {
     })
 }
 
-#[tauri::command]
-pub async fn initialize_lan_collaboration(
+async fn initialize_lan_service(
     app_handle: tauri::AppHandle,
+    app_data_dir: PathBuf,
     legacy_profile: Option<LegacyLanProfile>,
 ) -> Result<LanSnapshot, String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("获取应用数据目录失败：{error}"))?;
     fs::create_dir_all(&app_data_dir).map_err(|error| error.to_string())?;
     let db_path = app_data_dir.join("lan_collaboration.db");
     let avatars_dir = app_data_dir.join("lan_collaboration").join("avatars");
@@ -2098,8 +2179,129 @@ pub async fn initialize_lan_collaboration(
     snapshot()
 }
 
+pub(crate) async fn start_managed_service(
+    app_handle: tauri::AppHandle,
+    app_data_dir: PathBuf,
+) -> Result<(), String> {
+    let _service_guard = LAN_SERVICE_LOCK.lock().await;
+    LAN_SERVICE_ENABLED.store(true, Ordering::SeqCst);
+    let legacy_profile = load_legacy_profile_from_store(&app_data_dir);
+    match initialize_lan_service(app_handle, app_data_dir, legacy_profile).await {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            LAN_SERVICE_ENABLED.store(false, Ordering::SeqCst);
+            transfer::cancel_all_active_transfers();
+            let _ = stop_lan_network(None).await;
+            let _ = server_client::shutdown(None).await;
+            Err(error)
+        }
+    }
+}
+
+pub(crate) async fn stop_managed_service(app_handle: tauri::AppHandle) -> Result<(), String> {
+    LAN_SERVICE_ENABLED.store(false, Ordering::SeqCst);
+    let _service_guard = LAN_SERVICE_LOCK.lock().await;
+    let db_path = P2P_GLOBAL
+        .lock()
+        .ok()
+        .and_then(|state| state.db_path.clone());
+    transfer::cancel_all_active_transfers();
+
+    let mut errors = Vec::new();
+    if let Err(error) = stop_lan_network(Some(&app_handle)).await {
+        errors.push(error);
+    }
+    if let Err(error) = server_client::shutdown(Some(&app_handle)).await {
+        errors.push(error);
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while transfer::active_transfer_count() > 0 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    if transfer::active_transfer_count() > 0 {
+        errors.push("等待局域网文件传输任务退出超时".to_string());
+    }
+
+    if let Some(db_path) = db_path {
+        match open_database(&db_path) {
+            Ok(conn) => {
+                if let Err(error) = transfer::mark_active_transfers_stopped(&conn) {
+                    errors.push(format!("更新局域网传输停止状态失败：{error}"));
+                }
+                if let Err(error) = server_client::mark_active_transfers_stopped(&conn) {
+                    errors.push(format!("更新服务器传输停止状态失败：{error}"));
+                }
+            }
+            Err(error) => errors.push(format!("打开局域网数据库完成停止清理失败：{error}")),
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("；"))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ManagedLanServiceHealth {
+    pub initialized: bool,
+    pub udp_bound: bool,
+    pub tcp_bound: bool,
+    pub active_transfers: usize,
+    pub server_connected: bool,
+    pub last_error: Option<String>,
+}
+
+pub(crate) fn managed_service_health() -> ManagedLanServiceHealth {
+    let (initialized, udp_bound, tcp_bound, last_error) = P2P_GLOBAL
+        .lock()
+        .map(|state| {
+            let discovery_alive = state
+                .discovery_task
+                .as_ref()
+                .is_some_and(|task| !task.is_finished());
+            let tcp_alive = state
+                .tcp_task
+                .as_ref()
+                .is_some_and(|task| !task.is_finished());
+            (
+                state.profile.is_some() && state.db_path.is_some(),
+                discovery_alive && state.service.udp_bound,
+                tcp_alive && state.service.tcp_bound,
+                state.service.last_error.clone(),
+            )
+        })
+        .unwrap_or((false, false, false, Some("局域网状态锁已损坏".into())));
+    ManagedLanServiceHealth {
+        initialized,
+        udp_bound,
+        tcp_bound,
+        active_transfers: transfer::active_transfer_count(),
+        server_connected: server_client::status().connected,
+        last_error,
+    }
+}
+
+#[tauri::command]
+pub async fn initialize_lan_collaboration(
+    app_handle: tauri::AppHandle,
+    legacy_profile: Option<LegacyLanProfile>,
+) -> Result<LanSnapshot, String> {
+    ensure_service_enabled()?;
+    let _service_guard = LAN_SERVICE_LOCK.lock().await;
+    ensure_service_enabled()?;
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("获取应用数据目录失败：{error}"))?;
+    initialize_lan_service(app_handle, app_data_dir, legacy_profile).await
+}
+
 #[tauri::command]
 pub async fn get_lan_collaboration_snapshot() -> Result<LanSnapshot, String> {
+    ensure_service_enabled()?;
     let should_cleanup = {
         let state = P2P_GLOBAL.lock().map_err(|error| error.to_string())?;
         now_millis().saturating_sub(state.last_cleanup_at) > 24 * 60 * 60 * 1000
@@ -2119,6 +2321,7 @@ pub async fn update_lan_profile(
     app_handle: tauri::AppHandle,
     request: UpdateLanProfileRequest,
 ) -> Result<LanProfile, String> {
+    ensure_service_enabled()?;
     let display_name = validate_profile_text(&request.display_name, "显示名称", 32)?;
     if display_name.is_empty() {
         return Err("显示名称不能为空".to_string());
@@ -2155,6 +2358,7 @@ pub async fn update_lan_receive_directory(
     app_handle: tauri::AppHandle,
     request: UpdateLanReceiveDirectoryRequest,
 ) -> Result<LanLocalSettings, String> {
+    ensure_service_enabled()?;
     let requested = request.receive_directory.trim();
     if requested.is_empty() {
         return Err("请选择局域网文件接收目录".to_string());
@@ -2209,6 +2413,7 @@ pub async fn set_lan_avatar(
     app_handle: tauri::AppHandle,
     image_path: Option<String>,
 ) -> Result<LanProfile, String> {
+    ensure_service_enabled()?;
     let (db_path, avatars_dir) = state_paths()?;
     let mut profile = P2P_GLOBAL
         .lock()
@@ -2255,17 +2460,24 @@ pub async fn set_lan_avatar(
 
 #[tauri::command]
 pub async fn start_lan_discovery(app_handle: tauri::AppHandle) -> Result<(), String> {
+    ensure_service_enabled()?;
+    let _network_guard = LAN_NETWORK_LOCK.lock().await;
+    ensure_service_enabled()?;
     let (start_udp, start_tcp, db_path) = {
         let state = P2P_GLOBAL.lock().map_err(|error| error.to_string())?;
         let db_path = state
             .db_path
             .clone()
             .ok_or_else(|| "局域网协同尚未初始化".to_string())?;
-        (
-            !state.discovery_worker_started,
-            !state.tcp_server_started,
-            db_path,
-        )
+        let discovery_alive = state
+            .discovery_task
+            .as_ref()
+            .is_some_and(|task| !task.is_finished());
+        let tcp_alive = state
+            .tcp_task
+            .as_ref()
+            .is_some_and(|task| !task.is_finished());
+        (!discovery_alive, !tcp_alive, db_path)
     };
     let udp_socket = if start_udp {
         let socket = UdpSocket::bind(format!("0.0.0.0:{DISCOVERY_PORT}"))
@@ -2287,47 +2499,104 @@ pub async fn start_lan_discovery(app_handle: tauri::AppHandle) -> Result<(), Str
     } else {
         None
     };
+
+    let udp_runtime = udp_socket.map(|socket| {
+        let (cancel, cancel_rx) = watch::channel(false);
+        let task = tokio::spawn(run_discovery_loop(
+            socket,
+            app_handle.clone(),
+            db_path.clone(),
+            cancel_rx,
+        ));
+        (cancel, task)
+    });
+    let tcp_runtime = tcp_listener.map(|listener| {
+        let (cancel, cancel_rx) = watch::channel(false);
+        let task = tokio::spawn(run_tcp_server(
+            listener,
+            app_handle.clone(),
+            db_path.clone(),
+            cancel_rx,
+        ));
+        (cancel, task)
+    });
     {
         let mut state = P2P_GLOBAL.lock().map_err(|error| error.to_string())?;
         state.is_running = true;
         state.service.is_running = true;
         state.service.last_error = None;
         state.announce_generation = state.announce_generation.wrapping_add(1);
-        if udp_socket.is_some() {
+        if let Some((cancel, task)) = udp_runtime {
             state.discovery_worker_started = true;
+            state.discovery_cancel = Some(cancel);
+            state.discovery_task = Some(task);
             state.service.udp_bound = true;
         }
-        if tcp_listener.is_some() {
+        if let Some((cancel, task)) = tcp_runtime {
             state.tcp_server_started = true;
+            state.tcp_cancel = Some(cancel);
+            state.tcp_task = Some(task);
             state.service.tcp_bound = true;
         }
-    }
-    if let Some(socket) = udp_socket {
-        tokio::spawn(run_discovery_loop(
-            socket,
-            app_handle.clone(),
-            db_path.clone(),
-        ));
-    }
-    if let Some(listener) = tcp_listener {
-        tokio::spawn(run_tcp_server(listener, app_handle.clone(), db_path));
     }
     emit_service_status(&app_handle);
     Ok(())
 }
 
-#[tauri::command]
-pub async fn stop_lan_discovery(app_handle: tauri::AppHandle) -> Result<(), String> {
-    {
+async fn stop_lan_network(app_handle: Option<&tauri::AppHandle>) -> Result<(), String> {
+    let _network_guard = LAN_NETWORK_LOCK.lock().await;
+    let (discovery_cancel, discovery_task, tcp_cancel, tcp_task) = {
         let mut state = P2P_GLOBAL.lock().map_err(|error| error.to_string())?;
         state.is_running = false;
         state.online_users.clear();
+        state.discovery_worker_started = false;
+        state.tcp_server_started = false;
         state.service.is_running = false;
+        state.service.udp_bound = false;
+        state.service.tcp_bound = false;
         state.service.online_count = 0;
+        state.service.local_addresses.clear();
+        (
+            state.discovery_cancel.take(),
+            state.discovery_task.take(),
+            state.tcp_cancel.take(),
+            state.tcp_task.take(),
+        )
+    };
+
+    for cancel in [discovery_cancel, tcp_cancel].into_iter().flatten() {
+        let _ = cancel.send(true);
     }
-    emit_contacts_changed(&app_handle);
-    emit_service_status(&app_handle);
-    Ok(())
+
+    let mut errors = Vec::new();
+    for (label, task) in [("UDP 发现", discovery_task), ("TCP 消息", tcp_task)] {
+        let Some(mut task) = task else { continue };
+        match tokio::time::timeout(Duration::from_secs(3), &mut task).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => errors.push(format!("{label}任务退出失败：{error}")),
+            Err(_) => {
+                task.abort();
+                let _ = task.await;
+                errors.push(format!("等待{label}任务退出超时，已强制终止"));
+            }
+        }
+    }
+
+    if let Some(app_handle) = app_handle {
+        emit_contacts_changed(app_handle);
+        emit_service_status(app_handle);
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("；"))
+    }
+}
+
+#[tauri::command]
+pub async fn stop_lan_discovery(app_handle: tauri::AppHandle) -> Result<(), String> {
+    ensure_service_enabled()?;
+    stop_lan_network(Some(&app_handle)).await
 }
 
 async fn deliver_message(message: &P2PMessage) -> Result<P2PDeliveryResult, String> {
@@ -2461,6 +2730,7 @@ pub async fn send_lan_message(
     app_handle: tauri::AppHandle,
     request: SendLanMessageRequest,
 ) -> Result<LanDeliveryResult, String> {
+    ensure_service_enabled()?;
     let profile = P2P_GLOBAL
         .lock()
         .map_err(|error| error.to_string())?
@@ -2484,6 +2754,7 @@ pub async fn mark_lan_conversation_read(
     app_handle: tauri::AppHandle,
     conversation_id: String,
 ) -> Result<(), String> {
+    ensure_service_enabled()?;
     let (db_path, _) = state_paths()?;
     open_database(&db_path)?
         .execute(
@@ -2504,6 +2775,7 @@ pub async fn clear_lan_conversation(
     app_handle: tauri::AppHandle,
     conversation_id: String,
 ) -> Result<(), String> {
+    ensure_service_enabled()?;
     let (db_path, _) = state_paths()?;
     let mut conn = open_database(&db_path)?;
     let active_transfers: i64 = conn
@@ -2558,6 +2830,7 @@ pub async fn clear_lan_conversation(
 
 #[tauri::command]
 pub async fn clear_lan_history(app_handle: tauri::AppHandle) -> Result<(), String> {
+    ensure_service_enabled()?;
     let (db_path, _) = state_paths()?;
     let conn = open_database(&db_path)?;
     let active_transfers: i64 = conn
@@ -2605,6 +2878,7 @@ pub async fn remove_lan_contact(
     app_handle: tauri::AppHandle,
     contact_id: String,
 ) -> Result<(), String> {
+    ensure_service_enabled()?;
     let is_online = P2P_GLOBAL
         .lock()
         .map_err(|error| error.to_string())?
@@ -2643,6 +2917,7 @@ pub async fn init_p2p(
     user_id: String,
     user_name: String,
 ) -> Result<(), String> {
+    ensure_service_enabled()?;
     initialize_lan_collaboration(
         app_handle,
         Some(LegacyLanProfile {
@@ -2660,6 +2935,7 @@ pub async fn update_p2p_user(
     user_id: String,
     user_name: String,
 ) -> Result<(), String> {
+    ensure_service_enabled()?;
     let _ = user_id;
     let department = P2P_GLOBAL
         .lock()
@@ -2694,6 +2970,7 @@ pub async fn send_p2p_message(
     app_handle: tauri::AppHandle,
     message: P2PMessage,
 ) -> Result<P2PDeliveryResult, String> {
+    ensure_service_enabled()?;
     send_and_store_message(app_handle, message).await
 }
 
@@ -2703,6 +2980,57 @@ mod tests {
 
     fn temp_db(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("pm-center-lan-{name}-{}.db", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn disabled_module_rejects_legacy_and_current_commands() {
+        LAN_SERVICE_ENABLED.store(false, Ordering::SeqCst);
+        let error = ensure_service_enabled().unwrap_err();
+        assert!(error.starts_with("LAN_COLLABORATION_MODULE_DISABLED:"));
+    }
+
+    #[tokio::test]
+    async fn stopping_network_tasks_releases_udp_and_tcp_sockets() {
+        let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let udp_address = udp.local_addr().unwrap();
+        let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let tcp_address = tcp.local_addr().unwrap();
+        let (discovery_cancel, mut discovery_cancelled) = watch::channel(false);
+        let (tcp_cancel, mut tcp_cancelled) = watch::channel(false);
+        let discovery_task = tokio::spawn(async move {
+            let _socket = udp;
+            let _ = discovery_cancelled.changed().await;
+        });
+        let tcp_task = tokio::spawn(async move {
+            let _listener = tcp;
+            let _ = tcp_cancelled.changed().await;
+        });
+        {
+            let mut state = P2P_GLOBAL.lock().unwrap();
+            state.is_running = true;
+            state.discovery_worker_started = true;
+            state.tcp_server_started = true;
+            state.discovery_cancel = Some(discovery_cancel);
+            state.discovery_task = Some(discovery_task);
+            state.tcp_cancel = Some(tcp_cancel);
+            state.tcp_task = Some(tcp_task);
+            state.service.is_running = true;
+            state.service.udp_bound = true;
+            state.service.tcp_bound = true;
+        }
+
+        stop_lan_network(None).await.unwrap();
+
+        let state = P2P_GLOBAL.lock().unwrap();
+        assert!(!state.is_running);
+        assert!(!state.discovery_worker_started);
+        assert!(!state.tcp_server_started);
+        assert!(state.discovery_task.is_none());
+        assert!(state.tcp_task.is_none());
+        drop(state);
+        let rebound_udp = UdpSocket::bind(udp_address).await.unwrap();
+        let rebound_tcp = TcpListener::bind(tcp_address).await.unwrap();
+        drop((rebound_udp, rebound_tcp));
     }
 
     #[test]

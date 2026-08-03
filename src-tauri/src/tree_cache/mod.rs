@@ -63,20 +63,17 @@ pub fn detect_project_root_for_path(path: &str) -> Option<String> {
 }
 
 pub fn get_or_create_project_cache(project_path: &str) -> Result<TreeCacheDb, String> {
+    crate::project_resources::ensure_project_access(project_path)?;
     let project_key = normalize_path_key(project_path);
-    {
-        let guard = TREE_CACHE_DBS.lock().map_err(|error| error.to_string())?;
-        if let Some(db) = guard.get(&project_key) {
-            return Ok(db.clone());
-        }
+    let mut guard = TREE_CACHE_DBS.lock().map_err(|error| error.to_string())?;
+    crate::project_resources::ensure_project_access(project_path)?;
+    if let Some(db) = guard.get(&project_key) {
+        return Ok(db.clone());
     }
 
     let db = TreeCacheDb::new(project_path)?;
-    let mut guard = TREE_CACHE_DBS.lock().map_err(|error| error.to_string())?;
-    Ok(guard
-        .entry(project_key)
-        .or_insert_with(|| db.clone())
-        .clone())
+    guard.insert(project_key, db.clone());
+    Ok(db)
 }
 
 /// Drops the process-local SQLite handle for a project tree cache.
@@ -87,6 +84,52 @@ pub fn release_project_cache(project_path: &str) -> Result<bool, String> {
     let project_key = normalize_path_key(project_path);
     let mut guard = TREE_CACHE_DBS.lock().map_err(|error| error.to_string())?;
     Ok(guard.remove(&project_key).is_some())
+}
+
+pub fn release_all_project_caches() -> Result<usize, String> {
+    let mut guard = TREE_CACHE_DBS.lock().map_err(|error| error.to_string())?;
+    let count = guard.len();
+    guard.clear();
+    Ok(count)
+}
+
+pub fn project_cache_count() -> usize {
+    TREE_CACHE_DBS
+        .lock()
+        .map(|guard| guard.len())
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+pub fn has_project_cache(project_path: &str) -> bool {
+    let project_key = normalize_path_key(project_path);
+    TREE_CACHE_DBS
+        .lock()
+        .map(|guard| guard.contains_key(&project_key))
+        .unwrap_or(false)
+}
+
+pub fn mark_registered_trees_dirty() {
+    let caches = TREE_CACHE_DBS
+        .lock()
+        .map(|guard| guard.values().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    for cache in caches {
+        let _ = cache.mark_tree_dirty();
+        let _ = cache.mark_dir_dirty(&cache.project_path);
+    }
+}
+
+pub fn mark_project_tree_dirty(project_path: &str) {
+    let project_key = normalize_path_key(project_path);
+    let cache = TREE_CACHE_DBS
+        .lock()
+        .ok()
+        .and_then(|guard| guard.get(&project_key).cloned());
+    if let Some(cache) = cache {
+        let _ = cache.mark_tree_dirty();
+        let _ = cache.mark_dir_dirty(project_path);
+    }
 }
 
 pub fn process_dirty_dirs(max_dirs_per_project: usize) -> Result<(), String> {

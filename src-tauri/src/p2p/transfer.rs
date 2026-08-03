@@ -1,6 +1,7 @@
 use super::{
-    connect_to_peer, emit_contacts_changed, now_millis, open_database, set_online_legacy_peer,
-    state_paths, upsert_legacy_contact, OnlinePeer, P2P_GLOBAL, PROTOCOL_VERSION,
+    connect_to_peer, emit_contacts_changed, ensure_service_enabled, now_millis, open_database,
+    set_online_legacy_peer, state_paths, upsert_legacy_contact, OnlinePeer, P2P_GLOBAL,
+    PROTOCOL_VERSION,
 };
 use bytes::Bytes;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -132,6 +133,40 @@ fn signal_active_transfer_cancellation(transfer_id: &str) -> bool {
                 .map(|entry| entry.cancellation.clone())
         })
         .is_some_and(|sender| sender.send(true).is_ok())
+}
+
+pub(super) fn cancel_all_active_transfers() -> usize {
+    let cancellations = ACTIVE_TRANSFER_CANCELLATIONS
+        .lock()
+        .map(|active| {
+            active
+                .values()
+                .map(|entry| entry.cancellation.clone())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let count = cancellations.len();
+    for cancellation in cancellations {
+        let _ = cancellation.send(true);
+    }
+    count
+}
+
+pub(super) fn active_transfer_count() -> usize {
+    ACTIVE_TRANSFER_CANCELLATIONS
+        .lock()
+        .map(|active| active.len())
+        .unwrap_or_default()
+}
+
+pub(super) fn mark_active_transfers_stopped(conn: &Connection) -> Result<usize, String> {
+    conn.execute(
+        "UPDATE lan_transfers
+         SET status='cancelled',error='局域网模块停用导致传输中断，可重新发起',updated_at=?1
+         WHERE status IN ('preparing','transferring')",
+        params![now_millis() as i64],
+    )
+    .map_err(|error| error.to_string())
 }
 
 async fn wait_for_transfer_cancellation(cancellation: &mut watch::Receiver<bool>) {
@@ -1562,6 +1597,7 @@ pub async fn offer_lan_files(
     app_handle: tauri::AppHandle,
     request: OfferLanFilesRequest,
 ) -> Result<LanFileOfferResult, String> {
+    ensure_service_enabled()?;
     let OfferLanFilesRequest {
         to_id,
         mut to_ids,
@@ -2464,6 +2500,7 @@ pub async fn respond_lan_transfer(
     app_handle: tauri::AppHandle,
     request: RespondLanTransferRequest,
 ) -> Result<LanTransfer, String> {
+    ensure_service_enabled()?;
     let db_path = state_paths()?.0;
     let conn = open_database(&db_path)?;
     let transfer = load_transfer(&conn, &request.transfer_id)?;
@@ -2586,6 +2623,7 @@ pub async fn cancel_lan_transfer(
     app_handle: tauri::AppHandle,
     request: CancelLanTransferRequest,
 ) -> Result<LanTransfer, String> {
+    ensure_service_enabled()?;
     let (db_path, _) = state_paths()?;
     let conn = open_database(&db_path)?;
     let transfer = load_transfer(&conn, &request.transfer_id)?;
@@ -2649,6 +2687,7 @@ pub async fn create_lan_transfer_staging_path(
     app_handle: tauri::AppHandle,
     file_name: String,
 ) -> Result<String, String> {
+    ensure_service_enabled()?;
     let file_name = validate_file_name(&file_name)?;
     let directory = staging_dir(&app_handle)?;
     tokio::fs::create_dir_all(&directory)
@@ -2667,6 +2706,7 @@ pub async fn discard_lan_transfer_staging_file(
     app_handle: tauri::AppHandle,
     path: String,
 ) -> Result<(), String> {
+    ensure_service_enabled()?;
     let staging = staging_dir(&app_handle)?;
     let target = PathBuf::from(path);
     let item_directory = target
@@ -3544,6 +3584,10 @@ pub(super) async fn handle_connection(
 mod tests {
     use super::*;
 
+    lazy_static::lazy_static! {
+        static ref ACTIVE_TRANSFER_TEST_LOCK: Mutex<()> = Mutex::new(());
+    }
+
     fn temp_db(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "pm-center-transfer-{name}-{}.db",
@@ -3580,6 +3624,7 @@ mod tests {
 
     #[test]
     fn active_transfer_registrations_share_cancellation_and_progress() {
+        let _test_guard = ACTIVE_TRANSFER_TEST_LOCK.lock().unwrap();
         let transfer_id = format!("parallel-test-{}", uuid::Uuid::new_v4());
         let (first_guard, first_cancellation, first_progress, first_started_at) =
             register_active_transfer(&transfer_id).unwrap();
@@ -3602,6 +3647,22 @@ mod tests {
             .lock()
             .unwrap()
             .contains_key(&transfer_id));
+    }
+
+    #[test]
+    fn module_shutdown_cancels_all_active_transfers() {
+        let _test_guard = ACTIVE_TRANSFER_TEST_LOCK.lock().unwrap();
+        let first_id = format!("shutdown-first-{}", uuid::Uuid::new_v4());
+        let second_id = format!("shutdown-second-{}", uuid::Uuid::new_v4());
+        let (first_guard, first_cancellation, _, _) = register_active_transfer(&first_id).unwrap();
+        let (second_guard, second_cancellation, _, _) =
+            register_active_transfer(&second_id).unwrap();
+
+        assert_eq!(cancel_all_active_transfers(), 2);
+        assert!(*first_cancellation.borrow());
+        assert!(*second_cancellation.borrow());
+        drop((first_guard, second_guard));
+        assert_eq!(active_transfer_count(), 0);
     }
 
     #[test]
@@ -3859,6 +3920,7 @@ mod tests {
 
     #[test]
     fn active_transfer_cancellation_signal_reaches_the_stream_worker() {
+        let _test_guard = ACTIVE_TRANSFER_TEST_LOCK.lock().unwrap();
         let transfer_id = format!("cancel-signal-{}", uuid::Uuid::new_v4());
         let (_guard, receiver, _, _) = register_active_transfer(&transfer_id).unwrap();
         assert!(!*receiver.borrow());

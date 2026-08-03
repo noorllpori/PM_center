@@ -3,8 +3,8 @@ use super::transfer::{
     LanTransferProgress, OfferLanFilesRequest, RespondLanTransferRequest,
 };
 use super::{
-    now_millis, open_database, state_paths, LanContact, LanConversation, LanDeliveryResult,
-    LanMessage, P2PDeliveryFailure, P2P_GLOBAL,
+    ensure_service_enabled, now_millis, open_database, state_paths, LanContact, LanConversation,
+    LanDeliveryResult, LanMessage, P2PDeliveryFailure, P2P_GLOBAL,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use futures_util::{SinkExt, StreamExt};
@@ -93,6 +93,7 @@ struct RuntimeState {
     status: PmcServerStatus,
     outbound: Option<mpsc::UnboundedSender<ClientMessage>>,
     cancel: Option<watch::Sender<bool>>,
+    connection_task: Option<tokio::task::JoinHandle<()>>,
     online_ids: HashSet<String>,
     speed_test: Option<SpeedTestResult>,
     transfer_cancellations: HashMap<String, watch::Sender<bool>>,
@@ -324,14 +325,22 @@ pub(super) fn is_contact_online(contact_id: &str) -> bool {
 }
 
 pub(super) fn initialize(app_handle: tauri::AppHandle, conn: &Connection) -> Result<(), String> {
+    ensure_service_enabled()?;
     let current = settings(conn)?;
-    if current.enabled && !current.address.is_empty() {
+    let should_connect = SERVER_RUNTIME
+        .lock()
+        .map(|runtime| !runtime.status.connected && !runtime.status.connecting)
+        .unwrap_or(true);
+    if current.enabled && !current.address.is_empty() && should_connect {
         restart_connection(app_handle, current.address)?;
     }
     Ok(())
 }
 
 pub(super) fn refresh_profile(app_handle: tauri::AppHandle) {
+    if ensure_service_enabled().is_err() {
+        return;
+    }
     let current = state_paths()
         .ok()
         .and_then(|(db_path, _)| open_database(&db_path).ok())
@@ -344,23 +353,43 @@ pub(super) fn refresh_profile(app_handle: tauri::AppHandle) {
 }
 
 fn restart_connection(app_handle: tauri::AppHandle, address: String) -> Result<(), String> {
-    let cancel_rx = {
-        let mut runtime = SERVER_RUNTIME.lock().map_err(|error| error.to_string())?;
-        if let Some(cancel) = runtime.cancel.take() {
-            let _ = cancel.send(true);
-        }
-        runtime.outbound = None;
-        runtime.online_ids.clear();
-        runtime.status.connected = false;
-        runtime.status.connecting = true;
-        runtime.status.last_error = None;
-        let (cancel, cancel_rx) = watch::channel(false);
-        runtime.cancel = Some(cancel);
-        cancel_rx
-    };
+    ensure_service_enabled()?;
+    let mut runtime = SERVER_RUNTIME.lock().map_err(|error| error.to_string())?;
+    if let Some(cancel) = runtime.cancel.take() {
+        let _ = cancel.send(true);
+    }
+    if let Some(task) = runtime.connection_task.take() {
+        task.abort();
+    }
+    for (_, cancellation) in runtime.transfer_cancellations.drain() {
+        let _ = cancellation.send(true);
+    }
+    runtime.transfer_started.clear();
+    runtime.outbound = None;
+    runtime.online_ids.clear();
+    runtime.status.connected = false;
+    runtime.status.connecting = true;
+    runtime.status.last_error = None;
+    let (cancel, cancel_rx) = watch::channel(false);
+    runtime.cancel = Some(cancel);
+    runtime.connection_task = Some(tokio::spawn(connection_loop(
+        app_handle.clone(),
+        address,
+        cancel_rx,
+    )));
+    drop(runtime);
     emit_changed(&app_handle);
-    tauri::async_runtime::spawn(connection_loop(app_handle, address, cancel_rx));
     Ok(())
+}
+
+pub(super) fn mark_active_transfers_stopped(conn: &Connection) -> Result<usize, String> {
+    conn.execute(
+        "UPDATE pmc_server_transfers
+         SET status='failed',error='局域网模块停用导致传输中断，请重新发起',updated_at=?1
+         WHERE status IN ('waiting','pending','transferring')",
+        params![now_millis() as i64],
+    )
+    .map_err(|error| error.to_string())
 }
 
 async fn connection_loop(
@@ -1283,6 +1312,7 @@ pub async fn update_pmc_server_settings(
     app_handle: tauri::AppHandle,
     request: UpdatePmcServerSettingsRequest,
 ) -> Result<PmcServerSettings, String> {
+    ensure_service_enabled()?;
     let address = normalize_address(&request.address)?;
     if request.enabled && address.is_empty() {
         return Err("启用服务器连接前请填写服务器地址".to_string());
@@ -1297,26 +1327,51 @@ pub async fn update_pmc_server_settings(
     if request.enabled {
         restart_connection(app_handle, address)?;
     } else {
-        disconnect_runtime(&app_handle)?;
+        shutdown(Some(&app_handle)).await?;
     }
     settings(&conn)
 }
 
-fn disconnect_runtime(app_handle: &tauri::AppHandle) -> Result<(), String> {
-    let mut runtime = SERVER_RUNTIME.lock().map_err(|e| e.to_string())?;
-    if let Some(cancel) = runtime.cancel.take() {
+pub(super) async fn shutdown(app_handle: Option<&tauri::AppHandle>) -> Result<(), String> {
+    let (cancel, mut connection_task, transfer_cancellations) = {
+        let mut runtime = SERVER_RUNTIME.lock().map_err(|error| error.to_string())?;
+        let cancel = runtime.cancel.take();
+        let connection_task = runtime.connection_task.take();
+        let transfer_cancellations = runtime
+            .transfer_cancellations
+            .drain()
+            .map(|(_, cancellation)| cancellation)
+            .collect::<Vec<_>>();
+        runtime.transfer_started.clear();
+        runtime.outbound = None;
+        runtime.online_ids.clear();
+        runtime.status = PmcServerStatus::default();
+        (cancel, connection_task, transfer_cancellations)
+    };
+    if let Some(cancel) = cancel {
         let _ = cancel.send(true);
     }
-    runtime.outbound = None;
-    runtime.online_ids.clear();
-    runtime.status = PmcServerStatus::default();
-    drop(runtime);
-    emit_changed(app_handle);
+    for cancellation in transfer_cancellations {
+        let _ = cancellation.send(true);
+    }
+    if let Some(task) = connection_task.as_mut() {
+        if tokio::time::timeout(Duration::from_secs(3), &mut *task)
+            .await
+            .is_err()
+        {
+            task.abort();
+            let _ = task.await;
+        }
+    }
+    if let Some(app_handle) = app_handle {
+        emit_changed(app_handle);
+    }
     Ok(())
 }
 
 #[tauri::command]
 pub async fn connect_pmc_server(app_handle: tauri::AppHandle) -> Result<(), String> {
+    ensure_service_enabled()?;
     let db_path = state_paths()?.0;
     let current = settings(&open_database(&db_path)?)?;
     if current.address.is_empty() {
@@ -1327,7 +1382,8 @@ pub async fn connect_pmc_server(app_handle: tauri::AppHandle) -> Result<(), Stri
 
 #[tauri::command]
 pub async fn disconnect_pmc_server(app_handle: tauri::AppHandle) -> Result<(), String> {
-    disconnect_runtime(&app_handle)
+    ensure_service_enabled()?;
+    shutdown(Some(&app_handle)).await
 }
 
 #[tauri::command]
@@ -1335,6 +1391,7 @@ pub async fn send_server_message(
     app_handle: tauri::AppHandle,
     request: SendServerMessageRequest,
 ) -> Result<LanDeliveryResult, String> {
+    ensure_service_enabled()?;
     let content = request.content.trim().to_string();
     if content.is_empty() {
         return Err("消息不能为空".to_string());
@@ -1389,6 +1446,7 @@ pub async fn offer_server_files(
     app_handle: tauri::AppHandle,
     request: OfferLanFilesRequest,
 ) -> Result<LanFileOfferResult, String> {
+    ensure_service_enabled()?;
     let mut recipients = request.to_ids;
     if let Some(to_id) = request.to_id {
         recipients.push(to_id);
@@ -1459,6 +1517,7 @@ pub async fn respond_server_transfer(
     app_handle: tauri::AppHandle,
     request: RespondLanTransferRequest,
 ) -> Result<LanTransfer, String> {
+    ensure_service_enabled()?;
     let conn = open_database(&state_paths()?.0)?;
     let transfer = load_server_transfer(&conn, &request.transfer_id)?;
     if transfer.direction != "incoming" {
@@ -1512,6 +1571,7 @@ pub async fn cancel_server_transfer(
     app_handle: tauri::AppHandle,
     request: CancelLanTransferRequest,
 ) -> Result<LanTransfer, String> {
+    ensure_service_enabled()?;
     let outbound = SERVER_RUNTIME
         .lock()
         .map_err(|e| e.to_string())?
@@ -1534,6 +1594,7 @@ pub async fn cancel_server_transfer(
 pub async fn test_pmc_server_speed(
     app_handle: tauri::AppHandle,
 ) -> Result<SpeedTestResult, String> {
+    ensure_service_enabled()?;
     let result: Result<SpeedTestResult, String> = async {
         let (address, device_id, credential) = {
             let db_path = state_paths()?.0;
@@ -1665,7 +1726,11 @@ pub async fn test_pmc_server_speed(
 
 #[cfg(test)]
 mod tests {
-    use super::should_pause_automatic_reconnect;
+    use super::{should_pause_automatic_reconnect, shutdown, SERVER_RUNTIME};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::watch;
 
     #[test]
     fn authentication_failures_pause_automatic_reconnect() {
@@ -1675,5 +1740,40 @@ mod tests {
         ));
         assert!(should_pause_automatic_reconnect("设备凭据无效"));
         assert!(!should_pause_automatic_reconnect("连接服务器超时"));
+    }
+
+    #[tokio::test]
+    async fn shutdown_cancels_connection_and_transfer_tasks() {
+        let connection_stopped = Arc::new(AtomicBool::new(false));
+        let connection_stopped_task = connection_stopped.clone();
+        let (connection_cancel, mut connection_cancelled) = watch::channel(false);
+        let (transfer_cancel, mut transfer_cancelled) = watch::channel(false);
+        let connection_task = tokio::spawn(async move {
+            let _ = connection_cancelled.changed().await;
+            connection_stopped_task.store(true, Ordering::SeqCst);
+        });
+        {
+            let mut runtime = SERVER_RUNTIME.lock().unwrap();
+            runtime.cancel = Some(connection_cancel);
+            runtime.connection_task = Some(connection_task);
+            runtime
+                .transfer_cancellations
+                .insert("test-transfer".into(), transfer_cancel);
+            runtime.status.connecting = true;
+        }
+
+        shutdown(None).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), transfer_cancelled.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(*transfer_cancelled.borrow());
+        assert!(connection_stopped.load(Ordering::SeqCst));
+        let runtime = SERVER_RUNTIME.lock().unwrap();
+        assert!(runtime.cancel.is_none());
+        assert!(runtime.connection_task.is_none());
+        assert!(runtime.transfer_cancellations.is_empty());
+        assert!(!runtime.status.connected);
+        assert!(!runtime.status.connecting);
     }
 }
