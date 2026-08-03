@@ -1,0 +1,254 @@
+{
+  "$id": "https://pm-center.local/schema/v1/module-manifest.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": true,
+  "definitions": {
+    "Capability": {
+      "enum": [
+        "app.profile.read",
+        "app.profile.write",
+        "app.settings.read",
+        "app.settings.write",
+        "notification.send",
+        "clipboard.read",
+        "clipboard.write",
+        "filesystem.dialog.open",
+        "filesystem.external.read",
+        "filesystem.external.write",
+        "project.open",
+        "project.files.read",
+        "project.files.write",
+        "project.metadata.read",
+        "project.metadata.write",
+        "cache.inspect",
+        "cache.maintain",
+        "task.run",
+        "task.cancel",
+        "python.execute",
+        "python.packages.manage",
+        "process.spawn",
+        "network.http.request",
+        "network.lan.discover",
+        "network.lan.message",
+        "network.lan.transfer",
+        "network.server.connect",
+        "render.inspect",
+        "render.queue.read",
+        "render.queue.write",
+        "render.worker.execute",
+        "render.result.commit"
+      ],
+      "type": "string"
+    },
+    "ModuleContributions": {
+      "additionalProperties": true,
+      "properties": {
+        "contextCommands": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "dataSources": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "settingsSections": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "shellTabs": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "surfaces": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tools": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "widgets": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "workflowNodes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "workspaceTabs": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "ModuleDataPolicy": {
+      "additionalProperties": true,
+      "properties": {
+        "deleteRequiresExplicitAction": {
+          "default": true,
+          "type": "boolean"
+        },
+        "retainOnDisable": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "ModuleDependency": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "versionRequirement": {
+          "default": "*",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "ModuleScope": {
+      "enum": [
+        "global",
+        "project"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "apiVersion": {
+      "type": "string"
+    },
+    "backgroundServices": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "builtin": {
+      "default": false,
+      "type": "boolean"
+    },
+    "capabilities": {
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/Capability"
+      },
+      "type": "array"
+    },
+    "conflicts": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "contributes": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ModuleContributions"
+        }
+      ],
+      "default": {
+        "contextCommands": [],
+        "dataSources": [],
+        "settingsSections": [],
+        "shellTabs": [],
+        "surfaces": [],
+        "tools": [],
+        "widgets": [],
+        "workflowNodes": [],
+        "workspaceTabs": []
+      }
+    },
+    "dataPolicy": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ModuleDataPolicy"
+        }
+      ],
+      "default": {
+        "deleteRequiresExplicitAction": true,
+        "retainOnDisable": true
+      }
+    },
+    "description": {
+      "default": "",
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "optionalModules": {
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/ModuleDependency"
+      },
+      "type": "array"
+    },
+    "requiresModules": {
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/ModuleDependency"
+      },
+      "type": "array"
+    },
+    "schemaVersion": {
+      "const": 1,
+      "format": "uint16",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "scope": {
+      "$ref": "#/definitions/ModuleScope"
+    },
+    "version": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "apiVersion",
+    "id",
+    "name",
+    "schemaVersion",
+    "scope",
+    "version"
+  ],
+  "title": "ModuleManifestV1",
+  "type": "object"
+}

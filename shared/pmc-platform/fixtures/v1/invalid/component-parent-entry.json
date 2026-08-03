@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "test.component",
+  "name": "Invalid component",
+  "version": "1.0.0",
+  "apiVersion": "1",
+  "runtime": "native-process",
+  "platforms": ["windows-x64"],
+  "entry": "../outside.exe"
+}
+

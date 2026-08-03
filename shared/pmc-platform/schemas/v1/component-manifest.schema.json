@@ -1,0 +1,305 @@
+{
+  "$id": "https://pm-center.local/schema/v1/component-manifest.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": true,
+  "definitions": {
+    "Capability": {
+      "enum": [
+        "app.profile.read",
+        "app.profile.write",
+        "app.settings.read",
+        "app.settings.write",
+        "notification.send",
+        "clipboard.read",
+        "clipboard.write",
+        "filesystem.dialog.open",
+        "filesystem.external.read",
+        "filesystem.external.write",
+        "project.open",
+        "project.files.read",
+        "project.files.write",
+        "project.metadata.read",
+        "project.metadata.write",
+        "cache.inspect",
+        "cache.maintain",
+        "task.run",
+        "task.cancel",
+        "python.execute",
+        "python.packages.manage",
+        "process.spawn",
+        "network.http.request",
+        "network.lan.discover",
+        "network.lan.message",
+        "network.lan.transfer",
+        "network.server.connect",
+        "render.inspect",
+        "render.queue.read",
+        "render.queue.write",
+        "render.worker.execute",
+        "render.result.commit"
+      ],
+      "type": "string"
+    },
+    "ComponentContributions": {
+      "additionalProperties": true,
+      "properties": {
+        "dataSources": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "toolActions": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ToolActionContribution"
+          },
+          "type": "array"
+        },
+        "widgets": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "workflowNodes": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/WorkflowNodeContribution"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "ComponentResourceLimits": {
+      "additionalProperties": true,
+      "properties": {
+        "maxMemoryMb": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "maxParallelism": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "timeoutMs": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ComponentRuntime": {
+      "enum": [
+        "python-action",
+        "python-worker",
+        "native-process",
+        "native-library",
+        "data-pack",
+        "builtin-rust"
+      ],
+      "type": "string"
+    },
+    "PlatformTarget": {
+      "enum": [
+        "any",
+        "windows-x64",
+        "windows-arm64"
+      ],
+      "type": "string"
+    },
+    "PortDefinition": {
+      "additionalProperties": true,
+      "properties": {
+        "description": {
+          "default": "",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "required": {
+          "default": false,
+          "type": "boolean"
+        },
+        "type": {
+          "$ref": "#/definitions/PortValueType"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "type": "object"
+    },
+    "PortValueType": {
+      "enum": [
+        "string",
+        "integer",
+        "number",
+        "boolean",
+        "json",
+        "path",
+        "file",
+        "directory",
+        "artifact",
+        "string-list",
+        "file-list"
+      ],
+      "type": "string"
+    },
+    "ToolActionContribution": {
+      "additionalProperties": true,
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "command",
+        "id",
+        "name"
+      ],
+      "type": "object"
+    },
+    "WorkflowNodeContribution": {
+      "additionalProperties": true,
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "inputs": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/PortDefinition"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "outputs": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/PortDefinition"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "command",
+        "id",
+        "name"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "apiVersion": {
+      "type": "string"
+    },
+    "capabilities": {
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/Capability"
+      },
+      "type": "array"
+    },
+    "contributes": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ComponentContributions"
+        }
+      ],
+      "default": {
+        "dataSources": [],
+        "toolActions": [],
+        "widgets": [],
+        "workflowNodes": []
+      }
+    },
+    "description": {
+      "default": "",
+      "type": "string"
+    },
+    "entry": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "id": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "platforms": {
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/PlatformTarget"
+      },
+      "type": "array"
+    },
+    "publisher": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "resources": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ComponentResourceLimits"
+        }
+      ],
+      "default": {}
+    },
+    "runtime": {
+      "$ref": "#/definitions/ComponentRuntime"
+    },
+    "schemaVersion": {
+      "const": 1,
+      "format": "uint16",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "version": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "apiVersion",
+    "id",
+    "name",
+    "runtime",
+    "schemaVersion",
+    "version"
+  ],
+  "title": "ComponentManifestV1",
+  "type": "object"
+}

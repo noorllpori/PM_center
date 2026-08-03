@@ -36,7 +36,7 @@ Windows MSI 安装包会在系统“已安装的应用”中显示发布者“�
 - 类似内网通的局域网通信模式；
 - Blender 外部渲染控制端与渲染节点模式。
 
-规划包含真正的模块启停与资源释放、装配方案导入导出、Python/原生进程/隔离 DLL/资料包组件、媒体资料库，以及复用局域网同步的 Blender 渲染农场。完整设计和实施路线见 [下一代 DIY 可组合平台规划](./docs/NEXT_MAJOR_MODULAR_PLATFORM.md)。
+规划包含真正的模块启停与资源释放、装配方案导入导出、Python/原生进程/隔离 DLL/资料包组件、媒体资料库，以及复用局域网同步的 Blender 渲染农场。架构设计见 [下一代 DIY 可组合平台规划](./docs/NEXT_MAJOR_MODULAR_PLATFORM.md)，具体步骤、前置依赖和验收门槛见 [实施顺序与验收路线](./docs/NEXT_MAJOR_IMPLEMENTATION_ROADMAP.md)，当前合同候选见 [平台 schema v1](./docs/NEXT_MAJOR_SCHEMA_V1.md)。
 
 ### 已完成
 

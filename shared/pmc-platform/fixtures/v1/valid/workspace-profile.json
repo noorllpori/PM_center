@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "id": "example.render-controller",
+  "name": "Blender 渲染控制端",
+  "description": "用于验证 DIY 装配能力的普通方案",
+  "revision": 1,
+  "enabledModules": [
+    { "id": "render.batch", "versionRequirement": "^1.0" },
+    { "id": "lan.transport", "versionRequirement": "^1.0" }
+  ],
+  "moduleSettings": {
+    "render.batch": {
+      "maxBlenderProcesses": 4
+    }
+  },
+  "shellLayout": {
+    "home": "render-dashboard",
+    "navigation": ["render-dashboard"],
+    "pinnedTools": ["render.center", "render.farm-controller"],
+    "navigationKind": "top-bar"
+  },
+  "dataSources": [
+    {
+      "id": "render-queue",
+      "source": "render.queue-source",
+      "scope": "global"
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "render-dashboard",
+      "title": "渲染控制台",
+      "kind": "dashboard",
+      "layout": "responsive-grid",
+      "widgets": [
+        {
+          "id": "queue-summary",
+          "widget": "render.queue-summary",
+          "dataSource": "render-queue",
+          "order": 0,
+          "grid": {
+            "column": 0,
+            "row": 0,
+            "width": 6,
+            "height": 4
+          },
+          "visibleWhen": {
+            "kind": "module-enabled",
+            "moduleId": "render.batch"
+          }
+        }
+      ]
+    }
+  ],
+  "commandBindings": [
+    {
+      "id": "create-batch",
+      "command": "render.create-batch",
+      "placement": "toolbar",
+      "surface": "render-dashboard",
+      "order": 0
+    }
+  ],
+  "workflowBindings": [
+    {
+      "id": "prepare-render",
+      "trigger": "render.batch-created",
+      "workflow": "render.prepare-and-dispatch",
+      "enabled": true
+    }
+  ],
+  "variables": {
+    "blenderRequirement": "blender@5.x",
+    "ffmpegRequirement": "ffmpeg@system-or-configured"
+  }
+}
+

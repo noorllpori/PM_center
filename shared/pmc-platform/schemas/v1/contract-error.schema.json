@@ -1,0 +1,49 @@
+{
+  "$id": "https://pm-center.local/schema/v1/contract-error.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ContractErrorCode": {
+      "enum": [
+        "MALFORMED_DOCUMENT",
+        "UNSUPPORTED_SCHEMA_VERSION",
+        "INVALID_STABLE_ID",
+        "INVALID_LOCAL_ID",
+        "INVALID_VERSION",
+        "INVALID_VERSION_REQUIREMENT",
+        "INVALID_RELATIVE_PATH",
+        "INVALID_DIGEST",
+        "UNKNOWN_CAPABILITY",
+        "DUPLICATE_ID",
+        "SELF_DEPENDENCY",
+        "MISSING_DEPENDENCY",
+        "DEPENDENCY_CYCLE",
+        "MODULE_CONFLICT",
+        "INVALID_REFERENCE",
+        "INVALID_PORT",
+        "TYPE_MISMATCH",
+        "WORKFLOW_CYCLE",
+        "INVALID_RUNTIME_CONFIGURATION",
+        "INVALID_PACKAGE_HEADER"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "code": {
+      "$ref": "#/definitions/ContractErrorCode"
+    },
+    "message": {
+      "type": "string"
+    },
+    "path": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "code",
+    "message",
+    "path"
+  ],
+  "title": "ContractError",
+  "type": "object"
+}

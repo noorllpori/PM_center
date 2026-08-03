@@ -1,0 +1,268 @@
+{
+  "$id": "https://pm-center.local/schema/v1/workflow-manifest.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": true,
+  "definitions": {
+    "WorkflowEdge": {
+      "additionalProperties": true,
+      "properties": {
+        "from": {
+          "$ref": "#/definitions/WorkflowPortReference"
+        },
+        "to": {
+          "$ref": "#/definitions/WorkflowPortReference"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "type": "object"
+    },
+    "WorkflowExecutionTarget": {
+      "enum": [
+        "local",
+        "prefer-remote",
+        "require-remote"
+      ],
+      "type": "string"
+    },
+    "WorkflowInput": {
+      "oneOf": [
+        {
+          "properties": {
+            "source": {
+              "enum": [
+                "literal"
+              ],
+              "type": "string"
+            },
+            "value": true
+          },
+          "required": [
+            "source",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "source": {
+              "enum": [
+                "profile-variable"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "source"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "WorkflowNode": {
+      "additionalProperties": true,
+      "properties": {
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "execution": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/WorkflowExecutionTarget"
+            }
+          ],
+          "default": "local"
+        },
+        "id": {
+          "type": "string"
+        },
+        "inputs": {
+          "additionalProperties": {
+            "$ref": "#/definitions/WorkflowInput"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "nodeType": {
+          "type": "string"
+        },
+        "retry": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/WorkflowRetryPolicy"
+            }
+          ],
+          "default": {
+            "backoffMultiplier": 1,
+            "delayMs": 5000,
+            "maxAttempts": 1
+          }
+        },
+        "timeoutMs": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "nodeType"
+      ],
+      "type": "object"
+    },
+    "WorkflowPortReference": {
+      "properties": {
+        "node": {
+          "type": "string"
+        },
+        "port": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "node",
+        "port"
+      ],
+      "type": "object"
+    },
+    "WorkflowRetryPolicy": {
+      "properties": {
+        "backoffMultiplier": {
+          "default": 1,
+          "format": "uint8",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "delayMs": {
+          "default": 5000,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "maxAttempts": {
+          "default": 1,
+          "format": "uint8",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "WorkflowTrigger": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "manual"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "event": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "event"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "cron": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "schedule"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "cron",
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "properties": {
+    "description": {
+      "default": "",
+      "type": "string"
+    },
+    "edges": {
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/WorkflowEdge"
+      },
+      "type": "array"
+    },
+    "id": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "nodes": {
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/WorkflowNode"
+      },
+      "type": "array"
+    },
+    "schemaVersion": {
+      "const": 1,
+      "format": "uint16",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "trigger": {
+      "$ref": "#/definitions/WorkflowTrigger"
+    },
+    "variables": {
+      "additionalProperties": true,
+      "default": {},
+      "type": "object"
+    },
+    "version": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "name",
+    "schemaVersion",
+    "trigger",
+    "version"
+  ],
+  "title": "WorkflowManifestV1",
+  "type": "object"
+}

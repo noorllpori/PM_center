@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "test.profile",
+  "name": "Invalid profile",
+  "surfaces": [
+    { "id": "main", "kind": "dashboard", "layout": "stack" },
+    { "id": "main", "kind": "dashboard", "layout": "stack" }
+  ]
+}
+

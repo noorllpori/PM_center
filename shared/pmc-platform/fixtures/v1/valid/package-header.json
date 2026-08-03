@@ -1,0 +1,18 @@
+{
+  "magic": "PMC_PACKAGE",
+  "schemaVersion": 1,
+  "formatVersion": 1,
+  "kind": "profile",
+  "packageId": "example.render-controller",
+  "createdAt": 1785744000000,
+  "producerVersion": "2.8.4",
+  "payload": {
+    "path": "payload/profile.json",
+    "digest": {
+      "algorithm": "blake3",
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "sizeBytes": 4096
+  }
+}
+

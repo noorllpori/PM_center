@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "test.workflow",
+  "name": "Invalid workflow",
+  "version": "1.0.0",
+  "trigger": { "kind": "manual" },
+  "nodes": [
+    { "id": "alpha", "nodeType": "test.alpha" },
+    { "id": "beta", "nodeType": "test.beta" }
+  ],
+  "edges": [
+    {
+      "from": { "node": "alpha", "port": "out" },
+      "to": { "node": "beta", "port": "in" }
+    },
+    {
+      "from": { "node": "beta", "port": "out" },
+      "to": { "node": "alpha", "port": "in" }
+    }
+  ]
+}
+

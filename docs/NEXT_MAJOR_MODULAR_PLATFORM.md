@@ -295,8 +295,14 @@ render.result-review
   "apiVersion": "1",
   "scope": "global",
   "builtin": true,
-  "requiresModules": ["render.batch", "lan.transport", "lan.project-sync"],
-  "optionalModules": ["lan.chat"],
+  "requiresModules": [
+    {"id": "render.batch", "versionRequirement": "^1.0"},
+    {"id": "lan.transport", "versionRequirement": "^1.0"},
+    {"id": "lan.project-sync", "versionRequirement": "^1.0"}
+  ],
+  "optionalModules": [
+    {"id": "lan.chat", "versionRequirement": "*"}
+  ],
   "conflicts": [],
   "capabilities": [
     "project.files.read",
@@ -305,9 +311,9 @@ render.result-review
   ],
   "backgroundServices": ["farm-scheduler"],
   "contributes": {
-    "workspaceTabs": ["render-farm"],
-    "tools": ["render-farm-controller"],
-    "settingsSections": ["render-farm"],
+    "workspaceTabs": ["render.farm-tab"],
+    "tools": ["render.farm-controller"],
+    "settingsSections": ["render.farm-settings"],
     "workflowNodes": []
   },
   "dataPolicy": {
@@ -361,30 +367,36 @@ Module Manager 应统一登记：
   "schemaVersion": 1,
   "id": "example.render-controller",
   "name": "Blender 渲染控制端",
+  "revision": 1,
   "enabledModules": [
-    "task.center",
-    "lan.transport",
-    "lan.project-sync",
-    "render.inspector",
-    "render.batch",
-    "render.farm-controller"
+    {"id": "task.center", "versionRequirement": "^1.0"},
+    {"id": "lan.transport", "versionRequirement": "^1.0"},
+    {"id": "lan.project-sync", "versionRequirement": "^1.0"},
+    {"id": "render.inspector", "versionRequirement": "^1.0"},
+    {"id": "render.batch", "versionRequirement": "^1.0"},
+    {"id": "render.farm-controller", "versionRequirement": "^1.0"}
   ],
   "moduleSettings": {},
   "shellLayout": {
     "home": "render-dashboard",
     "navigation": ["render-dashboard", "render-queue", "node-manager"],
-    "pinnedTools": ["render-center", "render-farm-controller"]
+    "pinnedTools": ["render.center", "render.farm-controller"]
   },
   "surfaces": [
     {
       "id": "render-dashboard",
       "kind": "dashboard",
       "layout": "responsive-grid",
-      "widgets": ["render.queue-summary", "farm.node-status", "task.activity"]
+    "widgets": [
+      {"id": "queue-summary", "widget": "render.queue-summary", "order": 0},
+      {"id": "node-status", "widget": "farm.node-status", "order": 1},
+      {"id": "task-activity", "widget": "task.activity", "order": 2}
+    ]
     }
   ],
   "commandBindings": [
     {
+      "id": "create-render-batch",
       "command": "render.create-batch",
       "placement": "toolbar",
       "surface": "render-dashboard"
@@ -392,6 +404,7 @@ Module Manager 应统一登记：
   ],
   "workflowBindings": [
     {
+      "id": "prepare-render",
       "trigger": "render.batch-created",
       "workflow": "render.prepare-and-dispatch"
     }
@@ -555,8 +568,18 @@ pmc-component-host.exe
   "entry": "bin/windows-x64/duplicate-detector.exe",
   "capabilities": ["project.files.read"],
   "contributes": {
-    "workflowNodes": ["media.find-duplicates"],
-    "toolActions": ["media.find-duplicates-now"]
+    "workflowNodes": [
+      {
+        "id": "media.find-duplicates",
+        "command": "scan",
+        "name": "检测重复媒体",
+        "inputs": [{"name": "roots", "type": "file-list", "required": true}],
+        "outputs": [{"name": "groups", "type": "json", "required": true}]
+      }
+    ],
+    "toolActions": [
+      {"id": "media.find-duplicates-now", "command": "scan", "name": "立即检测重复项"}
+    ]
   },
   "resources": {
     "maxMemoryMb": 1024,
@@ -599,21 +622,22 @@ pmc-component-host.exe
   "schemaVersion": 1,
   "id": "render.prepare-and-dispatch",
   "name": "装配并发送渲染任务",
-  "trigger": "manual",
+  "version": "1.0.0",
+  "trigger": {"kind": "manual"},
   "nodes": [
-    {"id":"inspect","component":"render.inspect-scene","command":"inspect"},
-    {"id":"manifest","component":"asset.build-manifest","command":"build"},
-    {"id":"select-node","component":"farm.select-node","command":"select"},
-    {"id":"sync","component":"asset.sync","command":"sync"},
-    {"id":"render","component":"render.remote-worker","command":"render"},
-    {"id":"collect","component":"render.result-collector","command":"collect"}
+    {"id":"inspect","nodeType":"render.inspect-scene"},
+    {"id":"manifest","nodeType":"asset.build-manifest"},
+    {"id":"select-node","nodeType":"farm.select-node"},
+    {"id":"sync","nodeType":"asset.sync"},
+    {"id":"render","nodeType":"render.remote-worker","execution":"require-remote"},
+    {"id":"collect","nodeType":"render.result-collector"}
   ],
   "edges": [
-    ["inspect","manifest"],
-    ["manifest","select-node"],
-    ["select-node","sync"],
-    ["sync","render"],
-    ["render","collect"]
+    {"from":{"node":"inspect","port":"scene"},"to":{"node":"manifest","port":"scene"}},
+    {"from":{"node":"manifest","port":"manifest"},"to":{"node":"select-node","port":"manifest"}},
+    {"from":{"node":"select-node","port":"node"},"to":{"node":"sync","port":"node"}},
+    {"from":{"node":"sync","port":"package"},"to":{"node":"render","port":"package"}},
+    {"from":{"node":"render","port":"results"},"to":{"node":"collect","port":"results"}}
   ]
 }
 ```
@@ -841,9 +865,9 @@ interface ModuleDefinition {
   name: string;
   version: string;
   scope: 'global' | 'project';
-  requiresModules: string[];
-  optionalModules: string[];
-  capabilities: string[];
+  requiresModules: ModuleDependency[];
+  optionalModules: ModuleDependency[];
+  capabilities: Capability[];
   contributions: ModuleContributions;
 }
 
@@ -851,10 +875,12 @@ interface WorkspaceProfile {
   schemaVersion: 1;
   id: string;
   name: string;
-  enabledModules: string[];
+  revision: number;
+  enabledModules: ProfileModuleSelection[];
   moduleSettings: Record<string, unknown>;
   shellLayout: ProfileShellLayout;
   surfaces: ProfileSurface[];
+  dataSources: ProfileDataSource[];
   commandBindings: ProfileCommandBinding[];
   workflowBindings: ProfileWorkflowBinding[];
   variables: Record<string, string>;
@@ -958,6 +984,8 @@ logs/components/
 5. 数据迁移全部幂等，失败时旧版本数据仍可读取或回滚。
 
 ## 19. 分阶段实施路线
+
+本节记录架构级阶段。具体开发顺序、前置依赖、每步交付物、自动/人工验收、退出门槛和产品确认模板统一见 `docs/NEXT_MAJOR_IMPLEMENTATION_ROADMAP.md`。实际开发以该执行路线为准，不允许跳过尚未 accepted 的前置里程碑。
 
 ### 阶段 0：设计冻结与测试基线
 
