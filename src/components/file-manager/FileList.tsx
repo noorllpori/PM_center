@@ -6,6 +6,7 @@ import {
   useProjectStoreShallow,
 } from "../../stores/projectStore";
 import { usePluginStore } from "../../stores/pluginStore";
+import { useContributionRegistryStore } from "../../stores/contributionRegistryStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useTaskStore } from "../../stores/taskStore";
 import { useUiStore } from "../../stores/uiStore";
@@ -52,6 +53,10 @@ import { useResolvedImageSource } from "../image-viewer/useResolvedImageSource";
 import { normalizeMdtReferenceKey } from "../../utils/mdt";
 import { cacheResolvedPreviewThumbnail } from "./thumbnailCache";
 import { isVirtualFile } from "../../utils/collections";
+import {
+  CONTEXT_COMMAND_CONTRIBUTIONS,
+  isContributionAvailable,
+} from "../../features/contributionRegistry";
 
 function formatSize(bytes: number): string {
   if (bytes === 0) return "-";
@@ -1215,6 +1220,11 @@ export function FileList({
     (state) => state.byProject[pluginProjectKey],
   );
   const loadPlugins = usePluginStore((state) => state.loadPlugins);
+  const contributionSnapshot = useContributionRegistryStore((state) => state.snapshot);
+  const pluginContextCommandsAvailable = isContributionAvailable(
+    contributionSnapshot,
+    CONTEXT_COMMAND_CONTRIBUTIONS.legacyPluginActions,
+  );
   const {
     draggedPaths,
     startInternalDrag,
@@ -1419,12 +1429,17 @@ export function FileList({
   );
 
   useEffect(() => {
-    if (!projectPath) {
+    if (!projectPath || !pluginContextCommandsAvailable) {
       return;
     }
 
-    void loadPlugins(projectPath);
-  }, [loadPlugins, projectPath]);
+    void loadPlugins(projectPath).catch((error) => {
+      const snapshot = useContributionRegistryStore.getState().snapshot;
+      if (isContributionAvailable(snapshot, CONTEXT_COMMAND_CONTRIBUTIONS.legacyPluginActions)) {
+        console.error("Failed to load file context plugins:", error);
+      }
+    });
+  }, [loadPlugins, pluginContextCommandsAvailable, projectPath]);
 
   const clearDropHoverState = useCallback(() => {
     pendingHoverTargetRef.current = null;
@@ -2446,6 +2461,7 @@ export function FileList({
   const fileContextPluginActions = useMemo(() => {
     if (
       !projectPath ||
+      !pluginContextCommandsAvailable ||
       contextMenu?.kind !== "file" ||
       !fileContextPluginContext
     ) {
@@ -2461,12 +2477,14 @@ export function FileList({
     contextMenu,
     fileContextPluginContext,
     pluginState?.descriptors,
+    pluginContextCommandsAvailable,
     projectPath,
   ]);
 
   const fileContextPluginDebugInfo = useMemo(() => {
     if (
       !projectPath ||
+      !pluginContextCommandsAvailable ||
       contextMenu?.kind !== "file" ||
       !fileContextPluginContext
     ) {
@@ -2486,6 +2504,7 @@ export function FileList({
     contextMenu,
     fileContextPluginContext,
     pluginState?.descriptors,
+    pluginContextCommandsAvailable,
     projectPath,
   ]);
 
@@ -2500,6 +2519,7 @@ export function FileList({
   const currentDirectoryPluginActions = useMemo(() => {
     if (
       !projectPath ||
+      !pluginContextCommandsAvailable ||
       contextMenu?.kind !== "directory" ||
       !currentDirectoryPluginContext
     ) {
@@ -2515,12 +2535,14 @@ export function FileList({
     contextMenu,
     currentDirectoryPluginContext,
     pluginState?.descriptors,
+    pluginContextCommandsAvailable,
     projectPath,
   ]);
 
   const currentDirectoryPluginDebugInfo = useMemo(() => {
     if (
       !projectPath ||
+      !pluginContextCommandsAvailable ||
       contextMenu?.kind !== "directory" ||
       !currentDirectoryPluginContext
     ) {
@@ -2540,6 +2562,7 @@ export function FileList({
     contextMenu,
     currentDirectoryPluginContext,
     pluginState?.descriptors,
+    pluginContextCommandsAvailable,
     projectPath,
   ]);
 

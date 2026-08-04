@@ -60,6 +60,51 @@ export const TOOL_CONTRIBUTIONS = {
   smartClipboard: contribution('builtin.smart-clipboard.tool', 'tools', BUILTIN_MODULE_IDS.smartClipboard),
 } as const;
 
+export interface SettingsSectionContributionDefinition extends ContributionDefinition {
+  scopes: readonly ('global' | 'project')[];
+  title: string;
+}
+
+export const SETTINGS_SECTION_CONTRIBUTIONS = {
+  automationRuntime: {
+    ...contribution(
+      'builtin.automation-runtime.settings-section',
+      'settingsSections',
+      BUILTIN_MODULE_IDS.automationRuntime,
+    ),
+    scopes: ['global', 'project'],
+    title: '任务脚本与插件',
+  },
+} as const satisfies Record<string, SettingsSectionContributionDefinition>;
+
+export type ContextCommandTarget = 'file' | 'directoryBackground' | 'collection';
+
+export interface ContextCommandContributionDefinition extends ContributionDefinition {
+  targets: readonly ContextCommandTarget[];
+  title: string;
+}
+
+export const CONTEXT_COMMAND_CONTRIBUTIONS = {
+  legacyPluginActions: {
+    ...contribution(
+      'builtin.automation-runtime.plugin-context-commands',
+      'contextCommands',
+      BUILTIN_MODULE_IDS.automationRuntime,
+    ),
+    targets: ['file', 'directoryBackground'],
+    title: '插件右键动作',
+  },
+  projectCollections: {
+    ...contribution(
+      'builtin.project-resources.collection-context-commands',
+      'contextCommands',
+      BUILTIN_MODULE_IDS.projectResources,
+    ),
+    targets: ['file', 'collection'],
+    title: '项目集合命令',
+  },
+} as const satisfies Record<string, ContextCommandContributionDefinition>;
+
 export interface ShellTabContributionDefinition extends ContributionDefinition {
   tabId: string;
   tabType: 'lan';

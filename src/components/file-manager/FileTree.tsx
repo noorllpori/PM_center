@@ -6,6 +6,7 @@ import {
   useProjectStoreShallow,
 } from "../../stores/projectStore";
 import { usePluginStore } from "../../stores/pluginStore";
+import { useContributionRegistryStore } from "../../stores/contributionRegistryStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useTaskStore } from "../../stores/taskStore";
 import { useUiStore } from "../../stores/uiStore";
@@ -43,6 +44,10 @@ import {
   shouldExcludeFile,
 } from "../../utils/excludePatterns";
 import { normalizeMdtReferenceKey } from "../../utils/mdt";
+import {
+  CONTEXT_COMMAND_CONTRIBUTIONS,
+  isContributionAvailable,
+} from "../../features/contributionRegistry";
 
 const SYSTEM_CONTEXT_DOUBLE_TRIGGER_MS = 350;
 
@@ -357,6 +362,11 @@ export function FileTree({ onOpenDirectoryTab, rootPath, rootTitle }: FileTreePr
     (state) => state.byProject[pluginProjectKey],
   );
   const loadPlugins = usePluginStore((state) => state.loadPlugins);
+  const contributionSnapshot = useContributionRegistryStore((state) => state.snapshot);
+  const pluginContextCommandsAvailable = isContributionAvailable(
+    contributionSnapshot,
+    CONTEXT_COMMAND_CONTRIBUTIONS.legacyPluginActions,
+  );
   const {
     draggedPaths,
     startInternalDrag,
@@ -465,12 +475,17 @@ export function FileTree({ onOpenDirectoryTab, rootPath, rootTitle }: FileTreePr
   }, [isExcluded, rootPath, searchTerm, showExcludedFiles, treeData]);
 
   useEffect(() => {
-    if (!projectPath) {
+    if (!projectPath || !pluginContextCommandsAvailable) {
       return;
     }
 
-    void loadPlugins(projectPath);
-  }, [loadPlugins, projectPath]);
+    void loadPlugins(projectPath).catch((error) => {
+      const snapshot = useContributionRegistryStore.getState().snapshot;
+      if (isContributionAvailable(snapshot, CONTEXT_COMMAND_CONTRIBUTIONS.legacyPluginActions)) {
+        console.error("Failed to load tree context plugins:", error);
+      }
+    });
+  }, [loadPlugins, pluginContextCommandsAvailable, projectPath]);
 
   const openSystemContextMenu = useCallback(
     async (file: FileInfo) => {
@@ -557,7 +572,12 @@ export function FileTree({ onOpenDirectoryTab, rootPath, rootTitle }: FileTreePr
   }, [buildFileContext, contextDirectory, contextMenu]);
 
   const fileContextPluginActions = useMemo(() => {
-    if (!projectPath || !contextMenu || !fileContextPluginContext) {
+    if (
+      !projectPath ||
+      !pluginContextCommandsAvailable ||
+      !contextMenu ||
+      !fileContextPluginContext
+    ) {
       return [];
     }
 
@@ -570,11 +590,17 @@ export function FileTree({ onOpenDirectoryTab, rootPath, rootTitle }: FileTreePr
     contextMenu,
     fileContextPluginContext,
     pluginState?.descriptors,
+    pluginContextCommandsAvailable,
     projectPath,
   ]);
 
   const fileContextPluginDebugInfo = useMemo(() => {
-    if (!projectPath || !contextMenu || !fileContextPluginContext) {
+    if (
+      !projectPath ||
+      !pluginContextCommandsAvailable ||
+      !contextMenu ||
+      !fileContextPluginContext
+    ) {
       return "";
     }
 
@@ -591,6 +617,7 @@ export function FileTree({ onOpenDirectoryTab, rootPath, rootTitle }: FileTreePr
     contextMenu,
     fileContextPluginContext,
     pluginState?.descriptors,
+    pluginContextCommandsAvailable,
     projectPath,
   ]);
 

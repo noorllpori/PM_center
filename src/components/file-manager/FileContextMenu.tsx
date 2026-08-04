@@ -24,7 +24,14 @@ import {
   type PluginFileContextSubmenuEntry,
 } from '../../utils/pluginActions';
 import { useClipboardStore } from '../../stores/clipboardStore';
+import { useContributionRegistryStore } from '../../stores/contributionRegistryStore';
 import { useUiStore } from '../../stores/uiStore';
+import {
+  CONTEXT_COMMAND_CONTRIBUTIONS,
+  getContributionUnavailableReason,
+  isContributionAvailable,
+  type ContributionDefinition,
+} from '../../features/contributionRegistry';
 
 interface SystemClipboardStatus {
   hasFiles: boolean;
@@ -347,12 +354,22 @@ export function FileContextMenu({
   const submenuRef = useRef<HTMLDivElement>(null);
   const { items: clipboardItems, cut, copy, paste, pasteSystem, hasItem } = useClipboardStore();
   const showToast = useUiStore((state) => state.showToast);
+  const contributionSnapshot = useContributionRegistryStore((state) => state.snapshot);
+  const pluginCommandsAvailable = isContributionAvailable(
+    contributionSnapshot,
+    CONTEXT_COMMAND_CONTRIBUTIONS.legacyPluginActions,
+  );
+  const collectionCommandsAvailable = isContributionAvailable(
+    contributionSnapshot,
+    CONTEXT_COMMAND_CONTRIBUTIONS.projectCollections,
+  );
   const [systemClipboardStatus, setSystemClipboardStatus] = useState<SystemClipboardStatus>({
     hasFiles: false,
     hasImage: false,
   });
   const [openPluginSubmenu, setOpenPluginSubmenu] = useState<OpenPluginSubmenu | null>(null);
-  const pluginMenuEntries = buildFileContextPluginMenuEntries(pluginActions);
+  const effectivePluginActions = pluginCommandsAvailable ? pluginActions : [];
+  const pluginMenuEntries = buildFileContextPluginMenuEntries(effectivePluginActions);
   const isManualCollection = file.entry_kind === 'manual_collection';
   const isImageSequence = file.entry_kind === 'image_sequence';
   const isVirtualEntry = isManualCollection || isImageSequence;
@@ -392,6 +409,21 @@ export function FileContextMenu({
       setOpenPluginSubmenu(null);
     }
   }, [openPluginSubmenu, pluginMenuEntries.inlineEntries, pluginMenuEntries.sectionEntries]);
+
+  const ensureContributionAvailable = (
+    definition: ContributionDefinition,
+    title: string,
+  ) => {
+    const snapshot = useContributionRegistryStore.getState().snapshot;
+    const unavailableReason = getContributionUnavailableReason(snapshot, definition);
+    if (!unavailableReason) {
+      return true;
+    }
+
+    showToast({ title, message: unavailableReason, tone: 'warning' });
+    onClose();
+    return false;
+  };
 
   const handleOpen = async () => {
     try {
@@ -523,6 +555,12 @@ export function FileContextMenu({
   };
 
   const handleCreateCollection = async () => {
+    if (!ensureContributionAvailable(
+      CONTEXT_COMMAND_CONTRIBUTIONS.projectCollections,
+      '集合命令不可用',
+    )) {
+      return;
+    }
     try {
       await onCreateCollection?.();
     } catch (error) {
@@ -532,6 +570,12 @@ export function FileContextMenu({
   };
 
   const handleAddSelectionToCollection = async (collection?: FileInfo) => {
+    if (!ensureContributionAvailable(
+      CONTEXT_COMMAND_CONTRIBUTIONS.projectCollections,
+      '集合命令不可用',
+    )) {
+      return;
+    }
     try {
       await onAddSelectionToCollection?.(collection);
     } catch (error) {
@@ -541,6 +585,12 @@ export function FileContextMenu({
   };
 
   const handleRemoveFromCollection = async () => {
+    if (!ensureContributionAvailable(
+      CONTEXT_COMMAND_CONTRIBUTIONS.projectCollections,
+      '集合命令不可用',
+    )) {
+      return;
+    }
     try {
       await onRemoveFromCollection?.(file);
     } catch (error) {
@@ -550,6 +600,12 @@ export function FileContextMenu({
   };
 
   const handleRenameCollection = async () => {
+    if (!ensureContributionAvailable(
+      CONTEXT_COMMAND_CONTRIBUTIONS.projectCollections,
+      '集合命令不可用',
+    )) {
+      return;
+    }
     try {
       await onRenameCollection?.(file);
     } catch (error) {
@@ -559,6 +615,12 @@ export function FileContextMenu({
   };
 
   const handleDeleteCollection = async () => {
+    if (!ensureContributionAvailable(
+      CONTEXT_COMMAND_CONTRIBUTIONS.projectCollections,
+      '集合命令不可用',
+    )) {
+      return;
+    }
     try {
       await onDeleteCollection?.(file);
     } catch (error) {
@@ -596,6 +658,12 @@ export function FileContextMenu({
   };
 
   const handleRunPluginAction = (action: PluginAction) => {
+    if (!ensureContributionAvailable(
+      CONTEXT_COMMAND_CONTRIBUTIONS.legacyPluginActions,
+      '插件右键动作不可用',
+    )) {
+      return;
+    }
     setOpenPluginSubmenu(null);
     onRunPluginAction?.(action);
     onClose();
@@ -629,7 +697,7 @@ export function FileContextMenu({
   const isCutItem = clipboardItems.some((item) => item.action === 'cut' && item.path === file.path);
   const menuStyle = useContextMenuStyle(menuRef, x, y, 560, [
     file.is_dir,
-    pluginActions.length,
+    effectivePluginActions.length,
     pluginMenuEntries.inlineEntries.length,
     pluginMenuEntries.sectionEntries.length,
   ]);
@@ -651,7 +719,7 @@ export function FileContextMenu({
           {isManualCollection ? '打开集合' : '打开序列'}
         </MenuItem>
 
-        {isManualCollection && (
+        {isManualCollection && collectionCommandsAvailable && (
           <>
             <MenuDivider />
 
@@ -708,7 +776,7 @@ export function FileContextMenu({
 
         <MenuDivider />
 
-        {onRemoveFromCollection && (
+        {collectionCommandsAvailable && onRemoveFromCollection && (
           <>
             <MenuItem onClick={handleRemoveFromCollection} icon={<FolderMinus className="w-4 h-4" />}>
               从集合中移除
@@ -744,21 +812,25 @@ export function FileContextMenu({
           在当前目录新建文件夹
         </MenuItem>
 
-        <MenuItem
-          onClick={handleCreateCollection}
-          icon={<FolderPlus className="w-4 h-4" />}
-          disabled={!canCreateCollection}
-        >
-          创建集合
-        </MenuItem>
+        {collectionCommandsAvailable && (
+          <>
+            <MenuItem
+              onClick={handleCreateCollection}
+              icon={<FolderPlus className="w-4 h-4" />}
+              disabled={!canCreateCollection}
+            >
+              创建集合
+            </MenuItem>
 
-        <MenuItem
-          onClick={() => handleAddSelectionToCollection()}
-          icon={<FolderInput className="w-4 h-4" />}
-          disabled={!canAddSelectionToCollection}
-        >
-          加入已有集合...
-        </MenuItem>
+            <MenuItem
+              onClick={() => handleAddSelectionToCollection()}
+              icon={<FolderInput className="w-4 h-4" />}
+              disabled={!canAddSelectionToCollection}
+            >
+              加入已有集合...
+            </MenuItem>
+          </>
+        )}
 
         <MenuDivider />
 
@@ -803,7 +875,7 @@ export function FileContextMenu({
           详细信息
         </MenuItem>
 
-        {pluginDebugInfo && (
+        {pluginCommandsAvailable && pluginDebugInfo && (
           <>
             <MenuDivider />
             <MenuItem onClick={handleCopyPluginDebugInfo} icon={<ClipboardCopy className="w-4 h-4" />}>
@@ -853,12 +925,18 @@ export function CurrentDirectoryContextMenu({
   const submenuRef = useRef<HTMLDivElement>(null);
   const { items: clipboardItems, paste, pasteSystem, hasItem } = useClipboardStore();
   const showToast = useUiStore((state) => state.showToast);
+  const contributionSnapshot = useContributionRegistryStore((state) => state.snapshot);
+  const pluginCommandsAvailable = isContributionAvailable(
+    contributionSnapshot,
+    CONTEXT_COMMAND_CONTRIBUTIONS.legacyPluginActions,
+  );
   const [systemClipboardStatus, setSystemClipboardStatus] = useState<SystemClipboardStatus>({
     hasFiles: false,
     hasImage: false,
   });
   const [openPluginSubmenu, setOpenPluginSubmenu] = useState<OpenPluginSubmenu | null>(null);
-  const pluginMenuEntries = buildFileContextPluginMenuEntries(pluginActions);
+  const effectivePluginActions = pluginCommandsAvailable ? pluginActions : [];
+  const pluginMenuEntries = buildFileContextPluginMenuEntries(effectivePluginActions);
 
   useContextMenuDismiss([menuRef, submenuRef], onClose);
 
@@ -939,6 +1017,20 @@ export function CurrentDirectoryContextMenu({
   };
 
   const handleRunPluginAction = (action: PluginAction) => {
+    const snapshot = useContributionRegistryStore.getState().snapshot;
+    const unavailableReason = getContributionUnavailableReason(
+      snapshot,
+      CONTEXT_COMMAND_CONTRIBUTIONS.legacyPluginActions,
+    );
+    if (unavailableReason) {
+      showToast({
+        title: '插件右键动作不可用',
+        message: unavailableReason,
+        tone: 'warning',
+      });
+      onClose();
+      return;
+    }
     setOpenPluginSubmenu(null);
     onRunPluginAction?.(action);
     onClose();
@@ -993,7 +1085,7 @@ export function CurrentDirectoryContextMenu({
   const hasSystemPasteSource = systemClipboardStatus.hasFiles || systemClipboardStatus.hasImage;
   const canPaste = hasItem() || hasSystemPasteSource;
   const menuStyle = useContextMenuStyle(menuRef, x, y, 260, [
-    pluginActions.length,
+    effectivePluginActions.length,
     pluginMenuEntries.inlineEntries.length,
     pluginMenuEntries.sectionEntries.length,
   ]);
@@ -1042,7 +1134,7 @@ export function CurrentDirectoryContextMenu({
           </>
         )}
 
-        {pluginDebugInfo && (
+        {pluginCommandsAvailable && pluginDebugInfo && (
           <>
             <MenuDivider />
             <MenuItem onClick={handleCopyPluginDebugInfo} icon={<ClipboardCopy className="w-4 h-4" />}>

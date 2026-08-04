@@ -38,7 +38,12 @@ import { AlertDialog, ConfirmDialog, Dialog } from './Dialog';
 import { ModuleDiagnosticsSection } from './settings/ModuleDiagnosticsSection';
 import { CapabilityDiagnosticsSection } from './settings/CapabilityDiagnosticsSection';
 import { useOptionalProjectStoreShallow } from '../stores/projectStore';
+import { useContributionRegistryStore } from '../stores/contributionRegistryStore';
 import { BlenderInstallationInfo, ToolPaths, useSettingsStore } from '../stores/settingsStore';
+import {
+  SETTINGS_SECTION_CONTRIBUTIONS,
+  isContributionAvailable,
+} from '../features/contributionRegistry';
 import {
   DEFAULT_EXCLUDE_PATTERNS,
   PRESET_EXCLUDE_PATTERNS,
@@ -204,12 +209,24 @@ function pluginInfoToneClass(tone?: string | null) {
   }
 }
 
+function isAutomationSettingsContributionAvailable() {
+  return isContributionAvailable(
+    useContributionRegistryStore.getState().snapshot,
+    SETTINGS_SECTION_CONTRIBUTIONS.automationRuntime,
+  );
+}
+
 export function SettingsPanel({
   isOpen,
   onClose,
   defaultScope = 'global',
   onOpenProject,
 }: SettingsPanelProps) {
+  const contributionSnapshot = useContributionRegistryStore((state) => state.snapshot);
+  const automationSettingsAvailable = isContributionAvailable(
+    contributionSnapshot,
+    SETTINGS_SECTION_CONTRIBUTIONS.automationRuntime,
+  );
   const {
     autoOpenLastProject,
     launchOnStartup,
@@ -321,13 +338,23 @@ export function SettingsPanel({
   }, [globalExcludePatterns, isOpen]);
 
   useEffect(() => {
-    if (!isOpen) {
+    if (!isOpen || !automationSettingsAvailable) {
+      setGlobalTaskScriptsPath(null);
       return;
     }
 
     void invoke<string>('get_global_task_scripts_path')
-      .then((path) => setGlobalTaskScriptsPath(path))
+      .then((path) => {
+        const snapshot = useContributionRegistryStore.getState().snapshot;
+        if (isContributionAvailable(snapshot, SETTINGS_SECTION_CONTRIBUTIONS.automationRuntime)) {
+          setGlobalTaskScriptsPath(path);
+        }
+      })
       .catch((error) => {
+        const snapshot = useContributionRegistryStore.getState().snapshot;
+        if (!isContributionAvailable(snapshot, SETTINGS_SECTION_CONTRIBUTIONS.automationRuntime)) {
+          return;
+        }
         console.error('Failed to load global task scripts path:', error);
         setAlertDialog({
           isOpen: true,
@@ -335,7 +362,7 @@ export function SettingsPanel({
           message: String(error),
         });
       });
-  }, [isOpen]);
+  }, [automationSettingsAvailable, isOpen]);
 
   const loadToolStatuses = useCallback(async () => {
     setIsLoadingTools(true);
@@ -363,16 +390,29 @@ export function SettingsPanel({
   }, [isOpen, loadToolStatuses]);
 
   const loadPluginSection = useCallback(async () => {
+    if (!isAutomationSettingsContributionAvailable()) {
+      setIsLoadingPlugins(false);
+      return;
+    }
+
     setIsLoadingPlugins(true);
     try {
       const [descriptors, directories] = await Promise.all([
         refreshProjectPlugins(projectPath),
         loadPluginDirsFromStore(projectPath),
       ]);
+      const snapshot = useContributionRegistryStore.getState().snapshot;
+      if (!isContributionAvailable(snapshot, SETTINGS_SECTION_CONTRIBUTIONS.automationRuntime)) {
+        return;
+      }
       setPluginDescriptors(descriptors);
       setPluginSettingsDrafts(buildPluginSettingsDrafts(descriptors));
       setPluginDirectories(directories);
     } catch (error) {
+      const snapshot = useContributionRegistryStore.getState().snapshot;
+      if (!isContributionAvailable(snapshot, SETTINGS_SECTION_CONTRIBUTIONS.automationRuntime)) {
+        return;
+      }
       console.error('Failed to load plugins:', error);
       setAlertDialog({
         isOpen: true,
@@ -385,7 +425,7 @@ export function SettingsPanel({
   }, [loadPluginDirsFromStore, projectPath, refreshProjectPlugins]);
 
   useEffect(() => {
-    if (!isOpen) {
+    if (!isOpen || !automationSettingsAvailable) {
       setPluginDescriptors([]);
       setPluginDirectories(null);
       setIsLoadingPlugins(false);
@@ -397,7 +437,7 @@ export function SettingsPanel({
     }
 
     void loadPluginSection();
-  }, [isOpen, loadPluginSection]);
+  }, [automationSettingsAvailable, isOpen, loadPluginSection]);
 
   const sortedRecentProjects = useMemo(
     () => [...recentProjects].sort((left, right) => right.openedAt - left.openedAt),
@@ -729,10 +769,17 @@ export function SettingsPanel({
   };
 
   const handleTogglePlugin = async (plugin: PluginDescriptor, enabled: boolean) => {
+    if (!isAutomationSettingsContributionAvailable()) {
+      return;
+    }
+
     try {
       await togglePlugin(projectPath, plugin.key, enabled);
       await loadPluginSection();
     } catch (error) {
+      if (!isAutomationSettingsContributionAvailable()) {
+        return;
+      }
       setAlertDialog({
         isOpen: true,
         title: enabled ? '启用插件失败' : '禁用插件失败',
@@ -742,12 +789,19 @@ export function SettingsPanel({
   };
 
   const handleInspectPluginDependencies = async (plugin: PluginDescriptor) => {
+    if (!isAutomationSettingsContributionAvailable()) {
+      return;
+    }
+
     setPluginDependencyPending({ pluginKey: plugin.key, action: 'inspect' });
 
     try {
       await inspectPluginDependencies(plugin.key, projectPath);
       await loadPluginSection();
     } catch (error) {
+      if (!isAutomationSettingsContributionAvailable()) {
+        return;
+      }
       setAlertDialog({
         isOpen: true,
         title: '检查插件依赖失败',
@@ -759,16 +813,26 @@ export function SettingsPanel({
   };
 
   const handleInstallPluginDependencies = async (plugin: PluginDescriptor) => {
+    if (!isAutomationSettingsContributionAvailable()) {
+      return;
+    }
+
     setPluginDependencyPending({ pluginKey: plugin.key, action: 'install' });
 
     try {
       await installPluginDependencies(plugin.key, projectPath);
       await loadPluginSection();
+      if (!isAutomationSettingsContributionAvailable()) {
+        return;
+      }
       setExpandedPluginDependencyKeys((state) => ({
         ...state,
         [plugin.key]: true,
       }));
     } catch (error) {
+      if (!isAutomationSettingsContributionAvailable()) {
+        return;
+      }
       setAlertDialog({
         isOpen: true,
         title: '安装插件依赖失败',
@@ -784,12 +848,19 @@ export function SettingsPanel({
       return;
     }
 
+    if (!isAutomationSettingsContributionAvailable()) {
+      return;
+    }
+
     setPluginDependencyPending({ pluginKey: plugin.key, action: 'remove' });
 
     try {
       await removePluginDependencies(plugin.key, projectPath);
       await loadPluginSection();
     } catch (error) {
+      if (!isAutomationSettingsContributionAvailable()) {
+        return;
+      }
       setAlertDialog({
         isOpen: true,
         title: '删除插件依赖失败',
@@ -825,6 +896,10 @@ export function SettingsPanel({
     plugin: PluginDescriptor,
     field: PluginSettingsField,
   ) => {
+    if (!isAutomationSettingsContributionAvailable()) {
+      return;
+    }
+
     try {
       const allowedExtensions = (field.accept ?? [])
         .map((value) => value.trim().replace(/^\./, '').toLowerCase())
@@ -847,8 +922,15 @@ export function SettingsPanel({
         return;
       }
 
+      if (!isAutomationSettingsContributionAvailable()) {
+        return;
+      }
+
       handlePluginSettingsDraftChange(plugin.key, field.key, selected);
     } catch (error) {
+      if (!isAutomationSettingsContributionAvailable()) {
+        return;
+      }
       setAlertDialog({
         isOpen: true,
         title: '选择插件设置文件失败',
@@ -858,6 +940,10 @@ export function SettingsPanel({
   };
 
   const handleSavePluginSettings = async (plugin: PluginDescriptor) => {
+    if (!isAutomationSettingsContributionAvailable()) {
+      return;
+    }
+
     setPluginSettingsPending({ pluginKey: plugin.key, action: 'save' });
 
     try {
@@ -868,6 +954,9 @@ export function SettingsPanel({
       );
       await loadPluginSection();
     } catch (error) {
+      if (!isAutomationSettingsContributionAvailable()) {
+        return;
+      }
       setAlertDialog({
         isOpen: true,
         title: '保存插件设置失败',
@@ -883,12 +972,19 @@ export function SettingsPanel({
       return;
     }
 
+    if (!isAutomationSettingsContributionAvailable()) {
+      return;
+    }
+
     setPluginSettingsPending({ pluginKey: plugin.key, action: 'reset' });
 
     try {
       await resetPluginSettings(plugin.key, projectPath);
       await loadPluginSection();
     } catch (error) {
+      if (!isAutomationSettingsContributionAvailable()) {
+        return;
+      }
       setAlertDialog({
         isOpen: true,
         title: '重置插件设置失败',
@@ -1719,34 +1815,38 @@ export function SettingsPanel({
         },
       })}
 
-      <section className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
-        <div className="flex items-center gap-2 mb-3">
-          <FolderOpen className="w-4 h-4 text-blue-500" />
-          <div className="flex-1">
-            <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">全局任务脚本目录</h4>
-            <p className="text-xs text-gray-500 mt-1">这里存放所有项目共用的通用任务脚本。</p>
+      {automationSettingsAvailable && (
+        <section className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <FolderOpen className="w-4 h-4 text-blue-500" />
+            <div className="flex-1">
+              <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">全局任务脚本目录</h4>
+              <p className="text-xs text-gray-500 mt-1">这里存放所有项目共用的通用任务脚本。</p>
+            </div>
+            {renderDirectoryActionButtons({
+              targetPath: globalTaskScriptsPath,
+              explorerAction: () => void handleOpenGlobalTaskScriptsDir(),
+              projectAction: () => void handleOpenDirectoryAsProject(globalTaskScriptsPath),
+            })}
           </div>
-          {renderDirectoryActionButtons({
-            targetPath: globalTaskScriptsPath,
-            explorerAction: () => void handleOpenGlobalTaskScriptsDir(),
-            projectAction: () => void handleOpenDirectoryAsProject(globalTaskScriptsPath),
-          })}
-        </div>
 
-        <div className="rounded-lg bg-gray-50 dark:bg-gray-800 px-3 py-3">
-          <p className="text-xs text-gray-500 mb-1">目录位置</p>
-          <p className="text-sm text-gray-900 dark:text-gray-100 break-all">
-            {globalTaskScriptsPath || '读取中...'}
-          </p>
-        </div>
-      </section>
+          <div className="rounded-lg bg-gray-50 dark:bg-gray-800 px-3 py-3">
+            <p className="text-xs text-gray-500 mb-1">目录位置</p>
+            <p className="text-sm text-gray-900 dark:text-gray-100 break-all">
+              {globalTaskScriptsPath || '读取中...'}
+            </p>
+          </div>
+        </section>
+      )}
 
-      {renderPluginSection({
-        title: '全局插件',
-        description: '扫描应用级插件目录，供所有项目使用。项目内同 id 插件会覆盖这里的全局插件。',
-        directoryPath: pluginDirectories?.globalPath,
-        plugins: globalPlugins,
-      })}
+      {automationSettingsAvailable
+        ? renderPluginSection({
+            title: '全局插件',
+            description: '扫描应用级插件目录，供所有项目使用。项目内同 id 插件会覆盖这里的全局插件。',
+            directoryPath: pluginDirectories?.globalPath,
+            plugins: globalPlugins,
+          })
+        : null}
 
       <section className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
         <div className="flex items-center gap-2 mb-3">
@@ -2141,12 +2241,14 @@ export function SettingsPanel({
         </div>
       )}
 
-      {renderPluginSection({
-        title: '项目插件',
-        description: `当前项目：${projectName || '未打开项目'}。这里的插件只对当前项目生效，并且会覆盖同 id 的全局插件。`,
-        directoryPath: pluginDirectories?.projectPath,
-        plugins: projectPlugins,
-      })}
+      {automationSettingsAvailable
+        ? renderPluginSection({
+            title: '项目插件',
+            description: `当前项目：${projectName || '未打开项目'}。这里的插件只对当前项目生效，并且会覆盖同 id 的全局插件。`,
+            directoryPath: pluginDirectories?.projectPath,
+            plugins: projectPlugins,
+          })
+        : null}
 
       {needsProjectRefresh && (
         <div className="flex items-start gap-2 rounded-lg border border-yellow-200 bg-yellow-50 px-3 py-2 text-sm text-yellow-700">

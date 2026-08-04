@@ -25,6 +25,8 @@ pub const AUTOMATION_TASK_TOOL_ID: &str = "builtin.automation-runtime.task-tool"
 pub const AUTOMATION_PYTHON_SURFACE_ID: &str = "builtin.automation-runtime.python-surface";
 pub const AUTOMATION_TASK_SURFACE_ID: &str = "builtin.automation-runtime.task-surface";
 pub const AUTOMATION_SETTINGS_SECTION_ID: &str = "builtin.automation-runtime.settings-section";
+pub const AUTOMATION_PLUGIN_CONTEXT_COMMANDS_ID: &str =
+    "builtin.automation-runtime.plugin-context-commands";
 pub const RENDER_TOOL_ID: &str = "builtin.render-center.tool";
 pub const RENDER_WORKSPACE_TAB_ID: &str = "builtin.render-center.workspace-tab";
 pub const RENDER_SURFACE_ID: &str = "builtin.render-center.surface";
@@ -33,6 +35,8 @@ pub const PROJECT_MDT_TOOL_ID: &str = "builtin.project-resources.mdt-tool";
 pub const PROJECT_CACHE_WORKSPACE_TAB_ID: &str = "builtin.project-resources.cache-workspace-tab";
 pub const PROJECT_CACHE_SURFACE_ID: &str = "builtin.project-resources.cache-surface";
 pub const PROJECT_MDT_SURFACE_ID: &str = "builtin.project-resources.mdt-surface";
+pub const PROJECT_COLLECTION_CONTEXT_COMMANDS_ID: &str =
+    "builtin.project-resources.collection-context-commands";
 pub const LAN_MAIN_TOOL_ID: &str = "builtin.lan-collaboration.main-tool";
 pub const LAN_PROJECT_TOOL_ID: &str = "builtin.lan-collaboration.project-tool";
 pub const LAN_SHELL_TAB_ID: &str = "builtin.lan-collaboration.shell-tab";
@@ -156,6 +160,7 @@ pub fn automation_runtime_module() -> RegisteredModule {
                     AUTOMATION_TASK_SURFACE_ID.into(),
                 ],
                 settings_sections: vec![AUTOMATION_SETTINGS_SECTION_ID.into()],
+                context_commands: vec![AUTOMATION_PLUGIN_CONTEXT_COMMANDS_ID.into()],
                 ..ModuleContributions::default()
             },
             data_policy: ModuleDataPolicy::default(),
@@ -489,6 +494,7 @@ pub fn project_resources_module(
                     PROJECT_CACHE_SURFACE_ID.into(),
                     PROJECT_MDT_SURFACE_ID.into(),
                 ],
+                context_commands: vec![PROJECT_COLLECTION_CONTEXT_COMMANDS_ID.into()],
                 ..ModuleContributions::default()
             },
             data_policy: ModuleDataPolicy::default(),
@@ -1157,6 +1163,10 @@ mod project_resource_tests {
             .contributes
             .surfaces
             .contains(&PROJECT_CACHE_SURFACE_ID.to_string()));
+        assert_eq!(
+            module.manifest.contributes.context_commands,
+            vec![PROJECT_COLLECTION_CONTEXT_COMMANDS_ID.to_string()]
+        );
     }
 
     #[test]
@@ -1203,6 +1213,7 @@ mod project_resource_tests {
             ("surfaces", AUTOMATION_PYTHON_SURFACE_ID),
             ("surfaces", AUTOMATION_TASK_SURFACE_ID),
             ("settingsSections", AUTOMATION_SETTINGS_SECTION_ID),
+            ("contextCommands", AUTOMATION_PLUGIN_CONTEXT_COMMANDS_ID),
             ("tools", RENDER_TOOL_ID),
             ("workspaceTabs", RENDER_WORKSPACE_TAB_ID),
             ("surfaces", RENDER_SURFACE_ID),
@@ -1211,6 +1222,7 @@ mod project_resource_tests {
             ("workspaceTabs", PROJECT_CACHE_WORKSPACE_TAB_ID),
             ("surfaces", PROJECT_CACHE_SURFACE_ID),
             ("surfaces", PROJECT_MDT_SURFACE_ID),
+            ("contextCommands", PROJECT_COLLECTION_CONTEXT_COMMANDS_ID),
             ("tools", LAN_MAIN_TOOL_ID),
             ("tools", LAN_PROJECT_TOOL_ID),
             ("shellTabs", LAN_SHELL_TAB_ID),
@@ -1245,6 +1257,10 @@ mod project_resource_tests {
         assert_eq!(
             automation.manifest.contributes.settings_sections,
             vec![AUTOMATION_SETTINGS_SECTION_ID.to_string()]
+        );
+        assert_eq!(
+            automation.manifest.contributes.context_commands,
+            vec![AUTOMATION_PLUGIN_CONTEXT_COMMANDS_ID.to_string()]
         );
 
         let clipboard = smart_clipboard_module(std::env::temp_dir());
