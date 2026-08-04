@@ -19,6 +19,7 @@ pub const SMART_CLIPBOARD_MODULE_ID: &str = "builtin.smart-clipboard";
 pub const LAN_COLLABORATION_MODULE_ID: &str = "builtin.lan-collaboration";
 pub use crate::automation_runtime::AUTOMATION_RUNTIME_MODULE_ID;
 pub use crate::project_resources::PROJECT_RESOURCES_MODULE_ID;
+pub use crate::render_center::RENDER_CENTER_MODULE_ID;
 pub const DIAGNOSTIC_BASE_ID: &str = "diagnostic.runtime-base";
 pub const DIAGNOSTIC_WORKER_ID: &str = "diagnostic.runtime-worker";
 pub const DIAGNOSTIC_FAILING_ID: &str = "diagnostic.runtime-failing";
@@ -140,6 +141,137 @@ pub fn automation_runtime_component() -> CapabilityComponentRegistration {
         version: "1.0.0".into(),
         module_id: AUTOMATION_RUNTIME_MODULE_ID.into(),
         capabilities: automation_runtime_capabilities(),
+    }
+}
+
+struct RenderCenterLifecycle;
+
+impl ModuleLifecycle for RenderCenterLifecycle {
+    fn start<'a>(&'a self, context: ModuleContext) -> LifecycleFuture<'a, ()> {
+        Box::pin(async move {
+            crate::render_center::start_runtime();
+            let mut details = BTreeMap::new();
+            details.insert("scheduler".into(), "全局作业与 Blender 进程预算调度".into());
+            details.insert("workers".into(), "常驻与逐帧 Blender Worker".into());
+            details.insert("hooks".into(), "渲染前后置 PMC Python 脚本".into());
+            details.insert("packaging".into(), "FFmpeg 序列帧视频打包".into());
+            context.resources.register(
+                context.module_id,
+                ResourceKind::ChildProcess,
+                "渲染调度、Worker 与打包进程协调器",
+                details,
+                Box::new(|| Box::pin(crate::render_center::stop_runtime())),
+            );
+            Ok(())
+        })
+    }
+
+    fn stop<'a>(&'a self, _context: ModuleContext) -> LifecycleFuture<'a, ()> {
+        Box::pin(crate::render_center::stop_runtime())
+    }
+
+    fn health<'a>(&'a self, _context: ModuleContext) -> LifecycleFuture<'a, ModuleHealth> {
+        Box::pin(async {
+            if !crate::render_center::is_running() {
+                return Ok(ModuleHealth {
+                    level: ModuleHealthLevel::Unhealthy,
+                    message: "渲染中心当前未启用".into(),
+                    checked_at: Some(chrono::Utc::now().timestamp_millis()),
+                });
+            }
+            let jobs = crate::render_center::active_job_count();
+            let processes = crate::render_center::active_process_count();
+            let packages = crate::render_center::active_package_count();
+            let message = format!(
+                "活动作业 {jobs} 个，视频打包 {packages} 个；{}",
+                crate::render_center::active_process_summary()
+            );
+            if jobs == 0 && processes == 0 && packages == 0 {
+                Ok(ModuleHealth::healthy(
+                    "渲染中心待命，当前没有活动作业或子进程",
+                ))
+            } else if jobs > 0 && processes == 0 {
+                Ok(ModuleHealth {
+                    level: ModuleHealthLevel::Degraded,
+                    message: format!("作业已登记但尚无 Blender 进程；{message}"),
+                    checked_at: Some(chrono::Utc::now().timestamp_millis()),
+                })
+            } else {
+                Ok(ModuleHealth::healthy(message))
+            }
+        })
+    }
+
+    fn start_timeout(&self) -> Duration {
+        Duration::from_secs(5)
+    }
+
+    fn stop_timeout(&self) -> Duration {
+        Duration::from_secs(20)
+    }
+}
+
+fn render_center_capabilities() -> Vec<Capability> {
+    vec![
+        Capability::AppSettingsRead,
+        Capability::AppSettingsWrite,
+        Capability::ProjectFilesRead,
+        Capability::ProjectFilesWrite,
+        Capability::FilesystemExternalRead,
+        Capability::FilesystemExternalWrite,
+        Capability::RenderInspect,
+        Capability::RenderQueueRead,
+        Capability::RenderQueueWrite,
+        Capability::RenderWorkerExecute,
+        Capability::RenderResultCommit,
+        Capability::PythonExecute,
+        Capability::ProcessSpawn,
+    ]
+}
+
+pub fn render_center_module() -> RegisteredModule {
+    let mut extensions = ExtensionFields::new();
+    extensions.insert("defaultEnabled".into(), Value::Bool(true));
+    RegisteredModule {
+        manifest: ModuleManifestV1 {
+            schema_version: 1,
+            id: RENDER_CENTER_MODULE_ID.into(),
+            name: "渲染中心".into(),
+            description: "管理渲染队列、Blender Worker、渲染脚本、性能采样和视频打包生命周期。"
+                .into(),
+            version: "1.0.0".into(),
+            api_version: "1".into(),
+            scope: ModuleScope::Global,
+            builtin: true,
+            requires_modules: vec![ModuleDependency {
+                id: PROJECT_RESOURCES_MODULE_ID.into(),
+                version_requirement: "^1.0".into(),
+            }],
+            optional_modules: Vec::new(),
+            conflicts: Vec::new(),
+            capabilities: render_center_capabilities(),
+            background_services: vec![
+                "render-scheduler".into(),
+                "blender-worker-registry".into(),
+                "render-performance-sampling".into(),
+                "render-video-packaging".into(),
+            ],
+            contributes: ModuleContributions::default(),
+            data_policy: ModuleDataPolicy::default(),
+            extensions,
+        },
+        lifecycle: Arc::new(RenderCenterLifecycle),
+        diagnostic: false,
+    }
+}
+
+pub fn render_center_component() -> CapabilityComponentRegistration {
+    CapabilityComponentRegistration {
+        id: "builtin.render-center.service".into(),
+        name: "渲染调度与 Worker 协调组件".into(),
+        version: "1.0.0".into(),
+        module_id: RENDER_CENTER_MODULE_ID.into(),
+        capabilities: render_center_capabilities(),
     }
 }
 
@@ -955,5 +1087,29 @@ mod project_resource_tests {
             .manifest
             .background_services
             .contains(&"active-project-watcher".to_string()));
+    }
+
+    #[test]
+    fn render_center_manifest_owns_worker_and_commit_capabilities() {
+        let module = render_center_module();
+        assert_eq!(module.manifest.id, RENDER_CENTER_MODULE_ID);
+        assert_eq!(module.manifest.scope, ModuleScope::Global);
+        assert_eq!(
+            module.manifest.extensions.get("defaultEnabled"),
+            Some(&Value::Bool(true))
+        );
+        assert!(module
+            .manifest
+            .requires_modules
+            .iter()
+            .any(|dependency| dependency.id == PROJECT_RESOURCES_MODULE_ID));
+        assert!(module
+            .manifest
+            .capabilities
+            .contains(&Capability::RenderWorkerExecute));
+        assert!(module
+            .manifest
+            .capabilities
+            .contains(&Capability::RenderResultCommit));
     }
 }

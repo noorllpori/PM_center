@@ -133,7 +133,7 @@ React invoke/listen
 | 工具路径 | `tools.rs` | FFprobe、FFmpeg、Blender 路径校验与系统自动检测。 |
 | 局域网 | `p2p/mod.rs` | 全局联系人数据库、双向在线发现、个人资料/头像同步、大厅与私聊消息；由 `builtin.lan-collaboration` 生命周期统一管理 UDP/TCP、服务器连接和传输取消。 |
 | 智能剪贴板 | `smart_clipboard/` | Windows 剪贴板监听、历史 SQLite/图像载荷、原生窗口绘制、全局快捷键、内容恢复与自动粘贴。 |
-| 模块与权限运行时 | `platform/`、`automation_runtime.rs` | R2 Module Manager/ResourceRegistry 与 R3 CapabilityGateway，负责状态、资源、授权、短期 token、路径边界和审计；R4 已接入智能剪贴板、局域网协同、项目资源，以及任务/Python/旧插件进程。 |
+| 模块与权限运行时 | `platform/`、`automation_runtime.rs` | R2 Module Manager/ResourceRegistry 与 R3 CapabilityGateway，负责状态、资源、授权、短期 token、路径边界和审计；R4 已接入智能剪贴板、局域网协同、项目资源、任务/Python/旧插件和渲染中心。 |
 
 长耗时后端操作应避免阻塞 Tauri 主线程：使用 Tokio / `spawn_blocking`，向前端发进度事件，提供合理的取消与失败状态。Windows 子进程统一使用 `process_utils::{std_command, tokio_command}`，避免弹出控制台窗口。
 
@@ -176,6 +176,7 @@ React invoke/listen
 - 多 Worker 使用渐进启动，并受“作业并发”和全局 `maxBlenderProcesses` 双重限制。GPU/驱动级多开崩溃时自动降至单 Worker，不把中断帧计为失败。
 - 帧领取使用 `claimToken` 和 SQLite 事务；结果写临时文件、校验后原子替换最终输出，旧 Worker/超时 Worker 不可覆盖新输出。
 - 暂停/取消立即终止 Worker；暂停把未提交帧恢复为 pending，不增加失败次数。应用异常退出后运行帧会被恢复为可人工继续的状态。
+- `builtin.render-center` 默认启用并统一拥有调度器、常驻/逐帧 Blender Worker、性能采样、渲染前后置脚本和 FFmpeg 打包进程。停用先关闭调度闸门，再把活动作业与运行帧收敛为暂停状态并终止进程树；重新启用绝不自动继续队列。
 - 源 `.blend` 有完成帧后发生变化时进入 `attention`，用户必须重新检查或接受新源并重新排队，不能混用两个场景版本。
 - ETA 使用完成帧的鲁棒趋势预测并针对当前超时帧持续校准；前端只平滑显示后端 ETA，不应另写简单平均算法。
 - 每个任务可单独设置帧多开、执行模式、帧顺序、范围、场景、分辨率、格式；全局限制只约束实际资源占用。
@@ -190,7 +191,7 @@ React invoke/listen
 - 局域网联系人、消息和头像属于软件级全局数据，保存在应用数据目录的 `lan_collaboration.db` 与头像缓存中，不写入项目 `.pm_center`。外层 Shell 的“局域网主面板”承载联系人、大厅和私聊；项目内 `p2p` 标签是独立的功能预留入口，暂不承载聊天界面。
 - `builtin.lan-collaboration` 默认启用并统一拥有 UDP 31523、TCP 31524、Server 连接和活动传输。停用先拒绝新命令，再取消传输、关闭连接并等待监听任务退出；联系人、聊天、头像、接收文件和设置继续保留。
 - `builtin.project-resources` 默认启用并管理已打开项目的 `data.db` 注册表、TreeCache 注册表、当前活动项目 watcher 和脏目录修复任务。关闭外层项目标签先撤销项目租约，再释放句柄，防止迟到异步任务重新占用 `.pm_center`。
-- `builtin.automation-runtime` 默认启用并管理普通任务、Python/venv/pip 和旧插件动作进程。停用先拒绝新启动，再取消任务并终止登记的进程树；任务历史、脚本、venv、插件、设置和依赖数据保留。渲染中心的 Blender Worker 与渲染前后置脚本暂不归该模块所有。
+- `builtin.automation-runtime` 默认启用并管理普通任务、Python/venv/pip 和旧插件动作进程。停用先拒绝新启动，再取消任务并终止登记的进程树；任务历史、脚本、venv、插件、设置和依赖数据保留。渲染中心的 Blender Worker 与渲染前后置脚本由 `builtin.render-center` 独立托管。
 - 局域网提供两个稳定入口：主面板与主页、项目标签同级并保持全局单例；项目功能标签在每个项目内保持单例并参与项目会话恢复。当前不提供无项目独立窗口入口。
 - 局域网消息保留一个大厅与一对一私聊，记录默认保留 30 天；联系人离线后继续保留。任何文件传输、远程执行或渲染农场扩展都必须先定义权限、路径边界、失败恢复和用户确认。
 - 局域网传输使用独立于聊天消息的 `lan_transfers` 记录和 `offer -> accept/reject -> request -> stream -> verify -> receipt` 状态机。首版仅在私聊开放文件、多文件拖入、文件选择和剪贴板图片；对方确认并选择保存位置前不发送文件内容。

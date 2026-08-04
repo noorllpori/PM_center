@@ -8,7 +8,8 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Output, Stdio};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use sysinfo::{Pid, System};
@@ -19,6 +20,36 @@ use uuid::Uuid;
 const EVENT_PREFIX: &str = "PM_RENDER_EVENT ";
 const INSPECT_START: &str = "PM_RENDER_INSPECT_START";
 const INSPECT_END: &str = "PM_RENDER_INSPECT_END";
+
+pub const RENDER_CENTER_MODULE_ID: &str = "builtin.render-center";
+pub const RENDER_CENTER_DISABLED: &str = "RENDER_CENTER_MODULE_DISABLED";
+pub const RENDER_CENTER_STARTING: &str = "RENDER_CENTER_MODULE_STARTING";
+pub const RENDER_CENTER_STOPPING: &str = "RENDER_CENTER_MODULE_STOPPING";
+
+const PHASE_DISABLED: u8 = 0;
+const PHASE_STARTING: u8 = 1;
+const PHASE_RUNNING: u8 = 2;
+const PHASE_STOPPING: u8 = 3;
+
+static PHASE: AtomicU8 = AtomicU8::new(PHASE_DISABLED);
+
+#[derive(Debug, Clone)]
+struct ManagedRenderProcessRecord {
+    pid: u32,
+    kind: String,
+    label: String,
+    started_at: Instant,
+}
+
+pub struct ManagedRenderProcessLease {
+    id: Uuid,
+}
+
+impl Drop for ManagedRenderProcessLease {
+    fn drop(&mut self) {
+        MANAGED_PROCESSES.lock().unwrap().remove(&self.id);
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -309,7 +340,7 @@ fn default_max_blender_processes() -> i64 {
         .clamp(1, 4)
 }
 
-const PROGRESSIVE_WORKER_WARMUP_FRAMES: i64 = 3;
+const PROGRESSIVE_WORKER_WARMUP_FRAMES: i64 = 1;
 
 #[derive(Default)]
 struct JobControl {
@@ -365,7 +396,8 @@ async fn wait_for_progressive_worker_admission(
     loop {
         let admitted = {
             let value = control.lock().unwrap();
-            if value.cancel
+            if !is_running()
+                || value.cancel
                 || value.pause
                 || value.attention
                 || value.no_more_work
@@ -404,6 +436,293 @@ lazy_static::lazy_static! {
     static ref PROCESS_BUDGET_NOTIFY: tokio::sync::Notify = tokio::sync::Notify::new();
     static ref SOURCE_VERIFY_LOCK: Mutex<()> = Mutex::new(());
     static ref BATCH_PACKAGE_RUNNING: Mutex<HashSet<String>> = Mutex::new(HashSet::new());
+    static ref MANAGED_PROCESSES: Mutex<HashMap<Uuid, ManagedRenderProcessRecord>> =
+        Mutex::new(HashMap::new());
+}
+
+pub fn initialize_lifecycle_control() {
+    PHASE.store(PHASE_DISABLED, Ordering::SeqCst);
+    MANAGED_PROCESSES.lock().unwrap().clear();
+}
+
+pub fn set_initial_desired_enabled(desired_enabled: bool) {
+    PHASE.store(
+        if desired_enabled {
+            PHASE_STARTING
+        } else {
+            PHASE_DISABLED
+        },
+        Ordering::SeqCst,
+    );
+}
+
+pub fn start_runtime() {
+    PHASE.store(PHASE_RUNNING, Ordering::SeqCst);
+    PROCESS_BUDGET_NOTIFY.notify_waiters();
+}
+
+pub fn is_running() -> bool {
+    PHASE.load(Ordering::SeqCst) == PHASE_RUNNING
+}
+
+pub fn ensure_running() -> Result<(), String> {
+    match PHASE.load(Ordering::SeqCst) {
+        PHASE_RUNNING => Ok(()),
+        PHASE_STARTING => Err(format!("{RENDER_CENTER_STARTING}: 渲染中心正在启动")),
+        PHASE_STOPPING => Err(format!("{RENDER_CENTER_STOPPING}: 渲染中心正在停止")),
+        _ => Err(format!("{RENDER_CENTER_DISABLED}: 渲染中心已停用")),
+    }
+}
+
+pub async fn wait_until_running() -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match PHASE.load(Ordering::SeqCst) {
+            PHASE_RUNNING => return Ok(()),
+            PHASE_STARTING if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            _ => return ensure_running(),
+        }
+    }
+}
+
+fn register_managed_process(
+    pid: u32,
+    kind: impl Into<String>,
+    label: impl Into<String>,
+) -> Result<ManagedRenderProcessLease, String> {
+    ensure_running()?;
+    let id = Uuid::new_v4();
+    let record = ManagedRenderProcessRecord {
+        pid,
+        kind: kind.into(),
+        label: label.into(),
+        started_at: Instant::now(),
+    };
+    let mut processes = MANAGED_PROCESSES.lock().unwrap();
+    if !is_running() {
+        return Err(format!(
+            "{RENDER_CENTER_STOPPING}: 渲染中心已开始停止，拒绝登记新进程"
+        ));
+    }
+    processes.insert(id, record);
+    Ok(ManagedRenderProcessLease { id })
+}
+
+pub fn active_process_count() -> usize {
+    MANAGED_PROCESSES.lock().unwrap().len()
+}
+
+pub fn active_job_count() -> usize {
+    RUNTIME.lock().unwrap().running.len()
+}
+
+pub fn active_package_count() -> usize {
+    BATCH_PACKAGE_RUNNING.lock().unwrap().len()
+}
+
+pub fn active_process_summary() -> String {
+    let processes = MANAGED_PROCESSES.lock().unwrap();
+    if processes.is_empty() {
+        return "没有活动渲染子进程".into();
+    }
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    let mut oldest = Duration::ZERO;
+    let mut sample = Vec::new();
+    for process in processes.values() {
+        *counts.entry(process.kind.clone()).or_default() += 1;
+        oldest = oldest.max(process.started_at.elapsed());
+        if sample.len() < 3 {
+            sample.push(format!("{} (PID {})", process.label, process.pid));
+        }
+    }
+    let kinds = counts
+        .into_iter()
+        .map(|(kind, count)| format!("{kind} {count}"))
+        .collect::<Vec<_>>()
+        .join("，");
+    format!(
+        "活动进程 {} 个（{}），最长运行 {} 秒：{}",
+        processes.len(),
+        kinds,
+        oldest.as_secs(),
+        sample.join("；")
+    )
+}
+
+async fn run_managed_tokio_output(
+    mut command: tokio::process::Command,
+    kind: &str,
+    label: impl Into<String>,
+) -> Result<Output, String> {
+    ensure_running()?;
+    command.kill_on_drop(true);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("启动进程失败: {error}"))?;
+    let pid = child.id().ok_or_else(|| "无法获取子进程 PID".to_string())?;
+    let lease = match register_managed_process(pid, kind, label) {
+        Ok(lease) => lease,
+        Err(error) => {
+            terminate_pid_tree(pid);
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err(error);
+        }
+    };
+    let result = child
+        .wait_with_output()
+        .await
+        .map_err(|error| format!("等待进程失败: {error}"));
+    drop(lease);
+    result
+}
+
+fn job_interrupted(control: &Arc<Mutex<JobControl>>) -> bool {
+    if !is_running() {
+        return true;
+    }
+    let value = control.lock().unwrap();
+    value.cancel || value.pause || value.attention
+}
+
+async fn sleep_while_running(control: &Arc<Mutex<JobControl>>, duration: Duration) -> bool {
+    let deadline = Instant::now() + duration;
+    loop {
+        if job_interrupted(control) {
+            return false;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return true;
+        }
+        tokio::select! {
+            _ = PROCESS_BUDGET_NOTIFY.notified() => {},
+            _ = tokio::time::sleep(remaining.min(Duration::from_millis(100))) => {},
+        }
+    }
+}
+
+fn terminate_registered_processes() {
+    let pids = MANAGED_PROCESSES
+        .lock()
+        .unwrap()
+        .values()
+        .map(|process| process.pid)
+        .collect::<Vec<_>>();
+    for pid in pids {
+        terminate_pid_tree(pid);
+    }
+}
+
+fn pause_registered_runtime_jobs(reason: &str) -> Vec<String> {
+    let jobs = RUNTIME
+        .lock()
+        .unwrap()
+        .running
+        .iter()
+        .filter_map(|(key, control)| {
+            let (project_path, job_id) = key.split_once('\n')?;
+            Some((
+                project_path.to_string(),
+                job_id.to_string(),
+                control.clone(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    let projects = RUNTIME
+        .lock()
+        .unwrap()
+        .projects
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
+
+    for (_, _, control) in &jobs {
+        let mut value = control.lock().unwrap();
+        if !value.cancel && !value.attention {
+            value.pause = true;
+        }
+    }
+    for (_, _, control) in &jobs {
+        terminate_control_processes(control);
+    }
+    terminate_registered_processes();
+    PROCESS_BUDGET_NOTIFY.notify_waiters();
+
+    let mut errors = Vec::new();
+    for (project_path, job_id, control) in jobs {
+        let (cancel, attention) = {
+            let value = control.lock().unwrap();
+            (value.cancel, value.attention)
+        };
+        if attention {
+            continue;
+        }
+        match open_db(&project_path).and_then(|mut conn| {
+            settle_runtime_job(
+                &mut conn,
+                &job_id,
+                if cancel { "cancelled" } else { "paused" },
+                if cancel { "用户取消" } else { reason },
+            )
+        }) {
+            Ok(()) => {}
+            Err(error) => errors.push(format!("暂停渲染任务 {job_id} 失败: {error}")),
+        }
+    }
+    for project_path in projects {
+        let result = open_db(&project_path).and_then(|conn| {
+            conn.execute(
+                "UPDATE render_jobs SET status='paused',current_frame=NULL,finished_at=NULL,error=NULL,cpu_usage=0,memory_bytes=0,performance_updated_at=?1 WHERE archived=0 AND status IN ('pending','starting','running','pausing')",
+                params![now()],
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(())
+        });
+        if let Err(error) = result {
+            errors.push(format!("暂停项目渲染队列 {project_path} 失败: {error}"));
+        }
+    }
+    errors
+}
+
+pub async fn stop_runtime() -> Result<(), String> {
+    let previous = PHASE.swap(PHASE_STOPPING, Ordering::SeqCst);
+    if previous == PHASE_DISABLED {
+        return Ok(());
+    }
+
+    let mut errors = pause_registered_runtime_jobs("渲染中心模块已停用");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let jobs = active_job_count();
+        let processes = active_process_count();
+        let packages = active_package_count();
+        if jobs == 0 && processes == 0 && packages == 0 {
+            break;
+        }
+        if Instant::now() >= deadline {
+            errors.push(format!(
+                "停止超时，仍有 {jobs} 个渲染作业、{processes} 个子进程、{packages} 个视频打包任务未退出"
+            ));
+            break;
+        }
+        terminate_registered_processes();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    PHASE.store(PHASE_DISABLED, Ordering::SeqCst);
+    if errors.is_empty() {
+        RUNTIME.lock().unwrap().active_worker_slots = 0;
+    }
+    PROCESS_BUDGET_NOTIFY.notify_waiters();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("；"))
+    }
 }
 
 struct ProcessSlotPermit {
@@ -413,6 +732,14 @@ struct ProcessSlotPermit {
 impl ProcessSlotPermit {
     fn retire_if_over_limit(&mut self, app: &tauri::AppHandle) -> bool {
         if self.released {
+            return true;
+        }
+        if !is_running() {
+            let mut runtime = RUNTIME.lock().unwrap();
+            runtime.active_worker_slots = runtime.active_worker_slots.saturating_sub(1);
+            self.released = true;
+            drop(runtime);
+            PROCESS_BUDGET_NOTIFY.notify_waiters();
             return true;
         }
         let limit = load_scheduler_settings(app)
@@ -447,11 +774,7 @@ async fn acquire_process_slot(
     control: &Arc<Mutex<JobControl>>,
 ) -> Option<ProcessSlotPermit> {
     loop {
-        let interrupted = {
-            let value = control.lock().unwrap();
-            value.cancel || value.pause || value.attention
-        };
-        if interrupted {
+        if job_interrupted(control) {
             return None;
         }
         let limit = load_scheduler_settings(app)
@@ -990,6 +1313,7 @@ pub async fn inspect_render_sources(
     blender_path: String,
     sources: Vec<RenderSourceRequest>,
 ) -> Result<Vec<RenderSourceInfo>, String> {
+    wait_until_running().await?;
     if sources.is_empty() {
         return Ok(Vec::new());
     }
@@ -997,15 +1321,25 @@ pub async fn inspect_render_sources(
     fs::write(&temp_script, inspect_script()).map_err(|error| error.to_string())?;
     let mut result = Vec::with_capacity(sources.len());
     for source in sources {
-        let output = tokio_command(&blender_path)
+        ensure_running()?;
+        let mut command = tokio_command(&blender_path);
+        command
             .arg("-b")
             .arg(&source.path)
             .arg("--python")
             .arg(&temp_script)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await;
+            .stderr(Stdio::piped());
+        let output = run_managed_tokio_output(
+            command,
+            "blender-inspect",
+            format!("检查 Blender 场景 {}", source.path),
+        )
+        .await;
+        if !is_running() {
+            let _ = fs::remove_file(&temp_script);
+            return ensure_running().map(|_| Vec::new());
+        }
         match output {
             Ok(output) if output.status.success() => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1108,6 +1442,7 @@ pub async fn create_render_batch(
     project_path: String,
     request: CreateRenderBatchRequest,
 ) -> Result<RenderBatchResult, String> {
+    wait_until_running().await?;
     if request.jobs.is_empty() {
         return Err("至少需要一个渲染作业".into());
     }
@@ -1500,6 +1835,7 @@ pub async fn list_render_jobs(
     project_path: String,
     include_archived: Option<bool>,
 ) -> Result<Vec<RenderJob>, String> {
+    wait_until_running().await?;
     init_project_storage(&project_path)?;
     let conn = open_db(&project_path)?;
     let sql = format!(
@@ -1523,6 +1859,7 @@ pub async fn get_render_job(
     project_path: String,
     job_id: String,
 ) -> Result<RenderJobDetail, String> {
+    wait_until_running().await?;
     let conn = open_db(&project_path)?;
     let sql = format!("{} WHERE j.id=?1", JOB_SELECT);
     let job = conn
@@ -1653,7 +1990,7 @@ fn update_render_job_settings(
         return Err("帧范围无效".into());
     }
     if !(1..=8).contains(&request.parallelism) {
-        return Err("帧多开必须在 1 到 8 之间".into());
+        return Err("单任务并发必须在 1 到 8 之间".into());
     }
     if !(1..=100).contains(&request.resolution_percentage) {
         return Err("分辨率比例必须在 1 到 100 之间".into());
@@ -1875,6 +2212,7 @@ pub async fn update_render_job(
     job_id: String,
     request: UpdateRenderJobRequest,
 ) -> Result<(), String> {
+    wait_until_running().await?;
     let mut conn = open_db(&project_path)?;
     let (should_kick_scheduler, spec) = update_render_job_settings(&mut conn, &job_id, &request)?;
     let job_dir = PathBuf::from(&project_path)
@@ -1978,12 +2316,21 @@ fn worker_state(
 }
 
 fn kick_scheduler(app: tauri::AppHandle, project_path: String) {
+    if !is_running() {
+        return;
+    }
     register_runtime_project(&project_path);
     tauri::async_runtime::spawn(async move {
         let _scheduler_guard = SCHEDULER_LOCK.lock().await;
+        if !is_running() {
+            return;
+        }
         let mut started_job = false;
         let concurrency = load_scheduler_settings(&app).concurrency.clamp(1, 8) as usize;
         loop {
+            if !is_running() {
+                break;
+            }
             let _ = advance_batch_queue(&project_path);
             let running_total = RUNTIME.lock().unwrap().running.len();
             if running_total >= concurrency {
@@ -2006,6 +2353,15 @@ fn kick_scheduler(app: tauri::AppHandle, project_path: String) {
                 .unwrap_or(0);
             if claimed == 0 {
                 continue;
+            }
+            if !is_running() {
+                if let Ok(conn) = open_db(&project_path) {
+                    let _ = conn.execute(
+                        "UPDATE render_jobs SET status='paused' WHERE id=?1 AND status='starting'",
+                        params![job_id],
+                    );
+                }
+                break;
             }
             let key = format!("{}\n{}", project_path, job_id);
             let control = Arc::new(Mutex::new(JobControl::default()));
@@ -2130,6 +2486,9 @@ fn advance_batch_queue(project_path: &str) -> Result<(), String> {
 }
 
 fn kick_all_schedulers(app: tauri::AppHandle) {
+    if !is_running() {
+        return;
+    }
     let projects = {
         let mut runtime = RUNTIME.lock().unwrap();
         if runtime.project_order.is_empty() {
@@ -2251,10 +2610,10 @@ async fn run_hook(
     for (key, value) in runtime.env_vars {
         command.env(key, value);
     }
-    let output = command
-        .output()
-        .await
-        .map_err(|error| format!("{phase}脚本启动失败: {error}"))?;
+    let output =
+        run_managed_tokio_output(command, "render-hook", format!("{phase}渲染脚本 {job_id}"))
+            .await
+            .map_err(|error| format!("{phase}脚本启动失败: {error}"))?;
     if output.status.success() {
         Ok(())
     } else {
@@ -2282,7 +2641,9 @@ async fn run_job(
     emit_progress(app, project_path, job_id, None, "starting");
     if let Err(error) = run_hook(app, project_path, job_id, spec.pre_hook.as_deref(), "前置").await
     {
-        fail_job(&conn, job_id, &error)?;
+        if !job_interrupted(&control) {
+            fail_job(&conn, job_id, &error)?;
+        }
         return Err(error);
     }
     let job_dir = PathBuf::from(project_path)
@@ -2386,7 +2747,9 @@ async fn run_job(
         .unwrap_or(0);
     if let Err(error) = run_hook(app, project_path, job_id, spec.post_hook.as_deref(), "后置").await
     {
-        fail_job(&conn, job_id, &error)?;
+        if !job_interrupted(&control) {
+            fail_job(&conn, job_id, &error)?;
+        }
         return Err(error);
     }
     let status = if failed > 0 { "failed" } else { "completed" };
@@ -2756,11 +3119,7 @@ async fn run_job_worker(
     }
     let mut startup_failures = 0_i64;
     loop {
-        let interrupted = {
-            let value = control.lock().unwrap();
-            value.cancel || value.pause || value.attention
-        };
-        if interrupted {
+        if job_interrupted(&control) {
             return Ok(());
         }
         if worker_exceeds_runtime_limit(&control, ordinal) {
@@ -2795,12 +3154,14 @@ async fn run_job_worker(
                 if startup_failures > 2 {
                     return Err(format!("Blender Worker 连续启动失败: {error}"));
                 }
-                tokio::time::sleep(Duration::from_secs(if startup_failures == 1 {
-                    5
-                } else {
-                    15
-                }))
-                .await;
+                if !sleep_while_running(
+                    &control,
+                    Duration::from_secs(if startup_failures == 1 { 5 } else { 15 }),
+                )
+                .await
+                {
+                    return Ok(());
+                }
             }
         }
     }
@@ -2820,17 +3181,16 @@ async fn run_isolated_worker(
 ) -> Result<(), String> {
     let mut conn = open_db(project_path)?;
     loop {
-        let (cancel, pause, attention) = {
-            let value = control.lock().unwrap();
-            (value.cancel, value.pause, value.attention)
-        };
-        if cancel || pause || attention {
+        if job_interrupted(&control) {
             return Ok(());
         }
         if slot.retire_if_over_limit(app) {
             return Ok(());
         }
         verify_job_source(app, project_path, job_id, &spec.blend_path, &control)?;
+        if job_interrupted(&control) {
+            return Ok(());
+        }
         let Some(claim) = claim_next_frame(&mut conn, job_id, spec.max_retries, worker_id)? else {
             return Ok(());
         };
@@ -2845,18 +3205,18 @@ async fn run_isolated_worker(
             continue;
         }
         if claim.attempts > 0 {
-            tokio::time::sleep(Duration::from_secs(if claim.attempts == 1 {
-                5
-            } else {
-                15
-            }))
-            .await;
+            if !sleep_while_running(
+                &control,
+                Duration::from_secs(if claim.attempts == 1 { 5 } else { 15 }),
+            )
+            .await
+            {
+                release_frame_claim(&conn, job_id, &claim)?;
+                refresh_current_frame(&conn, job_id)?;
+                return Ok(());
+            }
         }
-        let interrupted = {
-            let value = control.lock().unwrap();
-            value.cancel || value.pause || value.attention
-        };
-        if interrupted {
+        if job_interrupted(&control) {
             release_frame_claim(&conn, job_id, &claim)?;
             refresh_current_frame(&conn, job_id)?;
             return Ok(());
@@ -2905,11 +3265,7 @@ async fn run_isolated_worker(
         .await;
         let duration = now() - started;
         let _ = fs::remove_file(frame_spec_path);
-        let interrupted = {
-            let value = control.lock().unwrap();
-            value.cancel || value.pause || value.attention
-        };
-        if interrupted {
+        if job_interrupted(&control) {
             release_frame_claim(&conn, job_id, &claim)?;
             refresh_current_frame(&conn, job_id)?;
             return Ok(());
@@ -3071,6 +3427,22 @@ async fn run_persistent_worker_process(
     if let Some(pid) = pid {
         control.lock().unwrap().pids.insert(pid);
     }
+    let _process_lease = if let Some(pid) = pid {
+        match register_managed_process(
+            pid,
+            "blender-worker",
+            format!("Blender Worker {} / {}", ordinal + 1, job_id),
+        ) {
+            Ok(lease) => Some(lease),
+            Err(_) => {
+                terminate_child_process_tree(&mut child, Some(pid)).await;
+                cleanup_worker_process(app, project_path, job_id, &control, Some(pid));
+                return Ok(PersistentWorkerOutcome::Complete);
+            }
+        }
+    } else {
+        None
+    };
     let mut stdin = child
         .stdin
         .take()
@@ -3117,11 +3489,7 @@ async fn run_persistent_worker_process(
     let mut sampler = RenderProcessSampler::new();
     let mut next_sample = Instant::now() + Duration::from_secs(1);
     let startup_ms = 'startup: loop {
-        let interrupted = {
-            let value = control.lock().unwrap();
-            value.cancel || value.pause || value.attention
-        };
-        if interrupted {
+        if job_interrupted(&control) {
             terminate_child_process_tree(&mut child, pid).await;
             cleanup_worker_process(app, project_path, job_id, &control, pid);
             publish_worker_state(
@@ -3217,11 +3585,7 @@ async fn run_persistent_worker_process(
 
     let mut conn = open_db(project_path)?;
     loop {
-        let interrupted = {
-            let value = control.lock().unwrap();
-            value.cancel || value.pause || value.attention
-        };
-        if interrupted {
+        if job_interrupted(&control) {
             terminate_child_process_tree(&mut child, pid).await;
             cleanup_worker_process(app, project_path, job_id, &control, pid);
             publish_worker_state(
@@ -3285,6 +3649,11 @@ async fn run_persistent_worker_process(
             );
             return Ok(PersistentWorkerOutcome::Complete);
         }
+        if job_interrupted(&control) {
+            terminate_child_process_tree(&mut child, pid).await;
+            cleanup_worker_process(app, project_path, job_id, &control, pid);
+            return Ok(PersistentWorkerOutcome::Complete);
+        }
         let Some(claim) = claim_next_frame(&mut conn, job_id, spec.max_retries, worker_id)? else {
             control.lock().unwrap().no_more_work = true;
             let _ = stdin.write_all(b"{\"type\":\"shutdown\"}\n").await;
@@ -3323,18 +3692,19 @@ async fn run_persistent_worker_process(
             continue;
         }
         if claim.attempts > 0 {
-            tokio::time::sleep(Duration::from_secs(if claim.attempts == 1 {
-                5
-            } else {
-                15
-            }))
-            .await;
+            if !sleep_while_running(
+                &control,
+                Duration::from_secs(if claim.attempts == 1 { 5 } else { 15 }),
+            )
+            .await
+            {
+                release_frame_claim(&conn, job_id, &claim)?;
+                terminate_child_process_tree(&mut child, pid).await;
+                cleanup_worker_process(app, project_path, job_id, &control, pid);
+                return Ok(PersistentWorkerOutcome::Complete);
+            }
         }
-        let interrupted = {
-            let value = control.lock().unwrap();
-            value.cancel || value.pause || value.attention
-        };
-        if interrupted {
+        if job_interrupted(&control) {
             release_frame_claim(&conn, job_id, &claim)?;
             terminate_child_process_tree(&mut child, pid).await;
             cleanup_worker_process(app, project_path, job_id, &control, pid);
@@ -3388,11 +3758,7 @@ async fn run_persistent_worker_process(
         );
         emit_progress(app, project_path, job_id, Some(claim.frame), "rendering");
         let frame_result: Result<i64, String> = 'frame_wait: loop {
-            let interrupted = {
-                let value = control.lock().unwrap();
-                value.cancel || value.pause || value.attention
-            };
-            if interrupted {
+            if job_interrupted(&control) {
                 terminate_child_process_tree(&mut child, pid).await;
                 release_frame_claim(&conn, job_id, &claim)?;
                 cleanup_worker_process(app, project_path, job_id, &control, pid);
@@ -3803,6 +4169,22 @@ async fn execute_frame(
     if let Some(pid) = child_pid {
         control.lock().unwrap().pids.insert(pid);
     }
+    let _process_lease = if let Some(pid) = child_pid {
+        match register_managed_process(
+            pid,
+            "blender-isolated",
+            format!("Blender 独立帧 {frame} / {job_id}"),
+        ) {
+            Ok(lease) => Some(lease),
+            Err(error) => {
+                terminate_child_process_tree(&mut child, Some(pid)).await;
+                update_worker_metrics(&control, pid, None);
+                return Err(error);
+            }
+        }
+    } else {
+        None
+    };
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let log_path = job_dir.join("render.log");
@@ -3857,11 +4239,7 @@ async fn execute_frame(
     let mut sampler = RenderProcessSampler::new();
     let mut next_performance_sample = Instant::now() + Duration::from_secs(1);
     let status = loop {
-        let interrupted = {
-            let value = control.lock().unwrap();
-            value.cancel || value.pause || value.attention
-        };
-        if interrupted {
+        if job_interrupted(&control) {
             if let Some(pid) = child_pid {
                 terminate_pid_tree(pid);
             }
@@ -3988,6 +4366,7 @@ pub async fn pause_render_job(
     project_path: String,
     job_id: String,
 ) -> Result<(), String> {
+    wait_until_running().await?;
     let mut conn = open_db(&project_path)?;
     if let Some(control) = control_for(&project_path, &job_id) {
         control.lock().unwrap().pause = true;
@@ -4030,6 +4409,7 @@ pub async fn resume_render_job(
     project_path: String,
     job_id: String,
 ) -> Result<(), String> {
+    wait_until_running().await?;
     if control_for(&project_path, &job_id).is_some() {
         return Err("Blender Worker 正在退出，请等待清理完成后再继续".into());
     }
@@ -4080,6 +4460,7 @@ pub async fn cancel_render_job(
     project_path: String,
     job_id: String,
 ) -> Result<(), String> {
+    wait_until_running().await?;
     let mut conn = open_db(&project_path)?;
     if let Some(control) = control_for(&project_path, &job_id) {
         control.lock().unwrap().cancel = true;
@@ -4124,6 +4505,7 @@ pub async fn pause_render_queue(
     app_handle: tauri::AppHandle,
     project_path: String,
 ) -> Result<(), String> {
+    wait_until_running().await?;
     let mut conn = open_db(&project_path)?;
     conn.execute(
         "UPDATE render_jobs SET status='paused' WHERE status='pending' AND archived=0",
@@ -4173,6 +4555,7 @@ pub async fn resume_render_queue(
     app_handle: tauri::AppHandle,
     project_path: String,
 ) -> Result<(), String> {
+    wait_until_running().await?;
     let conn = open_db(&project_path)?;
     conn.execute(
         "UPDATE render_jobs SET status='pending',error=NULL,finished_at=NULL WHERE status='paused' AND archived=0 AND batch_id IN (SELECT id FROM render_batches WHERE project_path=?1 AND status='running')",
@@ -4190,6 +4573,7 @@ pub async fn queue_render_frames(
     frames: Vec<i64>,
     mode: String,
 ) -> Result<(), String> {
+    wait_until_running().await?;
     if frames.is_empty() {
         return Err("请选择要处理的帧".into());
     }
@@ -4206,6 +4590,7 @@ pub async fn resolve_render_source_change(
     job_id: String,
     action: String,
 ) -> Result<(), String> {
+    wait_until_running().await?;
     if !matches!(action.as_str(), "recheck" | "acceptAndRerenderAll") {
         return Err("源文件处理方式无效".into());
     }
@@ -4318,6 +4703,7 @@ pub async fn retry_render_frames(
     job_id: String,
     frames: Option<Vec<i64>>,
 ) -> Result<(), String> {
+    wait_until_running().await?;
     let conn = open_db(&project_path)?;
     let selected = match frames.filter(|items| !items.is_empty()) {
         Some(frames) => frames,
@@ -4342,6 +4728,7 @@ pub async fn skip_render_frames(
     job_id: String,
     frames: Vec<i64>,
 ) -> Result<(), String> {
+    wait_until_running().await?;
     if frames.is_empty() {
         return Err("请选择要跳过的帧".into());
     }
@@ -4402,6 +4789,7 @@ pub async fn reorder_render_job(
     job_id: String,
     before_job_id: Option<String>,
 ) -> Result<(), String> {
+    wait_until_running().await?;
     reorder_render_job_in_db(&project_path, &job_id, before_job_id.as_deref())
 }
 
@@ -4486,6 +4874,7 @@ pub async fn reorder_render_batch(
     batch_id: String,
     before_batch_id: Option<String>,
 ) -> Result<(), String> {
+    wait_until_running().await?;
     reorder_render_batch_in_db(&project_path, &batch_id, before_batch_id.as_deref())
 }
 
@@ -4554,6 +4943,7 @@ pub async fn archive_render_job(
     job_id: String,
     archived: bool,
 ) -> Result<(), String> {
+    wait_until_running().await?;
     let conn = open_db(&project_path)?;
     conn.execute("UPDATE render_jobs SET archived=?2 WHERE id=?1 AND status NOT IN ('running','pausing','cancelling')", params![job_id,archived as i64]).map_err(|e|e.to_string())?;
     Ok(())
@@ -4564,6 +4954,7 @@ pub async fn list_render_presets(
     app_handle: tauri::AppHandle,
     project_path: String,
 ) -> Result<Vec<RenderPreset>, String> {
+    wait_until_running().await?;
     let conn = open_db(&project_path)?;
     let mut stmt = conn.prepare("SELECT id,name,scope,settings_json,created_at,updated_at FROM render_presets ORDER BY scope,name").map_err(|e|e.to_string())?;
     let presets = stmt
@@ -4632,6 +5023,7 @@ pub async fn save_render_preset(
     scope: String,
     settings: Value,
 ) -> Result<RenderPreset, String> {
+    wait_until_running().await?;
     let id = id.unwrap_or_else(|| Uuid::new_v4().to_string());
     let timestamp = now();
     if scope == "global" {
@@ -4673,6 +5065,7 @@ pub async fn delete_render_preset(
     id: String,
     scope: Option<String>,
 ) -> Result<(), String> {
+    wait_until_running().await?;
     if scope.as_deref() == Some("global") {
         let mut presets = load_global_presets(&app_handle)?;
         presets.retain(|preset| preset.id != id);
@@ -4690,6 +5083,7 @@ pub async fn get_render_scheduler_settings(
     app_handle: tauri::AppHandle,
     _project_path: String,
 ) -> Result<SchedulerSettings, String> {
+    wait_until_running().await?;
     Ok(load_scheduler_settings(&app_handle))
 }
 
@@ -4699,6 +5093,7 @@ pub async fn set_render_scheduler_settings(
     project_path: String,
     settings: SchedulerSettings,
 ) -> Result<SchedulerSettings, String> {
+    wait_until_running().await?;
     let settings = SchedulerSettings {
         concurrency: settings.concurrency.clamp(1, 8),
         max_blender_processes: settings.max_blender_processes.clamp(1, 16),
@@ -4816,8 +5211,10 @@ fn acquire_batch_package_guard(
     project_path: &str,
     batch_id: &str,
 ) -> Result<BatchPackageGuard, String> {
+    ensure_running()?;
     let key = format!("{}\u{0}{}", project_path.to_ascii_lowercase(), batch_id);
     let mut running = BATCH_PACKAGE_RUNNING.lock().unwrap();
+    ensure_running()?;
     if !running.insert(key.clone()) {
         return Err("该批次正在打包视频，请等待当前打包结束".to_string());
     }
@@ -5059,6 +5456,7 @@ fn package_render_batch_sync(
 
     let mut outputs = Vec::new();
     for (job, plan) in planned_jobs {
+        ensure_running()?;
         let short_id = job.id.get(..8).unwrap_or(&job.id);
         let name = format!(
             "{}-{}-{short_id}-{}",
@@ -5114,10 +5512,34 @@ fn package_render_batch_sync(
                 ]);
             }
         }
-        let output = command
+        command
             .arg(&output_path)
-            .output()
-            .map_err(|error| format!("启动 ffmpeg 失败: {error}"));
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = command
+            .spawn()
+            .map_err(|error| format!("启动 ffmpeg 失败: {error}"))
+            .and_then(|mut child| {
+                let pid = child.id();
+                let lease = match register_managed_process(
+                    pid,
+                    "ffmpeg-package",
+                    format!("视频打包 {}", job.name),
+                ) {
+                    Ok(lease) => lease,
+                    Err(error) => {
+                        terminate_pid_tree(pid);
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(error);
+                    }
+                };
+                let result = child
+                    .wait_with_output()
+                    .map_err(|error| format!("等待 ffmpeg 失败: {error}"));
+                drop(lease);
+                result
+            });
         let _ = fs::remove_file(&manifest_path);
         let _ = fs::remove_dir_all(&work_dir);
         let output = output?;
@@ -5155,6 +5577,7 @@ pub async fn package_render_batch(
     batch_id: String,
     request: RenderBatchPackageRequest,
 ) -> Result<RenderBatchPackageResult, String> {
+    wait_until_running().await?;
     if !request.fps.is_finite() || !(1.0..=240.0).contains(&request.fps) {
         return Err("帧率必须介于 1 到 240 fps 之间".to_string());
     }
@@ -5182,6 +5605,7 @@ pub async fn package_render_job(
     job_id: String,
     request: RenderBatchPackageRequest,
 ) -> Result<RenderBatchPackageResult, String> {
+    wait_until_running().await?;
     if !request.fps.is_finite() || !(1.0..=240.0).contains(&request.fps) {
         return Err("帧率必须介于 1 到 240 fps 之间".to_string());
     }
@@ -5212,31 +5636,128 @@ pub async fn package_render_job(
 
 #[tauri::command]
 pub async fn open_render_output(app_handle: tauri::AppHandle, path: String) -> Result<(), String> {
+    wait_until_running().await?;
     tauri_plugin_opener::OpenerExt::opener(&app_handle)
         .open_path(path, None::<&str>)
         .map_err(|e| e.to_string())
 }
 
 pub fn shutdown_all() {
-    let pids: Vec<u32> = RUNTIME
+    PHASE.store(PHASE_STOPPING, Ordering::SeqCst);
+    let controls = RUNTIME
         .lock()
         .unwrap()
         .running
         .values()
-        .flat_map(|control| {
+        .cloned()
+        .collect::<Vec<_>>();
+    for control in &controls {
+        {
             let mut value = control.lock().unwrap();
-            value.cancel = true;
-            value.pids.iter().copied().collect::<Vec<_>>()
-        })
-        .collect();
-    for pid in pids {
-        terminate_pid_tree(pid);
+            if !value.cancel && !value.attention {
+                value.pause = true;
+            }
+        }
+        terminate_control_processes(control);
     }
+    terminate_registered_processes();
+    PROCESS_BUDGET_NOTIFY.notify_waiters();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    lazy_static::lazy_static! {
+        static ref LIFECYCLE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::new(());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn lifecycle_guard_and_process_leases_are_consistent() {
+        let _guard = LIFECYCLE_TEST_LOCK.lock().await;
+        initialize_lifecycle_control();
+        assert!(ensure_running()
+            .unwrap_err()
+            .starts_with(RENDER_CENTER_DISABLED));
+
+        start_runtime();
+        let lease = register_managed_process(424_242, "test", "render lifecycle test").unwrap();
+        assert_eq!(active_process_count(), 1);
+        drop(lease);
+        assert_eq!(active_process_count(), 0);
+
+        stop_runtime().await.unwrap();
+        assert!(ensure_running()
+            .unwrap_err()
+            .starts_with(RENDER_CENTER_DISABLED));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn lifecycle_pause_releases_claims_without_counting_a_failure() {
+        let _guard = LIFECYCLE_TEST_LOCK.lock().await;
+        initialize_lifecycle_control();
+        start_runtime();
+        let root = std::env::temp_dir().join(format!("pm-render-lifecycle-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let project_path = root.to_string_lossy().to_string();
+        let temp_output = root.join("frame.part.png");
+        fs::write(&temp_output, b"partial").unwrap();
+        let conn = open_db(&project_path).unwrap();
+        conn.execute(
+            "INSERT INTO render_batches(id,project_path,name,status,created_at,updated_at) VALUES('batch',?1,'Batch','running',0,0)",
+            params![project_path],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO render_jobs(id,batch_id,project_path,name,blend_path,scene_name,status,frame_start,frame_end,frame_step,output_dir,blender_path,spec_json,position,created_at,current_frame) VALUES('job','batch',?1,'Job','test.blend','Scene','running',1,1,1,?1,'blender','{}',0,0,1)",
+            params![project_path],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO render_frames(job_id,frame,status,attempts,output_path,worker_id,claim_token,temp_output_path,updated_at) VALUES('job',1,'running',0,?1,'worker','token',?2,0)",
+            params![root.join("frame.png").to_string_lossy(), temp_output.to_string_lossy()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO render_attempts(job_id,frame,attempt,status,started_at,worker_id,claim_token,temp_output_path) VALUES('job',1,1,'running',0,'worker','token',?1)",
+            params![temp_output.to_string_lossy()],
+        )
+        .unwrap();
+        drop(conn);
+
+        register_runtime_project(&project_path);
+        let key = format!("{}\njob", project_path);
+        RUNTIME
+            .lock()
+            .unwrap()
+            .running
+            .insert(key.clone(), Arc::new(Mutex::new(JobControl::default())));
+        let errors = pause_registered_runtime_jobs("模块停用测试");
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let conn = open_db(&project_path).unwrap();
+        let state: (String, String, i64, String) = conn
+            .query_row(
+                "SELECT j.status,f.status,f.attempts,a.status FROM render_jobs j JOIN render_frames f ON f.job_id=j.id JOIN render_attempts a ON a.job_id=j.id WHERE j.id='job'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            state,
+            ("paused".into(), "pending".into(), 0, "aborted".into())
+        );
+        assert!(!temp_output.exists());
+        drop(conn);
+
+        let mut runtime = RUNTIME.lock().unwrap();
+        runtime.running.remove(&key);
+        runtime.projects.remove(&project_path);
+        runtime.project_order.retain(|path| path != &project_path);
+        drop(runtime);
+        initialize_lifecycle_control();
+        let _ = fs::remove_dir_all(root);
+    }
 
     fn eta_job(status: &str) -> RenderJob {
         RenderJob {
@@ -5973,11 +6494,10 @@ mod tests {
     }
 
     #[test]
-    fn process_crash_fallback_retires_extra_workers_once() {
+    fn progressive_startup_and_process_crash_fallback_work_together() {
         let control = Arc::new(Mutex::new(JobControl::default()));
         {
             let mut value = control.lock().unwrap();
-            value.completed_frames = 2;
             value.workers.insert(
                 "worker-1".into(),
                 worker_state("worker-1", 0, None, "ready", None, None, None),
@@ -5986,12 +6506,13 @@ mod tests {
         assert!(!progressive_worker_admitted(&control.lock().unwrap(), 1));
         {
             let mut value = control.lock().unwrap();
-            value.completed_frames = PROGRESSIVE_WORKER_WARMUP_FRAMES;
+            value.completed_frames = 1;
         }
         assert!(progressive_worker_admitted(&control.lock().unwrap(), 1));
+        assert!(!progressive_worker_admitted(&control.lock().unwrap(), 2));
         {
             let mut value = control.lock().unwrap();
-            value.completed_frames = PROGRESSIVE_WORKER_WARMUP_FRAMES * 2;
+            value.completed_frames = 2;
             value.workers.insert(
                 "worker-2".into(),
                 worker_state("worker-2", 1, None, "rendering", Some(4), None, None),
