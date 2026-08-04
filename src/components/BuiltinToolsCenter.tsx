@@ -11,6 +11,8 @@ import {
   type OpenBuiltinTool,
 } from '../features/builtinTools';
 import { useBuiltinToolsStore } from '../stores/builtinToolsStore';
+import { isContributionAvailable } from '../features/contributionRegistry';
+import { useContributionRegistryStore } from '../stores/contributionRegistryStore';
 
 interface BuiltinToolsCenterProps {
   isOpen: boolean;
@@ -31,6 +33,7 @@ export function BuiltinToolsCenter({
   const loadPreferences = useBuiltinToolsStore((state) => state.loadPreferences);
   const togglePinned = useBuiltinToolsStore((state) => state.togglePinned);
   const reorderPinned = useBuiltinToolsStore((state) => state.reorderPinned);
+  const contributionSnapshot = useContributionRegistryStore((state) => state.snapshot);
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [draggedToolId, setDraggedToolId] = useState<BuiltinToolId | null>(null);
@@ -50,18 +53,20 @@ export function BuiltinToolsCenter({
   }, [isOpen]);
 
   const filteredTools = useMemo(() => {
+    const availableTools = BUILTIN_TOOLS.filter((tool) =>
+      isContributionAvailable(contributionSnapshot, tool.contribution));
     const normalizedQuery = query.trim().toLocaleLowerCase();
     if (!normalizedQuery) {
-      return BUILTIN_TOOLS;
+      return availableTools;
     }
 
-    return BUILTIN_TOOLS.filter((tool) => {
+    return availableTools.filter((tool) => {
       const searchable = [tool.title, tool.description, ...tool.help, ...tool.keywords]
         .join(' ')
         .toLocaleLowerCase();
       return searchable.includes(normalizedQuery);
     });
-  }, [query]);
+  }, [contributionSnapshot, query]);
 
   const groupedTools = useMemo(() => BUILTIN_TOOL_CATEGORY_ORDER.flatMap((category) => {
     const tools = filteredTools.filter((tool) => tool.category === category);
@@ -74,8 +79,14 @@ export function BuiltinToolsCenter({
 
   const pinnedTools = pinnedToolIds.flatMap((toolId) => {
     const tool = BUILTIN_TOOL_BY_ID.get(toolId);
-    return tool ? [tool] : [];
+    return tool && isContributionAvailable(contributionSnapshot, tool.contribution) ? [tool] : [];
   });
+
+  useEffect(() => {
+    if (selectedIndex >= orderedFilteredTools.length) {
+      setSelectedIndex(0);
+    }
+  }, [orderedFilteredTools.length, selectedIndex]);
 
   const openTool = (toolId: BuiltinToolId) => {
     const tool = BUILTIN_TOOL_BY_ID.get(toolId);

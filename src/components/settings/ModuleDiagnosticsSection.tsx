@@ -27,6 +27,8 @@ import type {
   PlatformModuleRuntimeOverview,
   PlatformModuleState,
 } from '../../types/platformRuntime';
+import { CONTRIBUTION_KINDS } from '../../features/contributionRegistry';
+import { useContributionRegistryStore } from '../../stores/contributionRegistryStore';
 
 const STATE_LABELS: Record<PlatformModuleState, string> = {
   disabled: '已停用',
@@ -64,7 +66,16 @@ function formatCommandError(error: unknown) {
   return String(error);
 }
 
+function countDeclaredContributions(module: PlatformModuleRuntimeOverview['modules'][number]) {
+  return CONTRIBUTION_KINDS.reduce((total, kind) => {
+    const values = module.manifest.contributes?.[kind];
+    return total + (Array.isArray(values) ? values.length : 0);
+  }, 0);
+}
+
 export function ModuleDiagnosticsSection() {
+  const contributionSnapshot = useContributionRegistryStore((state) => state.snapshot);
+  const contributionError = useContributionRegistryStore((state) => state.error);
   const [overview, setOverview] = useState<PlatformModuleRuntimeOverview | null>(null);
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -77,6 +88,7 @@ export function ModuleDiagnosticsSection() {
       const [nextOverview, nextInjections] = await Promise.all([
         getPlatformModuleRuntime(),
         getPlatformModuleFailureInjections(),
+        useContributionRegistryStore.getState().refresh(),
       ]);
       setOverview(nextOverview);
       setInjections(nextInjections);
@@ -149,6 +161,10 @@ export function ModuleDiagnosticsSection() {
   );
   const managedModuleCount = modules.filter((module) => !module.diagnostic).length;
   const diagnosticModuleCount = modules.length - managedModuleCount;
+  const registeredContributionCount = CONTRIBUTION_KINDS.reduce(
+    (total, kind) => total + Object.keys(contributionSnapshot.claims[kind]).length,
+    0,
+  );
 
   return (
     <section className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
@@ -158,11 +174,11 @@ export function ModuleDiagnosticsSection() {
             <Activity className="h-4 w-4 text-blue-500" />
             <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">后台模块</h4>
             <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-500 dark:bg-gray-800 dark:text-gray-400">
-              R4
+              R4 / R5
             </span>
           </div>
           <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            智能剪贴板已由模块生命周期托管；停用会释放监听线程、原生窗口和快捷键，但保留历史数据。
+            模块生命周期负责释放后台资源；贡献注册表同步撤下工具、标签和页面，同时保留历史数据、Pin 与会话配置。
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -192,6 +208,10 @@ export function ModuleDiagnosticsSection() {
           <span>{managedModuleCount} 个已接入模块</span>
           <span>{diagnosticModuleCount} 个诊断模块</span>
           <span>{overview.resourceCount} 个已登记资源</span>
+          <span>{registeredContributionCount} 个有效贡献</span>
+          <span className={contributionSnapshot.conflicts.length > 0 ? 'text-red-600 dark:text-red-300' : ''}>
+            {contributionSnapshot.conflicts.length} 个贡献冲突
+          </span>
           <span className="min-w-0 truncate" title={overview.persistencePath}>状态：{overview.persistencePath}</span>
         </div>
       )}
@@ -202,6 +222,22 @@ export function ModuleDiagnosticsSection() {
           <span className="whitespace-pre-wrap break-all">
             {error || `${overview?.startupNotice?.code}: ${overview?.startupNotice?.message}`}
           </span>
+        </div>
+      )}
+
+      {(contributionError || contributionSnapshot.conflicts.length > 0) && (
+        <div className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div className="min-w-0 space-y-1">
+              {contributionError ? <p className="break-all">贡献注册表：{contributionError}</p> : null}
+              {contributionSnapshot.conflicts.map((conflict) => (
+                <p key={`${conflict.kind}:${conflict.contributionId}`} className="break-all">
+                  {conflict.kind} · {conflict.contributionId}：{conflict.moduleIds.join('、')}
+                </p>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 
@@ -287,6 +323,7 @@ export function ModuleDiagnosticsSection() {
               <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-gray-500 dark:text-gray-400">
                 <span>健康：{module.health.message}</span>
                 <span>资源：{module.resources.length}</span>
+                <span>贡献：{countDeclaredContributions(module)}</span>
                 {module.dependencies.map((dependency) => (
                   <span key={`${moduleId}:${dependency.id}`}>
                     {dependency.required ? '依赖' : '可选'}：{dependency.id} · {dependency.installed ? dependency.state : '未安装'}

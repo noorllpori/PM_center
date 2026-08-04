@@ -20,7 +20,14 @@ import { useResolvedImageSource } from '../image-viewer/useResolvedImageSource';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useProjectStoreShallow } from '../../stores/projectStore';
 import { useRenderStore } from '../../stores/renderStore';
+import { useContributionRegistryStore } from '../../stores/contributionRegistryStore';
+import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceTabStore } from '../../stores/workspaceTabStore';
+import {
+  WORKSPACE_TAB_CONTRIBUTIONS,
+  getWorkspaceTabContributionUnavailableReason,
+  isWorkspaceTabContributionAvailable,
+} from '../../features/contributionRegistry';
 import type { BlenderInstallationInfo } from '../../stores/settingsStore';
 import type {
   BlenderSceneRenderEdit,
@@ -894,7 +901,11 @@ export function BlenderFileTab({
   const toolPaths = useSettingsStore((state) => state.toolPaths);
   const projectPath = useProjectStoreShallow((state) => state.projectPath);
   const queueRenderSource = useRenderStore((state) => state.queueSource);
-  const openRenderCenterTab = useWorkspaceTabStore((state) => state.openRenderCenterTab);
+  const contributionSnapshot = useContributionRegistryStore((state) => state.snapshot);
+  const showToast = useUiStore((state) => state.showToast);
+  const openWorkspaceContributionTab = useWorkspaceTabStore(
+    (state) => state.openWorkspaceContributionTab,
+  );
   const blenderInstallations = useSettingsStore((state) => state.blenderInstallations);
   const [details, setDetails] = useState<FileDetailsResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -993,6 +1004,38 @@ export function BlenderFileTab({
     await loadDetails(true);
   }, [loadDetails]);
 
+  const renderCenterAvailable = isWorkspaceTabContributionAvailable(
+    contributionSnapshot,
+    WORKSPACE_TAB_CONTRIBUTIONS.render,
+  );
+
+  const handleAddToRender = useCallback(() => {
+    const snapshot = useContributionRegistryStore.getState().snapshot;
+    const unavailableReason = getWorkspaceTabContributionUnavailableReason(
+      snapshot,
+      WORKSPACE_TAB_CONTRIBUTIONS.render,
+    );
+    if (unavailableReason) {
+      showToast({
+        title: '渲染与批处理不可用',
+        message: unavailableReason,
+        tone: 'warning',
+      });
+      return;
+    }
+    if (!projectPath) {
+      showToast({
+        title: '需要打开项目',
+        message: '请先打开项目，再把 Blender 文件加入渲染。',
+        tone: 'warning',
+      });
+      return;
+    }
+
+    queueRenderSource(projectPath, filePath);
+    openWorkspaceContributionTab(WORKSPACE_TAB_CONTRIBUTIONS.render.id);
+  }, [filePath, openWorkspaceContributionTab, projectPath, queueRenderSource, showToast]);
+
   return (
     <div className="h-full min-h-0 overflow-auto bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100">
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 px-5 py-5">
@@ -1011,17 +1054,16 @@ export function BlenderFileTab({
             </div>
 
             <div className="flex shrink-0 items-center gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  if (projectPath) queueRenderSource(projectPath, filePath);
-                  openRenderCenterTab();
-                }}
-                className="inline-flex h-8 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-xs text-gray-700 transition-colors hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
-              >
-                <Clapperboard className="h-3.5 w-3.5 text-orange-500" />
-                加入渲染
-              </button>
+              {renderCenterAvailable ? (
+                <button
+                  type="button"
+                  onClick={handleAddToRender}
+                  className="inline-flex h-8 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-xs text-gray-700 transition-colors hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+                >
+                  <Clapperboard className="h-3.5 w-3.5 text-orange-500" />
+                  加入渲染
+                </button>
+              ) : null}
               <BlenderOpenButton
                 filePath={filePath}
                 installations={blenderInstallations}

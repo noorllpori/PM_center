@@ -9,6 +9,11 @@ import { openStandaloneVideoPlayer } from '../components/video-player/openStanda
 import { getFileNameFromPath, getWorkspaceOpenTarget } from '../components/workspace/fileOpeners';
 import { openStandaloneDirectoryViewer } from '../components/file-manager/openStandaloneDirectoryViewer';
 import type { ImageSequenceInfo } from '../types';
+import {
+  WORKSPACE_TAB_CONTRIBUTION_BY_ID,
+  WORKSPACE_TAB_CONTRIBUTIONS,
+  type WorkspaceTabContributionDefinition,
+} from '../features/contributionRegistry';
 
 export type WorkspaceTabType = 'files' | 'cache' | 'render' | 'p2p' | 'directory' | 'image' | 'text' | 'video' | 'blend' | 'collection';
 
@@ -35,12 +40,14 @@ export interface WorkspaceTab {
   isDirty?: boolean;
   editorSnapshot?: TextEditorTransferPayload;
   collection?: WorkspaceCollectionTabData;
+  contributionId?: string;
+  moduleId?: string;
 }
 
 export const FILES_TAB_ID = 'files';
-export const CACHE_MANAGER_TAB_ID = 'cache-manager';
-export const RENDER_CENTER_TAB_ID = 'render-center';
-export const P2P_TAB_ID = 'p2p-chat';
+export const CACHE_MANAGER_TAB_ID = WORKSPACE_TAB_CONTRIBUTIONS.cache.tabId;
+export const RENDER_CENTER_TAB_ID = WORKSPACE_TAB_CONTRIBUTIONS.render.tabId;
+export const P2P_TAB_ID = WORKSPACE_TAB_CONTRIBUTIONS.p2p.tabId;
 
 const FILES_TAB: WorkspaceTab = {
   id: FILES_TAB_ID,
@@ -54,6 +61,8 @@ const CACHE_MANAGER_TAB: WorkspaceTab = {
   type: 'cache',
   title: '缓存管理',
   closable: true,
+  contributionId: WORKSPACE_TAB_CONTRIBUTIONS.cache.id,
+  moduleId: WORKSPACE_TAB_CONTRIBUTIONS.cache.moduleId || undefined,
 };
 
 const RENDER_CENTER_TAB: WorkspaceTab = {
@@ -61,6 +70,8 @@ const RENDER_CENTER_TAB: WorkspaceTab = {
   type: 'render',
   title: '渲染与批处理',
   closable: true,
+  contributionId: WORKSPACE_TAB_CONTRIBUTIONS.render.id,
+  moduleId: WORKSPACE_TAB_CONTRIBUTIONS.render.moduleId || undefined,
 };
 
 const P2P_TAB: WorkspaceTab = {
@@ -68,7 +79,22 @@ const P2P_TAB: WorkspaceTab = {
   type: 'p2p',
   title: '局域网项目功能',
   closable: true,
+  contributionId: WORKSPACE_TAB_CONTRIBUTIONS.p2p.id,
+  moduleId: WORKSPACE_TAB_CONTRIBUTIONS.p2p.moduleId || undefined,
 };
+
+function createWorkspaceContributionTab(
+  definition: WorkspaceTabContributionDefinition,
+): WorkspaceTab {
+  return {
+    id: definition.tabId,
+    type: definition.tabType,
+    title: definition.title,
+    closable: true,
+    contributionId: definition.id,
+    moduleId: definition.moduleId || undefined,
+  };
+}
 
 function createFileTab(
   type: 'image' | 'text' | 'video' | 'blend',
@@ -139,12 +165,14 @@ export interface WorkspaceTabState {
     },
   ) => Promise<boolean>;
   openDirectoryInTab: (directoryPath: string) => string;
+  openWorkspaceContributionTab: (contributionId: string) => string | null;
   openCacheManagerTab: () => string;
   openRenderCenterTab: () => string;
   openP2PTab: () => string;
   openCollectionInTab: (collection: WorkspaceCollectionTabData) => string;
   activateTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
+  closeContributionTabs: (contributionIds: string[]) => void;
   reorderTabs: (fromId: string, toId: string) => void;
   updateTabDirty: (tabId: string, isDirty: boolean) => void;
   resetTabs: () => void;
@@ -280,54 +308,44 @@ export function createWorkspaceTabStore(storeOptions: CreateWorkspaceTabStoreOpt
       return nextTab.id;
     },
 
-    openCacheManagerTab: () => {
+    openWorkspaceContributionTab: (contributionId) => {
+      const definition = WORKSPACE_TAB_CONTRIBUTION_BY_ID.get(contributionId);
+      if (!definition) {
+        return null;
+      }
       if (storeOptions.forceStandaloneFileOpen) {
-        return CACHE_MANAGER_TAB_ID;
+        return definition.tabId;
       }
 
-      const existingTab = get().tabs.find((tab) => tab.id === CACHE_MANAGER_TAB_ID);
+      const existingTab = get().tabs.find(
+        (tab) => tab.contributionId === contributionId || tab.id === definition.tabId,
+      );
       if (existingTab) {
-        set({ activeTabId: CACHE_MANAGER_TAB_ID });
-        return CACHE_MANAGER_TAB_ID;
+        set({ activeTabId: existingTab.id });
+        return existingTab.id;
       }
 
+      const nextTab = createWorkspaceContributionTab(definition);
       set((state) => ({
-        tabs: [...state.tabs, CACHE_MANAGER_TAB],
-        activeTabId: CACHE_MANAGER_TAB_ID,
+        tabs: [...state.tabs, nextTab],
+        activeTabId: nextTab.id,
       }));
-      return CACHE_MANAGER_TAB_ID;
+      return nextTab.id;
+    },
+
+    openCacheManagerTab: () => {
+      return get().openWorkspaceContributionTab(WORKSPACE_TAB_CONTRIBUTIONS.cache.id)
+        ?? CACHE_MANAGER_TAB.id;
     },
 
     openRenderCenterTab: () => {
-      if (storeOptions.forceStandaloneFileOpen) {
-        return RENDER_CENTER_TAB_ID;
-      }
-      const existingTab = get().tabs.find((tab) => tab.id === RENDER_CENTER_TAB_ID);
-      if (existingTab) {
-        set({ activeTabId: RENDER_CENTER_TAB_ID });
-        return RENDER_CENTER_TAB_ID;
-      }
-      set((state) => ({
-        tabs: [...state.tabs, RENDER_CENTER_TAB],
-        activeTabId: RENDER_CENTER_TAB_ID,
-      }));
-      return RENDER_CENTER_TAB_ID;
+      return get().openWorkspaceContributionTab(WORKSPACE_TAB_CONTRIBUTIONS.render.id)
+        ?? RENDER_CENTER_TAB.id;
     },
 
     openP2PTab: () => {
-      if (storeOptions.forceStandaloneFileOpen) {
-        return P2P_TAB_ID;
-      }
-      const existingTab = get().tabs.find((tab) => tab.id === P2P_TAB_ID);
-      if (existingTab) {
-        set({ activeTabId: P2P_TAB_ID });
-        return P2P_TAB_ID;
-      }
-      set((state) => ({
-        tabs: [...state.tabs, P2P_TAB],
-        activeTabId: P2P_TAB_ID,
-      }));
-      return P2P_TAB_ID;
+      return get().openWorkspaceContributionTab(WORKSPACE_TAB_CONTRIBUTIONS.p2p.id)
+        ?? P2P_TAB.id;
     },
 
     openCollectionInTab: (collection) => {
@@ -389,6 +407,31 @@ export function createWorkspaceTabStore(storeOptions: CreateWorkspaceTabStoreOpt
         return {
           tabs: nextTabs,
           activeTabId: nextActiveTabId,
+        };
+      });
+    },
+
+    closeContributionTabs: (contributionIds) => {
+      const contributionIdSet = new Set(contributionIds);
+      if (contributionIdSet.size === 0) {
+        return;
+      }
+
+      set((state) => {
+        const removedActiveTab = state.tabs.some(
+          (tab) => tab.id === state.activeTabId
+            && Boolean(tab.contributionId)
+            && contributionIdSet.has(tab.contributionId!),
+        );
+        const nextTabs = state.tabs.filter(
+          (tab) => !tab.contributionId || !contributionIdSet.has(tab.contributionId),
+        );
+        if (nextTabs.length === state.tabs.length) {
+          return state;
+        }
+        return {
+          tabs: nextTabs,
+          activeTabId: removedActiveTab ? FILES_TAB_ID : state.activeTabId,
         };
       });
     },

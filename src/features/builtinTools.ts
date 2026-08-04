@@ -12,6 +12,12 @@ import {
   Settings,
   Terminal,
 } from 'lucide-react';
+import {
+  SHELL_TAB_CONTRIBUTIONS,
+  TOOL_CONTRIBUTIONS,
+  WORKSPACE_TAB_CONTRIBUTIONS,
+  type ContributionDefinition,
+} from './contributionRegistry';
 
 export type BuiltinToolId =
   | 'render-center'
@@ -27,8 +33,22 @@ export type BuiltinToolId =
 
 export type BuiltinToolCategory = 'project' | 'workflow' | 'system' | 'communication';
 
+export type BuiltinToolDialogId =
+  | 'python-environments'
+  | 'task-center'
+  | 'settings'
+  | 'blender-file-parser';
+
+export type BuiltinToolOpenTarget =
+  | { type: 'workspaceTab'; contributionId: string }
+  | { type: 'shellTab'; contributionId: string }
+  | { type: 'dialog'; dialogId: BuiltinToolDialogId }
+  | { type: 'event'; eventName: string }
+  | { type: 'command'; command: string; errorTitle: string };
+
 export interface BuiltinToolDefinition {
   id: BuiltinToolId;
+  contribution: ContributionDefinition;
   title: string;
   description: string;
   help: string[];
@@ -37,6 +57,7 @@ export interface BuiltinToolDefinition {
   requiresProject: boolean;
   pinnable: boolean;
   keywords: string[];
+  openTarget: BuiltinToolOpenTarget;
 }
 
 export const BUILTIN_TOOL_CATEGORY_LABELS: Record<BuiltinToolCategory, string> = {
@@ -56,6 +77,7 @@ export const BUILTIN_TOOL_CATEGORY_ORDER: BuiltinToolCategory[] = [
 export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
   {
     id: 'render-center',
+    contribution: TOOL_CONTRIBUTIONS.renderCenter,
     title: '渲染与批处理',
     description: '管理 Blender 渲染批次、队列、帧结果与视频打包。',
     help: [
@@ -68,9 +90,11 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     requiresProject: true,
     pinnable: true,
     keywords: ['blender', 'render', '批渲染', '队列', '视频'],
+    openTarget: { type: 'workspaceTab', contributionId: WORKSPACE_TAB_CONTRIBUTIONS.render.id },
   },
   {
     id: 'cache-manager',
+    contribution: TOOL_CONTRIBUTIONS.cacheManager,
     title: '缓存管理',
     description: '检查、清理和重建当前项目的 .pm_center 缓存。',
     help: [
@@ -83,9 +107,11 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     requiresProject: true,
     pinnable: true,
     keywords: ['cache', 'pm_center', '缩略图', '目录树'],
+    openTarget: { type: 'workspaceTab', contributionId: WORKSPACE_TAB_CONTRIBUTIONS.cache.id },
   },
   {
     id: 'p2p-chat',
+    contribution: TOOL_CONTRIBUTIONS.lanMain,
     title: '局域网主面板',
     description: '打开全局联系人、大厅和私聊主面板。',
     help: [
@@ -98,9 +124,11 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     requiresProject: false,
     pinnable: true,
     keywords: ['p2p', 'lan', '聊天', '设备', '协作'],
+    openTarget: { type: 'shellTab', contributionId: SHELL_TAB_CONTRIBUTIONS.lan.id },
   },
   {
     id: 'p2p-project',
+    contribution: TOOL_CONTRIBUTIONS.lanProject,
     title: '局域网项目功能',
     description: '打开当前项目中的局域网功能预留标签。',
     help: [
@@ -113,9 +141,11 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     requiresProject: true,
     pinnable: true,
     keywords: ['p2p', 'lan', '项目', '协同', '内置标签'],
+    openTarget: { type: 'workspaceTab', contributionId: WORKSPACE_TAB_CONTRIBUTIONS.p2p.id },
   },
   {
     id: 'python-environments',
+    contribution: TOOL_CONTRIBUTIONS.pythonEnvironments,
     title: 'Python 环境',
     description: '检测、创建和管理 PMC 使用的 Python 环境及依赖。',
     help: [
@@ -128,9 +158,11 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     requiresProject: false,
     pinnable: true,
     keywords: ['python', 'venv', '环境', '依赖'],
+    openTarget: { type: 'dialog', dialogId: 'python-environments' },
   },
   {
     id: 'task-center',
+    contribution: TOOL_CONTRIBUTIONS.taskCenter,
     title: '任务中心',
     description: '查看脚本、插件、文件操作和渲染任务的运行状态。',
     help: [
@@ -143,9 +175,11 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     requiresProject: false,
     pinnable: true,
     keywords: ['task', '任务', '进度', '日志'],
+    openTarget: { type: 'dialog', dialogId: 'task-center' },
   },
   {
     id: 'settings',
+    contribution: TOOL_CONTRIBUTIONS.settings,
     title: '设置中心',
     description: '管理全局工具、Blender 版本、插件和当前项目设置。',
     help: [
@@ -158,9 +192,11 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     requiresProject: false,
     pinnable: true,
     keywords: ['setting', '配置', 'blender', 'ffmpeg', '插件'],
+    openTarget: { type: 'dialog', dialogId: 'settings' },
   },
   {
     id: 'mdt-overview',
+    contribution: TOOL_CONTRIBUTIONS.mdtOverview,
     title: 'MDT 项目概览',
     description: '汇总当前项目的 MDT 任务、日志、引用文件和媒体。',
     help: [
@@ -173,9 +209,11 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     requiresProject: true,
     pinnable: true,
     keywords: ['mdt', 'markdown', '代办', '文档', '概览'],
+    openTarget: { type: 'event', eventName: 'pm-center:open-mdt-overview' },
   },
   {
     id: 'blender-file-parser',
+    contribution: TOOL_CONTRIBUTIONS.blenderFileParser,
     title: 'Blender 文件解析器',
     description: '读取 .blend 的场景、对象、材质、贴图和外部依赖。',
     help: [
@@ -188,9 +226,11 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     requiresProject: false,
     pinnable: true,
     keywords: ['blend', 'blender', '解析', '场景', '材质', '贴图'],
+    openTarget: { type: 'dialog', dialogId: 'blender-file-parser' },
   },
   {
     id: 'smart-clipboard',
+    contribution: TOOL_CONTRIBUTIONS.smartClipboard,
     title: '智能剪贴板',
     description: '查看并恢复最近复制的文本、图像和文件。',
     help: [
@@ -203,6 +243,11 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     requiresProject: false,
     pinnable: true,
     keywords: ['clipboard', 'ditto', '剪贴板', '复制历史', 'Ctrl+`'],
+    openTarget: {
+      type: 'command',
+      command: 'open_smart_clipboard',
+      errorTitle: '智能剪贴板打开失败',
+    },
   },
 ];
 

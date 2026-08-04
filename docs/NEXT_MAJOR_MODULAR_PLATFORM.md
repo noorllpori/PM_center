@@ -143,11 +143,11 @@
 
 | 能力 | 当前代码 | 可复用内容 | 当前限制 |
 | --- | --- | --- | --- |
-| 内置功能注册 | `src/features/builtinTools.ts` | 稳定工具 ID、名称、图标、分类、项目依赖和 Pin | 只描述入口，不描述后台服务、权限和依赖 |
-| 功能 Pin 偏好 | `src/stores/builtinToolsStore.ts` | 全局持久化、排序、未知 ID 清理 | 只控制快捷栏，不等于模块启停 |
-| 功能打开器 | `src/components/file-manager/index.tsx` 中的 `openBuiltinTool()` | 集中打开标签页或面板 | 使用 switch 硬编码，新增功能需要继续修改主组件 |
-| 项目工作区标签 | `src/stores/workspaceTabStore.ts` | 单例标签、文件标签、目录、集合、缓存、渲染和项目 P2P | 标签类型是固定联合类型，尚未由模块贡献 |
-| 外层 Shell 标签 | `src/stores/shellTabStore.ts` | home、project、lan 主页面 | 尚未按 Profile 生成不同 Shell 布局 |
+| 前端贡献注册 | `src/features/contributionRegistry.ts`、`src/stores/contributionRegistryStore.ts` | 稳定贡献 ID、模块所有权、运行状态、冲突检测和 Surface 配对 | R5 第一轮只迁移现有内置工具与标签，第三方渲染器和更多贡献类型仍待接入 |
+| 功能 Pin 偏好 | `src/stores/builtinToolsStore.ts` | 全局持久化、排序、停用时隐藏并保留配置 | 只控制快捷栏，不等于模块启停 |
+| 功能打开器 | `src/features/builtinTools.ts`、`src/components/file-manager/index.tsx` | 声明式 `openTarget` 集中打开标签页、弹窗、事件或命令 | 打开方式类型仍由主应用控制，R9 前不加载任意第三方 React 代码 |
+| 项目工作区标签 | `src/stores/workspaceTabStore.ts`、`ContributedWorkspaceSurface.tsx` | 贡献式单例标签、动态撤下、会话恢复和旧接口兼容 | 文件标签类型仍是固定联合类型，设置/右键/Widget 贡献尚未迁移 |
+| 外层 Shell 标签 | `src/stores/shellTabStore.ts` | home、project 与贡献式 LAN 主页面 | 尚未按 Profile 生成不同 Shell 布局 |
 | 项目状态 | `projectStore` 和 `ProjectSessionProvider` | 项目打开、激活、会话恢复 | 项目能力默认与主应用绑定 |
 | 任务与进度 | `taskStore`、任务面板和右下角进度体验 | 日志、进度、取消、失败反馈 | 尚未作为所有组件统一运行时 |
 
@@ -155,30 +155,22 @@
 
 | 能力 | 当前代码 | 可复用内容 | 当前限制 |
 | --- | --- | --- | --- |
-| 应用编排 | `src-tauri/src/lib.rs` | Tauri Builder、托盘、命令注册和项目资源释放 | 所有模块和命令静态注册，缺少统一模块守卫 |
-| 项目资源释放 | `release_project_resources` | 关闭 watcher、数据库和 TreeCache 句柄 | 只处理项目资源，未覆盖所有模块服务 |
-| Python 插件 | `src-tauri/src/plugin/mod.rs` | manifest、启停、依赖、设置、动作和内置 Python | `permissions` 当前只传入请求，没有宿主级授权校验 |
+| 应用编排 | `src-tauri/src/lib.rs`、`src-tauri/src/platform/` | Tauri Builder、Module Manager、ResourceRegistry、CapabilityGateway 和退出清理 | Tauri 命令仍静态注册，R9 前组件宿主类型仍有限 |
+| 项目资源释放 | `release_project_resources`、`builtin.project-resources` | 关闭 watcher、数据库和 TreeCache 句柄，模块停用时统一释放 | 项目级 UI 贡献仍在 R5 继续拆分 |
+| Python 插件 | `src-tauri/src/plugin/mod.rs`、`automation_runtime.rs` | manifest、依赖、动作、内置 Python、模块状态守卫和进程登记 | 旧插件协议仍是兼容层，R9 再迁入统一组件宿主 |
 | 插件 SDK | `src-tauri/resources/plugin-sdk/pmc_plugin` | 请求读取、progress、toast、confirm、refresh 和 result | 只支持一次性 Python CLI 动作 |
-| Python 环境 | `python`、`python_env` | PMC 内置 Python、系统/venv/Blender Python 检测与 pip | 缺少组件级隔离、锁定依赖和长期 Worker 管理 |
-| 任务执行 | `task/mod.rs` | 子进程、stdout/stderr、进度和取消 | 尚未抽象成通用组件宿主协议 |
-| 局域网 | `p2p/` | 发现、联系人、聊天、文件/目录传输和服务端通道 | 聊天、传输和未来同步仍处于同一大领域模块 |
-| 渲染中心 | `render_center/mod.rs` | 批次、事务领取、常驻 Worker、兼容模式、ETA 和性能 | 调度主要面向本机项目，尚无远程节点与资源装配协议 |
-| 缓存/Watcher | `cache_manager`、`tree_cache`、`watcher` | 项目级缓存生命周期和关闭释放 | 启动、后台循环和模块启停尚未统一管理 |
-| 智能剪贴板 | `smart_clipboard/` | Win32 独立线程、窗口、历史和关闭函数 | 当前在应用 setup 中直接初始化 |
+| Python 环境 | `python`、`python_env`、`automation_runtime.rs` | PMC 内置 Python、系统/venv/Blender Python、pip 和进程生命周期 | 缺少组件级隔离、锁定依赖和长期 Worker 管理 |
+| 任务执行 | `task/mod.rs`、`automation_runtime.rs` | 子进程、stdout/stderr、进度、取消和模块停用收敛 | 尚未抽象成通用组件宿主协议 |
+| 局域网 | `p2p/`、`builtin.lan-collaboration` | 发现、联系人、聊天、传输、服务器通道和统一启停 | 聊天、传输和未来同步仍处于同一大领域模块 |
+| 渲染中心 | `render_center/mod.rs`、`builtin.render-center` | 批次、常驻 Worker、ETA、性能、进程登记和停用恢复 | 调度主要面向本机项目，尚无远程节点与资源装配协议 |
+| 缓存/Watcher | `cache_manager`、`tree_cache`、`watcher`、`builtin.project-resources` | 项目级缓存、Watcher、数据库注册表和模块关闭释放 | Profile 尚不能选择更细粒度的项目资源子模块 |
+| 智能剪贴板 | `smart_clipboard/`、`builtin.smart-clipboard` | Win32 窗口、历史、快捷键与真实模块生命周期 | 仍是 Windows 原生专用 Surface，不是通用 WebView 组件 |
 
 ### 5.3 当前静态运行结构
 
-当前 `src-tauri/src/lib.rs` 使用 `tauri::generate_handler!` 注册全部 Tauri 命令。部分服务在应用 `setup` 中直接启动，另一些服务在页面初始化或命令调用时懒启动。
+当前 `src-tauri/src/lib.rs` 仍使用 `tauri::generate_handler!` 静态注册 Tauri 命令，但 R2-R4 已由 Module Manager、ResourceRegistry 和 CapabilityGateway 管理既有后台领域。R5 第一轮让功能中心、Pin、LAN Shell 标签及缓存/渲染/LAN 工作区标签读取模块贡献；停用模块时，前端入口撤下，后端命令守卫拒绝调用，实际端口、watcher、调度器、原生线程、数据库和子进程由各模块生命周期释放。
 
-这意味着当前“功能中心”和“Pin”只能改变入口显示，不能保证：
-
-- 对应 Tauri 命令被禁止调用；
-- UDP/TCP 端口被释放；
-- watcher、定时循环、调度器或原生线程退出；
-- 数据库连接和子进程被释放；
-- 插件不能绕过关闭状态调用相关能力。
-
-下一版本不要求动态增删 Tauri 命令注册。命令可以继续静态编译和注册，但每个领域入口必须通过统一的模块/能力守卫验证调用是否被允许。
+剩余限制是设置分区、右键动作、Widget、DataSource 和第三方页面还没有全部贡献化，Profile 也尚未接管布局。下一版本仍不要求动态增删 Tauri 命令注册；静态命令必须继续经过模块与能力守卫。
 
 ## 6. 目标分层架构
 

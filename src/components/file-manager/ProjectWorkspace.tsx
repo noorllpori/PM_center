@@ -9,9 +9,6 @@ import { ColumnSettings } from './ColumnSettings';
 import { FileDetail } from './FileDetail';
 import { BlenderFileTab } from './BlenderFileTab';
 import { CollectionTabSurface } from './CollectionTabSurface';
-import { CacheManagerSurface } from './CacheManagerSurface';
-import { RenderCenterSurface } from './RenderCenterSurface';
-import { LanProjectPlaceholderSurface } from './LanProjectPlaceholderSurface';
 import { DirectoryTabSurface } from './DirectoryTabSurface';
 import { ImageSequencePlayerSurface } from './ImageSequencePlayerSurface';
 import { MdtOverviewPanel } from './MdtOverviewPanel';
@@ -43,6 +40,7 @@ import {
 } from '../text-editor/textEditorWindowTransfer';
 import { VideoPlayerSurface } from '../video-player/VideoPlayerSurface';
 import { WorkspaceTabBar } from '../workspace/WorkspaceTabBar';
+import { ContributedWorkspaceSurface } from '../workspace/ContributedWorkspaceSurface';
 import { getFileExtension } from '../workspace/fileOpeners';
 import { useProjectStoreApi, useProjectStoreShallow } from '../../stores/projectStore';
 import { useClipboardStore } from '../../stores/clipboardStore';
@@ -66,6 +64,7 @@ const FS_REFRESH_ACTIVE_DELAY_MS = 500;
 const FS_REFRESH_INACTIVE_DELAY_MS = 500;
 const FS_TREE_REFRESH_MIN_INTERVAL_MS = 800;
 export const OPEN_MDT_OVERVIEW_EVENT = 'pm-center:open-mdt-overview';
+export const CLOSE_MDT_OVERVIEW_EVENT = 'pm-center:close-mdt-overview';
 
 interface ProjectFsChangeEventPayload {
   projectPath: string;
@@ -316,9 +315,14 @@ export function ProjectWorkspace() {
         setIsMdtOverviewOpen(true);
       }
     };
+    const handleCloseMdtOverview = () => setIsMdtOverviewOpen(false);
 
     window.addEventListener(OPEN_MDT_OVERVIEW_EVENT, handleOpenMdtOverview);
-    return () => window.removeEventListener(OPEN_MDT_OVERVIEW_EVENT, handleOpenMdtOverview);
+    window.addEventListener(CLOSE_MDT_OVERVIEW_EVENT, handleCloseMdtOverview);
+    return () => {
+      window.removeEventListener(OPEN_MDT_OVERVIEW_EVENT, handleOpenMdtOverview);
+      window.removeEventListener(CLOSE_MDT_OVERVIEW_EVENT, handleCloseMdtOverview);
+    };
   }, [isInitialized]);
 
   useEffect(() => {
@@ -1377,16 +1381,8 @@ export function ProjectWorkspace() {
                   </div>
                 )}
 
-                {tab.type === 'cache' && (
-                  <CacheManagerSurface isActive={isActive} />
-                )}
-
-                {tab.type === 'render' && (
-                  <RenderCenterSurface isActive={isActive} />
-                )}
-
-                {tab.type === 'p2p' && (
-                  <LanProjectPlaceholderSurface />
+                {tab.contributionId && (
+                  <ContributedWorkspaceSurface tab={tab} isActive={isActive} />
                 )}
 
                 {tab.type === 'directory' && tab.filePath && (

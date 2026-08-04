@@ -3,7 +3,7 @@ import type { WorkspaceTabType } from '../stores/workspaceTabStore';
 
 const STORE_FILE = 'app-session.json';
 const SESSION_KEY = 'appSession';
-const SESSION_VERSION = 2;
+const SESSION_VERSION = 3;
 
 export type PersistedWorkspaceTabType = Exclude<WorkspaceTabType, 'files'>;
 
@@ -11,11 +11,13 @@ export interface PersistedWorkspaceTab {
   type: PersistedWorkspaceTabType;
   filePath?: string;
   title?: string;
+  contributionId?: string;
 }
 
 export interface PersistedWorkspaceActiveTab {
   type: WorkspaceTabType;
   filePath?: string;
+  contributionId?: string;
 }
 
 export interface PersistedProjectSession {
@@ -76,6 +78,12 @@ function normalizePathKey(path?: string | null) {
     .toLowerCase();
 }
 
+function sanitizeContributionId(value: unknown) {
+  return typeof value === 'string' && /^[a-z0-9][a-z0-9.-]*$/.test(value)
+    ? value
+    : undefined;
+}
+
 function sanitizeWorkspaceTab(tab: unknown): PersistedWorkspaceTab | null {
   if (!tab || typeof tab !== 'object') {
     return null;
@@ -103,6 +111,7 @@ function sanitizeWorkspaceTab(tab: unknown): PersistedWorkspaceTab | null {
     type: candidate.type,
     filePath: candidate.filePath || undefined,
     title: candidate.title || undefined,
+    contributionId: sanitizeContributionId(candidate.contributionId),
   };
 }
 
@@ -133,6 +142,7 @@ function sanitizeActiveWorkspaceTab(tab: unknown): PersistedWorkspaceActiveTab {
   return {
     type: candidate.type,
     filePath: candidate.filePath || undefined,
+    contributionId: sanitizeContributionId(candidate.contributionId),
   };
 }
 

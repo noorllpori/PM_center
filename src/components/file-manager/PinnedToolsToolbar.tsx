@@ -5,6 +5,8 @@ import { useBuiltinToolsStore } from '../../stores/builtinToolsStore';
 import { useLanCollaborationStore } from '../../stores/lanCollaborationStore';
 import { getActiveRenderCount, useRenderStore } from '../../stores/renderStore';
 import { useTaskStore } from '../../stores/taskStore';
+import { isContributionAvailable } from '../../features/contributionRegistry';
+import { useContributionRegistryStore } from '../../stores/contributionRegistryStore';
 
 interface PinnedToolsToolbarProps {
   compact?: boolean;
@@ -29,6 +31,7 @@ export function PinnedToolsToolbar({ compact = false, onOpenTool }: PinnedToolsT
   const unreadCount = useLanCollaborationStore((state) => state.unreadCount);
   const runningTasks = useTaskStore((state) => state.stats.running);
   const renderCount = useRenderStore((state) => getActiveRenderCount(state.jobsByProject));
+  const contributionSnapshot = useContributionRegistryStore((state) => state.snapshot);
   const [visibleCapacity, setVisibleCapacity] = useState(() => getVisibleCapacity(compact));
   const [isOverflowOpen, setIsOverflowOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -67,8 +70,8 @@ export function PinnedToolsToolbar({ compact = false, onOpenTool }: PinnedToolsT
 
   const tools = useMemo(() => pinnedToolIds.flatMap((toolId) => {
     const tool = BUILTIN_TOOL_BY_ID.get(toolId);
-    return tool ? [tool] : [];
-  }), [pinnedToolIds]);
+    return tool && isContributionAvailable(contributionSnapshot, tool.contribution) ? [tool] : [];
+  }), [contributionSnapshot, pinnedToolIds]);
   const visibleTools = tools.slice(0, visibleCapacity);
   const overflowTools = tools.slice(visibleCapacity);
 

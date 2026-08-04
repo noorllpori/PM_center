@@ -14,7 +14,7 @@ import { openStandaloneTextEditor } from '../text-editor/openStandaloneTextEdito
 import { openStandaloneVideoPlayer } from '../video-player/openStandaloneVideoPlayer';
 import { LanCollaborationSurface } from '../lan/LanCollaborationSurface';
 import { Toolbar, TOOLBAR_SEARCH_FOCUS_EVENT } from './Toolbar';
-import { OPEN_MDT_OVERVIEW_EVENT, ProjectWorkspace } from './ProjectWorkspace';
+import { CLOSE_MDT_OVERVIEW_EVENT, ProjectWorkspace } from './ProjectWorkspace';
 import { ProjectSessionProvider } from './ProjectSessionProvider';
 import { ShellTabBar } from '../shell/ShellTabBar';
 import { Dialog } from '../Dialog';
@@ -27,7 +27,29 @@ import { useUiStore } from '../../stores/uiStore';
 import { useShellTabStore, normalizeProjectPath } from '../../stores/shellTabStore';
 import { useBuiltinToolsStore } from '../../stores/builtinToolsStore';
 import { useLanCollaborationStore } from '../../stores/lanCollaborationStore';
-import type { BuiltinToolId } from '../../features/builtinTools';
+import {
+  BUILTIN_TOOL_BY_ID,
+  type BuiltinToolDialogId,
+  type BuiltinToolId,
+} from '../../features/builtinTools';
+import {
+  SHELL_TAB_CONTRIBUTIONS,
+  SHELL_TAB_CONTRIBUTION_BY_ID,
+  TOOL_CONTRIBUTIONS,
+  WORKSPACE_TAB_CONTRIBUTION_BY_ID,
+  WORKSPACE_TAB_CONTRIBUTION_BY_TYPE,
+  WORKSPACE_TAB_CONTRIBUTIONS,
+  getContributionUnavailableReason,
+  getShellTabContributionUnavailableReason,
+  getWorkspaceTabContributionUnavailableReason,
+  isContributionAvailable,
+  isShellTabContributionAvailable,
+  isWorkspaceTabContributionAvailable,
+} from '../../features/contributionRegistry';
+import {
+  initializeContributionRegistry,
+  useContributionRegistryStore,
+} from '../../stores/contributionRegistryStore';
 import {
   createDefaultPersistedAppSession,
   dedupeStandaloneWindows,
@@ -97,6 +119,9 @@ function getFileNameFromPath(path: string) {
 }
 
 function getPersistedWorkspaceTabKey(tab: PersistedWorkspaceTab | PersistedWorkspaceActiveTab) {
+  if (tab.contributionId) {
+    return `contribution:${tab.contributionId}`;
+  }
   return tab.type === 'files' || tab.type === 'cache' || tab.type === 'render' || tab.type === 'p2p'
     ? tab.type
     : `${tab.type}:${tab.filePath || ''}`;
@@ -111,8 +136,12 @@ function serializeWorkspaceSession(
       return [];
     }
 
-    if (tab.type === 'cache' || tab.type === 'render' || tab.type === 'p2p') {
-      return [{ type: tab.type, title: tab.title }];
+    if (tab.contributionId) {
+      return [{
+        type: tab.type as PersistedWorkspaceTab['type'],
+        title: tab.title,
+        contributionId: tab.contributionId,
+      }];
     }
 
     if (!tab.filePath) {
@@ -128,8 +157,8 @@ function serializeWorkspaceSession(
 
   const activeTab = state.tabs.find((tab) => tab.id === state.activeTabId) ?? state.tabs[0];
   const activePersistedTab: PersistedWorkspaceActiveTab =
-    activeTab?.type === 'cache' || activeTab?.type === 'render' || activeTab?.type === 'p2p'
-      ? { type: activeTab.type }
+    activeTab?.contributionId
+      ? { type: activeTab.type, contributionId: activeTab.contributionId }
       : activeTab?.type && activeTab.type !== 'files' && activeTab.filePath
         ? { type: activeTab.type, filePath: activeTab.filePath }
         : { type: 'files' };
@@ -147,23 +176,29 @@ async function restoreWorkspaceSession(
   workspaceTabStore.getState().resetTabs();
 
   const restoredTabIds = new Map<string, string>();
+  const contributionSnapshot = useContributionRegistryStore.getState().snapshot;
 
   for (const tab of session.tabs) {
-    if (tab.type === 'cache') {
-      const tabId = workspaceTabStore.getState().openCacheManagerTab();
-      restoredTabIds.set(getPersistedWorkspaceTabKey(tab), tabId);
+    const contribution = tab.contributionId
+      ? WORKSPACE_TAB_CONTRIBUTION_BY_ID.get(tab.contributionId)
+      : WORKSPACE_TAB_CONTRIBUTION_BY_TYPE.get(tab.type);
+    if (tab.contributionId && !contribution) {
       continue;
     }
-
-    if (tab.type === 'render') {
-      const tabId = workspaceTabStore.getState().openRenderCenterTab();
-      restoredTabIds.set(getPersistedWorkspaceTabKey(tab), tabId);
-      continue;
-    }
-
-    if (tab.type === 'p2p') {
-      const tabId = workspaceTabStore.getState().openP2PTab();
-      restoredTabIds.set(getPersistedWorkspaceTabKey(tab), tabId);
+    if (contribution) {
+      if (!isWorkspaceTabContributionAvailable(contributionSnapshot, contribution)) {
+        continue;
+      }
+      const tabId = workspaceTabStore
+        .getState()
+        .openWorkspaceContributionTab(contribution.id);
+      if (tabId) {
+        restoredTabIds.set(getPersistedWorkspaceTabKey({
+          ...tab,
+          contributionId: contribution.id,
+        }), tabId);
+        restoredTabIds.set(getPersistedWorkspaceTabKey(tab), tabId);
+      }
       continue;
     }
 
@@ -245,6 +280,7 @@ export function FileManager() {
   const autoOpenLastProject = useSettingsStore((state) => state.autoOpenLastProject);
   const addRecentProject = useSettingsStore((state) => state.addRecentProject);
   const loadBuiltinToolsPreferences = useBuiltinToolsStore((state) => state.loadPreferences);
+  const contributionSnapshot = useContributionRegistryStore((state) => state.snapshot);
   const showToast = useUiStore((state) => state.showToast);
   const toast = useUiStore((state) => state.toast);
   const hideToast = useUiStore((state) => state.hideToast);
@@ -259,8 +295,12 @@ export function FileManager() {
     () => tabs.find((tab) => tab.id === activeTabId) ?? tabs[0],
     [activeTabId, tabs],
   );
-  const hasLanTab = tabs.some((tab) => tab.type === 'lan');
-  const isLanTabActive = activeShellTab?.type === 'lan';
+  const lanShellAvailable = isShellTabContributionAvailable(
+    contributionSnapshot,
+    SHELL_TAB_CONTRIBUTIONS.lan,
+  );
+  const hasLanTab = lanShellAvailable && tabs.some((tab) => tab.type === 'lan');
+  const isLanTabActive = lanShellAvailable && activeShellTab?.type === 'lan';
 
   const [isPythonEnvOpen, setIsPythonEnvOpen] = useState(false);
   const [isTaskCenterOpen, setIsTaskCenterOpen] = useState(false);
@@ -291,12 +331,34 @@ export function FileManager() {
   const hasHandledStartupProjectRef = useRef(false);
   const isRestoringSessionRef = useRef(false);
   const isSessionPersistenceReadyRef = useRef(false);
+  const unavailableWorkspaceContributionIds = useMemo(
+    () => Object.values(WORKSPACE_TAB_CONTRIBUTIONS)
+      .filter((definition) => !isWorkspaceTabContributionAvailable(contributionSnapshot, definition))
+      .map((definition) => definition.id),
+    [contributionSnapshot],
+  );
+  const pythonToolAvailable = isContributionAvailable(
+    contributionSnapshot,
+    TOOL_CONTRIBUTIONS.pythonEnvironments,
+  );
+  const taskToolAvailable = isContributionAvailable(
+    contributionSnapshot,
+    TOOL_CONTRIBUTIONS.taskCenter,
+  );
+  const mdtToolAvailable = isContributionAvailable(
+    contributionSnapshot,
+    TOOL_CONTRIBUTIONS.mdtOverview,
+  );
 
   useEffect(() => {
     let isActive = true;
 
     const initializeSettings = async () => {
-      await Promise.all([loadSettings(), loadBuiltinToolsPreferences()]);
+      await Promise.all([
+        loadSettings(),
+        loadBuiltinToolsPreferences(),
+        initializeContributionRegistry(),
+      ]);
       if (isActive) {
         setIsSettingsLoaded(true);
       }
@@ -308,6 +370,34 @@ export function FileManager() {
       isActive = false;
     };
   }, [loadBuiltinToolsPreferences, loadSettings]);
+
+  useEffect(() => {
+    sessionsRef.current.forEach((session) => {
+      session.workspaceTabStore
+        .getState()
+        .closeContributionTabs(unavailableWorkspaceContributionIds);
+    });
+    if (!lanShellAvailable) {
+      useShellTabStore
+        .getState()
+        .closeContributionTabs([SHELL_TAB_CONTRIBUTIONS.lan.id]);
+    }
+    if (!pythonToolAvailable) {
+      setIsPythonEnvOpen(false);
+    }
+    if (!taskToolAvailable) {
+      setIsTaskCenterOpen(false);
+    }
+    if (!mdtToolAvailable) {
+      window.dispatchEvent(new Event(CLOSE_MDT_OVERVIEW_EVENT));
+    }
+  }, [
+    lanShellAvailable,
+    mdtToolAvailable,
+    pythonToolAvailable,
+    taskToolAvailable,
+    unavailableWorkspaceContributionIds,
+  ]);
 
   useEffect(() => {
     if (!toast.isOpen) {
@@ -459,13 +549,26 @@ export function FileManager() {
     const handleTaskShortcut = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'b') {
         event.preventDefault();
+        const snapshot = useContributionRegistryStore.getState().snapshot;
+        const unavailableReason = getContributionUnavailableReason(
+          snapshot,
+          TOOL_CONTRIBUTIONS.taskCenter,
+        );
+        if (unavailableReason) {
+          showToast({
+            title: '任务中心不可用',
+            message: unavailableReason,
+            tone: 'warning',
+          });
+          return;
+        }
         setIsTaskCenterOpen(true);
       }
     };
 
     window.addEventListener('keydown', handleTaskShortcut);
     return () => window.removeEventListener('keydown', handleTaskShortcut);
-  }, []);
+  }, [showToast]);
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -474,6 +577,10 @@ export function FileManager() {
     void listen<{ conversationId: string; messageId?: string | null; transferId?: string | null }>(
       'pm-center:open-lan-conversation',
       (event) => {
+        const snapshot = useContributionRegistryStore.getState().snapshot;
+        if (!isShellTabContributionAvailable(snapshot, SHELL_TAB_CONTRIBUTIONS.lan)) {
+          return;
+        }
         useShellTabStore.getState().openLanTab();
         useLanCollaborationStore.getState().requestConversationNavigation(
           event.payload.conversationId,
@@ -641,7 +748,13 @@ export function FileManager() {
       sessionSnapshot.projects.map((project) => [normalizeProjectPath(project.projectPath), project] as const),
     );
 
-    if (sessionSnapshot.utilityTabs.includes('lan')) {
+    const contributionRegistry = useContributionRegistryStore.getState().snapshot;
+    const canRestoreLan = isShellTabContributionAvailable(
+      contributionRegistry,
+      SHELL_TAB_CONTRIBUTIONS.lan,
+    );
+
+    if (canRestoreLan && sessionSnapshot.utilityTabs.includes('lan')) {
       useShellTabStore.getState().openLanTab();
       restoredAnything = true;
     }
@@ -713,7 +826,7 @@ export function FileManager() {
       if (activeProjectTab) {
         useShellTabStore.getState().activateTab(activeProjectTab.id);
       }
-    } else if (sessionSnapshot.activeTab.type === 'lan') {
+    } else if (sessionSnapshot.activeTab.type === 'lan' && canRestoreLan) {
       useShellTabStore.getState().openLanTab();
     } else {
       const homeTab = useShellTabStore.getState().tabs.find((tab) => tab.type === 'home');
@@ -1043,6 +1156,24 @@ export function FileManager() {
   };
 
   const openBuiltinTool = useCallback((toolId: BuiltinToolId) => {
+    const tool = BUILTIN_TOOL_BY_ID.get(toolId);
+    if (!tool) {
+      return;
+    }
+    const contributionRegistry = useContributionRegistryStore.getState().snapshot;
+    const unavailableReason = getContributionUnavailableReason(
+      contributionRegistry,
+      tool.contribution,
+    );
+    if (unavailableReason) {
+      showToast({
+        title: `${tool.title}不可用`,
+        message: unavailableReason,
+        tone: 'warning',
+      });
+      return;
+    }
+
     const shellState = useShellTabStore.getState();
     const currentShellTab = shellState.tabs.find((tab) => tab.id === shellState.activeTabId);
     const currentProjectSession = currentShellTab?.type === 'project' && currentShellTab.projectPath
@@ -1062,54 +1193,63 @@ export function FileManager() {
       return null;
     };
 
-    switch (toolId) {
-      case 'render-center': {
-        const session = requireProjectSession();
-        session?.workspaceTabStore.getState().openRenderCenterTab();
-        break;
-      }
-      case 'cache-manager': {
-        const session = requireProjectSession();
-        session?.workspaceTabStore.getState().openCacheManagerTab();
-        break;
-      }
-      case 'p2p-chat':
-        shellState.openLanTab();
-        break;
-      case 'p2p-project': {
-        const session = requireProjectSession();
-        session?.workspaceTabStore.getState().openP2PTab();
-        break;
-      }
-      case 'python-environments':
-        setIsPythonEnvOpen(true);
-        break;
-      case 'task-center':
-        setIsTaskCenterOpen(true);
-        break;
-      case 'settings':
-        setIsSettingsOpen(true);
-        break;
-      case 'mdt-overview': {
-        const session = requireProjectSession();
-        if (session) {
-          window.dispatchEvent(new Event(OPEN_MDT_OVERVIEW_EVENT));
-        }
-        break;
-      }
-      case 'blender-file-parser': {
+    const dialogOpeners: Record<BuiltinToolDialogId, () => void> = {
+      'python-environments': () => setIsPythonEnvOpen(true),
+      'task-center': () => setIsTaskCenterOpen(true),
+      settings: () => setIsSettingsOpen(true),
+      'blender-file-parser': () => {
         const selectedBlendFiles = currentProjectSession
           ? Array.from(currentProjectSession.projectStore.getState().selectedFiles)
             .filter((path) => path.toLocaleLowerCase().endsWith('.blend'))
           : [];
         setBlenderParserInitialFilePath(selectedBlendFiles.length === 1 ? selectedBlendFiles[0] : null);
         setIsBlenderFileParserOpen(true);
+      },
+    };
+
+    const target = tool.openTarget;
+    switch (target.type) {
+      case 'workspaceTab': {
+        const workspaceContribution = WORKSPACE_TAB_CONTRIBUTION_BY_ID.get(target.contributionId);
+        const reason = workspaceContribution
+          ? getWorkspaceTabContributionUnavailableReason(contributionRegistry, workspaceContribution)
+          : '工作区贡献未注册';
+        if (reason) {
+          showToast({ title: `${tool.title}不可用`, message: reason, tone: 'warning' });
+          return;
+        }
+        const session = requireProjectSession();
+        session?.workspaceTabStore
+          .getState()
+          .openWorkspaceContributionTab(target.contributionId);
         break;
       }
-      case 'smart-clipboard':
-        void invoke('open_smart_clipboard').catch((error) => {
+      case 'shellTab': {
+        const shellContribution = SHELL_TAB_CONTRIBUTION_BY_ID.get(target.contributionId);
+        const reason = shellContribution
+          ? getShellTabContributionUnavailableReason(contributionRegistry, shellContribution)
+          : '主标签贡献未注册';
+        if (reason) {
+          showToast({ title: `${tool.title}不可用`, message: reason, tone: 'warning' });
+          return;
+        }
+        shellState.openShellContributionTab(target.contributionId);
+        break;
+      }
+      case 'dialog':
+        dialogOpeners[target.dialogId]();
+        break;
+      case 'event': {
+        if (tool.requiresProject && !requireProjectSession()) {
+          return;
+        }
+        window.dispatchEvent(new Event(target.eventName));
+        break;
+      }
+      case 'command':
+        void invoke(target.command).catch((error) => {
           showToast({
-            title: '智能剪贴板打开失败',
+            title: target.errorTitle,
             message: String(error),
             tone: 'error',
           });
@@ -1186,7 +1326,7 @@ export function FileManager() {
       </div>
 
       <PythonEnvManager
-        isOpen={isPythonEnvOpen}
+        isOpen={isPythonEnvOpen && pythonToolAvailable}
         onClose={() => setIsPythonEnvOpen(false)}
       />
 
@@ -1195,7 +1335,7 @@ export function FileManager() {
           projectStore={activeProjectSession.projectStore}
           workspaceTabStore={activeProjectSession.workspaceTabStore}
         >
-          <TaskPanel isOpen={isTaskCenterOpen} onClose={() => setIsTaskCenterOpen(false)} />
+          <TaskPanel isOpen={isTaskCenterOpen && taskToolAvailable} onClose={() => setIsTaskCenterOpen(false)} />
           <SettingsPanel
             isOpen={isSettingsOpen}
             onClose={() => setIsSettingsOpen(false)}
@@ -1205,7 +1345,7 @@ export function FileManager() {
         </ProjectSessionProvider>
       ) : (
         <>
-          <TaskPanel isOpen={isTaskCenterOpen} onClose={() => setIsTaskCenterOpen(false)} />
+          <TaskPanel isOpen={isTaskCenterOpen && taskToolAvailable} onClose={() => setIsTaskCenterOpen(false)} />
           <SettingsPanel
             isOpen={isSettingsOpen}
             onClose={() => setIsSettingsOpen(false)}

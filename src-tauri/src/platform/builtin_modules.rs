@@ -20,6 +20,27 @@ pub const LAN_COLLABORATION_MODULE_ID: &str = "builtin.lan-collaboration";
 pub use crate::automation_runtime::AUTOMATION_RUNTIME_MODULE_ID;
 pub use crate::project_resources::PROJECT_RESOURCES_MODULE_ID;
 pub use crate::render_center::RENDER_CENTER_MODULE_ID;
+pub const AUTOMATION_PYTHON_TOOL_ID: &str = "builtin.automation-runtime.python-tool";
+pub const AUTOMATION_TASK_TOOL_ID: &str = "builtin.automation-runtime.task-tool";
+pub const AUTOMATION_PYTHON_SURFACE_ID: &str = "builtin.automation-runtime.python-surface";
+pub const AUTOMATION_TASK_SURFACE_ID: &str = "builtin.automation-runtime.task-surface";
+pub const AUTOMATION_SETTINGS_SECTION_ID: &str = "builtin.automation-runtime.settings-section";
+pub const RENDER_TOOL_ID: &str = "builtin.render-center.tool";
+pub const RENDER_WORKSPACE_TAB_ID: &str = "builtin.render-center.workspace-tab";
+pub const RENDER_SURFACE_ID: &str = "builtin.render-center.surface";
+pub const PROJECT_CACHE_TOOL_ID: &str = "builtin.project-resources.cache-tool";
+pub const PROJECT_MDT_TOOL_ID: &str = "builtin.project-resources.mdt-tool";
+pub const PROJECT_CACHE_WORKSPACE_TAB_ID: &str = "builtin.project-resources.cache-workspace-tab";
+pub const PROJECT_CACHE_SURFACE_ID: &str = "builtin.project-resources.cache-surface";
+pub const PROJECT_MDT_SURFACE_ID: &str = "builtin.project-resources.mdt-surface";
+pub const LAN_MAIN_TOOL_ID: &str = "builtin.lan-collaboration.main-tool";
+pub const LAN_PROJECT_TOOL_ID: &str = "builtin.lan-collaboration.project-tool";
+pub const LAN_SHELL_TAB_ID: &str = "builtin.lan-collaboration.shell-tab";
+pub const LAN_PROJECT_WORKSPACE_TAB_ID: &str = "builtin.lan-collaboration.project-workspace-tab";
+pub const LAN_MAIN_SURFACE_ID: &str = "builtin.lan-collaboration.main-surface";
+pub const LAN_PROJECT_SURFACE_ID: &str = "builtin.lan-collaboration.project-surface";
+pub const SMART_CLIPBOARD_TOOL_ID: &str = "builtin.smart-clipboard.tool";
+pub const SMART_CLIPBOARD_SURFACE_ID: &str = "builtin.smart-clipboard.native-surface";
 pub const DIAGNOSTIC_BASE_ID: &str = "diagnostic.runtime-base";
 pub const DIAGNOSTIC_WORKER_ID: &str = "diagnostic.runtime-worker";
 pub const DIAGNOSTIC_FAILING_ID: &str = "diagnostic.runtime-failing";
@@ -125,7 +146,18 @@ pub fn automation_runtime_module() -> RegisteredModule {
             conflicts: Vec::new(),
             capabilities: automation_runtime_capabilities(),
             background_services: vec!["managed-process-registry".into()],
-            contributes: ModuleContributions::default(),
+            contributes: ModuleContributions {
+                tools: vec![
+                    AUTOMATION_PYTHON_TOOL_ID.into(),
+                    AUTOMATION_TASK_TOOL_ID.into(),
+                ],
+                surfaces: vec![
+                    AUTOMATION_PYTHON_SURFACE_ID.into(),
+                    AUTOMATION_TASK_SURFACE_ID.into(),
+                ],
+                settings_sections: vec![AUTOMATION_SETTINGS_SECTION_ID.into()],
+                ..ModuleContributions::default()
+            },
             data_policy: ModuleDataPolicy::default(),
             extensions,
         },
@@ -256,7 +288,12 @@ pub fn render_center_module() -> RegisteredModule {
                 "render-performance-sampling".into(),
                 "render-video-packaging".into(),
             ],
-            contributes: ModuleContributions::default(),
+            contributes: ModuleContributions {
+                workspace_tabs: vec![RENDER_WORKSPACE_TAB_ID.into()],
+                tools: vec![RENDER_TOOL_ID.into()],
+                surfaces: vec![RENDER_SURFACE_ID.into()],
+                ..ModuleContributions::default()
+            },
             data_policy: ModuleDataPolicy::default(),
             extensions,
         },
@@ -445,7 +482,15 @@ pub fn project_resources_module(
                 "active-project-watcher".into(),
                 "dirty-directory-repair".into(),
             ],
-            contributes: ModuleContributions::default(),
+            contributes: ModuleContributions {
+                workspace_tabs: vec![PROJECT_CACHE_WORKSPACE_TAB_ID.into()],
+                tools: vec![PROJECT_CACHE_TOOL_ID.into(), PROJECT_MDT_TOOL_ID.into()],
+                surfaces: vec![
+                    PROJECT_CACHE_SURFACE_ID.into(),
+                    PROJECT_MDT_SURFACE_ID.into(),
+                ],
+                ..ModuleContributions::default()
+            },
             data_policy: ModuleDataPolicy::default(),
             extensions,
         },
@@ -593,7 +638,13 @@ pub fn lan_collaboration_module(
                 "server-client".into(),
                 "transfer-supervisor".into(),
             ],
-            contributes: ModuleContributions::default(),
+            contributes: ModuleContributions {
+                shell_tabs: vec![LAN_SHELL_TAB_ID.into()],
+                workspace_tabs: vec![LAN_PROJECT_WORKSPACE_TAB_ID.into()],
+                tools: vec![LAN_MAIN_TOOL_ID.into(), LAN_PROJECT_TOOL_ID.into()],
+                surfaces: vec![LAN_MAIN_SURFACE_ID.into(), LAN_PROJECT_SURFACE_ID.into()],
+                ..ModuleContributions::default()
+            },
             data_policy: ModuleDataPolicy::default(),
             extensions,
         },
@@ -705,7 +756,11 @@ pub fn smart_clipboard_module(app_data_dir: PathBuf) -> RegisteredModule {
                 "native-window".into(),
                 "global-hotkey".into(),
             ],
-            contributes: ModuleContributions::default(),
+            contributes: ModuleContributions {
+                tools: vec![SMART_CLIPBOARD_TOOL_ID.into()],
+                surfaces: vec![SMART_CLIPBOARD_SURFACE_ID.into()],
+                ..ModuleContributions::default()
+            },
             data_policy: ModuleDataPolicy::default(),
             extensions,
         },
@@ -1069,6 +1124,7 @@ mod tests {
 #[cfg(test)]
 mod project_resource_tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     #[test]
     fn project_resource_manifest_declares_project_scope_and_default_enablement() {
@@ -1087,6 +1143,20 @@ mod project_resource_tests {
             .manifest
             .background_services
             .contains(&"active-project-watcher".to_string()));
+        assert_eq!(
+            module.manifest.contributes.workspace_tabs,
+            vec![PROJECT_CACHE_WORKSPACE_TAB_ID.to_string()]
+        );
+        assert!(module
+            .manifest
+            .contributes
+            .tools
+            .contains(&PROJECT_CACHE_TOOL_ID.to_string()));
+        assert!(module
+            .manifest
+            .contributes
+            .surfaces
+            .contains(&PROJECT_CACHE_SURFACE_ID.to_string()));
     }
 
     #[test]
@@ -1111,5 +1181,80 @@ mod project_resource_tests {
             .manifest
             .capabilities
             .contains(&Capability::RenderResultCommit));
+        assert_eq!(
+            module.manifest.contributes.workspace_tabs,
+            vec![RENDER_WORKSPACE_TAB_ID.to_string()]
+        );
+        assert_eq!(
+            module.manifest.contributes.tools,
+            vec![RENDER_TOOL_ID.to_string()]
+        );
+        assert_eq!(
+            module.manifest.contributes.surfaces,
+            vec![RENDER_SURFACE_ID.to_string()]
+        );
+    }
+
+    #[test]
+    fn builtin_contribution_ids_are_unique_within_each_kind() {
+        let claims = [
+            ("tools", AUTOMATION_PYTHON_TOOL_ID),
+            ("tools", AUTOMATION_TASK_TOOL_ID),
+            ("surfaces", AUTOMATION_PYTHON_SURFACE_ID),
+            ("surfaces", AUTOMATION_TASK_SURFACE_ID),
+            ("settingsSections", AUTOMATION_SETTINGS_SECTION_ID),
+            ("tools", RENDER_TOOL_ID),
+            ("workspaceTabs", RENDER_WORKSPACE_TAB_ID),
+            ("surfaces", RENDER_SURFACE_ID),
+            ("tools", PROJECT_CACHE_TOOL_ID),
+            ("tools", PROJECT_MDT_TOOL_ID),
+            ("workspaceTabs", PROJECT_CACHE_WORKSPACE_TAB_ID),
+            ("surfaces", PROJECT_CACHE_SURFACE_ID),
+            ("surfaces", PROJECT_MDT_SURFACE_ID),
+            ("tools", LAN_MAIN_TOOL_ID),
+            ("tools", LAN_PROJECT_TOOL_ID),
+            ("shellTabs", LAN_SHELL_TAB_ID),
+            ("workspaceTabs", LAN_PROJECT_WORKSPACE_TAB_ID),
+            ("surfaces", LAN_MAIN_SURFACE_ID),
+            ("surfaces", LAN_PROJECT_SURFACE_ID),
+            ("tools", SMART_CLIPBOARD_TOOL_ID),
+            ("surfaces", SMART_CLIPBOARD_SURFACE_ID),
+        ];
+        let mut seen = BTreeSet::new();
+
+        for claim in claims {
+            assert!(
+                seen.insert(claim),
+                "duplicate built-in contribution claim: {}:{}",
+                claim.0,
+                claim.1
+            );
+        }
+    }
+
+    #[test]
+    fn automation_and_clipboard_manifests_declare_stable_contributions() {
+        let automation = automation_runtime_module();
+        assert_eq!(
+            automation.manifest.contributes.tools,
+            vec![
+                AUTOMATION_PYTHON_TOOL_ID.to_string(),
+                AUTOMATION_TASK_TOOL_ID.to_string(),
+            ]
+        );
+        assert_eq!(
+            automation.manifest.contributes.settings_sections,
+            vec![AUTOMATION_SETTINGS_SECTION_ID.to_string()]
+        );
+
+        let clipboard = smart_clipboard_module(std::env::temp_dir());
+        assert_eq!(
+            clipboard.manifest.contributes.tools,
+            vec![SMART_CLIPBOARD_TOOL_ID.to_string()]
+        );
+        assert_eq!(
+            clipboard.manifest.contributes.surfaces,
+            vec![SMART_CLIPBOARD_SURFACE_ID.to_string()]
+        );
     }
 }

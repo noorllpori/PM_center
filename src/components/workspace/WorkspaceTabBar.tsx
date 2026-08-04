@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { Box, Clapperboard, Database, ExternalLink, FileText, Film, Folder, Image as ImageIcon, Layers, MessageCircle, X } from 'lucide-react';
+import { Box, ExternalLink, FileText, Film, Folder, Image as ImageIcon, Layers, X } from 'lucide-react';
 import type { WorkspaceTab } from '../../stores/workspaceTabStore';
+import { WORKSPACE_TAB_CONTRIBUTION_BY_ID } from '../../features/contributionRegistry';
 
 interface WorkspaceTabBarProps {
   tabs: WorkspaceTab[];
@@ -18,15 +19,17 @@ interface TabContextMenuState {
 }
 
 function getTabIcon(tab: WorkspaceTab) {
+  if (tab.contributionId) {
+    const definition = WORKSPACE_TAB_CONTRIBUTION_BY_ID.get(tab.contributionId);
+    if (definition) {
+      const Icon = definition.icon;
+      return <Icon className={`h-4 w-4 ${definition.iconClassName}`} />;
+    }
+  }
+
   switch (tab.type) {
     case 'files':
       return <Folder className="h-4 w-4 text-blue-500" />;
-    case 'cache':
-      return <Database className="h-4 w-4 text-cyan-600" />;
-    case 'render':
-      return <Clapperboard className="h-4 w-4 text-orange-500" />;
-    case 'p2p':
-      return <MessageCircle className="h-4 w-4 text-emerald-600" />;
     case 'directory':
       return <Folder className="h-4 w-4 text-blue-500" />;
     case 'image':

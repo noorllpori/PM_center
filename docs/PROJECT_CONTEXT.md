@@ -101,7 +101,7 @@ React invoke/listen
 | 渲染中心 | `RenderCenterSurface.tsx` | 批次、作业、帧、预设、性能、ETA、Worker、右键与视频打包入口。 |
 | 脚本/任务 | `ScriptRunner.tsx`、`TaskPanel/`、`taskStore.ts` | 用户脚本、日志、取消/重试与任务面板聚合。 |
 | 设置 | `SettingsPanel.tsx`、`settingsStore.ts` | 全局工具路径、Blender 版本、排除规则、启动偏好、插件等。 |
-| 功能中心 | `features/builtinTools.ts`、`components/file-manager/index.tsx` | `Alt+Q` 工具入口；智能剪贴板由此调用后端显示独立 Win32 窗口，不创建工作区标签或 WebView。 |
+| 功能中心 | `features/builtinTools.ts`、`features/contributionRegistry.ts`、`stores/contributionRegistryStore.ts`、`components/file-manager/index.tsx` | `Alt+Q` 工具入口；R5 已让工具、Pin、Shell/工作区标签按模块贡献和运行状态动态出现或撤下，智能剪贴板仍调用独立 Win32 窗口。 |
 | 说明组件 | `components/ui/HelpAssistant.tsx` | 复杂或不可逆概念旁的问号说明；支持文字、图片、视频及自动避让定位。 |
 
 状态 Store 的所有权：
@@ -133,7 +133,7 @@ React invoke/listen
 | 工具路径 | `tools.rs` | FFprobe、FFmpeg、Blender 路径校验与系统自动检测。 |
 | 局域网 | `p2p/mod.rs` | 全局联系人数据库、双向在线发现、个人资料/头像同步、大厅与私聊消息；由 `builtin.lan-collaboration` 生命周期统一管理 UDP/TCP、服务器连接和传输取消。 |
 | 智能剪贴板 | `smart_clipboard/` | Windows 剪贴板监听、历史 SQLite/图像载荷、原生窗口绘制、全局快捷键、内容恢复与自动粘贴。 |
-| 模块与权限运行时 | `platform/`、`automation_runtime.rs` | R2 Module Manager/ResourceRegistry 与 R3 CapabilityGateway，负责状态、资源、授权、短期 token、路径边界和审计；R4 已接入智能剪贴板、局域网协同、项目资源、任务/Python/旧插件和渲染中心。 |
+| 模块、权限与贡献运行时 | `platform/`、`automation_runtime.rs`、`features/contributionRegistry.ts` | R2 Module Manager/ResourceRegistry 与 R3 CapabilityGateway 负责状态、资源、授权、短期 token、路径边界和审计；R4 已接入全部既有后台领域，R5 正在把前端入口、标签和 Surface 迁入贡献注册表。 |
 
 长耗时后端操作应避免阻塞 Tauri 主线程：使用 Tokio / `spawn_blocking`，向前端发进度事件，提供合理的取消与失败状态。Windows 子进程统一使用 `process_utils::{std_command, tokio_command}`，避免弹出控制台窗口。
 

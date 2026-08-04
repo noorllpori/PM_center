@@ -1,4 +1,8 @@
 import { create } from 'zustand';
+import {
+  SHELL_TAB_CONTRIBUTION_BY_ID,
+  SHELL_TAB_CONTRIBUTIONS,
+} from '../features/contributionRegistry';
 
 export type ShellTabType = 'home' | 'project' | 'lan';
 
@@ -9,10 +13,12 @@ export interface ShellTab {
   closable: boolean;
   projectPath?: string;
   normalizedProjectPath?: string;
+  contributionId?: string;
+  moduleId?: string;
 }
 
 const HOME_TAB_ID = 'home';
-export const LAN_SHELL_TAB_ID = 'lan-collaboration';
+export const LAN_SHELL_TAB_ID = SHELL_TAB_CONTRIBUTIONS.lan.tabId;
 
 const HOME_TAB: ShellTab = {
   id: HOME_TAB_ID,
@@ -26,6 +32,8 @@ const LAN_SHELL_TAB: ShellTab = {
   type: 'lan',
   title: '设备协作',
   closable: true,
+  contributionId: SHELL_TAB_CONTRIBUTIONS.lan.id,
+  moduleId: SHELL_TAB_CONTRIBUTIONS.lan.moduleId || undefined,
 };
 
 export function normalizeProjectPath(path: string) {
@@ -39,9 +47,11 @@ interface ShellTabState {
   tabs: ShellTab[];
   activeTabId: string;
   openProjectTab: (projectPath: string, title: string) => string;
+  openShellContributionTab: (contributionId: string) => string | null;
   openLanTab: () => string;
   activateTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
+  closeContributionTabs: (contributionIds: string[]) => void;
   reorderTabs: (fromId: string, toId: string) => void;
   findProjectTab: (projectPath: string) => ShellTab | undefined;
 }
@@ -78,17 +88,36 @@ export const useShellTabStore = create<ShellTabState>()((set, get) => ({
     return nextTab.id;
   },
 
-  openLanTab: () => {
-    const existingTab = get().tabs.find((tab) => tab.id === LAN_SHELL_TAB_ID);
-    if (existingTab) {
-      set({ activeTabId: LAN_SHELL_TAB_ID });
-      return LAN_SHELL_TAB_ID;
+  openShellContributionTab: (contributionId) => {
+    const definition = SHELL_TAB_CONTRIBUTION_BY_ID.get(contributionId);
+    if (!definition) {
+      return null;
     }
+    const existingTab = get().tabs.find(
+      (tab) => tab.contributionId === contributionId || tab.id === definition.tabId,
+    );
+    if (existingTab) {
+      set({ activeTabId: existingTab.id });
+      return existingTab.id;
+    }
+    const nextTab: ShellTab = {
+      id: definition.tabId,
+      type: definition.tabType,
+      title: definition.title,
+      closable: true,
+      contributionId: definition.id,
+      moduleId: definition.moduleId || undefined,
+    };
     set((state) => ({
-      tabs: [...state.tabs, LAN_SHELL_TAB],
-      activeTabId: LAN_SHELL_TAB_ID,
+      tabs: [...state.tabs, nextTab],
+      activeTabId: nextTab.id,
     }));
-    return LAN_SHELL_TAB_ID;
+    return nextTab.id;
+  },
+
+  openLanTab: () => {
+    return get().openShellContributionTab(SHELL_TAB_CONTRIBUTIONS.lan.id)
+      ?? LAN_SHELL_TAB.id;
   },
 
   activateTab: (tabId) => {
@@ -124,6 +153,30 @@ export const useShellTabStore = create<ShellTabState>()((set, get) => ({
       return {
         tabs: nextTabs,
         activeTabId: nextActiveTabId,
+      };
+    });
+  },
+
+  closeContributionTabs: (contributionIds) => {
+    const contributionIdSet = new Set(contributionIds);
+    if (contributionIdSet.size === 0) {
+      return;
+    }
+    set((state) => {
+      const removedActiveTab = state.tabs.some(
+        (tab) => tab.id === state.activeTabId
+          && Boolean(tab.contributionId)
+          && contributionIdSet.has(tab.contributionId!),
+      );
+      const nextTabs = state.tabs.filter(
+        (tab) => !tab.contributionId || !contributionIdSet.has(tab.contributionId),
+      );
+      if (nextTabs.length === state.tabs.length) {
+        return state;
+      }
+      return {
+        tabs: nextTabs,
+        activeTabId: removedActiveTab ? HOME_TAB_ID : state.activeTabId,
       };
     });
   },

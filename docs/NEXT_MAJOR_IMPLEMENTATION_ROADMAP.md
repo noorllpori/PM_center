@@ -67,8 +67,8 @@ D0 架构记录
 | R1 | Module/Profile/Component/Workflow 协议 | accepted | R0 | 2026-08-03 已确认按当前设计继续 R2 |
 | R2 | Module Manager 与 ResourceRegistry | accepted | R1 | 2026-08-03 已完成诊断页和泄漏检查验收 |
 | R3 | Capability 权限网关 | accepted | R1、R2 | 2026-08-03 已完成人工验收，未发现问题 |
-| R4 | 现有模块生命周期接入 | in-progress | R2、R3 | 前四项已验收；渲染中心进入独立验收 |
-| R5 | 前端 Contribution Registry | pending | R1、R2 | 需要确认界面动态装配规则 |
+| R4 | 现有模块生命周期接入 | accepted | R2、R3 | 2026-08-04 已完成渲染中心最终验收 |
+| R5 | 前端 Contribution Registry | in-progress | R1、R2 | 第一条功能中心、快捷栏与标签纵向链路等待人工验收 |
 | R6 | 装配方案运行时与兼容迁移 | pending | R4、R5 | 需要确认迁移结果 |
 | R7 | DIY 装配编辑器 MVP | pending | R6 | 需要实际拖拽组装验收 |
 | R8 | Profile 导入导出 | pending | R6、R7 | 需要跨机器导入验收 |
@@ -359,7 +359,7 @@ R4 已开始接入真实资源，首项智能剪贴板由 Module Manager 托管�
 
 ## 10. R4：现有后台模块接入生命周期
 
-状态：`in-progress`
+状态：`accepted`
 
 分项实现与验收记录：
 
@@ -379,7 +379,7 @@ R4 已开始接入真实资源，首项智能剪贴板由 Module Manager 托管�
 2. **局域网服务**：`accepted`，2026-08-03 已完成模块关闭与重新开启人工验收。
 3. **项目资源**：`accepted`，2026-08-03 已完成项目打开、切换、关闭、模块停用和恢复人工验收。
 4. **任务、Python 和旧插件**：`accepted`，2026-08-04 已完成进程取消、模块停用、数据保留和重新启用人工验收。
-5. **渲染中心**：`verifying`，调度闸门、Worker/脚本/FFmpeg 进程登记、停用暂停和任务恢复已实现，等待真实渲染人工验收。
+5. **渲染中心**：`accepted`，2026-08-04 已完成真实渲染、任务级多开、停用暂停和恢复验收。
 
 ### 每个模块通用验收
 
@@ -404,6 +404,12 @@ R4 已开始接入真实资源，首项智能剪贴板由 Module Manager 托管�
 每迁移一个领域单独验收，不等待五个领域全部完成后一次确认。
 
 ## 11. R5：前端 Contribution Registry
+
+状态：`in-progress`
+
+第一轮实现与验收记录见 `docs/NEXT_MAJOR_R5_CONTRIBUTION_REGISTRY.md`。
+
+2026-08-04 已完成稳定贡献 ID、前端运行时注册表、功能中心与 Pin 过滤、Shell/工作区标签打开与恢复、模块停用撤下以及贡献冲突诊断。设置分区、右键动作、Widget 和隔离测试贡献继续作为后续 R5 分项。
 
 ### 目标
 
