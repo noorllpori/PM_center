@@ -18,6 +18,7 @@ interface BuiltinToolsState {
   loadPreferences: () => Promise<void>;
   togglePinned: (toolId: BuiltinToolId) => Promise<void>;
   reorderPinned: (toolId: BuiltinToolId, beforeToolId: BuiltinToolId | null) => Promise<void>;
+  replacePinnedByContributionIds: (contributionIds: string[]) => Promise<void>;
 }
 
 const STORE_FILE = 'builtin-tools.json';
@@ -61,6 +62,42 @@ async function persistPreferences(pinnedToolIds: BuiltinToolId[]) {
   };
   await store.set(STORE_KEY, preferences);
   await store.save();
+}
+
+export function getPinnedToolContributionIds(pinnedToolIds?: BuiltinToolId[]) {
+  const values = pinnedToolIds ?? useBuiltinToolsStore.getState().pinnedToolIds;
+  return values.flatMap((toolId) => {
+    const contributionId = BUILTIN_TOOL_BY_ID.get(toolId)?.contribution.id;
+    return contributionId ? [contributionId] : [];
+  });
+}
+
+export function getKnownToolContributionIds() {
+  return Array.from(BUILTIN_TOOL_BY_ID.values(), (definition) => definition.contribution.id);
+}
+
+function resolvePinnedContributionIds(contributionIds: string[]): BuiltinToolId[] {
+  const toolIdByContribution = new Map(
+    Array.from(BUILTIN_TOOL_BY_ID.values(), (definition) => [
+      definition.contribution.id,
+      definition.id,
+    ] as const),
+  );
+  const seen = new Set<BuiltinToolId>();
+  return contributionIds.map((contributionId) => {
+    const toolId = toolIdByContribution.get(contributionId);
+    const definition = toolId ? BUILTIN_TOOL_BY_ID.get(toolId) : null;
+    if (!toolId || !definition?.pinnable) {
+      throw new Error(`固定工具没有可用实现：${contributionId}`);
+    }
+    return toolId;
+  }).filter((toolId) => {
+    if (seen.has(toolId)) {
+      return false;
+    }
+    seen.add(toolId);
+    return true;
+  });
 }
 
 export const useBuiltinToolsStore = create<BuiltinToolsState>((set, get) => ({
@@ -133,5 +170,11 @@ export const useBuiltinToolsStore = create<BuiltinToolsState>((set, get) => ({
     } catch (error) {
       console.error('Failed to save builtin tool order:', error);
     }
+  },
+
+  replacePinnedByContributionIds: async (contributionIds) => {
+    const pinnedToolIds = resolvePinnedContributionIds(contributionIds);
+    await persistPreferences(pinnedToolIds);
+    set({ pinnedToolIds });
   },
 }));

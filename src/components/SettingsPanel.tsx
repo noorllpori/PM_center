@@ -37,6 +37,7 @@ import {
 import { AlertDialog, ConfirmDialog, Dialog } from './Dialog';
 import { ModuleDiagnosticsSection } from './settings/ModuleDiagnosticsSection';
 import { CapabilityDiagnosticsSection } from './settings/CapabilityDiagnosticsSection';
+import { WorkspaceProfileDiagnosticsSection } from './settings/WorkspaceProfileDiagnosticsSection';
 import { useOptionalProjectStoreShallow } from '../stores/projectStore';
 import { useContributionRegistryStore } from '../stores/contributionRegistryStore';
 import { BlenderInstallationInfo, ToolPaths, useSettingsStore } from '../stores/settingsStore';
@@ -2172,6 +2173,8 @@ export function SettingsPanel({
           </div>
         </div>
       </section>
+
+      <WorkspaceProfileDiagnosticsSection />
 
       <ModuleDiagnosticsSection />
 

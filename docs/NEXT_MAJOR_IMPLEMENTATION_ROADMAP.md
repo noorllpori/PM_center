@@ -68,8 +68,8 @@ D0 架构记录
 | R2 | Module Manager 与 ResourceRegistry | accepted | R1 | 2026-08-03 已完成诊断页和泄漏检查验收 |
 | R3 | Capability 权限网关 | accepted | R1、R2 | 2026-08-03 已完成人工验收，未发现问题 |
 | R4 | 现有模块生命周期接入 | accepted | R2、R3 | 2026-08-04 已完成渲染中心最终验收 |
-| R5 | 前端 Contribution Registry | verifying | R1、R2 | R5-1、R5-2、R5-3 已验收；R5-4 自动验证通过，等待最终人工验收 |
-| R6 | 装配方案运行时与兼容迁移 | pending | R4、R5 | 需要确认迁移结果 |
+| R5 | 前端 Contribution Registry | accepted | R1、R2 | 2026-08-04 已完成 R5-4 最终验收 |
+| R6 | 装配方案运行时与兼容迁移 | in-progress | R4、R5 | R6-1 已验收；R6-2 事务切换等待人工验收 |
 | R7 | DIY 装配编辑器 MVP | pending | R6 | 需要实际拖拽组装验收 |
 | R8 | Profile 导入导出 | pending | R6、R7 | 需要跨机器导入验收 |
 | R9 | 统一组件运行时 | pending | R3、R6 | 按运行时类型验收 |
@@ -310,7 +310,7 @@ R4 已开始接入真实资源，首项智能剪贴板由 Module Manager 托管�
 
 ## 9. R3：Capability 权限网关
 
-状态：`verifying`
+状态：`accepted`
 
 实现与验收记录见 `docs/NEXT_MAJOR_R3_CAPABILITY_GATEWAY.md`。
 
@@ -420,7 +420,7 @@ R5-2 已完成并验收自动化设置区、插件右键动作和项目集合命
 
 R5-3 已完成并验收 Widget、DataSource、工作流节点前端目录、通用贡献工作区类型和默认停用的隔离诊断样本。验收结果为 29 个有效贡献、0 个冲突；节点执行器仍属于 R11。
 
-R5-4 已完成前端/manifest 目录一致性检查、Surface/Widget/DataSource 实现覆盖诊断、缺失实现错误状态、Shell 通用渲染入口和引用计数订阅释放。自动验证已通过，等待最终人工验收；通过后 R5 转为 `accepted` 并进入 R6。
+R5-4 已完成前端/manifest 目录一致性检查、Surface/Widget/DataSource 实现覆盖诊断、缺失实现错误状态、Shell 通用渲染入口和引用计数订阅释放，并于 2026-08-04 完成人工验收。R5 已转为 `accepted`。
 
 ### 目标
 
@@ -448,6 +448,14 @@ R5-4 已完成前端/manifest 目录一致性检查、Surface/Widget/DataSource 
 安装/启用一个测试模块，确认工具、标签、设置项和右键动作出现；停用后全部消失且布局不破坏。
 
 ## 12. R6：装配方案运行时与兼容迁移
+
+状态：`in-progress`
+
+实现与验收记录见 `docs/NEXT_MAJOR_R6_PROFILE_RUNTIME_MIGRATION.md` 和 `docs/NEXT_MAJOR_R6_PROFILE_SWITCHING.md`。
+
+R6-1 已建立软件级 Profile 仓库、版本化当前方案状态、现有模块/Pin 的幂等迁移和设置页只读诊断，并于 2026-08-04 验收通过。
+
+R6-2 已增加普通“空白装配空间”、纯只读切换预览、模块/版本/依赖/Pin/后台资源阻塞报告、模块集合事务切换和失败回滚。当前等待人工往返切换验收；Profile 新建、复制、编辑、布局装配和版本历史仍属于后续 R6/R7。
 
 ### 目标
 

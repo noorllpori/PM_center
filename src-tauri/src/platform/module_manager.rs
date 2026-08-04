@@ -233,6 +233,20 @@ pub struct DisablePreview {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct ProfileModuleRuntimeSnapshot {
+    desired_enabled: BTreeSet<String>,
+    running: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProfileModuleTransition {
+    pub enabled: Vec<String>,
+    pub disabled: Vec<String>,
+    pub restored_after_failure: bool,
+}
+
+#[derive(Debug, Clone)]
 struct ModuleRuntimeRecord {
     state: ModuleState,
     desired_enabled: bool,
@@ -512,6 +526,198 @@ impl ModuleManager {
             }
         }
         errors
+    }
+
+    pub(crate) fn capture_profile_module_state(
+        &self,
+    ) -> Result<ProfileModuleRuntimeSnapshot, ModuleManagerError> {
+        let mut desired_enabled = BTreeSet::new();
+        let mut running = BTreeSet::new();
+        for (id, module) in &self.modules {
+            if module.diagnostic {
+                continue;
+            }
+            let record = self.runtime_record(id)?;
+            if record.desired_enabled {
+                desired_enabled.insert(id.clone());
+            }
+            if record.state == ModuleState::Running {
+                running.insert(id.clone());
+            }
+        }
+        Ok(ProfileModuleRuntimeSnapshot {
+            desired_enabled,
+            running,
+        })
+    }
+
+    pub(crate) async fn apply_profile_module_set(
+        &self,
+        target: &BTreeSet<String>,
+    ) -> Result<ProfileModuleTransition, ModuleManagerError> {
+        let _guard = self.operation_lock.lock().await;
+        self.validate_profile_target(target)?;
+        let previous = self.capture_profile_module_state()?;
+        match self.apply_profile_module_set_locked(target).await {
+            Ok(mut transition) => {
+                self.persist(false)?;
+                transition.restored_after_failure = false;
+                Ok(transition)
+            }
+            Err(mut error) => {
+                match self.restore_profile_module_state_locked(&previous).await {
+                    Ok(()) => {
+                        error.details.push("profileRollback=restored".to_string());
+                    }
+                    Err(rollback_error) => {
+                        error.details.push(format!(
+                            "profileRollbackFailed={:?}:{}",
+                            rollback_error.code, rollback_error.message
+                        ));
+                        error.details.extend(
+                            rollback_error
+                                .details
+                                .into_iter()
+                                .map(|detail| format!("rollback:{detail}")),
+                        );
+                    }
+                }
+                let _ = self.persist(false);
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) async fn restore_profile_module_state(
+        &self,
+        snapshot: &ProfileModuleRuntimeSnapshot,
+    ) -> Result<(), ModuleManagerError> {
+        let _guard = self.operation_lock.lock().await;
+        self.restore_profile_module_state_locked(snapshot).await?;
+        self.persist(false)
+    }
+
+    fn validate_profile_target(&self, target: &BTreeSet<String>) -> Result<(), ModuleManagerError> {
+        for id in target {
+            let module = self.module(id)?;
+            if module.diagnostic {
+                return Err(ModuleManagerError::new(
+                    ModuleErrorCode::ModuleNotFound,
+                    Some(id),
+                    "诊断模块不能写入普通装配方案",
+                ));
+            }
+            for dependency in &module.manifest.requires_modules {
+                if !target.contains(&dependency.id) {
+                    return Err(ModuleManagerError::new(
+                        ModuleErrorCode::ModuleMissingDependency,
+                        Some(id),
+                        format!("装配方案缺少模块依赖 {}", dependency.id),
+                    ));
+                }
+            }
+            for conflict in &module.manifest.conflicts {
+                if target.contains(conflict) {
+                    return Err(ModuleManagerError::new(
+                        ModuleErrorCode::ModuleConflict,
+                        Some(id),
+                        format!("装配方案同时启用了冲突模块 {id} 与 {conflict}"),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn apply_profile_module_set_locked(
+        &self,
+        target: &BTreeSet<String>,
+    ) -> Result<ProfileModuleTransition, ModuleManagerError> {
+        let previous = self.capture_profile_module_state()?;
+        let active_to_stop = self
+            .modules
+            .iter()
+            .filter(|(_, module)| !module.diagnostic)
+            .filter_map(|(id, _)| {
+                self.runtime_record(id)
+                    .ok()
+                    .filter(|record| record.state.is_active() || record.state == ModuleState::Error)
+                    .filter(|_| !target.contains(id))
+                    .map(|_| id.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        let stop_order = self.stop_order(&active_to_stop)?;
+        let mut disabled = Vec::new();
+        for id in stop_order {
+            self.stop_one(&id, false, true).await?;
+            disabled.push(id);
+        }
+
+        let topological = self.topological_order()?;
+        let mut enabled = Vec::new();
+        for id in topological {
+            if !target.contains(&id) || self.module(&id)?.diagnostic {
+                continue;
+            }
+            if self.runtime_record(&id)?.state != ModuleState::Running {
+                self.enable_locked(&id, false).await?;
+                enabled.push(id);
+            }
+        }
+
+        for (id, module) in &self.modules {
+            if module.diagnostic {
+                continue;
+            }
+            self.update_record(id, |record| record.desired_enabled = target.contains(id))?;
+        }
+
+        disabled.retain(|id| previous.running.contains(id));
+        Ok(ProfileModuleTransition {
+            enabled,
+            disabled,
+            restored_after_failure: false,
+        })
+    }
+
+    async fn restore_profile_module_state_locked(
+        &self,
+        snapshot: &ProfileModuleRuntimeSnapshot,
+    ) -> Result<(), ModuleManagerError> {
+        let active_to_stop = self
+            .modules
+            .iter()
+            .filter(|(_, module)| !module.diagnostic)
+            .filter_map(|(id, _)| {
+                self.runtime_record(id)
+                    .ok()
+                    .filter(|record| record.state.is_active() || record.state == ModuleState::Error)
+                    .filter(|_| !snapshot.running.contains(id))
+                    .map(|_| id.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        for id in self.stop_order(&active_to_stop)? {
+            self.stop_one(&id, true, true).await?;
+        }
+
+        for id in self.topological_order()? {
+            if self.module(&id)?.diagnostic || !snapshot.running.contains(&id) {
+                continue;
+            }
+            if self.runtime_record(&id)?.state != ModuleState::Running {
+                self.enable_locked(&id, false).await?;
+            }
+        }
+
+        for (id, module) in &self.modules {
+            if module.diagnostic {
+                continue;
+            }
+            self.update_record(id, |record| {
+                record.desired_enabled = snapshot.desired_enabled.contains(id)
+            })?;
+        }
+        Ok(())
     }
 
     pub async fn enable_module(
@@ -1582,11 +1788,70 @@ mod tests {
         }
     }
 
+    fn formal_module(
+        id: &str,
+        required: &[&str],
+        lifecycle: RecordingLifecycle,
+    ) -> RegisteredModule {
+        RegisteredModule {
+            manifest: manifest(id, required),
+            lifecycle: Arc::new(lifecycle),
+            diagnostic: false,
+        }
+    }
+
     fn state_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "pm-center-module-manager-{name}-{}.json",
             Uuid::new_v4()
         ))
+    }
+
+    #[tokio::test]
+    async fn profile_module_switch_restores_previous_runtime_after_start_failure() {
+        let log = Arc::new(StdMutex::new(Vec::new()));
+        let active = Arc::new(AtomicUsize::new(0));
+        let path = state_path("profile-rollback");
+        let manager = ModuleManager::new(
+            path.clone(),
+            vec![
+                formal_module(
+                    "test.alpha",
+                    &[],
+                    RecordingLifecycle::new("alpha", log.clone(), active.clone()),
+                ),
+                formal_module(
+                    "test.beta",
+                    &[],
+                    RecordingLifecycle::new("beta", log.clone(), active.clone()).failing(),
+                ),
+            ],
+        )
+        .unwrap();
+        manager.enable_module("test.alpha").await.unwrap();
+
+        let error = manager
+            .apply_profile_module_set(&BTreeSet::from(["test.beta".to_string()]))
+            .await
+            .unwrap_err();
+        assert!(error
+            .details
+            .iter()
+            .any(|detail| detail == "profileRollback=restored"));
+        let alpha = manager.snapshot("test.alpha").unwrap();
+        let beta = manager.snapshot("test.beta").unwrap();
+        assert_eq!(alpha.state, ModuleState::Running);
+        assert!(alpha.desired_enabled);
+        assert_ne!(beta.state, ModuleState::Running);
+        assert!(!beta.desired_enabled);
+        assert_eq!(active.load(Ordering::SeqCst), 1);
+        assert!(log
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|entry| entry == "start:alpha"));
+        let _ = manager.shutdown_all().await;
+        let _ = fs::remove_file(path);
     }
 
     #[test]

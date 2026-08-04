@@ -27,6 +27,7 @@ import { useUiStore } from '../../stores/uiStore';
 import { useShellTabStore, normalizeProjectPath } from '../../stores/shellTabStore';
 import { useBuiltinToolsStore } from '../../stores/builtinToolsStore';
 import { useLanCollaborationStore } from '../../stores/lanCollaborationStore';
+import { useWorkspaceProfileStore } from '../../stores/workspaceProfileStore';
 import {
   BUILTIN_TOOL_BY_ID,
   type BuiltinToolDialogId,
@@ -280,6 +281,7 @@ export function FileManager() {
   const autoOpenLastProject = useSettingsStore((state) => state.autoOpenLastProject);
   const addRecentProject = useSettingsStore((state) => state.addRecentProject);
   const loadBuiltinToolsPreferences = useBuiltinToolsStore((state) => state.loadPreferences);
+  const initializeWorkspaceProfiles = useWorkspaceProfileStore((state) => state.initialize);
   const contributionSnapshot = useContributionRegistryStore((state) => state.snapshot);
   const showToast = useUiStore((state) => state.showToast);
   const toast = useUiStore((state) => state.toast);
@@ -370,6 +372,13 @@ export function FileManager() {
         loadBuiltinToolsPreferences(),
         contributionRegistryInitialization,
       ]);
+      const legacyPinnedTools = useBuiltinToolsStore
+        .getState()
+        .pinnedToolIds.flatMap((toolId) => {
+          const contributionId = BUILTIN_TOOL_BY_ID.get(toolId)?.contribution.id;
+          return contributionId ? [contributionId] : [];
+        });
+      await initializeWorkspaceProfiles(legacyPinnedTools);
       if (isActive) {
         setIsSettingsLoaded(true);
       }
@@ -381,7 +390,7 @@ export function FileManager() {
       isActive = false;
       releaseContributionRegistry?.();
     };
-  }, [loadBuiltinToolsPreferences, loadSettings]);
+  }, [initializeWorkspaceProfiles, loadBuiltinToolsPreferences, loadSettings]);
 
   useEffect(() => {
     sessionsRef.current.forEach((session) => {

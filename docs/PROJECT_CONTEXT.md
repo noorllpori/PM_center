@@ -1,6 +1,6 @@
 # PM Center 项目总览与开发约定
 
-> 当前基线：`2.8.4`。本文件是 PM Center 的长期开发上下文；新增、修改或排查功能前，先确认其归属模块和下面的固定交互规则。README 保留对外简介和较长的愿望清单，本文件记录当前实际架构与已确定的产品约束。
+> 当前基线：`2.8.5`。本文件是 PM Center 的长期开发上下文；新增、修改或排查功能前，先确认其归属模块和下面的固定交互规则。README 保留对外简介和较长的愿望清单，本文件记录当前实际架构与已确定的产品约束。
 >
 > 下一超大版本将把现有单体功能升级为用户可 DIY 的模块装配平台。项目管理器、媒体资料管理器、局域网通信端和 Blender 渲染控制端/节点只是参考成品，不是系统写死的四种模式。完整架构见 `docs/NEXT_MAJOR_MODULAR_PLATFORM.md`，逐步开发顺序、退出门槛和确认模板见 `docs/NEXT_MAJOR_IMPLEMENTATION_ROADMAP.md`，R1 合同候选见 `docs/NEXT_MAJOR_SCHEMA_V1.md`。
 
@@ -102,6 +102,7 @@ React invoke/listen
 | 脚本/任务 | `ScriptRunner.tsx`、`TaskPanel/`、`taskStore.ts` | 用户脚本、日志、取消/重试与任务面板聚合。 |
 | 设置 | `SettingsPanel.tsx`、`settingsStore.ts` | 全局工具路径、Blender 版本、排除规则、启动偏好、插件等。 |
 | 功能中心 | `features/builtinTools.ts`、`features/contributionRegistry.ts`、`features/contributionDataSources.ts`、`features/contributionCatalogDiagnostics.ts`、`stores/contributionRegistryStore.ts`、`components/file-manager/index.tsx` | `Alt+Q` 工具入口；R5 已让工具、Pin、Shell/工作区标签、设置区、右键命令、Widget、DataSource 和节点目录按模块状态动态出现或撤下，并提供目录一致性、实现覆盖、缺失状态和订阅释放诊断。智能剪贴板仍调用独立 Win32 窗口。 |
+| 装配方案运行时 | `platform/profile_runtime.rs`、`api/workspaceProfiles.ts`、`stores/workspaceProfileStore.ts`、`WorkspaceProfileDiagnosticsSection.tsx` | R6-1 将现有正式模块期望状态和功能栏 Pin 幂等迁移为普通 `WorkspaceProfileV1`，保存在软件级 `profiles/`；当前只读诊断，不驱动模块或布局切换。 |
 | 说明组件 | `components/ui/HelpAssistant.tsx` | 复杂或不可逆概念旁的问号说明；支持文字、图片、视频及自动避让定位。 |
 
 状态 Store 的所有权：
@@ -237,6 +238,7 @@ React invoke/listen
 
 - 下一超大版本的主线是“统一内核 + Capability + Module + Component + Workflow + Profile”，不维护四套长期分叉代码；
 - Profile 是用户可新建、修改、导出和分享的装配方案；项目管理器、媒体管理器、通信端和 Blender 渲染器只是验证系统能力的参考组合，不得写死为固定枚举；
+- R6-2 已提供“当前 PM Center 装配方案”和普通“空白装配空间”的切换预览。预览只读，实际切换按目标模块集合执行并在失败时恢复旧集合；快捷栏 Pin 由 Profile 中稳定 Tool 贡献 ID 驱动；
 - 当前功能中心 Pin 只是入口偏好，不能作为模块启停。真正停用必须停止端口、watcher、调度器、原生线程、子进程和数据库资源；
 - 现有 Python 插件作为兼容组件保留，后续扩展到受控 Python Worker、原生独立进程、隔离 DLL 和资料包；
 - 渲染农场复用局域网传输与项目同步，不依赖聊天 UI，远程执行必须增加设备信任、权限和任务协议；

@@ -1,11 +1,18 @@
 mod builtin_modules;
 mod capability_gateway;
 mod module_manager;
+mod profile_runtime;
 mod resource_registry;
 
 pub use module_manager::{
     DisablePreview, ModuleDiagnosticSnapshot, ModuleManager, ModuleManagerError,
     ModuleRuntimeOverview, ModuleState, StopStrategy,
+};
+pub use profile_runtime::{
+    InitializeWorkspaceProfileRuntimeRequest, PreviewWorkspaceProfileSwitchRequest,
+    SwitchWorkspaceProfileRequest, WorkspaceProfileRuntime, WorkspaceProfileRuntimeError,
+    WorkspaceProfileRuntimeErrorCode, WorkspaceProfileRuntimeSnapshot,
+    WorkspaceProfileSwitchPreview, WorkspaceProfileSwitchResult,
 };
 
 pub use builtin_modules::{
@@ -37,6 +44,8 @@ use uuid::Uuid;
 pub struct PlatformRuntime {
     pub manager: Arc<ModuleManager>,
     pub gateway: Arc<CapabilityGateway>,
+    pub profiles: WorkspaceProfileRuntime,
+    profile_switch_lock: tokio::sync::Mutex<()>,
     controls: Arc<DiagnosticControls>,
 }
 
@@ -92,6 +101,8 @@ impl PlatformRuntime {
         Ok(Self {
             manager,
             gateway,
+            profiles: WorkspaceProfileRuntime::new(app_data_dir),
+            profile_switch_lock: tokio::sync::Mutex::new(()),
             controls,
         })
     }
@@ -134,6 +145,168 @@ pub struct PlatformDiagnosticResult {
 #[tauri::command]
 pub fn list_platform_modules(runtime: State<'_, PlatformRuntime>) -> ModuleRuntimeOverview {
     runtime.manager.overview()
+}
+
+#[tauri::command]
+pub fn initialize_workspace_profile_runtime(
+    request: InitializeWorkspaceProfileRuntimeRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<WorkspaceProfileRuntimeSnapshot, WorkspaceProfileRuntimeError> {
+    let overview = runtime.manager.overview();
+    let manifests = overview
+        .modules
+        .iter()
+        .filter(|module| !module.diagnostic)
+        .map(|module| module.manifest.clone())
+        .collect::<Vec<_>>();
+    let enabled_module_ids = overview
+        .modules
+        .iter()
+        .filter(|module| !module.diagnostic && module.desired_enabled)
+        .map(|module| module.manifest.id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    runtime.profiles.initialize_from_current_configuration(
+        &manifests,
+        &enabled_module_ids,
+        &request.legacy_pinned_tools,
+    )
+}
+
+#[tauri::command]
+pub fn get_workspace_profile_runtime(
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<WorkspaceProfileRuntimeSnapshot, WorkspaceProfileRuntimeError> {
+    let manifests = runtime
+        .manager
+        .overview()
+        .modules
+        .into_iter()
+        .filter(|module| !module.diagnostic)
+        .map(|module| module.manifest)
+        .collect::<Vec<_>>();
+    runtime.profiles.snapshot(&manifests)
+}
+
+#[tauri::command]
+pub fn preview_workspace_profile_switch(
+    request: PreviewWorkspaceProfileSwitchRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<WorkspaceProfileSwitchPreview, WorkspaceProfileRuntimeError> {
+    runtime
+        .profiles
+        .preview_switch(&request, &runtime.manager.overview().modules)
+}
+
+#[tauri::command]
+pub async fn switch_workspace_profile(
+    request: SwitchWorkspaceProfileRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<WorkspaceProfileSwitchResult, WorkspaceProfileRuntimeError> {
+    let _guard = runtime.profile_switch_lock.lock().await;
+    let preview_request = PreviewWorkspaceProfileSwitchRequest {
+        profile_id: request.profile_id.clone(),
+        current_pinned_tools: request.current_pinned_tools.clone(),
+        known_tool_contributions: request.known_tool_contributions.clone(),
+    };
+    let overview = runtime.manager.overview();
+    let preview = runtime
+        .profiles
+        .preview_switch(&preview_request, &overview.modules)?;
+    if preview.current_profile_id != request.expected_current_profile_id {
+        return Err(WorkspaceProfileRuntimeError::new(
+            WorkspaceProfileRuntimeErrorCode::ProfileSwitchStale,
+            format!(
+                "装配方案预览已经过期：预期 {}，实际 {}",
+                request.expected_current_profile_id, preview.current_profile_id
+            ),
+            None,
+        ));
+    }
+    if !preview.can_switch {
+        return Err(WorkspaceProfileRuntimeError::new(
+            WorkspaceProfileRuntimeErrorCode::ProfileSwitchBlocked,
+            "目标装配方案存在阻塞项，未修改任何状态",
+            None,
+        )
+        .with_details(
+            preview
+                .issues
+                .iter()
+                .filter(|issue| {
+                    issue.severity == profile_runtime::WorkspaceProfileSwitchIssueSeverity::Error
+                })
+                .map(|issue| format!("{}: {}", issue.code, issue.message))
+                .collect(),
+        ));
+    }
+
+    let manifests = overview
+        .modules
+        .iter()
+        .filter(|module| !module.diagnostic)
+        .map(|module| module.manifest.clone())
+        .collect::<Vec<_>>();
+    let target = runtime.profiles.profile(&request.profile_id, &manifests)?;
+    let target_module_ids = target
+        .enabled_modules
+        .iter()
+        .map(|selection| selection.id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let previous_modules = runtime
+        .manager
+        .capture_profile_module_state()
+        .map_err(profile_switch_module_error)?;
+    runtime
+        .manager
+        .apply_profile_module_set(&target_module_ids)
+        .await
+        .map_err(profile_switch_module_error)?;
+
+    let snapshot = match runtime.profiles.commit_switch(
+        &request.profile_id,
+        &request.expected_current_profile_id,
+        &manifests,
+    ) {
+        Ok(snapshot) => snapshot,
+        Err(commit_error) => {
+            return match runtime
+                .manager
+                .restore_profile_module_state(&previous_modules)
+                .await
+            {
+                Ok(()) => Err(commit_error.with_details(vec!["模块状态已恢复到切换前状态".into()])),
+                Err(rollback_error) => Err(WorkspaceProfileRuntimeError::new(
+                    WorkspaceProfileRuntimeErrorCode::ProfileRollbackFailed,
+                    "装配方案状态提交失败，模块回滚也未完整完成",
+                    None,
+                )
+                .with_details(vec![
+                    format!("commit={}", commit_error.message),
+                    format!("rollback={}", rollback_error.message),
+                ])),
+            };
+        }
+    };
+
+    Ok(WorkspaceProfileSwitchResult {
+        preview,
+        snapshot,
+        switched_at: chrono::Utc::now().timestamp_millis(),
+    })
+}
+
+fn profile_switch_module_error(error: ModuleManagerError) -> WorkspaceProfileRuntimeError {
+    WorkspaceProfileRuntimeError::new(
+        WorkspaceProfileRuntimeErrorCode::ProfileSwitchFailed,
+        format!("模块切换失败：{}", error.message),
+        None,
+    )
+    .with_details(
+        std::iter::once(format!("code={:?}", error.code))
+            .chain(error.module_id.map(|id| format!("moduleId={id}")))
+            .chain(error.details)
+            .collect(),
+    )
 }
 
 #[tauri::command]

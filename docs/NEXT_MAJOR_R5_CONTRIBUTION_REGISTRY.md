@@ -1,6 +1,6 @@
 # R5 前端 Contribution Registry
 
-> 状态：`verifying`
+> 状态：`accepted`
 >
 > 日期：2026-08-04
 >
@@ -114,6 +114,6 @@ Widget、DataSource、工作流节点前端目录和隔离诊断模块已于 202
 
 ## 10. R5-4 状态
 
-目录一致性、缺失渲染器状态和引用计数订阅释放已经实现并通过自动测试，当前等待桌面、窄窗口和深浅主题人工验收。验收预期和结果记录见 `docs/NEXT_MAJOR_R5_CONTRIBUTION_REGISTRY_HARDENING.md`。
+目录一致性、缺失渲染器状态和引用计数订阅释放已经实现，并于 2026-08-04 完成人工验收。验收结果记录见 `docs/NEXT_MAJOR_R5_CONTRIBUTION_REGISTRY_HARDENING.md`。
 
-人工确认后将 R5 转为 `accepted`，进入 R6 装配方案运行时。
+R5 已转为 `accepted`，下一项进入 R6 装配方案运行时。
