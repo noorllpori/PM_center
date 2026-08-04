@@ -18,7 +18,7 @@ R5-1 建立前端贡献注册表的第一条完整纵向链路，先迁移已有
 - 工作区会话保存、恢复和旧格式兼容；
 - 模块停用后的已挂载页面关闭。
 
-R5-2 已继续迁移自动化设置区、插件右键动作和项目集合命令，详细记录见 `docs/NEXT_MAJOR_R5_SETTINGS_CONTEXT_CONTRIBUTIONS.md`。Widget、DataSource、工作流节点和隔离测试贡献将在后续 R5 分项继续完成。
+R5-2 已完成并验收自动化设置区、插件右键动作和项目集合命令，详细记录见 `docs/NEXT_MAJOR_R5_SETTINGS_CONTEXT_CONTRIBUTIONS.md`。R5-3 已建立 Widget、DataSource、工作流节点目录和隔离测试贡献，记录见 `docs/NEXT_MAJOR_R5_WIDGET_DATA_WORKFLOW_CATALOGS.md`。
 
 ## 2. 注册表与稳定 ID
 
@@ -103,10 +103,14 @@ git diff --check
 
 ## 8. R5-2 状态
 
-设置区和右键命令贡献已实现并通过自动验证，目前等待人工验收。验收清单见 `docs/NEXT_MAJOR_R5_SETTINGS_CONTEXT_CONTRIBUTIONS.md`。
+设置区和右键命令贡献已于 2026-08-04 完成人工验收，未发现问题。
 
-## 9. 后续 R5 分项
+## 9. R5-3 状态
 
-1. 建立 Widget、DataSource 和工作流节点的前端贡献目录；
-2. 增加隔离测试贡献，验证新工具和页面无需修改主应用 switch；
-3. 完成桌面、窄窗口、深浅主题和订阅释放验收后，将 R5 转为 `accepted`。
+Widget、DataSource、工作流节点前端目录和隔离诊断模块已于 2026-08-04 完成人工验收。诊断页面显示 29 个有效贡献、0 个冲突，详细记录见 `docs/NEXT_MAJOR_R5_WIDGET_DATA_WORKFLOW_CATALOGS.md`。
+
+## 10. 后续 R5 分项
+
+1. 增加目录一致性、缺失渲染器和订阅释放诊断；
+2. 完成桌面、窄窗口和深浅主题最终验收；
+3. 将 R5 转为 `accepted`，进入 R6 装配方案运行时。

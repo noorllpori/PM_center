@@ -101,7 +101,7 @@ React invoke/listen
 | 渲染中心 | `RenderCenterSurface.tsx` | 批次、作业、帧、预设、性能、ETA、Worker、右键与视频打包入口。 |
 | 脚本/任务 | `ScriptRunner.tsx`、`TaskPanel/`、`taskStore.ts` | 用户脚本、日志、取消/重试与任务面板聚合。 |
 | 设置 | `SettingsPanel.tsx`、`settingsStore.ts` | 全局工具路径、Blender 版本、排除规则、启动偏好、插件等。 |
-| 功能中心 | `features/builtinTools.ts`、`features/contributionRegistry.ts`、`stores/contributionRegistryStore.ts`、`components/file-manager/index.tsx` | `Alt+Q` 工具入口；R5 已让工具、Pin、Shell/工作区标签、自动化设置区、插件右键动作和集合命令按模块贡献与运行状态动态出现或撤下，智能剪贴板仍调用独立 Win32 窗口。 |
+| 功能中心 | `features/builtinTools.ts`、`features/contributionRegistry.ts`、`features/contributionDataSources.ts`、`stores/contributionRegistryStore.ts`、`components/file-manager/index.tsx` | `Alt+Q` 工具入口；R5 已让工具、Pin、Shell/工作区标签、设置区、右键命令、Widget、DataSource 和节点目录按模块状态动态出现或撤下，智能剪贴板仍调用独立 Win32 窗口。 |
 | 说明组件 | `components/ui/HelpAssistant.tsx` | 复杂或不可逆概念旁的问号说明；支持文字、图片、视频及自动避让定位。 |
 
 状态 Store 的所有权：

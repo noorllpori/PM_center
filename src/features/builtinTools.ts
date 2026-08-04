@@ -5,6 +5,7 @@ import {
   ClipboardList,
   Database,
   FileSearch,
+  FlaskConical,
   ListTodo,
   MessageCircle,
   Network,
@@ -29,7 +30,8 @@ export type BuiltinToolId =
   | 'settings'
   | 'mdt-overview'
   | 'blender-file-parser'
-  | 'smart-clipboard';
+  | 'smart-clipboard'
+  | 'contribution-diagnostics';
 
 export type BuiltinToolCategory = 'project' | 'workflow' | 'system' | 'communication';
 
@@ -247,6 +249,26 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
       type: 'command',
       command: 'open_smart_clipboard',
       errorTitle: '智能剪贴板打开失败',
+    },
+  },
+  {
+    id: 'contribution-diagnostics',
+    contribution: TOOL_CONTRIBUTIONS.diagnosticSample,
+    title: '贡献隔离样本',
+    description: '验证工具、页面、Widget、数据源和工作流节点的动态装配。',
+    help: [
+      '该入口只在“贡献隔离样本”诊断模块启用时出现，用于验证贡献注册表本身。',
+      '页面通过通用工作区贡献打开，不在主应用打开逻辑中增加专用分支。',
+      '停用诊断模块后，入口、Pin 和已打开标签会撤下；重新启用后数据目录重新可用。',
+    ],
+    category: 'system',
+    icon: FlaskConical,
+    requiresProject: true,
+    pinnable: true,
+    keywords: ['diagnostic', 'contribution', 'widget', 'datasource', 'workflow', '诊断'],
+    openTarget: {
+      type: 'workspaceTab',
+      contributionId: WORKSPACE_TAB_CONTRIBUTIONS.diagnosticSample.id,
     },
   },
 ];

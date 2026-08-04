@@ -15,7 +15,7 @@ import {
   type WorkspaceTabContributionDefinition,
 } from '../features/contributionRegistry';
 
-export type WorkspaceTabType = 'files' | 'cache' | 'render' | 'p2p' | 'directory' | 'image' | 'text' | 'video' | 'blend' | 'collection';
+export type WorkspaceTabType = 'files' | 'cache' | 'render' | 'p2p' | 'contribution' | 'directory' | 'image' | 'text' | 'video' | 'blend' | 'collection';
 
 export type WorkspaceCollectionTabData =
   | {

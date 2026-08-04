@@ -1,6 +1,6 @@
 import type { LucideIcon } from 'lucide-react';
-import { Clapperboard, Database, MessageCircle } from 'lucide-react';
-import type { ModuleContributions } from '../types/platform';
+import { Clapperboard, Database, FlaskConical, MessageCircle } from 'lucide-react';
+import type { ModuleContributions, PortDefinition } from '../types/platform';
 import type {
   PlatformModuleDiagnostic,
   PlatformModuleState,
@@ -13,6 +13,8 @@ export const BUILTIN_MODULE_IDS = {
   renderCenter: 'builtin.render-center',
   smartClipboard: 'builtin.smart-clipboard',
 } as const;
+
+export const DIAGNOSTIC_CONTRIBUTION_MODULE_ID = 'diagnostic.contribution-sample';
 
 export const CONTRIBUTION_KINDS = [
   'shellTabs',
@@ -58,7 +60,102 @@ export const TOOL_CONTRIBUTIONS = {
   mdtOverview: contribution('builtin.project-resources.mdt-tool', 'tools', BUILTIN_MODULE_IDS.projectResources),
   blenderFileParser: contribution('core.blender-file-parser.tool', 'tools', null),
   smartClipboard: contribution('builtin.smart-clipboard.tool', 'tools', BUILTIN_MODULE_IDS.smartClipboard),
+  diagnosticSample: contribution(
+    'diagnostic.contribution-sample.tool',
+    'tools',
+    DIAGNOSTIC_CONTRIBUTION_MODULE_ID,
+  ),
 } as const;
+
+export type ContributionDataSourceScope = 'global' | 'project' | 'profile' | 'surface';
+export type ContributionDataValueType = 'object' | 'list' | 'string' | 'number' | 'boolean';
+
+export interface DataSourceContributionDefinition extends ContributionDefinition {
+  title: string;
+  description: string;
+  scope: ContributionDataSourceScope;
+  valueType: ContributionDataValueType;
+}
+
+export const DATA_SOURCE_CONTRIBUTIONS = {
+  diagnosticRegistrySummary: {
+    ...contribution(
+      'diagnostic.contribution-sample.registry-data-source',
+      'dataSources',
+      DIAGNOSTIC_CONTRIBUTION_MODULE_ID,
+    ),
+    title: '贡献注册表摘要',
+    description: '读取当前有效贡献、冲突和模块状态的只读摘要。',
+    scope: 'global',
+    valueType: 'object',
+  },
+} as const satisfies Record<string, DataSourceContributionDefinition>;
+
+export const DATA_SOURCE_CONTRIBUTION_BY_ID = new Map<string, DataSourceContributionDefinition>(
+  Object.values(DATA_SOURCE_CONTRIBUTIONS).map((definition) => [definition.id, definition] as const),
+);
+
+export interface WidgetContributionDefinition extends ContributionDefinition {
+  title: string;
+  description: string;
+  dataSourceId?: string;
+  minColumns: number;
+  minRows: number;
+}
+
+export const WIDGET_CONTRIBUTIONS = {
+  diagnosticRegistrySummary: {
+    ...contribution(
+      'diagnostic.contribution-sample.registry-widget',
+      'widgets',
+      DIAGNOSTIC_CONTRIBUTION_MODULE_ID,
+    ),
+    title: '贡献注册表状态',
+    description: '显示贡献目录、有效声明和冲突状态。',
+    dataSourceId: DATA_SOURCE_CONTRIBUTIONS.diagnosticRegistrySummary.id,
+    minColumns: 4,
+    minRows: 2,
+  },
+} as const satisfies Record<string, WidgetContributionDefinition>;
+
+export const WIDGET_CONTRIBUTION_BY_ID = new Map<string, WidgetContributionDefinition>(
+  Object.values(WIDGET_CONTRIBUTIONS).map((definition) => [definition.id, definition] as const),
+);
+
+export interface WorkflowNodeContributionDefinition extends ContributionDefinition {
+  title: string;
+  description: string;
+  category: string;
+  command: string;
+  inputs: readonly PortDefinition[];
+  outputs: readonly PortDefinition[];
+  executable: boolean;
+}
+
+export const WORKFLOW_NODE_CONTRIBUTIONS = {
+  diagnosticEcho: {
+    ...contribution(
+      'diagnostic.contribution-sample.echo-node',
+      'workflowNodes',
+      DIAGNOSTIC_CONTRIBUTION_MODULE_ID,
+    ),
+    title: '诊断回显',
+    description: '用于验证工作流节点目录、端口定义和模块动态撤下。',
+    category: '诊断',
+    command: 'diagnostic.echo',
+    inputs: [
+      { name: 'value', type: 'string', required: true, description: '需要回显的文本' },
+    ],
+    outputs: [
+      { name: 'value', type: 'string', required: true, description: '原样输出的文本' },
+    ],
+    executable: false,
+  },
+} as const satisfies Record<string, WorkflowNodeContributionDefinition>;
+
+export const WORKFLOW_NODE_CONTRIBUTION_BY_ID = new Map<string, WorkflowNodeContributionDefinition>(
+  Object.values(WORKFLOW_NODE_CONTRIBUTIONS).map((definition) => [definition.id, definition] as const),
+);
 
 export interface SettingsSectionContributionDefinition extends ContributionDefinition {
   scopes: readonly ('global' | 'project')[];
@@ -128,7 +225,7 @@ export const SHELL_TAB_CONTRIBUTION_BY_ID = new Map<string, ShellTabContribution
 
 export interface WorkspaceTabContributionDefinition extends ContributionDefinition {
   tabId: string;
-  tabType: 'cache' | 'render' | 'p2p';
+  tabType: 'cache' | 'render' | 'p2p' | 'contribution';
   title: string;
   icon: LucideIcon;
   iconClassName: string;
@@ -162,6 +259,19 @@ export const WORKSPACE_TAB_CONTRIBUTIONS = {
     icon: MessageCircle,
     iconClassName: 'text-emerald-600',
     surfaceId: 'builtin.lan-collaboration.project-surface',
+  },
+  diagnosticSample: {
+    ...contribution(
+      'diagnostic.contribution-sample.workspace-tab',
+      'workspaceTabs',
+      DIAGNOSTIC_CONTRIBUTION_MODULE_ID,
+    ),
+    tabId: 'diagnostic-contribution-sample',
+    tabType: 'contribution',
+    title: '贡献隔离样本',
+    icon: FlaskConical,
+    iconClassName: 'text-fuchsia-500',
+    surfaceId: 'diagnostic.contribution-sample.surface',
   },
 } as const satisfies Record<string, WorkspaceTabContributionDefinition>;
 

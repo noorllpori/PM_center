@@ -68,7 +68,7 @@ D0 架构记录
 | R2 | Module Manager 与 ResourceRegistry | accepted | R1 | 2026-08-03 已完成诊断页和泄漏检查验收 |
 | R3 | Capability 权限网关 | accepted | R1、R2 | 2026-08-03 已完成人工验收，未发现问题 |
 | R4 | 现有模块生命周期接入 | accepted | R2、R3 | 2026-08-04 已完成渲染中心最终验收 |
-| R5 | 前端 Contribution Registry | in-progress | R1、R2 | R5-1 已验收；R5-2 设置区与右键命令等待人工验收 |
+| R5 | 前端 Contribution Registry | in-progress | R1、R2 | R5-1、R5-2、R5-3 已验收；下一项 R5-4 最终收口 |
 | R6 | 装配方案运行时与兼容迁移 | pending | R4、R5 | 需要确认迁移结果 |
 | R7 | DIY 装配编辑器 MVP | pending | R6 | 需要实际拖拽组装验收 |
 | R8 | Profile 导入导出 | pending | R6、R7 | 需要跨机器导入验收 |
@@ -411,10 +411,13 @@ R4 已开始接入真实资源，首项智能剪贴板由 Module Manager 托管�
 
 - `docs/NEXT_MAJOR_R5_CONTRIBUTION_REGISTRY.md`
 - `docs/NEXT_MAJOR_R5_SETTINGS_CONTEXT_CONTRIBUTIONS.md`
+- `docs/NEXT_MAJOR_R5_WIDGET_DATA_WORKFLOW_CATALOGS.md`
 
 2026-08-04 已完成并验收 R5-1：稳定贡献 ID、前端运行时注册表、功能中心与 Pin 过滤、Shell/工作区标签打开与恢复、模块停用撤下以及贡献冲突诊断。
 
-R5-2 已完成自动化设置区、插件右键动作和项目集合命令的贡献接入，目前等待人工验收。Widget、DataSource、工作流节点和隔离测试贡献继续作为后续 R5 分项。
+R5-2 已完成并验收自动化设置区、插件右键动作和项目集合命令的贡献接入。
+
+R5-3 已完成并验收 Widget、DataSource、工作流节点前端目录、通用贡献工作区类型和默认停用的隔离诊断样本。验收结果为 29 个有效贡献、0 个冲突；节点执行器仍属于 R11。下一项为 R5-4 目录一致性、缺失渲染器和订阅释放收口。
 
 ### 目标
 

@@ -8,6 +8,7 @@ import type { WorkspaceTab } from '../../stores/workspaceTabStore';
 import { CacheManagerSurface } from '../file-manager/CacheManagerSurface';
 import { LanProjectPlaceholderSurface } from '../file-manager/LanProjectPlaceholderSurface';
 import { RenderCenterSurface } from '../file-manager/RenderCenterSurface';
+import { ContributionDiagnosticsSurface } from './ContributionDiagnosticsSurface';
 
 interface WorkspaceContributionSurfaceProps {
   isActive: boolean;
@@ -17,6 +18,7 @@ const SURFACE_RENDERERS: Record<string, ComponentType<WorkspaceContributionSurfa
   'builtin.project-resources.cache-surface': CacheManagerSurface,
   'builtin.render-center.surface': RenderCenterSurface,
   'builtin.lan-collaboration.project-surface': () => <LanProjectPlaceholderSurface />,
+  'diagnostic.contribution-sample.surface': () => <ContributionDiagnosticsSurface />,
 };
 
 export function ContributedWorkspaceSurface({

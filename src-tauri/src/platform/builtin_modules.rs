@@ -49,6 +49,17 @@ pub const DIAGNOSTIC_BASE_ID: &str = "diagnostic.runtime-base";
 pub const DIAGNOSTIC_WORKER_ID: &str = "diagnostic.runtime-worker";
 pub const DIAGNOSTIC_FAILING_ID: &str = "diagnostic.runtime-failing";
 pub const DIAGNOSTIC_SLOW_STOP_ID: &str = "diagnostic.runtime-slow-stop";
+pub const DIAGNOSTIC_CONTRIBUTION_SAMPLE_ID: &str = "diagnostic.contribution-sample";
+pub const DIAGNOSTIC_CONTRIBUTION_TOOL_ID: &str = "diagnostic.contribution-sample.tool";
+pub const DIAGNOSTIC_CONTRIBUTION_WORKSPACE_TAB_ID: &str =
+    "diagnostic.contribution-sample.workspace-tab";
+pub const DIAGNOSTIC_CONTRIBUTION_SURFACE_ID: &str = "diagnostic.contribution-sample.surface";
+pub const DIAGNOSTIC_CONTRIBUTION_WIDGET_ID: &str =
+    "diagnostic.contribution-sample.registry-widget";
+pub const DIAGNOSTIC_CONTRIBUTION_DATA_SOURCE_ID: &str =
+    "diagnostic.contribution-sample.registry-data-source";
+pub const DIAGNOSTIC_CONTRIBUTION_WORKFLOW_NODE_ID: &str =
+    "diagnostic.contribution-sample.echo-node";
 
 struct AutomationRuntimeLifecycle;
 
@@ -938,6 +949,22 @@ impl ModuleLifecycle for DiagnosticLifecycle {
     }
 }
 
+struct ContributionDiagnosticLifecycle;
+
+impl ModuleLifecycle for ContributionDiagnosticLifecycle {
+    fn start<'a>(&'a self, _context: ModuleContext) -> LifecycleFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn stop<'a>(&'a self, _context: ModuleContext) -> LifecycleFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn health<'a>(&'a self, _context: ModuleContext) -> LifecycleFuture<'a, ModuleHealth> {
+        Box::pin(async { Ok(ModuleHealth::healthy("前端贡献目录运行正常")) })
+    }
+}
+
 pub fn diagnostic_modules(controls: Arc<DiagnosticControls>) -> Vec<RegisteredModule> {
     vec![
         diagnostic_module(
@@ -980,7 +1007,43 @@ pub fn diagnostic_modules(controls: Arc<DiagnosticControls>) -> Vec<RegisteredMo
             &[Capability::FilesystemExternalWrite],
             controls,
         ),
+        diagnostic_contribution_module(),
     ]
+}
+
+fn diagnostic_contribution_module() -> RegisteredModule {
+    let mut extensions = ExtensionFields::new();
+    extensions.insert("diagnostic".into(), Value::Bool(true));
+    RegisteredModule {
+        manifest: ModuleManifestV1 {
+            schema_version: 1,
+            id: DIAGNOSTIC_CONTRIBUTION_SAMPLE_ID.into(),
+            name: "贡献隔离样本".into(),
+            description: "验证工具、页面、Widget、DataSource 和工作流节点的动态贡献。".into(),
+            version: "1.0.0".into(),
+            api_version: "1".into(),
+            scope: ModuleScope::Global,
+            builtin: true,
+            requires_modules: Vec::new(),
+            optional_modules: Vec::new(),
+            conflicts: Vec::new(),
+            capabilities: vec![Capability::AppSettingsRead],
+            background_services: Vec::new(),
+            contributes: ModuleContributions {
+                tools: vec![DIAGNOSTIC_CONTRIBUTION_TOOL_ID.into()],
+                workspace_tabs: vec![DIAGNOSTIC_CONTRIBUTION_WORKSPACE_TAB_ID.into()],
+                surfaces: vec![DIAGNOSTIC_CONTRIBUTION_SURFACE_ID.into()],
+                widgets: vec![DIAGNOSTIC_CONTRIBUTION_WIDGET_ID.into()],
+                data_sources: vec![DIAGNOSTIC_CONTRIBUTION_DATA_SOURCE_ID.into()],
+                workflow_nodes: vec![DIAGNOSTIC_CONTRIBUTION_WORKFLOW_NODE_ID.into()],
+                ..ModuleContributions::default()
+            },
+            data_policy: ModuleDataPolicy::default(),
+            extensions,
+        },
+        lifecycle: Arc::new(ContributionDiagnosticLifecycle),
+        diagnostic: true,
+    }
 }
 
 fn diagnostic_module(
@@ -1231,6 +1294,12 @@ mod project_resource_tests {
             ("surfaces", LAN_PROJECT_SURFACE_ID),
             ("tools", SMART_CLIPBOARD_TOOL_ID),
             ("surfaces", SMART_CLIPBOARD_SURFACE_ID),
+            ("tools", DIAGNOSTIC_CONTRIBUTION_TOOL_ID),
+            ("workspaceTabs", DIAGNOSTIC_CONTRIBUTION_WORKSPACE_TAB_ID),
+            ("surfaces", DIAGNOSTIC_CONTRIBUTION_SURFACE_ID),
+            ("widgets", DIAGNOSTIC_CONTRIBUTION_WIDGET_ID),
+            ("dataSources", DIAGNOSTIC_CONTRIBUTION_DATA_SOURCE_ID),
+            ("workflowNodes", DIAGNOSTIC_CONTRIBUTION_WORKFLOW_NODE_ID),
         ];
         let mut seen = BTreeSet::new();
 
@@ -1271,6 +1340,36 @@ mod project_resource_tests {
         assert_eq!(
             clipboard.manifest.contributes.surfaces,
             vec![SMART_CLIPBOARD_SURFACE_ID.to_string()]
+        );
+    }
+
+    #[test]
+    fn diagnostic_sample_declares_each_frontend_contribution_kind() {
+        let sample = diagnostic_contribution_module();
+        assert_eq!(sample.manifest.id, DIAGNOSTIC_CONTRIBUTION_SAMPLE_ID);
+        assert_eq!(
+            sample.manifest.contributes.tools,
+            vec![DIAGNOSTIC_CONTRIBUTION_TOOL_ID.to_string()]
+        );
+        assert_eq!(
+            sample.manifest.contributes.workspace_tabs,
+            vec![DIAGNOSTIC_CONTRIBUTION_WORKSPACE_TAB_ID.to_string()]
+        );
+        assert_eq!(
+            sample.manifest.contributes.surfaces,
+            vec![DIAGNOSTIC_CONTRIBUTION_SURFACE_ID.to_string()]
+        );
+        assert_eq!(
+            sample.manifest.contributes.widgets,
+            vec![DIAGNOSTIC_CONTRIBUTION_WIDGET_ID.to_string()]
+        );
+        assert_eq!(
+            sample.manifest.contributes.data_sources,
+            vec![DIAGNOSTIC_CONTRIBUTION_DATA_SOURCE_ID.to_string()]
+        );
+        assert_eq!(
+            sample.manifest.contributes.workflow_nodes,
+            vec![DIAGNOSTIC_CONTRIBUTION_WORKFLOW_NODE_ID.to_string()]
         );
     }
 }

@@ -98,12 +98,23 @@ function sanitizeWorkspaceTab(tab: unknown): PersistedWorkspaceTab | null {
     candidate.type !== 'blend' &&
     candidate.type !== 'cache' &&
     candidate.type !== 'render' &&
-    candidate.type !== 'p2p'
+    candidate.type !== 'p2p' &&
+    candidate.type !== 'contribution'
   ) {
     return null;
   }
 
-  if (candidate.type !== 'cache' && candidate.type !== 'render' && candidate.type !== 'p2p' && !candidate.filePath) {
+  const contributionId = sanitizeContributionId(candidate.contributionId);
+  if (candidate.type === 'contribution' && !contributionId) {
+    return null;
+  }
+  if (
+    candidate.type !== 'cache' &&
+    candidate.type !== 'render' &&
+    candidate.type !== 'p2p' &&
+    candidate.type !== 'contribution' &&
+    !candidate.filePath
+  ) {
     return null;
   }
 
@@ -111,7 +122,7 @@ function sanitizeWorkspaceTab(tab: unknown): PersistedWorkspaceTab | null {
     type: candidate.type,
     filePath: candidate.filePath || undefined,
     title: candidate.title || undefined,
-    contributionId: sanitizeContributionId(candidate.contributionId),
+    contributionId,
   };
 }
 
@@ -130,19 +141,31 @@ function sanitizeActiveWorkspaceTab(tab: unknown): PersistedWorkspaceActiveTab {
     candidate.type !== 'blend' &&
     candidate.type !== 'cache' &&
     candidate.type !== 'render' &&
-    candidate.type !== 'p2p'
+    candidate.type !== 'p2p' &&
+    candidate.type !== 'contribution'
   ) {
     return { type: 'files' };
   }
 
-  if (candidate.type !== 'files' && candidate.type !== 'cache' && candidate.type !== 'render' && candidate.type !== 'p2p' && !candidate.filePath) {
+  const contributionId = sanitizeContributionId(candidate.contributionId);
+  if (candidate.type === 'contribution' && !contributionId) {
+    return { type: 'files' };
+  }
+  if (
+    candidate.type !== 'files' &&
+    candidate.type !== 'cache' &&
+    candidate.type !== 'render' &&
+    candidate.type !== 'p2p' &&
+    candidate.type !== 'contribution' &&
+    !candidate.filePath
+  ) {
     return { type: 'files' };
   }
 
   return {
     type: candidate.type,
     filePath: candidate.filePath || undefined,
-    contributionId: sanitizeContributionId(candidate.contributionId),
+    contributionId,
   };
 }
 

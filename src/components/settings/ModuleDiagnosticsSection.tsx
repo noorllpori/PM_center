@@ -27,7 +27,10 @@ import type {
   PlatformModuleRuntimeOverview,
   PlatformModuleState,
 } from '../../types/platformRuntime';
-import { CONTRIBUTION_KINDS } from '../../features/contributionRegistry';
+import {
+  CONTRIBUTION_KINDS,
+  DIAGNOSTIC_CONTRIBUTION_MODULE_ID,
+} from '../../features/contributionRegistry';
 import { useContributionRegistryStore } from '../../stores/contributionRegistryStore';
 
 const STATE_LABELS: Record<PlatformModuleState, string> = {
@@ -390,6 +393,13 @@ export function ModuleDiagnosticsSection() {
                   >
                     停止超时
                   </button>
+                </div>
+              )}
+              {moduleId === DIAGNOSTIC_CONTRIBUTION_MODULE_ID && (
+                <div className="mt-2 rounded-md bg-fuchsia-50 px-3 py-2 text-xs text-fuchsia-800 dark:bg-fuchsia-950/30 dark:text-fuchsia-200">
+                  {running
+                    ? '已挂载 6 项隔离贡献，可在功能中心（Alt+Q）打开“贡献隔离样本”。'
+                    : '启用后会动态挂载工具、工作区、Surface、Widget、DataSource 和 WorkflowNode。'}
                 </div>
               )}
               </div>
