@@ -520,6 +520,14 @@ export function initTaskEventListeners() {
     useTaskStore.getState().updateTaskStatus(taskId, 'failed', undefined, error);
   });
 
+  listen('task-cancelled', (event: { payload: { taskId: string; reason?: string } }) => {
+    const { taskId, reason } = event.payload;
+    if (reason) {
+      useTaskStore.getState().updateTaskOutput(taskId, `[cancelled] ${reason}`);
+    }
+    useTaskStore.getState().updateTaskStatus(taskId, 'cancelled');
+  });
+
   listen('task-control', (event: { payload: { taskId: string; message: PluginControlMessage } }) => {
     const { taskId, message } = event.payload;
     if (message.type === 'progress' && typeof message.value === 'number') {

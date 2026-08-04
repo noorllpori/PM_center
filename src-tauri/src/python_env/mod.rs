@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tauri::Manager;
 
-use crate::process_utils::std_command;
+use crate::process_utils::tokio_command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -22,6 +22,7 @@ pub struct PythonEnv {
 /// 检测系统可用的 Python 环境
 #[tauri::command]
 pub async fn detect_system_python() -> Result<Vec<PythonEnv>, String> {
+    crate::automation_runtime::wait_until_running().await?;
     let mut envs = vec![];
 
     // 尝试检测的常见 Python 命令
@@ -87,7 +88,15 @@ pub async fn detect_system_python() -> Result<Vec<PythonEnv>, String> {
 
 /// 检查指定命令的 Python
 async fn check_python(cmd: &str) -> Option<PythonEnv> {
-    let output = std_command(cmd).args(&["--version"]).output().ok()?;
+    let mut version_command = tokio_command(cmd);
+    version_command.arg("--version");
+    let output = crate::automation_runtime::run_tokio_output(
+        version_command,
+        "python-probe",
+        format!("检测 {cmd}"),
+    )
+    .await
+    .ok()?;
 
     if !output.status.success() {
         return None;
@@ -112,7 +121,15 @@ async fn check_python(cmd: &str) -> Option<PythonEnv> {
     #[cfg(not(windows))]
     let which_cmd = "which";
 
-    let which_output = std_command(which_cmd).arg(cmd).output().ok()?;
+    let mut which_command = tokio_command(which_cmd);
+    which_command.arg(cmd);
+    let which_output = crate::automation_runtime::run_tokio_output(
+        which_command,
+        "python-probe",
+        format!("定位 {cmd}"),
+    )
+    .await
+    .ok()?;
 
     let path = String::from_utf8_lossy(&which_output.stdout)
         .lines()
@@ -138,7 +155,15 @@ async fn check_python(cmd: &str) -> Option<PythonEnv> {
 
 /// 检查指定路径的 Python
 async fn check_python_path(path: &PathBuf) -> Option<PythonEnv> {
-    let output = std_command(path).args(&["--version"]).output().ok()?;
+    let mut command = tokio_command(path);
+    command.arg("--version");
+    let output = crate::automation_runtime::run_tokio_output(
+        command,
+        "python-probe",
+        format!("检测 {}", path.display()),
+    )
+    .await
+    .ok()?;
 
     if !output.status.success() {
         return None;
@@ -176,6 +201,7 @@ pub async fn create_venv(
     base_python_path: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
+    crate::automation_runtime::wait_until_running().await?;
     // 确定基础 Python
     let base_python = base_python_path.unwrap_or_else(|| "python".to_string());
 
@@ -193,10 +219,15 @@ pub async fn create_venv(
     println!("[PythonEnv] 创建 venv: {:?} 使用 {}", venv_dir, base_python);
 
     // 创建 venv
-    let output = std_command(&base_python)
-        .args(&["-m", "venv", &venv_dir.to_string_lossy().to_string()])
-        .output()
-        .map_err(|e| format!("创建 venv 失败: {}", e))?;
+    let mut command = tokio_command(&base_python);
+    command.args(["-m", "venv", &venv_dir.to_string_lossy()]);
+    let output = crate::automation_runtime::run_tokio_output(
+        command,
+        "python-environment",
+        format!("创建 venv {name}"),
+    )
+    .await
+    .map_err(|e| format!("创建 venv 失败: {e}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -211,6 +242,7 @@ pub async fn create_venv(
 /// 扫描应用数据目录下的 venvs
 #[tauri::command]
 pub async fn scan_app_venvs(app_handle: tauri::AppHandle) -> Result<Vec<PythonEnv>, String> {
+    crate::automation_runtime::wait_until_running().await?;
     let app_data_dir = app_handle
         .path()
         .app_data_dir()
@@ -299,6 +331,7 @@ async fn detect_pmc_embedded_python(app_handle: &tauri::AppHandle) -> Option<Pyt
 /// 删除 venv
 #[tauri::command]
 pub async fn delete_venv(venv_path: String) -> Result<(), String> {
+    crate::automation_runtime::wait_until_running().await?;
     let path = PathBuf::from(&venv_path);
 
     if !path.exists() {
@@ -318,12 +351,18 @@ pub async fn pip_install_package(
     python_path: String,
     package_name: String,
 ) -> Result<String, String> {
+    crate::automation_runtime::wait_until_running().await?;
     println!("[PythonEnv] 安装包: {} 使用 {}", package_name, python_path);
 
-    let output = std_command(&python_path)
-        .args(&["-m", "pip", "install", &package_name])
-        .output()
-        .map_err(|e| format!("运行 pip 失败: {}", e))?;
+    let mut command = tokio_command(&python_path);
+    command.args(["-m", "pip", "install", &package_name]);
+    let output = crate::automation_runtime::run_tokio_output(
+        command,
+        "python-package",
+        format!("pip install {package_name}"),
+    )
+    .await
+    .map_err(|e| format!("运行 pip 失败: {e}"))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -341,12 +380,18 @@ pub async fn pip_uninstall_package(
     python_path: String,
     package_name: String,
 ) -> Result<String, String> {
+    crate::automation_runtime::wait_until_running().await?;
     println!("[PythonEnv] 卸载包: {} 使用 {}", package_name, python_path);
 
-    let output = std_command(&python_path)
-        .args(&["-m", "pip", "uninstall", "-y", &package_name])
-        .output()
-        .map_err(|e| format!("运行 pip 失败: {}", e))?;
+    let mut command = tokio_command(&python_path);
+    command.args(["-m", "pip", "uninstall", "-y", &package_name]);
+    let output = crate::automation_runtime::run_tokio_output(
+        command,
+        "python-package",
+        format!("pip uninstall {package_name}"),
+    )
+    .await
+    .map_err(|e| format!("运行 pip 失败: {e}"))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -361,10 +406,12 @@ pub async fn pip_uninstall_package(
 /// 获取已安装的包列表
 #[tauri::command]
 pub async fn pip_list_packages(python_path: String) -> Result<Vec<String>, String> {
-    let output = std_command(&python_path)
-        .args(&["-m", "pip", "list", "--format=freeze"])
-        .output()
-        .map_err(|e| format!("运行 pip list 失败: {}", e))?;
+    crate::automation_runtime::wait_until_running().await?;
+    let mut command = tokio_command(&python_path);
+    command.args(["-m", "pip", "list", "--format=freeze"]);
+    let output = crate::automation_runtime::run_tokio_output(command, "python-package", "pip list")
+        .await
+        .map_err(|e| format!("运行 pip list 失败: {e}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

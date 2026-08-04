@@ -30,11 +30,20 @@ pub enum EnvType {
 
 // 检测可用的 Python 环境
 #[tauri::command]
-pub async fn detect_python_envs() -> Vec<PythonEnv> {
+pub async fn detect_python_envs() -> Result<Vec<PythonEnv>, String> {
+    crate::automation_runtime::wait_until_running().await?;
     let mut envs = Vec::new();
 
     for cmd in &["python", "python3", "py"] {
-        if let Ok(output) = tokio_command(cmd).args(&["--version"]).output().await {
+        let mut command = tokio_command(cmd);
+        command.arg("--version");
+        if let Ok(output) = crate::automation_runtime::run_tokio_output(
+            command,
+            "python-probe",
+            format!("检测 {cmd}"),
+        )
+        .await
+        {
             if output.status.success() {
                 let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 envs.push(PythonEnv {
@@ -60,10 +69,14 @@ pub async fn detect_python_envs() -> Vec<PythonEnv> {
 
     let embedded_path = get_embedded_python_path();
     if embedded_path.exists() {
-        if let Ok(output) = tokio_command(&embedded_path)
-            .args(&["--version"])
-            .output()
-            .await
+        let mut command = tokio_command(&embedded_path);
+        command.arg("--version");
+        if let Ok(output) = crate::automation_runtime::run_tokio_output(
+            command,
+            "python-probe",
+            "检测 PMC 内置 Python",
+        )
+        .await
         {
             if output.status.success() {
                 envs.push(PythonEnv {
@@ -75,7 +88,7 @@ pub async fn detect_python_envs() -> Vec<PythonEnv> {
         }
     }
 
-    envs
+    Ok(envs)
 }
 
 pub fn find_blender_path() -> Option<String> {
@@ -142,6 +155,7 @@ pub async fn run_python_script(
     working_dir: Option<String>,
     env_vars: Option<std::collections::HashMap<String, String>>,
 ) -> Result<ScriptResult, String> {
+    crate::automation_runtime::wait_until_running().await?;
     let mut cmd = match env_type {
         EnvType::Blender => {
             let mut c = tokio_command(&python_path);
@@ -173,10 +187,10 @@ pub async fn run_python_script(
 
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-    let output = cmd
-        .output()
-        .await
-        .map_err(|e| format!("Failed to execute: {}", e))?;
+    let output =
+        crate::automation_runtime::run_tokio_output(cmd, "python-script", "运行 Python 内联脚本")
+            .await
+            .map_err(|e| format!("Failed to execute: {e}"))?;
 
     Ok(ScriptResult {
         success: output.status.success(),
@@ -195,6 +209,7 @@ pub async fn run_python_file(
     args: Vec<String>,
     working_dir: Option<String>,
 ) -> Result<ScriptResult, String> {
+    crate::automation_runtime::wait_until_running().await?;
     let mut cmd = match env_type {
         EnvType::Blender => {
             let mut c = tokio_command(&python_path);
@@ -224,10 +239,13 @@ pub async fn run_python_file(
 
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-    let output = cmd
-        .output()
-        .await
-        .map_err(|e| format!("Failed to execute: {}", e))?;
+    let output = crate::automation_runtime::run_tokio_output(
+        cmd,
+        "python-script",
+        format!("运行 Python 文件 {script_path}"),
+    )
+    .await
+    .map_err(|e| format!("Failed to execute: {e}"))?;
 
     Ok(ScriptResult {
         success: output.status.success(),
@@ -243,15 +261,19 @@ pub async fn pip_install(
     python_path: String,
     packages: Vec<String>,
 ) -> Result<ScriptResult, String> {
+    crate::automation_runtime::wait_until_running().await?;
     let mut cmd = tokio_command(&python_path);
     cmd.args(&["-m", "pip", "install"]);
     cmd.args(&packages);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-    let output = cmd
-        .output()
-        .await
-        .map_err(|e| format!("Failed to execute pip: {}", e))?;
+    let output = crate::automation_runtime::run_tokio_output(
+        cmd,
+        "python-package",
+        format!("pip install {}", packages.join(" ")),
+    )
+    .await
+    .map_err(|e| format!("Failed to execute pip: {e}"))?;
 
     Ok(ScriptResult {
         success: output.status.success(),

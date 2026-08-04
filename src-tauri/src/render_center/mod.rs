@@ -1,4 +1,4 @@
-use crate::process_utils::{std_command, tokio_command};
+use crate::process_utils::{std_command, terminate_pid_tree, tokio_command};
 use crate::tools::resolve_ffmpeg_path;
 use image::GenericImageView;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
@@ -3925,22 +3925,6 @@ fn control_for(project_path: &str, job_id: &str) -> Option<Arc<Mutex<JobControl>
         .running
         .get(&format!("{}\n{}", project_path, job_id))
         .cloned()
-}
-
-fn terminate_pid_tree(pid: u32) {
-    #[cfg(windows)]
-    {
-        let _ = std_command("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .output();
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = std_command("kill")
-            .arg("-TERM")
-            .arg(pid.to_string())
-            .output();
-    }
 }
 
 async fn terminate_child_process_tree(child: &mut tokio::process::Child, pid: Option<u32>) {

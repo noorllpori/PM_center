@@ -8,7 +8,9 @@ pub use module_manager::{
     ModuleRuntimeOverview, ModuleState, StopStrategy,
 };
 
-pub use builtin_modules::{PROJECT_RESOURCES_MODULE_ID, SMART_CLIPBOARD_MODULE_ID};
+pub use builtin_modules::{
+    AUTOMATION_RUNTIME_MODULE_ID, PROJECT_RESOURCES_MODULE_ID, SMART_CLIPBOARD_MODULE_ID,
+};
 
 pub use capability_gateway::{
     CapabilityDecisionRequest, CapabilityGatewayError, CapabilityGatewayOverview,
@@ -17,9 +19,10 @@ pub use capability_gateway::{
 };
 
 use builtin_modules::{
-    diagnostic_components, diagnostic_modules, lan_collaboration_component,
-    lan_collaboration_module, project_resources_component, project_resources_module,
-    smart_clipboard_component, smart_clipboard_module, DiagnosticControls, DIAGNOSTIC_BASE_ID,
+    automation_runtime_component, automation_runtime_module, diagnostic_components,
+    diagnostic_modules, lan_collaboration_component, lan_collaboration_module,
+    project_resources_component, project_resources_module, smart_clipboard_component,
+    smart_clipboard_module, DiagnosticControls, DIAGNOSTIC_BASE_ID,
 };
 use capability_gateway::{run_security_diagnostic, CapabilityGateway};
 use serde::{Deserialize, Serialize};
@@ -42,6 +45,7 @@ impl PlatformRuntime {
         project_databases: crate::project_resources::ProjectDatabaseState,
     ) -> Result<Self, ModuleManagerError> {
         crate::project_resources::initialize_lifecycle_control();
+        crate::automation_runtime::initialize_lifecycle_control();
         let controls = Arc::new(DiagnosticControls::default());
         let mut modules = diagnostic_modules(controls.clone());
         modules.push(smart_clipboard_module(app_data_dir.to_path_buf()));
@@ -50,15 +54,21 @@ impl PlatformRuntime {
             app_handle,
         ));
         modules.push(project_resources_module(project_databases));
+        modules.push(automation_runtime_module());
         let manager = ModuleManager::new(app_data_dir.join("module-runtime.json"), modules)?;
         let project_resources_desired = manager
             .snapshot(PROJECT_RESOURCES_MODULE_ID)?
             .desired_enabled;
         crate::project_resources::set_initial_desired_enabled(project_resources_desired);
+        let automation_runtime_desired = manager
+            .snapshot(AUTOMATION_RUNTIME_MODULE_ID)?
+            .desired_enabled;
+        crate::automation_runtime::set_initial_desired_enabled(automation_runtime_desired);
         let mut components = diagnostic_components();
         components.push(smart_clipboard_component());
         components.push(lan_collaboration_component());
         components.push(project_resources_component());
+        components.push(automation_runtime_component());
         let gateway = CapabilityGateway::new(
             app_data_dir.join("capability-gateway.db"),
             manager.clone(),

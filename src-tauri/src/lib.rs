@@ -6,6 +6,7 @@ use tauri::{
     Manager, Runtime,
 };
 
+mod automation_runtime;
 mod cache_manager;
 mod db;
 mod file_details;
@@ -369,6 +370,7 @@ fn get_global_task_scripts_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf,
 async fn get_global_task_scripts_path(app_handle: tauri::AppHandle) -> Result<String, String> {
     use std::fs;
 
+    automation_runtime::wait_until_running().await?;
     let scripts_dir = get_global_task_scripts_dir(&app_handle)?;
     fs::create_dir_all(&scripts_dir).map_err(|e| format!("创建全局脚本目录失败: {}", e))?;
     ensure_global_task_scripts(&scripts_dir)?;
@@ -397,6 +399,7 @@ async fn get_project_scripts(
     use std::fs;
     use std::path::PathBuf;
 
+    automation_runtime::wait_until_running().await?;
     let project_scripts_dir = PathBuf::from(&project_path)
         .join(".pm_center")
         .join("scripts");

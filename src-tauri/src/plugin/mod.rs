@@ -20,6 +20,11 @@ const DEFAULT_PLUGIN_SETTINGS_STORAGE: &str = "appData";
 const DEFAULT_PLUGIN_FILE_STORE_MODE: &str = "path";
 const DEFAULT_PLUGIN_FILE_PICKER: &str = "file";
 
+lazy_static::lazy_static! {
+    static ref PLUGIN_DEPENDENCY_OPERATION_LOCK: tokio::sync::Mutex<()> =
+        tokio::sync::Mutex::new(());
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginValidationIssue {
@@ -1580,6 +1585,7 @@ pub async fn refresh_plugins(
     app_handle: AppHandle,
     project_path: Option<String>,
 ) -> Result<Vec<PluginDescriptor>, String> {
+    crate::automation_runtime::wait_until_running().await?;
     load_plugin_descriptors(app_handle, project_path).await
 }
 
@@ -1588,6 +1594,7 @@ pub async fn list_plugins(
     app_handle: AppHandle,
     project_path: Option<String>,
 ) -> Result<Vec<PluginDescriptor>, String> {
+    crate::automation_runtime::wait_until_running().await?;
     load_plugin_descriptors(app_handle, project_path).await
 }
 
@@ -1597,6 +1604,7 @@ pub async fn set_plugin_enabled(
     plugin_key: String,
     enabled: bool,
 ) -> Result<(), String> {
+    crate::automation_runtime::wait_until_running().await?;
     let mut state = load_plugin_state(&app_handle)?;
     state.version = 1;
     state.enabled.insert(plugin_key, enabled);
@@ -1608,6 +1616,7 @@ pub async fn get_plugin_dirs(
     app_handle: AppHandle,
     project_path: Option<String>,
 ) -> Result<PluginDirectories, String> {
+    crate::automation_runtime::wait_until_running().await?;
     let global_path = get_global_plugins_dir(&app_handle)?;
     fs::create_dir_all(&global_path).map_err(|error| format!("创建全局插件目录失败: {error}"))?;
 
@@ -1885,6 +1894,7 @@ pub async fn update_plugin_settings(
     project_path: Option<String>,
     values: HashMap<String, Value>,
 ) -> Result<PluginDescriptor, String> {
+    crate::automation_runtime::wait_until_running().await?;
     let descriptor =
         find_plugin_descriptor_by_key(&app_handle, project_path.as_deref(), &plugin_key)?;
     save_plugin_settings_values(&app_handle, &descriptor, values)?;
@@ -1897,6 +1907,7 @@ pub async fn reset_plugin_settings(
     plugin_key: String,
     project_path: Option<String>,
 ) -> Result<PluginDescriptor, String> {
+    crate::automation_runtime::wait_until_running().await?;
     let descriptor =
         find_plugin_descriptor_by_key(&app_handle, project_path.as_deref(), &plugin_key)?;
     reset_plugin_settings_values(&app_handle, &descriptor)?;
@@ -1909,11 +1920,36 @@ pub async fn inspect_plugin_dependencies(
     plugin_key: String,
     project_path: Option<String>,
 ) -> Result<PluginDependencyInfo, String> {
+    crate::automation_runtime::wait_until_running().await?;
     let descriptor =
         find_plugin_descriptor_by_key(&app_handle, project_path.as_deref(), &plugin_key)?;
     Ok(inspect_plugin_dependencies_in_dir(Path::new(
         &descriptor.path,
     )))
+}
+
+fn commit_staged_plugin_dependencies(
+    staging_dir: &Path,
+    vendor_dir: &Path,
+    backup_dir: &Path,
+) -> Result<(), String> {
+    if vendor_dir.exists() {
+        if let Err(error) = fs::rename(vendor_dir, backup_dir) {
+            let _ = fs::remove_dir_all(staging_dir);
+            return Err(format!("备份旧插件依赖失败: {error}"));
+        }
+    }
+    if let Err(error) = fs::rename(staging_dir, vendor_dir) {
+        if backup_dir.exists() {
+            let _ = fs::rename(backup_dir, vendor_dir);
+        }
+        let _ = fs::remove_dir_all(staging_dir);
+        return Err(format!("提交新插件依赖失败，旧依赖已保留: {error}"));
+    }
+    if backup_dir.exists() {
+        let _ = fs::remove_dir_all(backup_dir);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1922,6 +1958,8 @@ pub async fn install_plugin_dependencies(
     plugin_key: String,
     project_path: Option<String>,
 ) -> Result<PluginDependencyInfo, String> {
+    crate::automation_runtime::wait_until_running().await?;
+    let _operation_guard = PLUGIN_DEPENDENCY_OPERATION_LOCK.lock().await;
     let descriptor =
         find_plugin_descriptor_by_key(&app_handle, project_path.as_deref(), &plugin_key)?;
     if descriptor.runtime != "python" {
@@ -1938,17 +1976,16 @@ pub async fn install_plugin_dependencies(
         return Ok(dependency_info);
     }
 
-    let python_path = ensure_embedded_plugin_pip(&app_handle)?;
+    let python_path = ensure_embedded_plugin_pip(&app_handle).await?;
     let requirements_path = plugin_dir.join("requirements.txt");
     let vendor_dir = plugin_dir.join("vendor");
-
-    if vendor_dir.exists() {
-        fs::remove_dir_all(&vendor_dir).map_err(|error| format!("清理旧依赖目录失败: {error}"))?;
-    }
-    fs::create_dir_all(&vendor_dir).map_err(|error| format!("创建依赖目录失败: {error}"))?;
+    let operation_id = uuid::Uuid::new_v4();
+    let staging_dir = plugin_dir.join(format!(".vendor-install-{operation_id}"));
+    let backup_dir = plugin_dir.join(format!(".vendor-backup-{operation_id}"));
+    fs::create_dir_all(&staging_dir).map_err(|error| format!("创建依赖暂存目录失败: {error}"))?;
 
     let embedded_env = build_embedded_python_env(&python_path, &[])?;
-    let mut install_command = std_command(&python_path);
+    let mut install_command = tokio_command(&python_path);
     install_command
         .arg("-m")
         .arg("pip")
@@ -1958,7 +1995,7 @@ pub async fn install_plugin_dependencies(
         .arg("-r")
         .arg(&requirements_path)
         .arg("--target")
-        .arg(&vendor_dir)
+        .arg(&staging_dir)
         .arg("--no-compile")
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONUTF8", "1")
@@ -1966,13 +2003,26 @@ pub async fn install_plugin_dependencies(
     for (key, value) in &embedded_env {
         install_command.env(key, value);
     }
-    let output = install_command
-        .output()
-        .map_err(|error| format!("安装插件依赖失败: {error}"))?;
+    let output = match crate::automation_runtime::run_tokio_output(
+        install_command,
+        "plugin-dependency",
+        format!("安装插件依赖 {}", descriptor.name),
+    )
+    .await
+    {
+        Ok(output) => output,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging_dir);
+            return Err(format!("安装插件依赖失败: {error}"));
+        }
+    };
 
     if !output.status.success() {
+        let _ = fs::remove_dir_all(&staging_dir);
         return Err(format_command_error("安装插件依赖失败。", &output));
     }
+
+    commit_staged_plugin_dependencies(&staging_dir, &vendor_dir, &backup_dir)?;
 
     Ok(inspect_plugin_dependencies_in_dir(&plugin_dir))
 }
@@ -1983,6 +2033,8 @@ pub async fn remove_plugin_dependencies(
     plugin_key: String,
     project_path: Option<String>,
 ) -> Result<PluginDependencyInfo, String> {
+    crate::automation_runtime::wait_until_running().await?;
+    let _operation_guard = PLUGIN_DEPENDENCY_OPERATION_LOCK.lock().await;
     let descriptor =
         find_plugin_descriptor_by_key(&app_handle, project_path.as_deref(), &plugin_key)?;
     let plugin_dir = PathBuf::from(&descriptor.path);
@@ -2002,6 +2054,7 @@ pub async fn validate_plugin(
     plugin_path: String,
     scope: Option<String>,
 ) -> Result<PluginDescriptor, String> {
+    crate::automation_runtime::wait_until_running().await?;
     let plugin_dir = PathBuf::from(&plugin_path);
     if !plugin_dir.exists() {
         return Err(format!("插件目录不存在: {plugin_path}"));
@@ -2096,7 +2149,7 @@ pub fn prepare_pmc_python_runtime(
     Ok(PreparedPmcPythonRuntime { program, env_vars })
 }
 
-fn ensure_embedded_plugin_pip(app_handle: &AppHandle) -> Result<PathBuf, String> {
+async fn ensure_embedded_plugin_pip(app_handle: &AppHandle) -> Result<PathBuf, String> {
     let runtime = resolve_plugin_runtime(app_handle);
     if runtime.status != "ready" {
         return Err(runtime
@@ -2115,31 +2168,39 @@ fn ensure_embedded_plugin_pip(app_handle: &AppHandle) -> Result<PathBuf, String>
 
     let embedded_env = build_embedded_python_env(&python_path, &[])?;
 
-    let mut pip_ready_command = std_command(&python_path);
+    let mut pip_ready_command = tokio_command(&python_path);
     pip_ready_command.args(["-m", "pip", "--version"]);
     for (key, value) in &embedded_env {
         pip_ready_command.env(key, value);
     }
-    let pip_ready = pip_ready_command
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false);
+    let pip_ready = crate::automation_runtime::run_tokio_output(
+        pip_ready_command,
+        "plugin-dependency",
+        "检查插件 pip",
+    )
+    .await
+    .map(|output| output.status.success())
+    .unwrap_or(false);
     if pip_ready {
         return Ok(python_path);
     }
 
     let get_pip_path = resolve_plugin_get_pip_path(app_handle)
         .ok_or_else(|| "未找到 get-pip.py，请重新执行插件运行时准备脚本。".to_string())?;
-    let mut bootstrap_command = std_command(&python_path);
+    let mut bootstrap_command = tokio_command(&python_path);
     bootstrap_command
         .arg(&get_pip_path)
         .arg("--no-warn-script-location");
     for (key, value) in &embedded_env {
         bootstrap_command.env(key, value);
     }
-    let bootstrap_output = bootstrap_command
-        .output()
-        .map_err(|error| format!("启动 get-pip.py 失败: {error}"))?;
+    let bootstrap_output = crate::automation_runtime::run_tokio_output(
+        bootstrap_command,
+        "plugin-dependency",
+        "初始化插件 pip",
+    )
+    .await
+    .map_err(|error| format!("启动 get-pip.py 失败: {error}"))?;
     if !bootstrap_output.status.success() {
         return Err(format_command_error(
             "初始化插件 pip 失败。",
@@ -2147,14 +2208,18 @@ fn ensure_embedded_plugin_pip(app_handle: &AppHandle) -> Result<PathBuf, String>
         ));
     }
 
-    let mut verify_command = std_command(&python_path);
+    let mut verify_command = tokio_command(&python_path);
     verify_command.args(["-m", "pip", "--version"]);
     for (key, value) in &embedded_env {
         verify_command.env(key, value);
     }
-    let verify_output = verify_command
-        .output()
-        .map_err(|error| format!("校验插件 pip 失败: {error}"))?;
+    let verify_output = crate::automation_runtime::run_tokio_output(
+        verify_command,
+        "plugin-dependency",
+        "校验插件 pip",
+    )
+    .await
+    .map_err(|error| format!("校验插件 pip 失败: {error}"))?;
     if !verify_output.status.success() {
         return Err(format_command_error(
             "插件 pip 初始化后仍不可用。",
@@ -2169,6 +2234,7 @@ pub fn prepare_plugin_execution(
     app_handle: &AppHandle,
     request: &PluginActionRunRequest,
 ) -> Result<PreparedPluginExecution, String> {
+    crate::automation_runtime::ensure_running()?;
     let descriptors = scan_plugins_internal(app_handle, Some(&request.context.project_path))?;
     let descriptor = descriptors
         .into_iter()
@@ -2320,6 +2386,7 @@ pub async fn run_plugin_action(
     app_handle: AppHandle,
     request: PluginActionRunRequest,
 ) -> Result<PluginRunResult, String> {
+    crate::automation_runtime::wait_until_running().await?;
     let prepared = prepare_plugin_execution(&app_handle, &request)?;
     let mut command = tokio_command(&prepared.program);
     command.args(&prepared.args);
@@ -2329,19 +2396,63 @@ pub async fn run_plugin_action(
     for (key, value) in &prepared.env_vars {
         command.env(key, value);
     }
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
 
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("启动插件动作失败: {error}"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "无法读取插件 stdout".to_string())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "无法读取插件 stderr".to_string())?;
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            for path in prepared.cleanup_paths {
+                let _ = fs::remove_file(path);
+            }
+            return Err(format!("启动插件动作失败: {error}"));
+        }
+    };
+    let pid = child
+        .id()
+        .ok_or_else(|| "无法获取插件动作进程 PID".to_string())?;
+    let process_lease = match crate::automation_runtime::register_process(
+        pid,
+        "plugin-action",
+        format!("插件动作 {}", request.command_id),
+    ) {
+        Ok(lease) => lease,
+        Err(error) => {
+            crate::process_utils::terminate_pid_tree(pid);
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            for path in prepared.cleanup_paths {
+                let _ = fs::remove_file(path);
+            }
+            return Err(error);
+        }
+    };
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            crate::process_utils::terminate_pid_tree(pid);
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            for path in prepared.cleanup_paths {
+                let _ = fs::remove_file(path);
+            }
+            return Err("无法读取插件 stdout".to_string());
+        }
+    };
+    let stderr = match child.stderr.take() {
+        Some(stderr) => stderr,
+        None => {
+            crate::process_utils::terminate_pid_tree(pid);
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            for path in prepared.cleanup_paths {
+                let _ = fs::remove_file(path);
+            }
+            return Err("无法读取插件 stderr".to_string());
+        }
+    };
 
     let stdout_handle = tokio::spawn(async move {
         let mut reader = BufReader::new(stdout);
@@ -2381,20 +2492,19 @@ pub async fn run_plugin_action(
         lines.join("\n")
     });
 
-    let status = child
-        .wait()
-        .await
-        .map_err(|error| format!("等待插件动作结束失败: {error}"))?;
-    let (stdout, controls) = stdout_handle
-        .await
-        .map_err(|error| format!("读取插件 stdout 失败: {error}"))?;
-    let stderr = stderr_handle
-        .await
-        .map_err(|error| format!("读取插件 stderr 失败: {error}"))?;
+    let status_result = child.wait().await;
+    drop(process_lease);
+    let stdout_result = stdout_handle.await;
+    let stderr_result = stderr_handle.await;
 
     for path in prepared.cleanup_paths {
         let _ = fs::remove_file(path);
     }
+
+    let status = status_result.map_err(|error| format!("等待插件动作结束失败: {error}"))?;
+    let (stdout, controls) =
+        stdout_result.map_err(|error| format!("读取插件 stdout 失败: {error}"))?;
+    let stderr = stderr_result.map_err(|error| format!("读取插件 stderr 失败: {error}"))?;
 
     Ok(PluginRunResult {
         success: status.success(),
@@ -2408,9 +2518,11 @@ pub async fn run_plugin_action(
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_action_menu, normalize_extension, parse_plugin_control_message, validate_when,
-        version_greater_than, PluginActionMenuContribution, PluginActionWhen,
+        commit_staged_plugin_dependencies, normalize_action_menu, normalize_extension,
+        parse_plugin_control_message, validate_when, version_greater_than,
+        PluginActionMenuContribution, PluginActionWhen,
     };
+    use std::fs;
 
     #[test]
     fn parses_control_messages_from_stdout_prefix() {
@@ -2428,6 +2540,37 @@ mod tests {
     fn ignores_non_control_lines() {
         assert!(parse_plugin_control_message("normal log line").is_none());
         assert!(parse_plugin_control_message("@pmc not-json").is_none());
+    }
+
+    #[test]
+    fn dependency_commit_replaces_atomically_and_restores_on_failure() {
+        let root = std::env::temp_dir().join(format!(
+            "pm-center-plugin-dependency-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let vendor = root.join("vendor");
+        let staging = root.join("staging");
+        let backup = root.join("backup");
+        fs::create_dir_all(&vendor).unwrap();
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(vendor.join("old.txt"), b"old").unwrap();
+        fs::write(staging.join("new.txt"), b"new").unwrap();
+
+        commit_staged_plugin_dependencies(&staging, &vendor, &backup).unwrap();
+        assert!(vendor.join("new.txt").is_file());
+        assert!(!vendor.join("old.txt").exists());
+        assert!(!backup.exists());
+
+        fs::remove_dir_all(&vendor).unwrap();
+        fs::create_dir_all(&vendor).unwrap();
+        fs::write(vendor.join("preserved.txt"), b"preserved").unwrap();
+        let error = commit_staged_plugin_dependencies(&staging, &vendor, &backup).unwrap_err();
+        assert!(error.contains("旧依赖已保留"));
+        assert_eq!(
+            fs::read(vendor.join("preserved.txt")).unwrap(),
+            b"preserved"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

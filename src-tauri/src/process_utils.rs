@@ -15,6 +15,23 @@ pub fn tokio_command(program: impl AsRef<OsStr>) -> tokio::process::Command {
     command
 }
 
+pub fn terminate_pid_tree(pid: u32) {
+    #[cfg(windows)]
+    {
+        let _ = std_command("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .output();
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = std_command("kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .output();
+    }
+}
+
 #[cfg(windows)]
 fn hide_std_command_window(command: &mut std::process::Command) {
     use std::os::windows::process::CommandExt;

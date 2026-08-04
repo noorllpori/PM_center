@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -45,16 +45,26 @@ pub enum TaskScript {
     PluginAction(PluginActionTaskScript),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ManagedTaskProcess {
-    child: tokio::process::Child,
-    cleanup_paths: Vec<PathBuf>,
+    pid: u32,
 }
 
 type TaskProcesses = Arc<Mutex<HashMap<String, ManagedTaskProcess>>>;
 
 lazy_static::lazy_static! {
     static ref TASK_PROCESSES: TaskProcesses = Arc::new(Mutex::new(HashMap::new()));
+    static ref CANCELLED_TASKS: Mutex<HashMap<String, String>> = Mutex::new(HashMap::new());
+}
+
+struct TaskProcessLease {
+    task_id: String,
+}
+
+impl Drop for TaskProcessLease {
+    fn drop(&mut self) {
+        TASK_PROCESSES.lock().unwrap().remove(&self.task_id);
+    }
 }
 
 fn decode_process_output(bytes: &[u8]) -> String {
@@ -174,32 +184,58 @@ async fn prepare_task_execution(
     }
 }
 
-async fn wait_for_process(task_id: &str) -> Result<(i32, Vec<PathBuf>), String> {
-    let managed_process = {
-        let mut processes = TASK_PROCESSES.lock().unwrap();
-        processes.remove(task_id)
-    };
+fn register_task_process(task_id: &str, pid: u32) -> Result<TaskProcessLease, String> {
+    let mut processes = TASK_PROCESSES.lock().unwrap();
+    if processes.contains_key(task_id) {
+        return Err(format!("任务 {task_id} 已经在运行"));
+    }
+    processes.insert(task_id.to_string(), ManagedTaskProcess { pid });
+    Ok(TaskProcessLease {
+        task_id: task_id.to_string(),
+    })
+}
 
-    if let Some(mut managed_process) = managed_process {
-        let cleanup_paths = managed_process.cleanup_paths.clone();
-        match managed_process.child.wait().await {
-            Ok(status) => Ok((status.code().unwrap_or(-1), cleanup_paths)),
-            Err(error) => Err(format!("等待进程失败: {error}")),
-        }
-    } else {
-        Err("任务未找到".to_string())
+fn request_task_termination(task_id: &str, reason: Option<&str>) -> bool {
+    let process = TASK_PROCESSES.lock().unwrap().get(task_id).cloned();
+    let Some(process) = process else {
+        return false;
+    };
+    if let Some(reason) = reason {
+        CANCELLED_TASKS
+            .lock()
+            .unwrap()
+            .insert(task_id.to_string(), reason.to_string());
+    }
+    crate::process_utils::terminate_pid_tree(process.pid);
+    true
+}
+
+async fn wait_for_task_exit(task_id: &str, timeout: Duration) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    while TASK_PROCESSES.lock().unwrap().contains_key(task_id)
+        && tokio::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
-async fn kill_process(task_id: &str) {
-    let managed_process = {
-        let mut processes = TASK_PROCESSES.lock().unwrap();
-        processes.remove(task_id)
-    };
+fn take_cancel_reason(task_id: &str) -> Option<String> {
+    CANCELLED_TASKS.lock().unwrap().remove(task_id)
+}
 
-    if let Some(mut managed_process) = managed_process {
-        let _ = managed_process.child.kill().await;
-        cleanup_paths(managed_process.cleanup_paths).await;
+pub fn active_task_count() -> usize {
+    TASK_PROCESSES.lock().unwrap().len()
+}
+
+pub fn cancel_all_tasks(reason: &str) {
+    let task_ids = TASK_PROCESSES
+        .lock()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect::<HashSet<_>>();
+    for task_id in &task_ids {
+        request_task_termination(task_id, Some(reason));
     }
 }
 
@@ -296,6 +332,7 @@ pub async fn run_task(
     python_path: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
+    crate::automation_runtime::wait_until_running().await?;
     let prepared = match prepare_task_execution(&app_handle, &script, python_path).await {
         Ok(prepared) => prepared,
         Err(error) => {
@@ -323,6 +360,7 @@ pub async fn run_task(
         .stderr(Stdio::piped())
         .stdin(Stdio::null());
 
+    command.kill_on_drop(true);
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
@@ -354,16 +392,37 @@ pub async fn run_task(
         }
     };
 
-    {
-        let mut processes = TASK_PROCESSES.lock().unwrap();
-        processes.insert(
-            task_id.clone(),
-            ManagedTaskProcess {
-                child,
-                cleanup_paths: prepared.cleanup_paths.clone(),
-            },
-        );
-    }
+    let pid = child
+        .id()
+        .ok_or_else(|| "无法获取任务进程 PID".to_string())?;
+    let process_lease = match crate::automation_runtime::register_process(
+        pid,
+        if prepared.parse_plugin_controls {
+            "plugin-task"
+        } else {
+            "python-task"
+        },
+        format!("任务 {task_id}"),
+    ) {
+        Ok(lease) => lease,
+        Err(error) => {
+            crate::process_utils::terminate_pid_tree(pid);
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            cleanup_paths(prepared.cleanup_paths).await;
+            return Err(error);
+        }
+    };
+    let task_lease = match register_task_process(&task_id, pid) {
+        Ok(lease) => lease,
+        Err(error) => {
+            crate::process_utils::terminate_pid_tree(pid);
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            cleanup_paths(prepared.cleanup_paths).await;
+            return Err(error);
+        }
+    };
 
     let stdout_handle = tokio::spawn(read_stdout(
         task_id.clone(),
@@ -373,16 +432,19 @@ pub async fn run_task(
     ));
     let stderr_handle = tokio::spawn(read_stderr(task_id.clone(), stderr, app_handle.clone()));
 
-    let (mut exit_code, cleanup_paths_to_remove) = if timeout_seconds > 0 {
-        match tokio::time::timeout(
-            Duration::from_secs(timeout_seconds),
-            wait_for_process(&task_id),
-        )
-        .await
-        {
-            Ok(result) => result?,
+    let mut exit_code = if timeout_seconds > 0 {
+        match tokio::time::timeout(Duration::from_secs(timeout_seconds), child.wait()).await {
+            Ok(Ok(status)) => status.code().unwrap_or(-1),
+            Ok(Err(error)) => {
+                drop(task_lease);
+                drop(process_lease);
+                cleanup_paths(prepared.cleanup_paths).await;
+                return Err(format!("等待进程失败: {error}"));
+            }
             Err(_) => {
-                kill_process(&task_id).await;
+                request_task_termination(&task_id, None);
+                let _ = child.wait().await;
+                let _ = take_cancel_reason(&task_id);
                 let message = "任务执行超时".to_string();
                 let _ = app_handle.emit(
                     "task-error",
@@ -391,23 +453,48 @@ pub async fn run_task(
                         "error": message,
                     }),
                 );
+                drop(task_lease);
+                drop(process_lease);
+                cleanup_paths(prepared.cleanup_paths).await;
                 return Err("任务执行超时".to_string());
             }
         }
     } else {
-        wait_for_process(&task_id).await?
+        match child.wait().await {
+            Ok(status) => status.code().unwrap_or(-1),
+            Err(error) => {
+                drop(task_lease);
+                drop(process_lease);
+                cleanup_paths(prepared.cleanup_paths).await;
+                return Err(format!("等待进程失败: {error}"));
+            }
+        }
     };
 
-    let stdout_summary = stdout_handle
-        .await
-        .map_err(|error| format!("读取 stdout 失败: {error}"))?;
-    let _ = stderr_handle.await;
+    let stdout_result = stdout_handle.await;
+    let stderr_result = stderr_handle.await;
+
+    drop(task_lease);
+    drop(process_lease);
+    cleanup_paths(prepared.cleanup_paths).await;
+
+    let stdout_summary = stdout_result.map_err(|error| format!("读取 stdout 失败: {error}"))?;
+    let _ = stderr_result;
 
     if stdout_summary.plugin_error_message.is_some() && exit_code == 0 {
         exit_code = 1;
     }
 
-    cleanup_paths(cleanup_paths_to_remove).await;
+    if let Some(reason) = take_cancel_reason(&task_id) {
+        let _ = app_handle.emit(
+            "task-cancelled",
+            serde_json::json!({
+                "taskId": task_id,
+                "reason": reason,
+            }),
+        );
+        return Ok(());
+    }
 
     let _ = app_handle.emit(
         "task-completed",
@@ -422,6 +509,11 @@ pub async fn run_task(
 
 #[tauri::command]
 pub async fn cancel_task(task_id: String) -> Result<(), String> {
-    kill_process(&task_id).await;
-    Ok(())
+    request_task_termination(&task_id, Some("用户已取消任务"));
+    wait_for_task_exit(&task_id, Duration::from_secs(5)).await;
+    if TASK_PROCESSES.lock().unwrap().contains_key(&task_id) {
+        Err(format!("取消任务 {task_id} 超时，进程仍未退出"))
+    } else {
+        Ok(())
+    }
 }

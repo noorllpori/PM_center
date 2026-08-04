@@ -17,11 +17,131 @@ use std::time::Duration;
 
 pub const SMART_CLIPBOARD_MODULE_ID: &str = "builtin.smart-clipboard";
 pub const LAN_COLLABORATION_MODULE_ID: &str = "builtin.lan-collaboration";
+pub use crate::automation_runtime::AUTOMATION_RUNTIME_MODULE_ID;
 pub use crate::project_resources::PROJECT_RESOURCES_MODULE_ID;
 pub const DIAGNOSTIC_BASE_ID: &str = "diagnostic.runtime-base";
 pub const DIAGNOSTIC_WORKER_ID: &str = "diagnostic.runtime-worker";
 pub const DIAGNOSTIC_FAILING_ID: &str = "diagnostic.runtime-failing";
 pub const DIAGNOSTIC_SLOW_STOP_ID: &str = "diagnostic.runtime-slow-stop";
+
+struct AutomationRuntimeLifecycle;
+
+impl ModuleLifecycle for AutomationRuntimeLifecycle {
+    fn start<'a>(&'a self, context: ModuleContext) -> LifecycleFuture<'a, ()> {
+        Box::pin(async move {
+            crate::automation_runtime::start_runtime();
+            let mut details = BTreeMap::new();
+            details.insert("taskProcesses".into(), "任务中心 Python/插件任务".into());
+            details.insert("pythonProcesses".into(), "脚本、venv 与 pip 操作".into());
+            details.insert("pluginProcesses".into(), "旧插件动作与依赖安装".into());
+            context.resources.register(
+                context.module_id,
+                ResourceKind::ChildProcess,
+                "任务、Python 与旧插件进程协调器",
+                details,
+                Box::new(|| Box::pin(crate::automation_runtime::stop_runtime())),
+            );
+            Ok(())
+        })
+    }
+
+    fn stop<'a>(&'a self, _context: ModuleContext) -> LifecycleFuture<'a, ()> {
+        Box::pin(crate::automation_runtime::stop_runtime())
+    }
+
+    fn health<'a>(&'a self, _context: ModuleContext) -> LifecycleFuture<'a, ModuleHealth> {
+        Box::pin(async {
+            if !crate::automation_runtime::is_running() {
+                return Ok(ModuleHealth {
+                    level: ModuleHealthLevel::Unhealthy,
+                    message: "任务、Python 与旧插件运行时当前未启用".into(),
+                    checked_at: Some(chrono::Utc::now().timestamp_millis()),
+                });
+            }
+            let task_count = crate::task::active_task_count();
+            let process_count = crate::automation_runtime::active_process_count();
+            let message = format!(
+                "任务 {} 个；{}",
+                task_count,
+                crate::automation_runtime::active_process_summary()
+            );
+            if task_count <= process_count {
+                Ok(ModuleHealth::healthy(message))
+            } else {
+                Ok(ModuleHealth {
+                    level: ModuleHealthLevel::Degraded,
+                    message: format!("任务登记数高于进程登记数；{message}"),
+                    checked_at: Some(chrono::Utc::now().timestamp_millis()),
+                })
+            }
+        })
+    }
+
+    fn start_timeout(&self) -> Duration {
+        Duration::from_secs(5)
+    }
+
+    fn stop_timeout(&self) -> Duration {
+        Duration::from_secs(12)
+    }
+}
+
+fn automation_runtime_capabilities() -> Vec<Capability> {
+    vec![
+        Capability::AppSettingsRead,
+        Capability::AppSettingsWrite,
+        Capability::FilesystemExternalRead,
+        Capability::FilesystemExternalWrite,
+        Capability::ProjectFilesRead,
+        Capability::ProjectFilesWrite,
+        Capability::TaskRun,
+        Capability::TaskCancel,
+        Capability::PythonExecute,
+        Capability::PythonPackagesManage,
+        Capability::ProcessSpawn,
+        Capability::NetworkHttpRequest,
+    ]
+}
+
+pub fn automation_runtime_module() -> RegisteredModule {
+    let mut extensions = ExtensionFields::new();
+    extensions.insert("defaultEnabled".into(), Value::Bool(true));
+    RegisteredModule {
+        manifest: ModuleManifestV1 {
+            schema_version: 1,
+            id: AUTOMATION_RUNTIME_MODULE_ID.into(),
+            name: "任务、Python 与旧插件".into(),
+            description: "管理普通任务、Python 环境、venv、pip 和旧插件动作的进程生命周期。".into(),
+            version: "1.0.0".into(),
+            api_version: "1".into(),
+            scope: ModuleScope::Global,
+            builtin: true,
+            requires_modules: Vec::new(),
+            optional_modules: vec![ModuleDependency {
+                id: PROJECT_RESOURCES_MODULE_ID.into(),
+                version_requirement: "^1.0".into(),
+            }],
+            conflicts: Vec::new(),
+            capabilities: automation_runtime_capabilities(),
+            background_services: vec!["managed-process-registry".into()],
+            contributes: ModuleContributions::default(),
+            data_policy: ModuleDataPolicy::default(),
+            extensions,
+        },
+        lifecycle: Arc::new(AutomationRuntimeLifecycle),
+        diagnostic: false,
+    }
+}
+
+pub fn automation_runtime_component() -> CapabilityComponentRegistration {
+    CapabilityComponentRegistration {
+        id: "builtin.automation-runtime.service".into(),
+        name: "任务与脚本进程协调组件".into(),
+        version: "1.0.0".into(),
+        module_id: AUTOMATION_RUNTIME_MODULE_ID.into(),
+        capabilities: automation_runtime_capabilities(),
+    }
+}
 
 struct ProjectResourcesLifecycle {
     databases: crate::project_resources::ProjectDatabaseState,

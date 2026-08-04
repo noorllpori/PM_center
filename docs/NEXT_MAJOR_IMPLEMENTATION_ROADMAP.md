@@ -66,8 +66,8 @@ D0 架构记录
 | R0 | 当前行为与资源基线 | verifying | D0 | 已补一组真实恢复会话资源样本，完整人工流程仍待确认 |
 | R1 | Module/Profile/Component/Workflow 协议 | accepted | R0 | 2026-08-03 已确认按当前设计继续 R2 |
 | R2 | Module Manager 与 ResourceRegistry | accepted | R1 | 2026-08-03 已完成诊断页和泄漏检查验收 |
-| R3 | Capability 权限网关 | verifying | R1、R2 | 内核、审批界面和安全自检完成，等待人工验收 |
-| R4 | 现有模块生命周期接入 | in-progress | R2、R3 | 智能剪贴板与局域网已验收，项目资源进入独立验收 |
+| R3 | Capability 权限网关 | accepted | R1、R2 | 2026-08-03 已完成人工验收，未发现问题 |
+| R4 | 现有模块生命周期接入 | in-progress | R2、R3 | 前三项已验收；任务、Python 和旧插件进入独立验收 |
 | R5 | 前端 Contribution Registry | pending | R1、R2 | 需要确认界面动态装配规则 |
 | R6 | 装配方案运行时与兼容迁移 | pending | R4、R5 | 需要确认迁移结果 |
 | R7 | DIY 装配编辑器 MVP | pending | R6 | 需要实际拖拽组装验收 |
@@ -366,6 +366,7 @@ R4 已开始接入真实资源，首项智能剪贴板由 Module Manager 托管�
 - `docs/NEXT_MAJOR_R4_SMART_CLIPBOARD_LIFECYCLE.md`
 - `docs/NEXT_MAJOR_R4_LAN_LIFECYCLE.md`
 - `docs/NEXT_MAJOR_R4_PROJECT_RESOURCES_LIFECYCLE.md`
+- `docs/NEXT_MAJOR_R4_AUTOMATION_RUNTIME_LIFECYCLE.md`
 
 ### 目标
 
@@ -375,8 +376,8 @@ R4 已开始接入真实资源，首项智能剪贴板由 Module Manager 托管�
 
 1. **智能剪贴板**：`accepted`，2026-08-03 已完成人工验收，未发现问题。
 2. **局域网服务**：`accepted`，2026-08-03 已完成模块关闭与重新开启人工验收。
-3. **项目资源**：`verifying`，watcher、项目数据库、TreeCache、缓存维护取消和项目关闭释放已接入生命周期，等待人工验收。
-4. **任务、Python 和旧插件**：`pending`，验证子进程、依赖和取消状态。
+3. **项目资源**：`accepted`，2026-08-03 已完成项目打开、切换、关闭、模块停用和恢复人工验收。
+4. **任务、Python 和旧插件**：`verifying`，统一进程登记、命令守卫、任务取消和停用清理已实现，等待人工验收。
 5. **渲染中心**：`pending`，最后迁移调度器、Blender Worker、性能采样和任务恢复。
 
 ### 每个模块通用验收
