@@ -1,6 +1,6 @@
 # R5 前端 Contribution Registry
 
-> 状态：`in-progress`
+> 状态：`verifying`
 >
 > 日期：2026-08-04
 >
@@ -18,7 +18,7 @@ R5-1 建立前端贡献注册表的第一条完整纵向链路，先迁移已有
 - 工作区会话保存、恢复和旧格式兼容；
 - 模块停用后的已挂载页面关闭。
 
-R5-2 已完成并验收自动化设置区、插件右键动作和项目集合命令，详细记录见 `docs/NEXT_MAJOR_R5_SETTINGS_CONTEXT_CONTRIBUTIONS.md`。R5-3 已建立 Widget、DataSource、工作流节点目录和隔离测试贡献，记录见 `docs/NEXT_MAJOR_R5_WIDGET_DATA_WORKFLOW_CATALOGS.md`。
+R5-2 已完成并验收自动化设置区、插件右键动作和项目集合命令，详细记录见 `docs/NEXT_MAJOR_R5_SETTINGS_CONTEXT_CONTRIBUTIONS.md`。R5-3 已建立 Widget、DataSource、工作流节点目录和隔离测试贡献，记录见 `docs/NEXT_MAJOR_R5_WIDGET_DATA_WORKFLOW_CATALOGS.md`。R5-4 已完成目录一致性、缺失实现状态和订阅释放加固，记录见 `docs/NEXT_MAJOR_R5_CONTRIBUTION_REGISTRY_HARDENING.md`。
 
 ## 2. 注册表与稳定 ID
 
@@ -30,8 +30,11 @@ Rust 内置模块清单现在声明真实贡献 ID，前端从 `list_platform_mo
 - `shellTabs`；
 - `workspaceTabs`；
 - `surfaces`；
-- `settingsSections`。
-- `contextCommands`。
+- `widgets`；
+- `dataSources`；
+- `settingsSections`；
+- `contextCommands`；
+- `workflowNodes`。
 
 稳定 ID 使用小写点分命名，例如 `builtin.render-center.tool`、`builtin.render-center.workspace-tab` 和 `builtin.render-center.surface`。工作区标签只有在标签贡献和对应 Surface 都有效时才允许打开或恢复。
 
@@ -82,7 +85,7 @@ npm run check:platform-contracts
 git diff --check
 ```
 
-结果：Rust 库测试 `119 passed`；TypeScript/Vite 构建、Rust 编译、格式、平台合同和差异检查全部通过。
+结果：Rust 库测试 `120 passed`；TypeScript/Vite 构建、Rust 编译、格式、平台合同和差异检查全部通过。
 
 ## 7. R5-1 人工验收
 
@@ -109,8 +112,8 @@ git diff --check
 
 Widget、DataSource、工作流节点前端目录和隔离诊断模块已于 2026-08-04 完成人工验收。诊断页面显示 29 个有效贡献、0 个冲突，详细记录见 `docs/NEXT_MAJOR_R5_WIDGET_DATA_WORKFLOW_CATALOGS.md`。
 
-## 10. 后续 R5 分项
+## 10. R5-4 状态
 
-1. 增加目录一致性、缺失渲染器和订阅释放诊断；
-2. 完成桌面、窄窗口和深浅主题最终验收；
-3. 将 R5 转为 `accepted`，进入 R6 装配方案运行时。
+目录一致性、缺失渲染器状态和引用计数订阅释放已经实现并通过自动测试，当前等待桌面、窄窗口和深浅主题人工验收。验收预期和结果记录见 `docs/NEXT_MAJOR_R5_CONTRIBUTION_REGISTRY_HARDENING.md`。
+
+人工确认后将 R5 转为 `accepted`，进入 R6 装配方案运行时。

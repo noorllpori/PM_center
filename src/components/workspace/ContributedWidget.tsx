@@ -10,6 +10,18 @@ import {
 import { readContributionDataSource } from '../../features/contributionDataSources';
 import { useContributionRegistryStore } from '../../stores/contributionRegistryStore';
 
+function WidgetUnavailableState({ message, contributionId }: { message: string; contributionId: string }) {
+  return (
+    <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+      <span className="min-w-0">
+        <span className="block">{message}</span>
+        <code className="mt-1 block break-all text-[11px] opacity-75">{contributionId}</code>
+      </span>
+    </div>
+  );
+}
+
 interface ContributedWidgetRendererProps {
   definition: WidgetContributionDefinition;
   value: JsonValue | null;
@@ -69,21 +81,33 @@ const WIDGET_RENDERERS: Record<string, ComponentType<ContributedWidgetRendererPr
   'diagnostic.contribution-sample.registry-widget': DiagnosticRegistrySummaryWidget,
 };
 
+export function getContributedWidgetRendererIds() {
+  return Object.keys(WIDGET_RENDERERS);
+}
+
 export function ContributedWidget({ widgetId }: { widgetId: string }) {
   const snapshot = useContributionRegistryStore((state) => state.snapshot);
   const definition = WIDGET_CONTRIBUTION_BY_ID.get(widgetId);
   if (!definition) {
-    return null;
+    return <WidgetUnavailableState message="Widget 定义未注册" contributionId={widgetId} />;
   }
 
   const unavailableReason = getContributionUnavailableReason(snapshot, definition);
   if (unavailableReason) {
-    return null;
+    return <WidgetUnavailableState message={unavailableReason} contributionId={definition.id} />;
   }
 
   const dataSource = definition.dataSourceId
     ? DATA_SOURCE_CONTRIBUTION_BY_ID.get(definition.dataSourceId)
     : undefined;
+  if (definition.dataSourceId && !dataSource) {
+    return (
+      <WidgetUnavailableState
+        message="Widget 引用的 DataSource 未注册"
+        contributionId={definition.dataSourceId}
+      />
+    );
+  }
   const result = dataSource
     ? readContributionDataSource(snapshot, dataSource)
     : { value: null, error: null };
@@ -91,10 +115,10 @@ export function ContributedWidget({ widgetId }: { widgetId: string }) {
 
   if (!Renderer || result.error) {
     return (
-      <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
-        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-        <span>{result.error || `Widget 尚未注册渲染器：${definition.id}`}</span>
-      </div>
+      <WidgetUnavailableState
+        message={result.error || 'Widget 尚未注册渲染器'}
+        contributionId={definition.id}
+      />
     );
   }
 

@@ -30,6 +30,10 @@ const DATA_SOURCE_READERS: Record<string, ContributionDataSourceReader> = {
   },
 };
 
+export function getContributionDataSourceReaderIds() {
+  return Object.keys(DATA_SOURCE_READERS);
+}
+
 export interface ContributionDataSourceReadResult {
   definition: DataSourceContributionDefinition;
   value: JsonValue | null;

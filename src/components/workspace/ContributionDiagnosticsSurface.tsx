@@ -1,11 +1,22 @@
-import { Braces, Database, FlaskConical, Workflow } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { AlertTriangle, Braces, CheckCircle2, Database, FlaskConical, Radio, Workflow } from 'lucide-react';
+import {
+  inspectContributionCatalog,
+  type ContributionCatalogReport,
+  type ContributionImplementationInventory,
+} from '../../features/contributionCatalogDiagnostics';
 import {
   DATA_SOURCE_CONTRIBUTIONS,
   WIDGET_CONTRIBUTIONS,
   WORKFLOW_NODE_CONTRIBUTIONS,
   getContributionUnavailableReason,
 } from '../../features/contributionRegistry';
-import { useContributionRegistryStore } from '../../stores/contributionRegistryStore';
+import {
+  getContributionRegistrySubscriptionDiagnostics,
+  runContributionRegistrySubscriptionProbe,
+  useContributionRegistryStore,
+  type ContributionRegistrySubscriptionProbe,
+} from '../../stores/contributionRegistryStore';
 import { ContributedWidget } from './ContributedWidget';
 
 function StatusRow({
@@ -28,8 +39,15 @@ function StatusRow({
   );
 }
 
-export function ContributionDiagnosticsSurface() {
+export function ContributionDiagnosticsSurface({
+  isActive,
+  implementationInventory,
+}: {
+  isActive: boolean;
+  implementationInventory: ContributionImplementationInventory;
+}) {
   const snapshot = useContributionRegistryStore((state) => state.snapshot);
+  const [subscriptionProbe, setSubscriptionProbe] = useState<ContributionRegistrySubscriptionProbe | null>(null);
   const widget = WIDGET_CONTRIBUTIONS.diagnosticRegistrySummary;
   const dataSource = DATA_SOURCE_CONTRIBUTIONS.diagnosticRegistrySummary;
   const workflowNode = WORKFLOW_NODE_CONTRIBUTIONS.diagnosticEcho;
@@ -38,6 +56,17 @@ export function ContributionDiagnosticsSurface() {
     { label: 'DataSource', definition: dataSource },
     { label: 'WorkflowNode', definition: workflowNode },
   ];
+  const catalogReport = useMemo<ContributionCatalogReport>(
+    () => inspectContributionCatalog(snapshot, implementationInventory),
+    [implementationInventory, snapshot],
+  );
+  const subscriptionDiagnostics = getContributionRegistrySubscriptionDiagnostics();
+
+  useEffect(() => {
+    if (isActive) {
+      setSubscriptionProbe(runContributionRegistrySubscriptionProbe());
+    }
+  }, [isActive, snapshot]);
 
   return (
     <div className="h-full min-h-0 overflow-auto bg-gray-50 dark:bg-gray-950">
@@ -57,6 +86,61 @@ export function ContributionDiagnosticsSurface() {
 
       <main className="mx-auto max-w-5xl space-y-5 px-5 py-5">
         <ContributedWidget widgetId={widget.id} />
+
+        <section className="min-w-0">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              {catalogReport.healthy ? (
+                <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+              ) : (
+                <AlertTriangle className="h-4 w-4 text-amber-500" />
+              )}
+              <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">目录一致性</h3>
+            </div>
+            <span className={`text-xs ${catalogReport.healthy ? 'text-emerald-600 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'}`}>
+              {catalogReport.healthy ? '检查通过' : `${catalogReport.errorCount} 错误 · ${catalogReport.warningCount} 警告`}
+            </span>
+          </div>
+          <div className="overflow-hidden rounded-md border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
+            <div className="grid grid-cols-2 divide-x divide-y divide-gray-100 sm:grid-cols-4 sm:divide-y-0 dark:divide-gray-800">
+              {[
+                ['前端定义', catalogReport.catalogDefinitionCount],
+                ['模块定义', catalogReport.moduleOwnedDefinitionCount],
+                ['Manifest 声明', catalogReport.manifestClaimCount],
+                ['实现注册', catalogReport.rendererCount],
+              ].map(([label, value]) => (
+                <div key={String(label)} className="px-4 py-3">
+                  <p className="text-xs text-gray-500 dark:text-gray-400">{label}</p>
+                  <p className="mt-1 text-lg font-semibold text-gray-900 dark:text-gray-100">{value}</p>
+                </div>
+              ))}
+            </div>
+            {catalogReport.issues.length > 0 && (
+              <div className="border-t border-gray-100 px-4 py-3 dark:border-gray-800">
+                {catalogReport.issues.map((issue) => (
+                  <p key={`${issue.code}:${issue.contributionId}`} className="py-1 text-xs text-amber-800 dark:text-amber-200">
+                    {issue.code} · {issue.contributionId}：{issue.message}
+                  </p>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
+
+        <section className="min-w-0">
+          <div className="mb-2 flex items-center gap-2">
+            <Radio className="h-4 w-4 text-sky-500" />
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">订阅释放</h3>
+          </div>
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-md border border-gray-200 bg-white px-4 py-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300">
+            <span>当前消费者：{subscriptionDiagnostics.consumerCount}</span>
+            <span>事件监听：{subscriptionDiagnostics.listenerInstalled ? '已安装' : '未安装'}</span>
+            <span>刷新任务：{subscriptionDiagnostics.refreshInFlight ? '进行中' : '空闲'}</span>
+            <span className={subscriptionProbe?.success ? 'text-emerald-600 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'}>
+              引用计数自检：{subscriptionProbe ? (subscriptionProbe.success ? '通过' : '失败') : '等待页面激活'}
+            </span>
+          </div>
+        </section>
 
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1.2fr)_minmax(280px,0.8fr)]">
           <section className="min-w-0">

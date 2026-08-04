@@ -12,11 +12,11 @@ import { LauncherButton } from '../Launcher';
 import { BlenderFileParserDialog } from '../tools/BlenderFileParserDialog';
 import { openStandaloneTextEditor } from '../text-editor/openStandaloneTextEditor';
 import { openStandaloneVideoPlayer } from '../video-player/openStandaloneVideoPlayer';
-import { LanCollaborationSurface } from '../lan/LanCollaborationSurface';
 import { Toolbar, TOOLBAR_SEARCH_FOCUS_EVENT } from './Toolbar';
 import { CLOSE_MDT_OVERVIEW_EVENT, ProjectWorkspace } from './ProjectWorkspace';
 import { ProjectSessionProvider } from './ProjectSessionProvider';
 import { ShellTabBar } from '../shell/ShellTabBar';
+import { ContributedShellSurface } from '../shell/ContributedShellSurface';
 import { Dialog } from '../Dialog';
 import { ProjectLocationDialog } from './ProjectLocationDialog';
 import { createProjectStore, type ProjectStoreApi } from '../../stores/projectStore';
@@ -299,8 +299,11 @@ export function FileManager() {
     contributionSnapshot,
     SHELL_TAB_CONTRIBUTIONS.lan,
   );
-  const hasLanTab = lanShellAvailable && tabs.some((tab) => tab.type === 'lan');
-  const isLanTabActive = lanShellAvailable && activeShellTab?.type === 'lan';
+  const contributionShellTabs = useMemo(
+    () => tabs.filter((tab) => Boolean(tab.contributionId)),
+    [tabs],
+  );
+  const isContributionShellActive = Boolean(activeShellTab?.contributionId);
 
   const [isPythonEnvOpen, setIsPythonEnvOpen] = useState(false);
   const [isTaskCenterOpen, setIsTaskCenterOpen] = useState(false);
@@ -352,12 +355,20 @@ export function FileManager() {
 
   useEffect(() => {
     let isActive = true;
+    let releaseContributionRegistry: (() => void) | null = null;
 
     const initializeSettings = async () => {
+      const contributionRegistryInitialization = initializeContributionRegistry().then((releaseRegistry) => {
+        if (!isActive) {
+          releaseRegistry();
+        } else {
+          releaseContributionRegistry = releaseRegistry;
+        }
+      });
       await Promise.all([
         loadSettings(),
         loadBuiltinToolsPreferences(),
-        initializeContributionRegistry(),
+        contributionRegistryInitialization,
       ]);
       if (isActive) {
         setIsSettingsLoaded(true);
@@ -368,6 +379,7 @@ export function FileManager() {
 
     return () => {
       isActive = false;
+      releaseContributionRegistry?.();
     };
   }, [loadBuiltinToolsPreferences, loadSettings]);
 
@@ -1305,19 +1317,22 @@ export function FileManager() {
       />
 
       <div className="flex-1 min-h-0 overflow-hidden">
-        {hasLanTab ? (
-          <div className={isLanTabActive ? 'h-full' : 'hidden'}>
-            <LanCollaborationSurface isActive={isLanTabActive} />
-          </div>
-        ) : null}
-        {!isLanTabActive && activeProjectSession ? (
+        {contributionShellTabs.map((tab) => {
+          const isActive = tab.id === activeTabId;
+          return (
+            <div key={tab.id} className={isActive ? 'h-full' : 'hidden'}>
+              <ContributedShellSurface tab={tab} isActive={isActive} />
+            </div>
+          );
+        })}
+        {!isContributionShellActive && activeProjectSession ? (
           <ProjectSessionProvider
             projectStore={activeProjectSession.projectStore}
             workspaceTabStore={activeProjectSession.workspaceTabStore}
           >
             <ProjectWorkspace />
           </ProjectSessionProvider>
-        ) : !isLanTabActive ? (
+        ) : !isContributionShellActive ? (
           <WelcomeScreen
             onOpenProject={handleOpenProject}
             settingsLoaded={isSettingsLoaded}

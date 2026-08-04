@@ -143,7 +143,7 @@
 
 | 能力 | 当前代码 | 可复用内容 | 当前限制 |
 | --- | --- | --- | --- |
-| 前端贡献注册 | `src/features/contributionRegistry.ts`、`src/features/contributionDataSources.ts`、`src/stores/contributionRegistryStore.ts` | 稳定贡献 ID、模块所有权、运行状态、冲突检测、Widget/DataSource/WorkflowNode 目录和 Surface 配对 | R5 尚待完成目录一致性、缺失渲染器与订阅释放诊断；R9 前不加载任意第三方 React 代码 |
+| 前端贡献注册 | `src/features/contributionRegistry.ts`、`src/features/contributionDataSources.ts`、`src/features/contributionCatalogDiagnostics.ts`、`src/stores/contributionRegistryStore.ts` | 稳定贡献 ID、模块所有权、运行状态、冲突检测、Widget/DataSource/WorkflowNode 目录、Surface 配对、实现覆盖和订阅释放诊断 | Profile 尚未接管布局；R9 前不加载任意第三方 React 代码 |
 | 功能 Pin 偏好 | `src/stores/builtinToolsStore.ts` | 全局持久化、排序、停用时隐藏并保留配置 | 只控制快捷栏，不等于模块启停 |
 | 功能打开器 | `src/features/builtinTools.ts`、`src/components/file-manager/index.tsx` | 声明式 `openTarget` 集中打开标签页、弹窗、事件或命令 | 打开方式类型仍由主应用控制，R9 前不加载任意第三方 React 代码 |
 | 项目工作区标签 | `src/stores/workspaceTabStore.ts`、`ContributedWorkspaceSurface.tsx`、`ContributedWidget.tsx` | 贡献式单例标签、通用 contribution 标签、动态撤下、会话恢复和 Widget 数据源连接 | Profile 尚未接管页面布局，Widget 网格和第三方组件渲染器仍待后续里程碑 |
@@ -170,7 +170,7 @@
 
 当前 `src-tauri/src/lib.rs` 仍使用 `tauri::generate_handler!` 静态注册 Tauri 命令，但 R2-R4 已由 Module Manager、ResourceRegistry 和 CapabilityGateway 管理既有后台领域。R5 第一轮让功能中心、Pin、LAN Shell 标签及缓存/渲染/LAN 工作区标签读取模块贡献；停用模块时，前端入口撤下，后端命令守卫拒绝调用，实际端口、watcher、调度器、原生线程、数据库和子进程由各模块生命周期释放。
 
-设置分区、右键动作、Widget 和 DataSource 已接入 R5 贡献目录，工作流节点已登记类型合同但尚不可执行。剩余限制是 Profile 尚未接管布局、第三方组件渲染器尚未进入统一运行时。下一版本仍不要求动态增删 Tauri 命令注册；静态命令必须继续经过模块与能力守卫。
+设置分区、右键动作、Widget 和 DataSource 已接入 R5 贡献目录，工作流节点已登记类型合同但尚不可执行。前端目录与 manifest 所有权、Surface/Widget/DataSource 实现覆盖和订阅释放已可自检，缺失实现会显示明确错误状态。剩余限制是 Profile 尚未接管布局、第三方组件渲染器尚未进入统一运行时。下一版本仍不要求动态增删 Tauri 命令注册；静态命令必须继续经过模块与能力守卫。
 
 ## 6. 目标分层架构
 

@@ -67,6 +67,101 @@ export const TOOL_CONTRIBUTIONS = {
   ),
 } as const;
 
+export type SurfaceContributionHost = 'workspace' | 'shell' | 'dialog' | 'event' | 'native';
+
+export interface SurfaceContributionDefinition extends ContributionDefinition {
+  title: string;
+  host: SurfaceContributionHost;
+}
+
+export const SURFACE_CONTRIBUTIONS = {
+  automationPython: {
+    ...contribution(
+      'builtin.automation-runtime.python-surface',
+      'surfaces',
+      BUILTIN_MODULE_IDS.automationRuntime,
+    ),
+    title: 'Python 环境',
+    host: 'dialog',
+  },
+  automationTasks: {
+    ...contribution(
+      'builtin.automation-runtime.task-surface',
+      'surfaces',
+      BUILTIN_MODULE_IDS.automationRuntime,
+    ),
+    title: '任务中心',
+    host: 'dialog',
+  },
+  renderCenter: {
+    ...contribution(
+      'builtin.render-center.surface',
+      'surfaces',
+      BUILTIN_MODULE_IDS.renderCenter,
+    ),
+    title: '渲染与批处理',
+    host: 'workspace',
+  },
+  cacheManager: {
+    ...contribution(
+      'builtin.project-resources.cache-surface',
+      'surfaces',
+      BUILTIN_MODULE_IDS.projectResources,
+    ),
+    title: '缓存管理',
+    host: 'workspace',
+  },
+  mdtOverview: {
+    ...contribution(
+      'builtin.project-resources.mdt-surface',
+      'surfaces',
+      BUILTIN_MODULE_IDS.projectResources,
+    ),
+    title: 'MDT 项目概览',
+    host: 'event',
+  },
+  lanMain: {
+    ...contribution(
+      'builtin.lan-collaboration.main-surface',
+      'surfaces',
+      BUILTIN_MODULE_IDS.lanCollaboration,
+    ),
+    title: '设备协作',
+    host: 'shell',
+  },
+  lanProject: {
+    ...contribution(
+      'builtin.lan-collaboration.project-surface',
+      'surfaces',
+      BUILTIN_MODULE_IDS.lanCollaboration,
+    ),
+    title: '局域网项目功能',
+    host: 'workspace',
+  },
+  smartClipboard: {
+    ...contribution(
+      'builtin.smart-clipboard.native-surface',
+      'surfaces',
+      BUILTIN_MODULE_IDS.smartClipboard,
+    ),
+    title: '智能剪贴板',
+    host: 'native',
+  },
+  diagnosticSample: {
+    ...contribution(
+      'diagnostic.contribution-sample.surface',
+      'surfaces',
+      DIAGNOSTIC_CONTRIBUTION_MODULE_ID,
+    ),
+    title: '贡献隔离样本',
+    host: 'workspace',
+  },
+} as const satisfies Record<string, SurfaceContributionDefinition>;
+
+export const SURFACE_CONTRIBUTION_BY_ID = new Map<string, SurfaceContributionDefinition>(
+  Object.values(SURFACE_CONTRIBUTIONS).map((definition) => [definition.id, definition] as const),
+);
+
 export type ContributionDataSourceScope = 'global' | 'project' | 'profile' | 'surface';
 export type ContributionDataValueType = 'object' | 'list' | 'string' | 'number' | 'boolean';
 
@@ -215,7 +310,7 @@ export const SHELL_TAB_CONTRIBUTIONS = {
     tabId: 'lan-collaboration',
     tabType: 'lan',
     title: '设备协作',
-    surfaceId: 'builtin.lan-collaboration.main-surface',
+    surfaceId: SURFACE_CONTRIBUTIONS.lanMain.id,
   },
 } as const satisfies Record<string, ShellTabContributionDefinition>;
 
@@ -240,7 +335,7 @@ export const WORKSPACE_TAB_CONTRIBUTIONS = {
     title: '缓存管理',
     icon: Database,
     iconClassName: 'text-cyan-600',
-    surfaceId: 'builtin.project-resources.cache-surface',
+    surfaceId: SURFACE_CONTRIBUTIONS.cacheManager.id,
   },
   render: {
     ...contribution('builtin.render-center.workspace-tab', 'workspaceTabs', BUILTIN_MODULE_IDS.renderCenter),
@@ -249,7 +344,7 @@ export const WORKSPACE_TAB_CONTRIBUTIONS = {
     title: '渲染与批处理',
     icon: Clapperboard,
     iconClassName: 'text-orange-500',
-    surfaceId: 'builtin.render-center.surface',
+    surfaceId: SURFACE_CONTRIBUTIONS.renderCenter.id,
   },
   p2p: {
     ...contribution('builtin.lan-collaboration.project-workspace-tab', 'workspaceTabs', BUILTIN_MODULE_IDS.lanCollaboration),
@@ -258,7 +353,7 @@ export const WORKSPACE_TAB_CONTRIBUTIONS = {
     title: '局域网项目功能',
     icon: MessageCircle,
     iconClassName: 'text-emerald-600',
-    surfaceId: 'builtin.lan-collaboration.project-surface',
+    surfaceId: SURFACE_CONTRIBUTIONS.lanProject.id,
   },
   diagnosticSample: {
     ...contribution(
@@ -271,7 +366,7 @@ export const WORKSPACE_TAB_CONTRIBUTIONS = {
     title: '贡献隔离样本',
     icon: FlaskConical,
     iconClassName: 'text-fuchsia-500',
-    surfaceId: 'diagnostic.contribution-sample.surface',
+    surfaceId: SURFACE_CONTRIBUTIONS.diagnosticSample.id,
   },
 } as const satisfies Record<string, WorkspaceTabContributionDefinition>;
 

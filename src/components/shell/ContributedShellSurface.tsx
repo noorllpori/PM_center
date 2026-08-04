@@ -1,42 +1,42 @@
 import {
-  WORKSPACE_TAB_CONTRIBUTION_BY_ID,
-  getWorkspaceTabContributionUnavailableReason,
+  SHELL_TAB_CONTRIBUTION_BY_ID,
+  getShellTabContributionUnavailableReason,
 } from '../../features/contributionRegistry';
+import type { ShellTab } from '../../stores/shellTabStore';
 import { useContributionRegistryStore } from '../../stores/contributionRegistryStore';
-import type { WorkspaceTab } from '../../stores/workspaceTabStore';
-import { ContributionUnavailableState } from './ContributionUnavailableState';
-import { WORKSPACE_SURFACE_RENDERERS } from './contributionImplementationRegistry';
+import { ContributionUnavailableState } from '../workspace/ContributionUnavailableState';
+import { SHELL_SURFACE_RENDERERS } from '../workspace/contributionImplementationRegistry';
 
-export function ContributedWorkspaceSurface({
+export function ContributedShellSurface({
   tab,
   isActive,
 }: {
-  tab: WorkspaceTab;
+  tab: ShellTab;
   isActive: boolean;
 }) {
   const snapshot = useContributionRegistryStore((state) => state.snapshot);
   if (!tab.contributionId) {
     return (
       <ContributionUnavailableState
-        title="工作区贡献缺少标识"
+        title="Shell 贡献缺少标识"
         contributionId={tab.id}
         message="该标签没有 contributionId，无法定位贡献定义。"
       />
     );
   }
 
-  const definition = WORKSPACE_TAB_CONTRIBUTION_BY_ID.get(tab.contributionId);
+  const definition = SHELL_TAB_CONTRIBUTION_BY_ID.get(tab.contributionId);
   if (!definition) {
     return (
       <ContributionUnavailableState
-        title="工作区贡献未注册"
+        title="Shell 贡献未注册"
         contributionId={tab.contributionId}
-        message="前端目录中没有该工作区贡献定义。"
+        message="前端目录中没有该 Shell 贡献定义。"
       />
     );
   }
 
-  const unavailableReason = getWorkspaceTabContributionUnavailableReason(snapshot, definition);
+  const unavailableReason = getShellTabContributionUnavailableReason(snapshot, definition);
   if (unavailableReason) {
     return (
       <ContributionUnavailableState
@@ -47,13 +47,13 @@ export function ContributedWorkspaceSurface({
     );
   }
 
-  const Surface = WORKSPACE_SURFACE_RENDERERS[definition.surfaceId];
+  const Surface = SHELL_SURFACE_RENDERERS[definition.surfaceId];
   if (!Surface) {
     return (
       <ContributionUnavailableState
         title={`${definition.title}缺少渲染器`}
         contributionId={definition.surfaceId}
-        message="模块已经声明 Surface，但前端没有注册对应的工作区渲染器。"
+        message="模块已经声明 Surface，但前端没有注册对应的 Shell 渲染器。"
       />
     );
   }
