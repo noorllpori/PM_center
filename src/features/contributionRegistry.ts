@@ -9,6 +9,7 @@ import type {
 export const BUILTIN_MODULE_IDS = {
   automationRuntime: 'builtin.automation-runtime',
   lanCollaboration: 'builtin.lan-collaboration',
+  localWebConsole: 'builtin.local-web-console',
   projectManager: 'builtin.project-manager',
   projectResources: 'builtin.project-resources',
   renderCenter: 'builtin.render-center',
@@ -62,6 +63,11 @@ export const TOOL_CONTRIBUTIONS = {
   mdtOverview: contribution('builtin.project-resources.mdt-tool', 'tools', BUILTIN_MODULE_IDS.projectResources),
   blenderFileParser: contribution('core.blender-file-parser.tool', 'tools', null),
   smartClipboard: contribution('builtin.smart-clipboard.tool', 'tools', BUILTIN_MODULE_IDS.smartClipboard),
+  localWebConsole: contribution(
+    'builtin.local-web-console.tool',
+    'tools',
+    BUILTIN_MODULE_IDS.localWebConsole,
+  ),
   diagnosticSample: contribution(
     'diagnostic.contribution-sample.tool',
     'tools',

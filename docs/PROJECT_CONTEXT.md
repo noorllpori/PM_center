@@ -100,7 +100,7 @@ React invoke/listen
 | 缓存管理 | `CacheManagerSurface.tsx` | `.pm_center` 报告、快速/深度检查、清理和重建，进度进入右下角任务体验。 |
 | 渲染中心 | `RenderCenterSurface.tsx` | 批次、作业、帧、预设、性能、ETA、Worker、右键与视频打包入口。 |
 | 脚本/任务 | `ScriptRunner.tsx`、`TaskPanel/`、`taskStore.ts` | 用户脚本、日志、取消/重试与任务面板聚合。 |
-| 设置 | `SettingsPanel.tsx`、`settingsStore.ts` | 全局工具路径、Blender 版本、排除规则、启动偏好、插件等。 |
+| 设置 | `SettingsPanel.tsx`、`settingsStore.ts`、`settings/LocalWebConsoleSettingsSection.tsx` | 全局工具路径、Blender 版本、排除规则、启动偏好、插件及可选本机网页控制台。 |
 | 功能中心 | `features/builtinTools.ts`、`features/contributionRegistry.ts`、`features/contributionDataSources.ts`、`features/contributionCatalogDiagnostics.ts`、`stores/contributionRegistryStore.ts`、`components/file-manager/index.tsx` | `Alt+Q` 工具入口；R5 已让工具、Pin、Shell/工作区标签、设置区、右键命令、Widget、DataSource 和节点目录按模块状态动态出现或撤下，并提供目录一致性、实现覆盖、缺失状态和订阅释放诊断。智能剪贴板仍调用独立 Win32 窗口。 |
 | 装配方案运行时 | `platform/profile_runtime.rs`、`api/workspaceProfiles.ts`、`stores/workspaceProfileStore.ts`、`WorkspaceProfileDiagnosticsSection.tsx`、`WorkspaceProfileEditorDialog.tsx`、`features/profileHome.ts`、`components/shell/ProfileHomeSurface.tsx` | R6 已完成迁移、事务切换、会话归属和恢复；R7-1 的方案草稿编辑已验收；R7-2A 已让 `shellLayout.home` 驱动默认主页并提供安全回退；R7-2B 已完成项目管理器与会话热恢复；R7-2C 已把默认项目主页拆成可登记的 Surface、Widget、DataSource 和 Command，等待人工验收。当前运行方案必须复制后编辑，保存不会自动应用。 |
 | 说明组件 | `components/ui/HelpAssistant.tsx` | 复杂或不可逆概念旁的问号说明；支持文字、图片、视频及自动避让定位。 |
@@ -134,6 +134,7 @@ React invoke/listen
 | 工具路径 | `tools.rs` | FFprobe、FFmpeg、Blender 路径校验与系统自动检测。 |
 | 局域网 | `p2p/mod.rs` | 全局联系人数据库、双向在线发现、个人资料/头像同步、大厅与私聊消息；由 `builtin.lan-collaboration` 生命周期统一管理 UDP/TCP、服务器连接和传输取消。 |
 | 智能剪贴板 | `smart_clipboard/` | Windows 剪贴板监听、历史 SQLite/图像载荷、原生窗口绘制、全局快捷键、内容恢复与自动粘贴。 |
+| 本机网页控制台 | `local_web_console.rs`、`local_web_console/page.html` | 默认停用、仅监听 `127.0.0.1` 的浏览器控制面；使用访问令牌和固定 API 白名单提供状态、部分设置、窗口显示/隐藏、重启与退出。 |
 | 模块、权限与贡献运行时 | `platform/`、`automation_runtime.rs`、`features/contributionRegistry.ts`、`features/contributionCatalogDiagnostics.ts` | R2 Module Manager/ResourceRegistry 与 R3 CapabilityGateway 负责状态、资源、授权、短期 token、路径边界和审计；R4 已接入全部既有后台领域，R5 已完成前端入口、标签、Surface、Widget、DataSource、设置区和上下文命令的贡献接入，等待最终人工验收。 |
 
 长耗时后端操作应避免阻塞 Tauri 主线程：使用 Tokio / `spawn_blocking`，向前端发进度事件，提供合理的取消与失败状态。Windows 子进程统一使用 `process_utils::{std_command, tokio_command}`，避免弹出控制台窗口。
@@ -242,6 +243,7 @@ React invoke/listen
 - R6-2 已提供“当前 PM Center 装配方案”和普通“空白装配空间”的切换预览。预览只读，实际切换按目标模块集合执行并在失败时恢复旧集合；快捷栏 Pin 由 Profile 中稳定 Tool 贡献 ID 驱动；
 - R6-3 已完成 Profile 会话归属和中断恢复并验收；R7-0 组件目录和依赖合同、R7-1 草稿编辑器均已验收，`pmc.blendio` 作为首个 bundled 但可卸载的组件登记。实际组件下载、安装、卸载、升级和外部进程监督仍属于 R9/R10；
 - R7-2A 已把主页入口改为 Profile Home Resolver，并完成安全主页人工验收；R7-2B 已新增可停用的 `builtin.project-manager` 管理项目主页和项目 Shell，并完成停用撤下、资源释放与热恢复验收；R7-2C 已让项目主页由 4 个 Widget、4 个 DataSource 和稳定 Command 贡献组合，默认 Profile 迁移幂等补齐这些绑定；`builtin.project-resources` 继续保留数据库/Watcher 等资源层；
+- 可选 `builtin.local-web-console` 默认停用，只允许从本机浏览器访问白名单控制面；不得把它扩展为通用 `invoke`、Shell、文件系统或未经配对的局域网远控入口；
 - 静态启动页由 `shellLayout.home` 决定，复杂启动窗口和条件行为在 R11 通过受控 `app.started` 工作流实现；恢复流程始终优先，目标不可用时回退最小安全主页；
 - 当前功能中心 Pin 只是入口偏好，不能作为模块启停。真正停用必须停止端口、watcher、调度器、原生线程、子进程和数据库资源；
 - 现有 Python 插件作为兼容组件保留，后续扩展到受控 Python Worker、原生独立进程、隔离 DLL 和资料包；

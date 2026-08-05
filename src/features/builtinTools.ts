@@ -8,6 +8,7 @@ import {
   FlaskConical,
   ListTodo,
   MessageCircle,
+  MonitorCog,
   Network,
   NotebookTabs,
   Settings,
@@ -33,6 +34,7 @@ export type BuiltinToolId =
   | 'mdt-overview'
   | 'blender-file-parser'
   | 'smart-clipboard'
+  | 'local-web-console'
   | 'contribution-diagnostics';
 
 export type BuiltinToolCategory = 'project' | 'workflow' | 'system' | 'communication';
@@ -251,6 +253,27 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
       type: 'command',
       command: 'open_smart_clipboard',
       errorTitle: '智能剪贴板打开失败',
+    },
+  },
+  {
+    id: 'local-web-console',
+    contribution: TOOL_CONTRIBUTIONS.localWebConsole,
+    title: '本机网页控制台',
+    description: '在真实浏览器中查看状态、修改部分设置并控制主窗口。',
+    help: [
+      '网页控制台只监听 127.0.0.1，默认关闭，需要在设置中明确启用后才能访问。',
+      '浏览器入口使用持久访问令牌，只开放状态、部分常规设置、显示或隐藏主窗口、重启和退出等白名单操作。',
+      '端口或网页权限修改后需要重启该模块；不会开放文件系统、Shell 或任意 Tauri 命令。',
+    ],
+    category: 'system',
+    icon: MonitorCog,
+    requiresProject: false,
+    pinnable: true,
+    keywords: ['web', 'browser', '网页', '浏览器', '控制台', 'localhost'],
+    openTarget: {
+      type: 'command',
+      command: 'open_local_web_console',
+      errorTitle: '网页控制台打开失败',
     },
   },
   {

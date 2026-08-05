@@ -19,8 +19,8 @@ pub use profile_runtime::{
 };
 
 pub use builtin_modules::{
-    AUTOMATION_RUNTIME_MODULE_ID, PROJECT_RESOURCES_MODULE_ID, RENDER_CENTER_MODULE_ID,
-    SMART_CLIPBOARD_MODULE_ID,
+    AUTOMATION_RUNTIME_MODULE_ID, LOCAL_WEB_CONSOLE_MODULE_ID, PROJECT_RESOURCES_MODULE_ID,
+    RENDER_CENTER_MODULE_ID, SMART_CLIPBOARD_MODULE_ID,
 };
 
 pub use capability_gateway::{
@@ -33,9 +33,10 @@ use builtin_components::builtin_component_manifests;
 use builtin_modules::{
     automation_runtime_component, automation_runtime_module, diagnostic_components,
     diagnostic_modules, lan_collaboration_component, lan_collaboration_module,
-    project_manager_module, project_resources_component, project_resources_module,
-    render_center_component, render_center_module, smart_clipboard_component,
-    smart_clipboard_module, DiagnosticControls, DIAGNOSTIC_BASE_ID,
+    local_web_console_component, local_web_console_module, project_manager_module,
+    project_resources_component, project_resources_module, render_center_component,
+    render_center_module, smart_clipboard_component, smart_clipboard_module, DiagnosticControls,
+    DIAGNOSTIC_BASE_ID,
 };
 use capability_gateway::{run_security_diagnostic, CapabilityGateway};
 use serde::{Deserialize, Serialize};
@@ -67,6 +68,10 @@ impl PlatformRuntime {
         modules.push(smart_clipboard_module(app_data_dir.to_path_buf()));
         modules.push(lan_collaboration_module(
             app_data_dir.to_path_buf(),
+            app_handle.clone(),
+        ));
+        modules.push(local_web_console_module(
+            app_data_dir.to_path_buf(),
             app_handle,
         ));
         modules.push(project_resources_module(project_databases));
@@ -87,6 +92,7 @@ impl PlatformRuntime {
         let mut components = diagnostic_components();
         components.push(smart_clipboard_component());
         components.push(lan_collaboration_component());
+        components.push(local_web_console_component());
         components.push(project_resources_component());
         components.push(automation_runtime_component());
         components.push(render_center_component());
@@ -580,6 +586,62 @@ pub async fn restart_platform_module(
     runtime: State<'_, PlatformRuntime>,
 ) -> Result<ModuleDiagnosticSnapshot, ModuleManagerError> {
     runtime.manager.restart_module(&module_id).await
+}
+
+#[tauri::command]
+pub async fn set_local_web_console_enabled(
+    enabled: bool,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<ModuleDiagnosticSnapshot, String> {
+    let _guard = runtime.profile_switch_lock.lock().await;
+    let previous = runtime
+        .manager
+        .snapshot(LOCAL_WEB_CONSOLE_MODULE_ID)
+        .map_err(|error| error.to_string())?;
+
+    let transition = if enabled {
+        runtime
+            .manager
+            .enable_module(LOCAL_WEB_CONSOLE_MODULE_ID)
+            .await
+    } else {
+        runtime
+            .manager
+            .disable_module(LOCAL_WEB_CONSOLE_MODULE_ID, StopStrategy::Graceful)
+            .await
+    };
+    transition.map_err(|error| error.to_string())?;
+
+    let manifests = formal_module_manifests(&runtime);
+    if let Err(error) = runtime.profiles.set_current_module_enabled(
+        LOCAL_WEB_CONSOLE_MODULE_ID,
+        "^1.0",
+        enabled,
+        &[crate::local_web_console::LOCAL_WEB_CONSOLE_TOOL_ID],
+        &manifests,
+    ) {
+        let rollback = if previous.desired_enabled {
+            runtime
+                .manager
+                .enable_module(LOCAL_WEB_CONSOLE_MODULE_ID)
+                .await
+        } else {
+            runtime
+                .manager
+                .disable_module(LOCAL_WEB_CONSOLE_MODULE_ID, StopStrategy::Force)
+                .await
+        };
+        let rollback_note = rollback
+            .err()
+            .map(|rollback_error| format!("；运行时回滚失败：{}", rollback_error.message))
+            .unwrap_or_default();
+        return Err(format!("{}{}", error.message, rollback_note));
+    }
+
+    runtime
+        .manager
+        .snapshot(LOCAL_WEB_CONSOLE_MODULE_ID)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

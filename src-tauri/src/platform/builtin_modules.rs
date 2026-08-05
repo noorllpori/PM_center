@@ -20,6 +20,7 @@ pub const SMART_CLIPBOARD_MODULE_ID: &str = "builtin.smart-clipboard";
 pub const LAN_COLLABORATION_MODULE_ID: &str = "builtin.lan-collaboration";
 pub const PROJECT_MANAGER_MODULE_ID: &str = "builtin.project-manager";
 pub use crate::automation_runtime::AUTOMATION_RUNTIME_MODULE_ID;
+pub use crate::local_web_console::LOCAL_WEB_CONSOLE_MODULE_ID;
 pub use crate::project_resources::PROJECT_RESOURCES_MODULE_ID;
 pub use crate::render_center::RENDER_CENTER_MODULE_ID;
 pub const AUTOMATION_PYTHON_TOOL_ID: &str = "builtin.automation-runtime.python-tool";
@@ -85,6 +86,7 @@ pub const LAN_MAIN_SURFACE_ID: &str = "builtin.lan-collaboration.main-surface";
 pub const LAN_PROJECT_SURFACE_ID: &str = "builtin.lan-collaboration.project-surface";
 pub const SMART_CLIPBOARD_TOOL_ID: &str = "builtin.smart-clipboard.tool";
 pub const SMART_CLIPBOARD_SURFACE_ID: &str = "builtin.smart-clipboard.native-surface";
+pub use crate::local_web_console::LOCAL_WEB_CONSOLE_TOOL_ID;
 pub const DIAGNOSTIC_BASE_ID: &str = "diagnostic.runtime-base";
 pub const DIAGNOSTIC_WORKER_ID: &str = "diagnostic.runtime-worker";
 pub const DIAGNOSTIC_FAILING_ID: &str = "diagnostic.runtime-failing";
@@ -944,6 +946,134 @@ pub fn smart_clipboard_component() -> CapabilityComponentRegistration {
     }
 }
 
+struct LocalWebConsoleLifecycle {
+    app_data_dir: PathBuf,
+    app_handle: tauri::AppHandle,
+}
+
+impl LocalWebConsoleLifecycle {
+    fn new(app_data_dir: PathBuf, app_handle: tauri::AppHandle) -> Self {
+        Self {
+            app_data_dir,
+            app_handle,
+        }
+    }
+}
+
+impl ModuleLifecycle for LocalWebConsoleLifecycle {
+    fn start<'a>(&'a self, context: ModuleContext) -> LifecycleFuture<'a, ()> {
+        Box::pin(async move {
+            let server = crate::local_web_console::start_server(
+                self.app_handle.clone(),
+                self.app_data_dir.clone(),
+            )
+            .await?;
+            let mut details = BTreeMap::new();
+            details.insert(
+                "address".into(),
+                crate::local_web_console::runtime_address()
+                    .unwrap_or_else(|| "http://127.0.0.1".into()),
+            );
+            details.insert("exposure".into(), "仅本机回环地址".into());
+            details.insert("authentication".into(), "持久访问令牌".into());
+            context.resources.register(
+                context.module_id,
+                ResourceKind::NetworkListener,
+                "本机网页控制台 HTTP 服务",
+                details,
+                Box::new(move || Box::pin(server.shutdown())),
+            );
+            Ok(())
+        })
+    }
+
+    fn stop<'a>(&'a self, _context: ModuleContext) -> LifecycleFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn health<'a>(&'a self, _context: ModuleContext) -> LifecycleFuture<'a, ModuleHealth> {
+        Box::pin(async {
+            match crate::local_web_console::runtime_address() {
+                Some(address) => Ok(ModuleHealth::healthy(format!(
+                    "本机网页控制台正在监听 {address}"
+                ))),
+                None => Ok(ModuleHealth {
+                    level: ModuleHealthLevel::Unhealthy,
+                    message: "本机网页控制台监听服务未运行".into(),
+                    checked_at: Some(chrono::Utc::now().timestamp_millis()),
+                }),
+            }
+        })
+    }
+
+    fn start_timeout(&self) -> Duration {
+        Duration::from_secs(5)
+    }
+
+    fn stop_timeout(&self) -> Duration {
+        Duration::from_secs(8)
+    }
+}
+
+fn local_web_console_capabilities() -> Vec<Capability> {
+    vec![
+        Capability::AppProfileRead,
+        Capability::AppSettingsRead,
+        Capability::AppSettingsWrite,
+        Capability::NetworkServerConnect,
+    ]
+}
+
+pub fn local_web_console_module(
+    app_data_dir: PathBuf,
+    app_handle: tauri::AppHandle,
+) -> RegisteredModule {
+    RegisteredModule {
+        manifest: local_web_console_manifest(),
+        lifecycle: Arc::new(LocalWebConsoleLifecycle::new(app_data_dir, app_handle)),
+        diagnostic: false,
+    }
+}
+
+fn local_web_console_manifest() -> ModuleManifestV1 {
+    let mut extensions = ExtensionFields::new();
+    extensions.insert("defaultEnabled".into(), Value::Bool(false));
+    extensions.insert("exposure".into(), Value::String("localhost-only".into()));
+    ModuleManifestV1 {
+        schema_version: 1,
+        id: LOCAL_WEB_CONSOLE_MODULE_ID.into(),
+        name: "本机网页控制台".into(),
+        description: "通过真实浏览器查看 PM Center 状态、修改部分设置并执行受限程序控制。".into(),
+        version: "1.0.0".into(),
+        api_version: "1".into(),
+        scope: ModuleScope::Global,
+        builtin: true,
+        requires_modules: Vec::new(),
+        optional_modules: Vec::new(),
+        requires_components: Vec::new(),
+        optional_components: Vec::new(),
+        conflicts: Vec::new(),
+        capabilities: local_web_console_capabilities(),
+        background_services: vec!["localhost-http-console".into()],
+        contributes: ModuleContributions {
+            tools: vec![LOCAL_WEB_CONSOLE_TOOL_ID.into()],
+            ..ModuleContributions::default()
+        },
+        data_policy: ModuleDataPolicy::default(),
+        extensions,
+    }
+}
+
+pub fn local_web_console_component() -> CapabilityComponentRegistration {
+    CapabilityComponentRegistration {
+        id: "builtin.local-web-console.service".into(),
+        name: "本机网页控制台服务组件".into(),
+        version: "1.0.0".into(),
+        module_id: LOCAL_WEB_CONSOLE_MODULE_ID.into(),
+        capabilities: local_web_console_capabilities(),
+    }
+}
+
 #[derive(Default)]
 pub struct DiagnosticControls {
     fail_start: AtomicBool,
@@ -1507,6 +1637,7 @@ mod project_resource_tests {
             ("surfaces", LAN_PROJECT_SURFACE_ID),
             ("tools", SMART_CLIPBOARD_TOOL_ID),
             ("surfaces", SMART_CLIPBOARD_SURFACE_ID),
+            ("tools", LOCAL_WEB_CONSOLE_TOOL_ID),
             ("tools", DIAGNOSTIC_CONTRIBUTION_TOOL_ID),
             ("workspaceTabs", DIAGNOSTIC_CONTRIBUTION_WORKSPACE_TAB_ID),
             ("surfaces", DIAGNOSTIC_CONTRIBUTION_SURFACE_ID),
@@ -1554,6 +1685,27 @@ mod project_resource_tests {
             clipboard.manifest.contributes.surfaces,
             vec![SMART_CLIPBOARD_SURFACE_ID.to_string()]
         );
+    }
+
+    #[test]
+    fn local_web_console_is_optional_and_localhost_scoped() {
+        let manifest = local_web_console_manifest();
+        assert_eq!(manifest.id, LOCAL_WEB_CONSOLE_MODULE_ID);
+        assert_eq!(
+            manifest.extensions.get("defaultEnabled"),
+            Some(&Value::Bool(false))
+        );
+        assert_eq!(
+            manifest.extensions.get("exposure"),
+            Some(&Value::String("localhost-only".into()))
+        );
+        assert_eq!(
+            manifest.contributes.tools,
+            vec![LOCAL_WEB_CONSOLE_TOOL_ID.to_string()]
+        );
+        assert!(manifest
+            .capabilities
+            .contains(&Capability::AppSettingsWrite));
     }
 
     #[test]

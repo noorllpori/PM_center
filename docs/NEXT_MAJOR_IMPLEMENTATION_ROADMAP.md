@@ -70,7 +70,7 @@ D0 架构记录
 | R4 | 现有模块生命周期接入 | accepted | R2、R3 | 2026-08-04 已完成渲染中心最终验收 |
 | R5 | 前端 Contribution Registry | accepted | R1、R2 | 2026-08-04 已完成 R5-4 最终验收 |
 | R6 | 装配方案运行时与兼容迁移 | accepted | R4、R5 | 2026-08-05 已完成跨 Profile 会话、贡献过滤、重启恢复和窄窗口最终验收 |
-| R7 | DIY 装配编辑器 MVP | implementing | R6 | R7-0、R7-1、R7-2A 已验收，R7-2B 项目管理器拆分进入人工验收 |
+| R7 | DIY 装配编辑器 MVP | implementing | R6 | R7-0、R7-1、R7-2A/B/C 已验收；可选本机网页控制台已实现，等待桌面与浏览器验收 |
 | R8 | Profile 导入导出 | pending | R6、R7 | 需要跨机器导入验收 |
 | R9 | 统一组件运行时 | pending | R3、R6 | 按运行时类型验收 |
 | R10 | 隔离 DLL 宿主与组件包安全 | pending | R9 | 需要崩溃和签名验收 |
@@ -494,7 +494,9 @@ R7-0 已于 2026-08-05 完成人工验收：共享合同已增加组件角色、
 
 R7-1 已实现 Profile 新建、复制、名称与说明编辑、模块选择、显式组件选择、依赖预检和修订冲突保护，并于 2026-08-05 完成人工验收。当前运行方案不能直接修改，必须复制后编辑；创建、复制、保存都不会自动切换运行方案。详细边界和验收见 `NEXT_MAJOR_R7_PROFILE_DRAFT_EDITOR.md`。
 
-R7-2 负责 Shell、主页与导航装配：让 `shellLayout.home` 真正驱动主页，提供不可撤下的最小安全主页，并把当前项目主页和项目 Shell 入口归属到可停用的 `builtin.project-manager`。R7-2A 已于 2026-08-05 完成 Home Resolver、安全回退和桌面往返验收；R7-2B 已完成项目管理器模块、项目标签所有权、停用撤下、会话暂存与热恢复验收；R7-2C 已拆分项目主页 Surface、Widget、DataSource 和 Command，当前为 `verifying`。详细拆分、启动优先级和验收见 `NEXT_MAJOR_R7_SHELL_HOME_COMPOSITION.md`。
+R7-2 负责 Shell、主页与导航装配：让 `shellLayout.home` 真正驱动主页，提供不可撤下的最小安全主页，并把当前项目主页和项目 Shell 入口归属到可停用的 `builtin.project-manager`。R7-2A 已于 2026-08-05 完成 Home Resolver、安全回退和桌面往返验收；R7-2B 已完成项目管理器模块、项目标签所有权、停用撤下、会话暂存与热恢复验收；R7-2C 已拆分项目主页 Surface、Widget、DataSource 和 Command，并已完成人工验收。详细拆分、启动优先级和验收见 `NEXT_MAJOR_R7_SHELL_HOME_COMPOSITION.md`。
+
+R7 同期增加可选的 `builtin.local-web-console`：通过仅监听 `127.0.0.1` 的受令牌保护 HTTP 服务，在真实浏览器中提供状态、部分设置、主窗口显示/隐藏、重启和退出。该模块默认停用，不开放任意 Tauri 命令，并由 Module Manager/ResourceRegistry 统一清理。实现与验收边界见 `NEXT_MAJOR_R7_LOCAL_WEB_CONSOLE.md`。
 
 ### 目标
 
@@ -506,7 +508,8 @@ R7-2 负责 Shell、主页与导航装配：让 `shellLayout.home` 真正驱动�
 - [已验收] R7-1：方案新建/复制、模块与显式组件选择、依赖校验和修订安全保存；
 - [已验收] R7-2A：Profile Home Resolver、默认项目主页与最小安全主页；
 - [已验收] R7-2B：项目管理器模块、项目 Shell 所有权、会话暂存和热恢复；
-- [验证中] R7-2C：项目主页 Surface、Widget、DataSource 和 Command 贡献；
+- [已验收] R7-2C：项目主页 Surface、Widget、DataSource 和 Command 贡献；
+- [待人工验收] R7 本机网页控制台：localhost 服务、设置同步、窗口控制和应用重启恢复；
 - [待实施] R7-2D-E：主页导航编辑和会话资源收敛；
 - 添加/移除模块；
 - 显示显式组件、模块传递组件以及被依赖原因；

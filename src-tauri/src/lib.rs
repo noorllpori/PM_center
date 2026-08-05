@@ -13,6 +13,7 @@ mod file_details;
 mod fs;
 mod icon_extractor;
 mod link_preview;
+mod local_web_console;
 mod p2p;
 mod platform;
 mod plugin;
@@ -1287,6 +1288,17 @@ async fn shutdown_application(app: tauri::AppHandle) {
     app.exit(0);
 }
 
+async fn restart_application(app: tauri::AppHandle) {
+    if let Some(runtime) = app.try_state::<platform::PlatformRuntime>() {
+        let manager = runtime.manager.clone();
+        for error in manager.shutdown_all().await {
+            eprintln!("[platform] 重启清理警告: {error}");
+        }
+    }
+    render_center::shutdown_all();
+    app.restart();
+}
+
 #[tauri::command]
 async fn exit_app(app: tauri::AppHandle) -> Result<(), String> {
     shutdown_application(app).await;
@@ -1452,6 +1464,7 @@ pub fn run() {
             platform::enable_platform_module,
             platform::disable_platform_module,
             platform::restart_platform_module,
+            platform::set_local_web_console_enabled,
             platform::run_platform_module_health_check,
             platform::configure_platform_module_failure,
             platform::get_platform_module_failure_injections,
@@ -1462,6 +1475,9 @@ pub fn run() {
             platform::revoke_platform_capability_grant,
             platform::run_platform_capability_operation,
             platform::run_platform_capability_diagnostic,
+            local_web_console::get_local_web_console_status,
+            local_web_console::update_local_web_console_config,
+            local_web_console::open_local_web_console,
             smart_clipboard::open_smart_clipboard,
             link_preview::get_link_preview,
             render_center::inspect_render_sources,

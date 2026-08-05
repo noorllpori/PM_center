@@ -67,3 +67,4 @@ semver = "1"
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 tokio-util = { version = "0.7", features = ["io"] }
 tokio-stream = "0.1"
+axum = { version = "0.7", features = ["json"] }

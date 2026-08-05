@@ -668,6 +668,73 @@ impl WorkspaceProfileRuntime {
         })
     }
 
+    pub(crate) fn set_current_module_enabled(
+        &self,
+        module_id: &str,
+        version_requirement: &str,
+        enabled: bool,
+        removed_tool_contributions: &[&str],
+        manifests: &[ModuleManifestV1],
+    ) -> Result<WorkspaceProfileRuntimeSnapshot, WorkspaceProfileRuntimeError> {
+        let _guard = self.operation_lock.lock().map_err(|_| {
+            WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileLockPoisoned,
+                "装配方案运行时锁已损坏",
+                None,
+            )
+        })?;
+        self.ensure_edit_repository_ready_locked()?;
+        let state = self.read_state()?;
+        let path = self.profile_path(&state.current_profile_id);
+        let mut profile = self.read_profile(&path)?;
+        let already_enabled = profile
+            .enabled_modules
+            .iter()
+            .any(|selection| selection.id == module_id);
+
+        if enabled && !already_enabled {
+            profile.enabled_modules.push(ProfileModuleSelection {
+                id: module_id.into(),
+                version_requirement: version_requirement.into(),
+                extensions: ExtensionFields::new(),
+            });
+            profile
+                .enabled_modules
+                .sort_by(|left, right| left.id.cmp(&right.id));
+        } else if !enabled && already_enabled {
+            profile
+                .enabled_modules
+                .retain(|selection| selection.id != module_id);
+        }
+
+        let pinned_tool_count = profile.shell_layout.pinned_tools.len();
+        if !enabled && !removed_tool_contributions.is_empty() {
+            profile.shell_layout.pinned_tools.retain(|contribution_id| {
+                !removed_tool_contributions.contains(&contribution_id.as_str())
+            });
+        }
+        let pinned_tools_changed = profile.shell_layout.pinned_tools.len() != pinned_tool_count;
+
+        if already_enabled == enabled && !pinned_tools_changed {
+            return self.snapshot_locked(manifests);
+        }
+
+        profile.revision = profile.revision.saturating_add(1);
+        self.validate_profile(&profile, manifests)
+            .map_err(|error| {
+                WorkspaceProfileRuntimeError::new(
+                    WorkspaceProfileRuntimeErrorCode::ProfileDocumentInvalid,
+                    format!(
+                        "更新当前装配方案模块失败：{}（{}）",
+                        error.message, error.path
+                    ),
+                    Some(&path),
+                )
+            })?;
+        replace_json(&path, &profile)?;
+        self.snapshot_locked(manifests)
+    }
+
     pub(crate) fn begin_switch(
         &self,
         target_profile_id: &str,
@@ -2690,6 +2757,61 @@ mod tests {
             second.current_profile.revision,
             first.current_profile.revision
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn current_profile_module_toggle_persists_and_removes_owned_pin() {
+        let root = test_root("current-module-toggle");
+        let runtime = WorkspaceProfileRuntime::new(&root);
+        let manifests = vec![manifest("builtin.local-web-console", "1.0.0")];
+        let initial = runtime
+            .initialize_from_current_configuration(
+                &manifests,
+                &BTreeSet::new(),
+                &["builtin.local-web-console.tool".into()],
+            )
+            .unwrap();
+
+        let enabled = runtime
+            .set_current_module_enabled(
+                "builtin.local-web-console",
+                "^1.0",
+                true,
+                &["builtin.local-web-console.tool"],
+                &manifests,
+            )
+            .unwrap();
+        assert!(enabled
+            .current_profile
+            .enabled_modules
+            .iter()
+            .any(|selection| selection.id == "builtin.local-web-console"));
+        assert_eq!(
+            enabled.current_profile.revision,
+            initial.current_profile.revision + 1
+        );
+
+        let disabled = runtime
+            .set_current_module_enabled(
+                "builtin.local-web-console",
+                "^1.0",
+                false,
+                &["builtin.local-web-console.tool"],
+                &manifests,
+            )
+            .unwrap();
+        assert!(disabled.current_profile.enabled_modules.is_empty());
+        assert!(disabled
+            .current_profile
+            .shell_layout
+            .pinned_tools
+            .is_empty());
+        assert_eq!(
+            disabled.current_profile.revision,
+            enabled.current_profile.revision + 1
+        );
+
         fs::remove_dir_all(root).unwrap();
     }
 

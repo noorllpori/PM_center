@@ -6,6 +6,7 @@ import {
 } from '@tauri-apps/plugin-autostart';
 import { load } from '@tauri-apps/plugin-store';
 import { DEFAULT_EXCLUDE_PATTERNS } from '../utils/excludePatterns';
+import type { LocalWebEditableSettings } from '../api/localWebConsole';
 
 export interface RecentProject {
   path: string;
@@ -80,6 +81,7 @@ interface SettingsState {
   removeBlenderInstallation: (path: string) => Promise<void>;
   // 设置全局排除规则
   setGlobalExcludePatterns: (patterns: string[]) => Promise<void>;
+  applyLocalWebSettings: (settings: LocalWebEditableSettings) => Promise<void>;
 }
 
 // Store 文件名
@@ -393,6 +395,30 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       set({ globalExcludePatterns: patterns });
     } catch (error) {
       console.error('Failed to set global exclude patterns:', error);
+    }
+  },
+
+  applyLocalWebSettings: async (settings) => {
+    try {
+      const store = await load(STORE_FILE);
+      await store.set('autoOpenLastProject', settings.autoOpenLastProject);
+      await store.set('confirmProjectTabClose', settings.confirmProjectTabClose);
+      await store.set('confirmFileTabClose', settings.confirmFileTabClose);
+      if (settings.projectsRootDir) {
+        await store.set('projectsRootDir', settings.projectsRootDir);
+      } else {
+        await store.delete('projectsRootDir');
+      }
+      await store.save();
+      set({
+        autoOpenLastProject: settings.autoOpenLastProject,
+        confirmProjectTabClose: settings.confirmProjectTabClose,
+        confirmFileTabClose: settings.confirmFileTabClose,
+        projectsRootDir: settings.projectsRootDir,
+      });
+    } catch (error) {
+      console.error('Failed to synchronize local web settings:', error);
+      throw error;
     }
   },
 

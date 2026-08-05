@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { FileManager } from './components/file-manager';
 import { WindowManager } from './components/WindowManager';
 import { StandaloneDirectoryPage, isStandaloneDirectoryRoute } from './components/file-manager/StandaloneDirectoryPage';
@@ -9,6 +10,11 @@ import { FileOperationPanel } from './components/file-manager/FileOperationPanel
 import { initTaskEventListeners, loadTaskState } from './stores/taskStore';
 import { initRenderEventListeners } from './stores/renderStore';
 import { useLanCollaborationStore } from './stores/lanCollaborationStore';
+import { useSettingsStore } from './stores/settingsStore';
+import {
+  LOCAL_WEB_SETTINGS_CHANGED_EVENT,
+  type LocalWebEditableSettings,
+} from './api/localWebConsole';
 
 function App() {
   const isDirectoryWindow = isStandaloneDirectoryRoute();
@@ -35,6 +41,29 @@ function App() {
     document.body.classList.remove('dark');
     document.documentElement.style.colorScheme = 'light';
     document.body.style.colorScheme = 'light';
+  }, [isStandaloneWindow]);
+
+  useEffect(() => {
+    if (isStandaloneWindow) {
+      return;
+    }
+
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen<LocalWebEditableSettings>(LOCAL_WEB_SETTINGS_CHANGED_EVENT, ({ payload }) => {
+      void useSettingsStore.getState().applyLocalWebSettings(payload);
+    }).then((nextUnlisten) => {
+      if (disposed) {
+        nextUnlisten();
+      } else {
+        unlisten = nextUnlisten;
+      }
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, [isStandaloneWindow]);
 
   let content;

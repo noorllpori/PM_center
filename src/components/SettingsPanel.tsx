@@ -18,6 +18,7 @@ import {
   Download,
   ExternalLink,
   FolderOpen,
+  Globe2,
   ImageIcon,
   Info,
   HelpCircle,
@@ -38,6 +39,7 @@ import { AlertDialog, ConfirmDialog, Dialog } from './Dialog';
 import { ModuleDiagnosticsSection } from './settings/ModuleDiagnosticsSection';
 import { CapabilityDiagnosticsSection } from './settings/CapabilityDiagnosticsSection';
 import { WorkspaceProfileDiagnosticsSection } from './settings/WorkspaceProfileDiagnosticsSection';
+import { LocalWebConsoleSettingsSection } from './settings/LocalWebConsoleSettingsSection';
 import { useOptionalProjectStoreShallow } from '../stores/projectStore';
 import { useContributionRegistryStore } from '../stores/contributionRegistryStore';
 import { BlenderInstallationInfo, ToolPaths, useSettingsStore } from '../stores/settingsStore';
@@ -67,6 +69,7 @@ import type {
 type SettingsScope = 'global' | 'project';
 type SettingsNavigationId =
   | 'general'
+  | 'web-console'
   | 'exclusions'
   | 'automation'
   | 'tools'
@@ -314,6 +317,7 @@ export function SettingsPanel({
   const resolvedDefaultScope = hasProjectScope && defaultScope === 'project' ? 'project' : 'global';
   const globalNavigationItems = [
     { id: 'general' as const, label: '常规', icon: SlidersHorizontal },
+    { id: 'web-console' as const, label: '网页控制台', icon: Globe2 },
     { id: 'exclusions' as const, label: '排除规则', icon: FolderOpen },
     { id: 'automation' as const, label: '脚本与插件', icon: Puzzle },
     { id: 'tools' as const, label: '工具与 Blender', icon: Wrench },
@@ -1872,6 +1876,8 @@ export function SettingsPanel({
           </div>
         </div>
       </section>
+
+      <LocalWebConsoleSettingsSection />
 
       <div id="settings-global-exclusions" className="scroll-mt-4">
         {renderExcludeRulesSection({

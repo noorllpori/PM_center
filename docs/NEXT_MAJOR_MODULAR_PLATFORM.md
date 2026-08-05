@@ -1072,6 +1072,10 @@ logs/components/
 - 评估可选装配方案/组件包目录和按需安装选择；
 - 保持统一更新和数据兼容，不维护长期分叉产品。
 
+### 可选本机浏览器控制面
+
+`builtin.local-web-console` 用于验证“完整桌面 Shell 之外的轻量 Surface”也能由模块生命周期装配。第一版固定监听 `127.0.0.1`，通过令牌和 HTTP API 白名单提供状态、部分设置、窗口显示/隐藏、重启和退出。它不等于完整 Web 版 PM Center，也不能直接开放局域网；详细边界见 `NEXT_MAJOR_R7_LOCAL_WEB_CONSOLE.md`。
+
 ## 20. 测试与验收基线
 
 ### 20.1 模块、Profile 与资源
