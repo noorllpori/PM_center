@@ -376,6 +376,12 @@ pub struct WorkspaceProfileMutationResult {
     pub snapshot: WorkspaceProfileRuntimeSnapshot,
 }
 
+pub(crate) struct PreparedCurrentProfileUpdate {
+    pub profile: WorkspaceProfileV1,
+    pub validation: WorkspaceProfileDraftValidation,
+    pub expected_revision: u64,
+}
+
 pub struct WorkspaceProfileRuntime {
     repository_path: PathBuf,
     state_path: PathBuf,
@@ -688,6 +694,112 @@ impl WorkspaceProfileRuntime {
         Ok(WorkspaceProfileMutationResult {
             profile,
             validation,
+            snapshot,
+        })
+    }
+
+    pub(crate) fn prepare_current_profile_update(
+        &self,
+        request: &SaveWorkspaceProfileRequest,
+        manifests: &[ModuleManifestV1],
+    ) -> Result<PreparedCurrentProfileUpdate, WorkspaceProfileRuntimeError> {
+        let _guard = self.operation_lock.lock().map_err(|_| {
+            WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileLockPoisoned,
+                "装配方案运行时锁已损坏",
+                None,
+            )
+        })?;
+        self.ensure_edit_repository_ready_locked()?;
+        if !is_valid_stable_id(&request.profile.id) {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileDocumentInvalid,
+                format!("装配方案 ID 无效：{}", request.profile.id),
+                None,
+            ));
+        }
+        let state = self.read_state()?;
+        if state.current_profile_id != request.profile.id {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileEditBlocked,
+                "只能通过当前方案保存入口更新正在运行的装配方案",
+                Some(&self.profile_path(&request.profile.id)),
+            ));
+        }
+        let path = self.profile_path(&request.profile.id);
+        let existing = self.read_profile_document_locked(&request.profile.id)?;
+        if existing.revision != request.expected_revision
+            || request.profile.revision != request.expected_revision
+        {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileRevisionConflict,
+                format!(
+                    "当前装配方案已被其他窗口修改：预期修订 {}，当前修订 {}",
+                    request.expected_revision, existing.revision
+                ),
+                Some(&path),
+            ));
+        }
+
+        let mut profile = request.profile.clone();
+        profile.name = validate_profile_text(&profile.name, "装配方案名称", 80)?;
+        profile.description =
+            validate_profile_text_optional(&profile.description, "装配方案说明", 500)?;
+        profile.schema_version = PLATFORM_SCHEMA_VERSION;
+        profile.revision = existing.revision.saturating_add(1);
+        let validation = build_draft_validation(&profile, manifests, &self.component_manifests);
+        if !validation.valid {
+            return Err(draft_validation_error(
+                "当前装配方案草稿未通过依赖预检",
+                &validation,
+                Some(&path),
+            ));
+        }
+
+        Ok(PreparedCurrentProfileUpdate {
+            profile,
+            validation,
+            expected_revision: existing.revision,
+        })
+    }
+
+    pub(crate) fn commit_current_profile_update(
+        &self,
+        prepared: PreparedCurrentProfileUpdate,
+        manifests: &[ModuleManifestV1],
+    ) -> Result<WorkspaceProfileMutationResult, WorkspaceProfileRuntimeError> {
+        let _guard = self.operation_lock.lock().map_err(|_| {
+            WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileLockPoisoned,
+                "装配方案运行时锁已损坏",
+                None,
+            )
+        })?;
+        let state = self.read_state()?;
+        if state.current_profile_id != prepared.profile.id {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileSwitchStale,
+                "保存期间当前装配方案已经切换，未写入草稿",
+                Some(&self.state_path),
+            ));
+        }
+        let path = self.profile_path(&prepared.profile.id);
+        let existing = self.read_profile(&path)?;
+        if existing.revision != prepared.expected_revision {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileRevisionConflict,
+                format!(
+                    "保存期间装配方案已被修改：预期修订 {}，当前修订 {}",
+                    prepared.expected_revision, existing.revision
+                ),
+                Some(&path),
+            ));
+        }
+        replace_json(&path, &prepared.profile)?;
+        let snapshot = self.snapshot_locked(manifests)?;
+        Ok(WorkspaceProfileMutationResult {
+            profile: prepared.profile,
+            validation: prepared.validation,
             snapshot,
         })
     }
@@ -2996,7 +3108,10 @@ fn compatibility_issues(
                     })
                 })
         });
-        if !matches!(surface.kind, SurfaceKind::ShellPage) || !provider_has_shell_entry {
+        let is_home_navigation = profile.shell_layout.home.as_deref() == Some(surface_id.as_str());
+        if !is_home_navigation
+            && (!matches!(surface.kind, SurfaceKind::ShellPage) || !provider_has_shell_entry)
+        {
             issues.push(switch_issue(
                 "NAVIGATION_ENTRY_UNSUPPORTED",
                 WorkspaceProfileSwitchIssueSeverity::Error,
@@ -3449,6 +3564,23 @@ mod tests {
             .issues
             .iter()
             .any(|issue| issue.code == "NAVIGATION_ENTRY_UNSUPPORTED"));
+    }
+
+    #[test]
+    fn draft_validation_accepts_home_surface_in_navigation_without_a_shell_entry() {
+        let mut provider = layout_manifest();
+        provider.contributes.shell_tabs.clear();
+        let mut profile = profile_with_layout(true);
+        profile.shell_layout.home = Some("layout-page".into());
+        profile.surfaces[0].kind = SurfaceKind::Dashboard;
+
+        let validation = build_draft_validation(&profile, &[provider], &[]);
+
+        assert!(
+            validation.valid,
+            "unexpected issues: {:?}",
+            validation.issues
+        );
     }
 
     #[test]
@@ -4368,6 +4500,43 @@ mod tests {
             error.code,
             WorkspaceProfileRuntimeErrorCode::ProfileEditBlocked
         ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn current_profile_update_is_deferred_until_commit() {
+        let root = test_root("current-update-commit");
+        let runtime = WorkspaceProfileRuntime::new(&root);
+        let snapshot = runtime
+            .initialize_from_current_configuration(&[], &BTreeSet::new(), &[])
+            .unwrap();
+        let original = snapshot.current_profile;
+        let original_path = runtime.profile_path(&original.id);
+        let original_bytes = fs::read(&original_path).unwrap();
+        let mut edited = original.clone();
+        edited.name = "Updated Current Profile".into();
+
+        let prepared = runtime
+            .prepare_current_profile_update(
+                &SaveWorkspaceProfileRequest {
+                    profile: edited,
+                    expected_revision: original.revision,
+                },
+                &[],
+            )
+            .unwrap();
+
+        assert_eq!(fs::read(&original_path).unwrap(), original_bytes);
+        let saved = runtime
+            .commit_current_profile_update(prepared, &[])
+            .unwrap();
+        assert_eq!(saved.profile.id, original.id);
+        assert_eq!(saved.profile.name, "Updated Current Profile");
+        assert_eq!(saved.profile.revision, original.revision + 1);
+        assert_eq!(
+            saved.snapshot.current_profile.name,
+            "Updated Current Profile"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -40,6 +40,9 @@ export const createWorkspaceProfile = (request: CreateWorkspaceProfileRequest) =
 export const saveWorkspaceProfile = (request: SaveWorkspaceProfileRequest) =>
   invoke<WorkspaceProfileMutationResult>('save_workspace_profile', { request });
 
+export const applyCurrentWorkspaceProfile = (request: SaveWorkspaceProfileRequest) =>
+  invoke<WorkspaceProfileMutationResult>('apply_current_workspace_profile', { request });
+
 export const exportWorkspaceProfilePackage = (request: ExportWorkspaceProfilePackageRequest) =>
   invoke<ProfilePackageExportResult>('export_workspace_profile_package', { request });
 

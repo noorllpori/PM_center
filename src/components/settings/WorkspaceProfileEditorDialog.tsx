@@ -70,6 +70,10 @@ export function WorkspaceProfileEditorDialog({
   onClose,
 }: WorkspaceProfileEditorDialogProps) {
   const saveProfile = useWorkspaceProfileStore((state) => state.saveProfile);
+  const saveCurrentProfile = useWorkspaceProfileStore((state) => state.saveCurrentProfile);
+  const currentProfileId = useWorkspaceProfileStore(
+    (state) => state.snapshot?.currentProfile.id ?? null,
+  );
   const isMutating = useWorkspaceProfileStore((state) => state.isMutating);
   const [draft, setDraft] = useState<WorkspaceProfileV1 | null>(null);
   const [modules, setModules] = useState<PlatformModuleDiagnostic[]>([]);
@@ -175,6 +179,7 @@ export function WorkspaceProfileEditorDialog({
     [draft, knownComponentIds],
   );
   const dirty = Boolean(draft) && JSON.stringify(draft) !== originalDocumentRef.current;
+  const editingCurrentProfile = Boolean(profileId) && profileId === currentProfileId;
 
   const updateDraft = (updater: (current: WorkspaceProfileV1) => WorkspaceProfileV1) => {
     setDraft((current) => {
@@ -304,7 +309,8 @@ export function WorkspaceProfileEditorDialog({
     setError(null);
     setSaveMessage(null);
     try {
-      const result = await saveProfile({
+      const save = editingCurrentProfile ? saveCurrentProfile : saveProfile;
+      const result = await save({
         profile: draft,
         expectedRevision: draft.revision ?? 1,
       });
@@ -314,7 +320,11 @@ export function WorkspaceProfileEditorDialog({
       originalDocumentRef.current = JSON.stringify(saved);
       undoStackRef.current = [];
       redoStackRef.current = [];
-      setSaveMessage(`已保存修订 r${saved.revision ?? 1}`);
+      setSaveMessage(
+        editingCurrentProfile
+          ? `已保存并应用修订 r${saved.revision ?? 1}`
+          : `已保存修订 r${saved.revision ?? 1}`,
+      );
     } catch (saveError) {
       setError(formatRuntimeError(saveError));
     }
@@ -344,7 +354,7 @@ export function WorkspaceProfileEditorDialog({
             className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-4 py-2 text-sm text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {isMutating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-            保存方案
+            {editingCurrentProfile ? '保存并应用' : '保存方案'}
           </button>
           </>
         }
@@ -371,6 +381,12 @@ export function WorkspaceProfileEditorDialog({
         </div>
       ) : (
         <div className="space-y-4">
+          {editingCurrentProfile ? (
+            <div className="flex items-start gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700 dark:border-blue-900/50 dark:bg-blue-950/30 dark:text-blue-300">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>正在编辑当前装配方案。点击“保存并应用”后，模块、主页、导航和快捷栏会立即按新配置更新。</span>
+            </div>
+          ) : null}
           <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.6fr)]">
             <label className="block">
               <span className="mb-1.5 block text-xs font-medium text-gray-700 dark:text-gray-300">方案名称</span>

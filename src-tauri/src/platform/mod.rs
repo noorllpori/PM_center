@@ -296,6 +296,47 @@ pub async fn save_workspace_profile(
 }
 
 #[tauri::command]
+pub async fn apply_current_workspace_profile(
+    request: SaveWorkspaceProfileRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<WorkspaceProfileMutationResult, WorkspaceProfileRuntimeError> {
+    let _guard = runtime.profile_switch_lock.lock().await;
+    let manifests = formal_module_manifests(&runtime);
+    let prepared = runtime
+        .profiles
+        .prepare_current_profile_update(&request, &manifests)?;
+    let target_module_ids = profile_module_ids(&prepared.profile);
+    let previous_modules = runtime
+        .manager
+        .capture_profile_module_state()
+        .map_err(profile_switch_module_error)?;
+    runtime
+        .manager
+        .apply_profile_module_set(&target_module_ids)
+        .await
+        .map_err(profile_switch_module_error)?;
+
+    match runtime
+        .profiles
+        .commit_current_profile_update(prepared, &manifests)
+    {
+        Ok(result) => Ok(result),
+        Err(mut commit_error) => {
+            if let Err(rollback_error) = runtime
+                .manager
+                .restore_profile_module_state(&previous_modules)
+                .await
+            {
+                commit_error
+                    .details
+                    .push(format!("模块状态回滚失败：{}", rollback_error.message));
+            }
+            Err(commit_error)
+        }
+    }
+}
+
+#[tauri::command]
 pub fn export_workspace_profile_package(
     request: ExportWorkspaceProfilePackageRequest,
     runtime: State<'_, PlatformRuntime>,

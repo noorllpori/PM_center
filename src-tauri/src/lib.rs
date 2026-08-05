@@ -1455,6 +1455,7 @@ pub fn run() {
             platform::validate_workspace_profile_draft,
             platform::create_workspace_profile,
             platform::save_workspace_profile,
+            platform::apply_current_workspace_profile,
             platform::export_workspace_profile_package,
             platform::inspect_workspace_profile_package,
             platform::import_workspace_profile_package,

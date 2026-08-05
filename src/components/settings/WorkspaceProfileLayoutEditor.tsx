@@ -15,7 +15,6 @@ import {
   SURFACE_CONTRIBUTION_BY_ID,
   SURFACE_CONTRIBUTIONS,
   WIDGET_CONTRIBUTION_BY_ID,
-  type ShellTabContributionDefinition,
   type SurfaceContributionDefinition,
   type WidgetContributionDefinition,
 } from '../../features/contributionRegistry';
@@ -108,11 +107,19 @@ export function WorkspaceProfileLayoutEditor({
       .filter((definition) => definition.id !== SURFACE_CONTRIBUTIONS.projectWorkspace.id)
   ), [selectedSurfaceIds]);
 
-  const availableNavigationTabs = useMemo(() => (
-    Object.values(SHELL_TAB_CONTRIBUTIONS)
+  const availableNavigationSurfaces = useMemo(() => {
+    const definitions: SurfaceContributionDefinition[] = Object.values(SHELL_TAB_CONTRIBUTIONS)
       .filter((definition) => definition.instanceMode === 'singleton')
       .filter((definition) => selectedShellTabIds.has(definition.id))
-  ), [selectedShellTabIds]);
+      .flatMap((definition) => {
+        const surface = SURFACE_CONTRIBUTION_BY_ID.get(definition.surfaceId);
+        return surface ? [surface] : [];
+      });
+    if (selectedSurfaceIds.has(SURFACE_CONTRIBUTIONS.projectHome.id)) {
+      definitions.unshift(SURFACE_CONTRIBUTIONS.projectHome);
+    }
+    return definitions;
+  }, [selectedShellTabIds, selectedSurfaceIds]);
 
   const availableTools = useMemo(() => (
     BUILTIN_TOOLS.filter((tool) => tool.pinnable && selectedToolIds.has(tool.contribution.id))
@@ -155,13 +162,8 @@ export function WorkspaceProfileLayoutEditor({
     setDragged(null);
   };
 
-  const toggleNavigation = (
-    definition: ShellTabContributionDefinition,
-    enabled: boolean,
-  ) => {
-    const surfaceDefinition = SURFACE_CONTRIBUTION_BY_ID.get(definition.surfaceId);
-    if (!surfaceDefinition) return;
-    mutate((profile) => setProfileNavigationContribution(profile, surfaceDefinition.id, enabled));
+  const toggleNavigation = (definition: SurfaceContributionDefinition, enabled: boolean) => {
+    mutate((profile) => setProfileNavigationContribution(profile, definition.id, enabled));
   };
 
   const selectHome = (definition: SurfaceContributionDefinition | null) => {
@@ -283,10 +285,9 @@ export function WorkspaceProfileLayoutEditor({
               <div>
                 <p className="mb-2 text-xs font-medium text-gray-600 dark:text-gray-300">可用页面</p>
                 <div className="space-y-1.5">
-                  {availableNavigationTabs.map((definition) => {
-                    const surfaceDefinition = SURFACE_CONTRIBUTION_BY_ID.get(definition.surfaceId);
+                  {availableNavigationSurfaces.map((definition) => {
                     const selected = navigationSurfaces.some(
-                      (surface) => surface.contribution === surfaceDefinition?.id,
+                      (surface) => surface.contribution === definition.id,
                     );
                     return (
                       <label key={definition.id} className="flex min-h-9 cursor-pointer items-center gap-2 rounded-md px-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800">
@@ -300,7 +301,7 @@ export function WorkspaceProfileLayoutEditor({
                       </label>
                     );
                   })}
-                  {availableNavigationTabs.length === 0 ? (
+                  {availableNavigationSurfaces.length === 0 ? (
                     <p className="py-5 text-center text-xs text-gray-400">所选模块没有单例导航页面</p>
                   ) : null}
                 </div>
