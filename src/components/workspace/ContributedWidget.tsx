@@ -9,6 +9,12 @@ import {
 } from '../../features/contributionRegistry';
 import { readContributionDataSource } from '../../features/contributionDataSources';
 import { useContributionRegistryStore } from '../../stores/contributionRegistryStore';
+import {
+  ProjectCatalogWidget,
+  ProjectDirectoryWidget,
+  ProjectQuickActionsWidget,
+  RecentProjectsWidget,
+} from '../project-home/ProjectHomeWidgets';
 
 function WidgetUnavailableState({ message, contributionId }: { message: string; contributionId: string }) {
   return (
@@ -22,9 +28,15 @@ function WidgetUnavailableState({ message, contributionId }: { message: string; 
   );
 }
 
-interface ContributedWidgetRendererProps {
+export interface ContributedWidgetRendererProps {
   definition: WidgetContributionDefinition;
   value: JsonValue | null;
+  executeCommand: (commandId: string, payload?: JsonValue) => Promise<void>;
+}
+
+export interface ContributedWidgetRuntime {
+  dataSourceValues?: Record<string, JsonValue>;
+  executeCommand?: (commandId: string, payload?: JsonValue) => Promise<void> | void;
 }
 
 function objectNumber(value: JsonValue | null, key: string) {
@@ -78,6 +90,10 @@ function DiagnosticRegistrySummaryWidget({
 }
 
 const WIDGET_RENDERERS: Record<string, ComponentType<ContributedWidgetRendererProps>> = {
+  'builtin.project-manager.project-directory-widget': ProjectDirectoryWidget,
+  'builtin.project-manager.quick-actions-widget': ProjectQuickActionsWidget,
+  'builtin.project-manager.recent-projects-widget': RecentProjectsWidget,
+  'builtin.project-manager.project-catalog-widget': ProjectCatalogWidget,
   'diagnostic.contribution-sample.registry-widget': DiagnosticRegistrySummaryWidget,
 };
 
@@ -85,7 +101,15 @@ export function getContributedWidgetRendererIds() {
   return Object.keys(WIDGET_RENDERERS);
 }
 
-export function ContributedWidget({ widgetId }: { widgetId: string }) {
+export function ContributedWidget({
+  widgetId,
+  dataSourceId,
+  runtime,
+}: {
+  widgetId: string;
+  dataSourceId?: string;
+  runtime?: ContributedWidgetRuntime;
+}) {
   const snapshot = useContributionRegistryStore((state) => state.snapshot);
   const definition = WIDGET_CONTRIBUTION_BY_ID.get(widgetId);
   if (!definition) {
@@ -97,19 +121,20 @@ export function ContributedWidget({ widgetId }: { widgetId: string }) {
     return <WidgetUnavailableState message={unavailableReason} contributionId={definition.id} />;
   }
 
-  const dataSource = definition.dataSourceId
-    ? DATA_SOURCE_CONTRIBUTION_BY_ID.get(definition.dataSourceId)
+  const resolvedDataSourceId = dataSourceId || definition.dataSourceId;
+  const dataSource = resolvedDataSourceId
+    ? DATA_SOURCE_CONTRIBUTION_BY_ID.get(resolvedDataSourceId)
     : undefined;
-  if (definition.dataSourceId && !dataSource) {
+  if (resolvedDataSourceId && !dataSource) {
     return (
       <WidgetUnavailableState
         message="Widget 引用的 DataSource 未注册"
-        contributionId={definition.dataSourceId}
+        contributionId={resolvedDataSourceId}
       />
     );
   }
   const result = dataSource
-    ? readContributionDataSource(snapshot, dataSource)
+    ? readContributionDataSource(snapshot, dataSource, runtime?.dataSourceValues)
     : { value: null, error: null };
   const Renderer = WIDGET_RENDERERS[definition.id];
 
@@ -122,5 +147,16 @@ export function ContributedWidget({ widgetId }: { widgetId: string }) {
     );
   }
 
-  return <Renderer definition={definition} value={result.value} />;
+  return (
+    <Renderer
+      definition={definition}
+      value={result.value}
+      executeCommand={async (commandId, payload) => {
+        if (!runtime?.executeCommand) {
+          throw new Error(`Widget 未绑定命令运行时：${commandId}`);
+        }
+        await runtime.executeCommand(commandId, payload);
+      }}
+    />
+  );
 }

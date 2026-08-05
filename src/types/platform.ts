@@ -86,6 +86,7 @@ export interface ModuleContributions {
   surfaces?: string[];
   widgets?: string[];
   dataSources?: string[];
+  commands?: string[];
   settingsSections?: string[];
   contextCommands?: string[];
   workflowNodes?: string[];

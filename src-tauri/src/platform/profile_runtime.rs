@@ -1,8 +1,9 @@
 use chrono::Utc;
 use pmc_platform::{
-    parse_workspace_profile, validate_profile_with_catalogs, ComponentDistribution,
-    ComponentManifestV1, ComponentRole, ComponentRuntime, ComponentUiMode, ContractResult,
-    ExtensionFields, ModuleManifestV1, ProfileModuleSelection, ProfileShellLayout, ProfileSurface,
+    parse_workspace_profile, validate_profile_with_catalogs, CommandPlacement,
+    ComponentDistribution, ComponentManifestV1, ComponentRole, ComponentRuntime, ComponentUiMode,
+    ContractResult, DataSourceScope, ExtensionFields, ModuleManifestV1, ProfileCommandBinding,
+    ProfileDataSource, ProfileModuleSelection, ProfileShellLayout, ProfileSurface, ProfileWidget,
     SurfaceKind, SurfaceLayoutKind, WorkspaceProfileV1, PLATFORM_SCHEMA_VERSION,
 };
 use semver::{Version, VersionReq};
@@ -24,7 +25,20 @@ const MIGRATION_SOURCE: &str = "current-pm-center";
 const PROJECT_MANAGER_MODULE_ID: &str = "builtin.project-manager";
 const PROJECT_HOME_PROFILE_SURFACE_ID: &str = "pm-center-project-home";
 const PROJECT_HOME_CONTRIBUTION_ID: &str = "builtin.project-manager.home-surface";
-const SHELL_HOME_MIGRATION_VERSION: u16 = 2;
+const PROJECT_DIRECTORY_WIDGET_ID: &str = "builtin.project-manager.project-directory-widget";
+const PROJECT_QUICK_ACTIONS_WIDGET_ID: &str = "builtin.project-manager.quick-actions-widget";
+const RECENT_PROJECTS_WIDGET_ID: &str = "builtin.project-manager.recent-projects-widget";
+const PROJECT_CATALOG_WIDGET_ID: &str = "builtin.project-manager.project-catalog-widget";
+const PROJECT_DIRECTORY_DATA_SOURCE_ID: &str =
+    "builtin.project-manager.project-directory-data-source";
+const PROJECT_QUICK_ACTIONS_DATA_SOURCE_ID: &str =
+    "builtin.project-manager.quick-actions-data-source";
+const RECENT_PROJECTS_DATA_SOURCE_ID: &str = "builtin.project-manager.recent-projects-data-source";
+const PROJECT_CATALOG_DATA_SOURCE_ID: &str = "builtin.project-manager.project-catalog-data-source";
+const CREATE_PROJECT_COMMAND_ID: &str = "builtin.project-manager.create-project-command";
+const IMPORT_PROJECT_COMMAND_ID: &str = "builtin.project-manager.import-project-command";
+const OPEN_PROJECT_COMMAND_ID: &str = "builtin.project-manager.open-project-command";
+const SHELL_HOME_MIGRATION_VERSION: u16 = 3;
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -1290,6 +1304,7 @@ impl WorkspaceProfileRuntime {
         let already_current = profile.shell_layout.home.as_deref()
             == Some(PROJECT_HOME_PROFILE_SURFACE_ID)
             && has_project_home
+            && has_project_home_composition(&profile)
             && (!should_enable_project_manager || has_project_manager);
         if already_current {
             return Ok(());
@@ -1305,6 +1320,7 @@ impl WorkspaceProfileRuntime {
             }
             profile.surfaces.push(project_home_surface());
         }
+        apply_project_home_composition(&mut profile);
         profile.shell_layout.home = Some(PROJECT_HOME_PROFILE_SURFACE_ID.into());
 
         if should_enable_project_manager && !has_project_manager {
@@ -1698,8 +1714,8 @@ fn build_migrated_profile(
             ..ProfileShellLayout::default()
         },
         surfaces: vec![project_home_surface()],
-        data_sources: Vec::new(),
-        command_bindings: Vec::new(),
+        data_sources: project_home_data_sources(),
+        command_bindings: project_home_command_bindings(),
         workflow_bindings: Vec::new(),
         variables: BTreeMap::new(),
         extensions,
@@ -1713,10 +1729,190 @@ fn project_home_surface() -> ProfileSurface {
         kind: SurfaceKind::Dashboard,
         layout: SurfaceLayoutKind::ContributionDefined,
         contribution: Some(PROJECT_HOME_CONTRIBUTION_ID.into()),
-        widgets: Vec::new(),
+        widgets: vec![
+            project_home_widget(
+                "project-directory",
+                PROJECT_DIRECTORY_WIDGET_ID,
+                "project-directory-state",
+                "sidebar",
+                0,
+            ),
+            project_home_widget(
+                "quick-actions",
+                PROJECT_QUICK_ACTIONS_WIDGET_ID,
+                "project-quick-actions-state",
+                "sidebar",
+                1,
+            ),
+            project_home_widget(
+                "recent-projects",
+                RECENT_PROJECTS_WIDGET_ID,
+                "recent-projects-state",
+                "content",
+                0,
+            ),
+            project_home_widget(
+                "project-catalog",
+                PROJECT_CATALOG_WIDGET_ID,
+                "project-catalog-state",
+                "content",
+                1,
+            ),
+        ],
         settings: BTreeMap::new(),
         extensions: ExtensionFields::new(),
     }
+}
+
+fn project_home_widget(
+    id: &str,
+    widget: &str,
+    data_source: &str,
+    region: &str,
+    order: i32,
+) -> ProfileWidget {
+    ProfileWidget {
+        id: id.into(),
+        widget: widget.into(),
+        data_source: Some(data_source.into()),
+        region: Some(region.into()),
+        order,
+        grid: None,
+        settings: BTreeMap::new(),
+        visible_when: None,
+        extensions: ExtensionFields::new(),
+    }
+}
+
+fn project_home_data_sources() -> Vec<ProfileDataSource> {
+    vec![
+        project_home_data_source(
+            "project-directory-state",
+            PROJECT_DIRECTORY_DATA_SOURCE_ID,
+            DataSourceScope::Global,
+        ),
+        project_home_data_source(
+            "project-quick-actions-state",
+            PROJECT_QUICK_ACTIONS_DATA_SOURCE_ID,
+            DataSourceScope::Surface,
+        ),
+        project_home_data_source(
+            "recent-projects-state",
+            RECENT_PROJECTS_DATA_SOURCE_ID,
+            DataSourceScope::Global,
+        ),
+        project_home_data_source(
+            "project-catalog-state",
+            PROJECT_CATALOG_DATA_SOURCE_ID,
+            DataSourceScope::Surface,
+        ),
+    ]
+}
+
+fn project_home_data_source(id: &str, source: &str, scope: DataSourceScope) -> ProfileDataSource {
+    ProfileDataSource {
+        id: id.into(),
+        source: source.into(),
+        scope,
+        settings: BTreeMap::new(),
+        extensions: ExtensionFields::new(),
+    }
+}
+
+fn project_home_command_bindings() -> Vec<ProfileCommandBinding> {
+    vec![
+        project_home_command_binding("create-project", CREATE_PROJECT_COMMAND_ID, 0),
+        project_home_command_binding("import-project", IMPORT_PROJECT_COMMAND_ID, 1),
+        project_home_command_binding("open-project", OPEN_PROJECT_COMMAND_ID, 2),
+    ]
+}
+
+fn project_home_command_binding(id: &str, command: &str, order: i32) -> ProfileCommandBinding {
+    ProfileCommandBinding {
+        id: id.into(),
+        command: command.into(),
+        placement: CommandPlacement::SurfaceAction,
+        surface: Some(PROJECT_HOME_PROFILE_SURFACE_ID.into()),
+        target: None,
+        shortcut: None,
+        order,
+        settings: BTreeMap::new(),
+        extensions: ExtensionFields::new(),
+    }
+}
+
+fn has_project_home_composition(profile: &WorkspaceProfileV1) -> bool {
+    let required_widgets = [
+        PROJECT_DIRECTORY_WIDGET_ID,
+        PROJECT_QUICK_ACTIONS_WIDGET_ID,
+        RECENT_PROJECTS_WIDGET_ID,
+        PROJECT_CATALOG_WIDGET_ID,
+    ];
+    let required_sources = [
+        PROJECT_DIRECTORY_DATA_SOURCE_ID,
+        PROJECT_QUICK_ACTIONS_DATA_SOURCE_ID,
+        RECENT_PROJECTS_DATA_SOURCE_ID,
+        PROJECT_CATALOG_DATA_SOURCE_ID,
+    ];
+    let required_commands = [
+        CREATE_PROJECT_COMMAND_ID,
+        IMPORT_PROJECT_COMMAND_ID,
+        OPEN_PROJECT_COMMAND_ID,
+    ];
+    profile
+        .surfaces
+        .iter()
+        .find(|surface| surface.id == PROJECT_HOME_PROFILE_SURFACE_ID)
+        .is_some_and(|surface| {
+            required_widgets.iter().all(|required| {
+                surface
+                    .widgets
+                    .iter()
+                    .any(|widget| widget.widget == *required)
+            })
+        })
+        && required_sources.iter().all(|required| {
+            profile
+                .data_sources
+                .iter()
+                .any(|source| source.source == *required)
+        })
+        && required_commands.iter().all(|required| {
+            profile
+                .command_bindings
+                .iter()
+                .any(|binding| binding.command == *required)
+        })
+}
+
+fn apply_project_home_composition(profile: &mut WorkspaceProfileV1) {
+    if let Some(surface) = profile
+        .surfaces
+        .iter_mut()
+        .find(|surface| surface.id == PROJECT_HOME_PROFILE_SURFACE_ID)
+    {
+        surface.widgets = project_home_surface().widgets;
+    }
+
+    let data_source_ids = project_home_data_sources()
+        .into_iter()
+        .map(|source| source.id)
+        .collect::<BTreeSet<_>>();
+    profile
+        .data_sources
+        .retain(|source| !data_source_ids.contains(&source.id));
+    profile.data_sources.extend(project_home_data_sources());
+
+    let command_binding_ids = project_home_command_bindings()
+        .into_iter()
+        .map(|binding| binding.id)
+        .collect::<BTreeSet<_>>();
+    profile
+        .command_bindings
+        .retain(|binding| !command_binding_ids.contains(&binding.id));
+    profile
+        .command_bindings
+        .extend(project_home_command_bindings());
 }
 
 fn build_blank_profile() -> WorkspaceProfileV1 {
@@ -2505,6 +2701,8 @@ mod tests {
         let mut legacy = build_migrated_profile(&[], &BTreeSet::new(), &[]);
         legacy.shell_layout.home = None;
         legacy.surfaces.clear();
+        legacy.data_sources.clear();
+        legacy.command_bindings.clear();
         legacy.revision = 7;
         fs::write(
             profiles.join(format!("{MIGRATED_PROFILE_ID}.json")),
@@ -2526,6 +2724,9 @@ mod tests {
             first.current_profile.surfaces[0].contribution.as_deref(),
             Some(PROJECT_HOME_CONTRIBUTION_ID)
         );
+        assert_eq!(first.current_profile.surfaces[0].widgets.len(), 4);
+        assert_eq!(first.current_profile.data_sources.len(), 4);
+        assert_eq!(first.current_profile.command_bindings.len(), 3);
 
         let second = runtime
             .initialize_from_current_configuration(&[], &BTreeSet::new(), &[])

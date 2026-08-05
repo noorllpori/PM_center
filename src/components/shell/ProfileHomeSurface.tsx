@@ -38,7 +38,11 @@ export function ProfileHomeSurface({
   const Surface = SHELL_SURFACE_RENDERERS[resolution.contribution.id];
   return (
     <ShellHomeHostProvider value={{ onOpenProject, settingsLoaded }}>
-      <Surface isActive />
+      <Surface
+        isActive
+        profile={resolution.profile}
+        profileSurface={resolution.surface}
+      />
     </ShellHomeHostProvider>
   );
 }

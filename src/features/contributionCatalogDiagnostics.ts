@@ -1,5 +1,6 @@
 import { BUILTIN_TOOLS } from './builtinTools';
 import {
+  COMMAND_CONTRIBUTIONS,
   CONTEXT_COMMAND_CONTRIBUTIONS,
   CONTRIBUTION_KINDS,
   DATA_SOURCE_CONTRIBUTIONS,
@@ -30,6 +31,7 @@ export interface ContributionImplementationInventory {
   shellSurfaceRendererIds: readonly string[];
   widgetRendererIds: readonly string[];
   dataSourceReaderIds: readonly string[];
+  commandHandlerIds: readonly string[];
 }
 
 export interface ContributionCatalogReport {
@@ -52,6 +54,7 @@ const CATALOGS: Record<ContributionKind, readonly ContributionDefinition[]> = {
   surfaces: Object.values(SURFACE_CONTRIBUTIONS),
   widgets: Object.values(WIDGET_CONTRIBUTIONS),
   dataSources: Object.values(DATA_SOURCE_CONTRIBUTIONS),
+  commands: Object.values(COMMAND_CONTRIBUTIONS),
   settingsSections: Object.values(SETTINGS_SECTION_CONTRIBUTIONS),
   contextCommands: Object.values(CONTEXT_COMMAND_CONTRIBUTIONS),
   workflowNodes: Object.values(WORKFLOW_NODE_CONTRIBUTIONS),
@@ -151,6 +154,7 @@ export function inspectContributionCatalog(
   const shellRendererIds = new Set(inventory.shellSurfaceRendererIds);
   const widgetRendererIds = new Set(inventory.widgetRendererIds);
   const dataSourceReaderIds = new Set(inventory.dataSourceReaderIds);
+  const commandHandlerIds = new Set(inventory.commandHandlerIds);
 
   snapshot.conflicts.forEach((conflict) => {
     pushIssue(
@@ -220,6 +224,12 @@ export function inspectContributionCatalog(
     }
   });
 
+  Object.values(COMMAND_CONTRIBUTIONS).forEach((command) => {
+    if (!commandHandlerIds.has(command.id)) {
+      pushIssue(issues, 'COMMAND_HANDLER_MISSING', command.id, 'Command 缺少宿主处理器');
+    }
+  });
+
   Object.values(WORKFLOW_NODE_CONTRIBUTIONS).forEach((node) => {
     const ports = new Set<string>();
     [...node.inputs.map((port) => `input:${port.name}`), ...node.outputs.map((port) => `output:${port.name}`)]
@@ -265,6 +275,11 @@ export function inspectContributionCatalog(
       pushIssue(issues, 'UNKNOWN_DATA_SOURCE_READER', id, '读取器没有对应的 DataSource 定义', 'warning');
     }
   });
+  inventory.commandHandlerIds.forEach((id) => {
+    if (!Object.values(COMMAND_CONTRIBUTIONS).some((command) => command.id === id)) {
+      pushIssue(issues, 'UNKNOWN_COMMAND_HANDLER', id, '处理器没有对应的 Command 定义', 'warning');
+    }
+  });
 
   const catalogDefinitionCount = CONTRIBUTION_KINDS.reduce(
     (total, kind) => total + CATALOGS[kind].length,
@@ -290,7 +305,8 @@ export function inspectContributionCatalog(
       inventory.workspaceSurfaceRendererIds.length
       + inventory.shellSurfaceRendererIds.length
       + inventory.widgetRendererIds.length
-      + inventory.dataSourceReaderIds.length,
+      + inventory.dataSourceReaderIds.length
+      + inventory.commandHandlerIds.length,
     issues,
     errorCount,
     warningCount,

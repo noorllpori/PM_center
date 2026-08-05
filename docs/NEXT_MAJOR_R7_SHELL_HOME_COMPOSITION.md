@@ -1,6 +1,6 @@
 # R7-2 最小 Shell、主页与启动装配
 
-> 状态：`verifying`（R7-2B；R7-2A accepted）
+> 状态：`verifying`（R7-2C；R7-2A/B accepted）
 >
 > 日期：2026-08-05
 >
@@ -84,6 +84,19 @@ Profile 的 `shellLayout.home` 指向主页 Surface。默认迁移 Profile 继�
 - 默认迁移 Profile 在自身已选择项目资源时幂等补入项目管理器，不依赖当前正在运行的 Profile；因此从空白方案升级后仍可正常切回默认方案。
 - `builtin.project-resources` 继续拥有数据库、TreeCache、Watcher、缓存管理、MDT 和集合命令；渲染中心仍只依赖资源层，不依赖项目管理器。
 
+2026-08-05 已完成项目管理器停用、项目会话暂存、资源释放、重新启用热恢复和重启恢复验收；项目根目录、最近记录、已打开项目和文件工作区均恢复正常。R7-2B 转为 `accepted`。
+
+### R7-2C 实现记录
+
+- 模块清单和前端 Contribution Registry 新增通用 `commands` 贡献种类，与 Profile 已有 `commandBindings` 对齐；旧清单缺失该字段时按空列表兼容。
+- `builtin.project-manager` 新增 4 个 Widget、4 个 DataSource 和 9 个稳定命令贡献，覆盖项目目录、快速操作、最近项目、项目目录扫描及其交互。
+- 项目主页运行时集中管理扫描、创建、导入、打开、忽略、最近记录和弹窗状态；Widget 只消费 DataSource 并通过命令贡献发起操作。
+- `ProjectHomeSurface` 按 Profile Surface 的 Widget、DataSource 和区域绑定组合页面；旧 Profile 未声明 Widget 时仍使用当前完整主页作为兼容默认。
+- 默认迁移 Profile 幂等补齐主页 Widget、DataSource 和创建/导入/打开命令绑定，迁移版本提升到 3，重复启动不会继续增加修订。
+- 通用 `ContributedWidget` 支持 Surface 提供运行时 DataSource 值和命令执行器；贡献诊断同步检查 Command 处理器、Widget 渲染器和 DataSource 读取器覆盖。
+- `WelcomeScreen` 保留为兼容外壳，实际页面已拆到项目主页 Surface 与独立 Widget 实现中。
+- 本轮保持现有默认视觉、项目扫描和弹窗行为；主页选择、拖动排序、响应式网格编辑和属性面板仍属于 R7-2D。
+
 ## 7. 验收
 
 ### R7-2A 验收结果
@@ -95,7 +108,7 @@ Profile 的 `shellLayout.home` 指向主页 Surface。默认迁移 Profile 继�
 
 以上项目已于 2026-08-05 验收通过。
 
-### R7-2B 当前验收
+### R7-2B 验收结果
 
 - 设置的模块诊断中显示“项目管理器”运行中，并明确依赖“项目资源”。
 - 默认方案的主页、最近项目、打开项目、项目标签和文件工作区行为与升级前一致。
@@ -106,6 +119,20 @@ Profile 的 `shellLayout.home` 指向主页 Surface。默认迁移 Profile 继�
 - 从空白方案切回“当前 PM Center 装配方案”后，项目管理器与项目主页正常恢复，不出现缺失模块或无效 Profile。
 
 通过以上项目后，R7-2B 标记为 `accepted` 并进入 R7-2C。
+
+以上项目已于 2026-08-05 验收通过。
+
+### R7-2C 当前验收
+
+- 默认方案主页外观与改造前一致，项目目录、快速操作、最近打开和项目列表均正常。
+- 更换或清除项目根目录后，目录 Widget 和项目列表立即同步；重新选择目录后扫描恢复。
+- 创建、手动导入、打开、忽略、恢复忽略和移除最近项目均只在点击后执行，取消确认不会提前修改数据。
+- 设置的贡献诊断中，项目管理器新增的 Widget、DataSource 和 Command 均有实现，目录报告为 0 错误、0 警告。
+- 重启后默认 Profile 只迁移一次，主页不重复增加 Widget、DataSource 或命令绑定。
+- 停用项目管理器后整个主页组合一起撤下并回退安全主页；重新启用后完整组合恢复。
+- 普通宽度、窄窗口、浅色和深色主题下无横向遮挡或文字重叠。
+
+通过以上项目后，R7-2C 标记为 `accepted` 并进入 R7-2D。
 
 - 默认 Profile 的主页和当前版本视觉、项目列表及操作一致。
 - 空白 Profile 不显示项目内容，但工具中心、全局设置和 Profile 管理可用。

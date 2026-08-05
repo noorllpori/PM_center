@@ -24,6 +24,7 @@ export const CONTRIBUTION_KINDS = [
   'surfaces',
   'widgets',
   'dataSources',
+  'commands',
   'settingsSections',
   'contextCommands',
   'workflowNodes',
@@ -192,6 +193,50 @@ export interface DataSourceContributionDefinition extends ContributionDefinition
 }
 
 export const DATA_SOURCE_CONTRIBUTIONS = {
+  projectDirectory: {
+    ...contribution(
+      'builtin.project-manager.project-directory-data-source',
+      'dataSources',
+      BUILTIN_MODULE_IDS.projectManager,
+    ),
+    title: '项目目录状态',
+    description: '读取项目根目录和被忽略项目数量。',
+    scope: 'global',
+    valueType: 'object',
+  },
+  projectQuickActions: {
+    ...contribution(
+      'builtin.project-manager.quick-actions-data-source',
+      'dataSources',
+      BUILTIN_MODULE_IDS.projectManager,
+    ),
+    title: '项目快捷操作状态',
+    description: '读取项目创建、导入和忽略列表入口所需状态。',
+    scope: 'surface',
+    valueType: 'object',
+  },
+  recentProjects: {
+    ...contribution(
+      'builtin.project-manager.recent-projects-data-source',
+      'dataSources',
+      BUILTIN_MODULE_IDS.projectManager,
+    ),
+    title: '最近项目',
+    description: '读取软件级最近打开项目记录。',
+    scope: 'global',
+    valueType: 'object',
+  },
+  projectCatalog: {
+    ...contribution(
+      'builtin.project-manager.project-catalog-data-source',
+      'dataSources',
+      BUILTIN_MODULE_IDS.projectManager,
+    ),
+    title: '项目目录扫描结果',
+    description: '读取项目根目录扫描状态和项目条目。',
+    scope: 'surface',
+    valueType: 'object',
+  },
   diagnosticRegistrySummary: {
     ...contribution(
       'diagnostic.contribution-sample.registry-data-source',
@@ -218,6 +263,54 @@ export interface WidgetContributionDefinition extends ContributionDefinition {
 }
 
 export const WIDGET_CONTRIBUTIONS = {
+  projectDirectory: {
+    ...contribution(
+      'builtin.project-manager.project-directory-widget',
+      'widgets',
+      BUILTIN_MODULE_IDS.projectManager,
+    ),
+    title: '项目目录',
+    description: '选择或清除用于扫描多个项目的根目录。',
+    dataSourceId: DATA_SOURCE_CONTRIBUTIONS.projectDirectory.id,
+    minColumns: 4,
+    minRows: 2,
+  },
+  projectQuickActions: {
+    ...contribution(
+      'builtin.project-manager.quick-actions-widget',
+      'widgets',
+      BUILTIN_MODULE_IDS.projectManager,
+    ),
+    title: '快速操作',
+    description: '创建、导入项目并管理忽略列表。',
+    dataSourceId: DATA_SOURCE_CONTRIBUTIONS.projectQuickActions.id,
+    minColumns: 4,
+    minRows: 2,
+  },
+  recentProjects: {
+    ...contribution(
+      'builtin.project-manager.recent-projects-widget',
+      'widgets',
+      BUILTIN_MODULE_IDS.projectManager,
+    ),
+    title: '最近打开',
+    description: '显示最近打开的项目。',
+    dataSourceId: DATA_SOURCE_CONTRIBUTIONS.recentProjects.id,
+    minColumns: 8,
+    minRows: 4,
+  },
+  projectCatalog: {
+    ...contribution(
+      'builtin.project-manager.project-catalog-widget',
+      'widgets',
+      BUILTIN_MODULE_IDS.projectManager,
+    ),
+    title: '项目列表',
+    description: '显示项目根目录中扫描到的项目。',
+    dataSourceId: DATA_SOURCE_CONTRIBUTIONS.projectCatalog.id,
+    minColumns: 8,
+    minRows: 4,
+  },
   diagnosticRegistrySummary: {
     ...contribution(
       'diagnostic.contribution-sample.registry-widget',
@@ -234,6 +327,66 @@ export const WIDGET_CONTRIBUTIONS = {
 
 export const WIDGET_CONTRIBUTION_BY_ID = new Map<string, WidgetContributionDefinition>(
   Object.values(WIDGET_CONTRIBUTIONS).map((definition) => [definition.id, definition] as const),
+);
+
+export type CommandContributionScope = 'global' | 'project' | 'surface';
+
+export interface CommandContributionDefinition extends ContributionDefinition {
+  title: string;
+  description: string;
+  scope: CommandContributionScope;
+}
+
+export const COMMAND_CONTRIBUTIONS = {
+  selectProjectRoot: projectManagerCommand(
+    'select-project-root',
+    '选择项目根目录',
+    '选择用于扫描多个项目的根目录。',
+  ),
+  clearProjectRoot: projectManagerCommand(
+    'clear-project-root',
+    '清除项目根目录',
+    '停止从当前根目录展示项目列表。',
+  ),
+  createProject: projectManagerCommand(
+    'create-project',
+    '创建项目',
+    '在当前项目根目录中创建并打开项目。',
+  ),
+  importProject: projectManagerCommand(
+    'import-project',
+    '导入项目',
+    '从系统目录选择器导入并打开项目。',
+  ),
+  openProject: projectManagerCommand(
+    'open-project',
+    '打开项目',
+    '通过项目路径执行统一打开预检。',
+  ),
+  ignoreProject: projectManagerCommand(
+    'ignore-project',
+    '忽略项目',
+    '从根目录项目列表隐藏指定项目。',
+  ),
+  restoreIgnoredProject: projectManagerCommand(
+    'restore-ignored-project',
+    '恢复忽略项目',
+    '让指定项目重新出现在根目录项目列表中。',
+  ),
+  showIgnoredProjects: projectManagerCommand(
+    'show-ignored-projects',
+    '查看忽略项目',
+    '打开被忽略项目列表。',
+  ),
+  removeRecentProject: projectManagerCommand(
+    'remove-recent-project',
+    '移除最近项目',
+    '从最近项目记录中移除指定项目。',
+  ),
+} as const satisfies Record<string, CommandContributionDefinition>;
+
+export const COMMAND_CONTRIBUTION_BY_ID = new Map<string, CommandContributionDefinition>(
+  Object.values(COMMAND_CONTRIBUTIONS).map((definition) => [definition.id, definition] as const),
 );
 
 export interface WorkflowNodeContributionDefinition extends ContributionDefinition {
@@ -419,6 +572,23 @@ function contribution(
   moduleId: string | null,
 ): ContributionDefinition {
   return { id, kind, moduleId };
+}
+
+function projectManagerCommand(
+  suffix: string,
+  title: string,
+  description: string,
+): CommandContributionDefinition {
+  return {
+    ...contribution(
+      `builtin.project-manager.${suffix}-command`,
+      'commands',
+      BUILTIN_MODULE_IDS.projectManager,
+    ),
+    title,
+    description,
+    scope: 'surface',
+  };
 }
 
 function createClaims(): Record<ContributionKind, Record<string, string>> {

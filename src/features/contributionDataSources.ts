@@ -8,9 +8,47 @@ import {
 
 type ContributionDataSourceReader = (
   snapshot: ContributionRegistrySnapshot,
+  runtimeValues: ContributionDataSourceRuntimeValues,
 ) => JsonValue;
 
+export type ContributionDataSourceRuntimeValues = Record<string, JsonValue>;
+
+function runtimeValue(
+  runtimeValues: ContributionDataSourceRuntimeValues,
+  id: string,
+  fallback: JsonValue,
+) {
+  return Object.prototype.hasOwnProperty.call(runtimeValues, id)
+    ? runtimeValues[id]
+    : fallback;
+}
+
 const DATA_SOURCE_READERS: Record<string, ContributionDataSourceReader> = {
+  'builtin.project-manager.project-directory-data-source': (_snapshot, runtimeValues) => (
+    runtimeValue(runtimeValues, 'builtin.project-manager.project-directory-data-source', {
+      projectsRootDir: null,
+      ignoredProjectCount: 0,
+    })
+  ),
+  'builtin.project-manager.quick-actions-data-source': (_snapshot, runtimeValues) => (
+    runtimeValue(runtimeValues, 'builtin.project-manager.quick-actions-data-source', {
+      hasProjectsRoot: false,
+      ignoredProjectCount: 0,
+    })
+  ),
+  'builtin.project-manager.recent-projects-data-source': (_snapshot, runtimeValues) => (
+    runtimeValue(runtimeValues, 'builtin.project-manager.recent-projects-data-source', {
+      settingsLoaded: false,
+      projects: [],
+    })
+  ),
+  'builtin.project-manager.project-catalog-data-source': (_snapshot, runtimeValues) => (
+    runtimeValue(runtimeValues, 'builtin.project-manager.project-catalog-data-source', {
+      settingsLoaded: false,
+      isScanning: false,
+      projects: [],
+    })
+  ),
   'diagnostic.contribution-sample.registry-data-source': (snapshot) => {
     const contributionCounts = Object.fromEntries(
       CONTRIBUTION_KINDS.map((kind) => [kind, Object.keys(snapshot.claims[kind]).length]),
@@ -43,6 +81,7 @@ export interface ContributionDataSourceReadResult {
 export function readContributionDataSource(
   snapshot: ContributionRegistrySnapshot,
   definition: DataSourceContributionDefinition,
+  runtimeValues: ContributionDataSourceRuntimeValues = {},
 ): ContributionDataSourceReadResult {
   const unavailableReason = getContributionUnavailableReason(snapshot, definition);
   if (unavailableReason) {
@@ -55,7 +94,7 @@ export function readContributionDataSource(
   }
 
   try {
-    return { definition, value: reader(snapshot), error: null };
+    return { definition, value: reader(snapshot, runtimeValues), error: null };
   } catch (error) {
     return { definition, value: null, error: String(error) };
   }

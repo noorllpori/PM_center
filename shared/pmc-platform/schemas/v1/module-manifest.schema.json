@@ -58,6 +58,13 @@
     "ModuleContributions": {
       "additionalProperties": true,
       "properties": {
+        "commands": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "contextCommands": {
           "default": [],
           "items": {
@@ -197,6 +204,7 @@
         }
       ],
       "default": {
+        "commands": [],
         "contextCommands": [],
         "dataSources": [],
         "settingsSections": [],

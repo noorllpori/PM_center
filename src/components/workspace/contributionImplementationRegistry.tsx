@@ -1,5 +1,7 @@
 import type { ComponentType } from 'react';
+import type { ProfileSurface, WorkspaceProfileV1 } from '../../types/platform';
 import type { ContributionImplementationInventory } from '../../features/contributionCatalogDiagnostics';
+import { getContributionCommandHandlerIds } from '../../features/contributionCommands';
 import { getContributionDataSourceReaderIds } from '../../features/contributionDataSources';
 import { SURFACE_CONTRIBUTIONS } from '../../features/contributionRegistry';
 import { CacheManagerSurface } from '../file-manager/CacheManagerSurface';
@@ -13,6 +15,8 @@ import { getContributedWidgetRendererIds } from './ContributedWidget';
 
 export interface ContributionSurfaceRendererProps {
   isActive: boolean;
+  profile?: WorkspaceProfileV1;
+  profileSurface?: ProfileSurface;
 }
 
 export const WORKSPACE_SURFACE_RENDERERS: Record<
@@ -45,5 +49,6 @@ export function getContributionImplementationInventory(): ContributionImplementa
     shellSurfaceRendererIds: Object.keys(SHELL_SURFACE_RENDERERS),
     widgetRendererIds: getContributedWidgetRendererIds(),
     dataSourceReaderIds: getContributionDataSourceReaderIds(),
+    commandHandlerIds: getContributionCommandHandlerIds(),
   };
 }

@@ -43,6 +43,40 @@ pub const PROJECT_MANAGER_SHELL_TAB_ID: &str = "builtin.project-manager.project-
 pub const PROJECT_MANAGER_HOME_SURFACE_ID: &str = "builtin.project-manager.home-surface";
 pub const PROJECT_MANAGER_WORKSPACE_SURFACE_ID: &str =
     "builtin.project-manager.project-workspace-surface";
+pub const PROJECT_MANAGER_DIRECTORY_WIDGET_ID: &str =
+    "builtin.project-manager.project-directory-widget";
+pub const PROJECT_MANAGER_QUICK_ACTIONS_WIDGET_ID: &str =
+    "builtin.project-manager.quick-actions-widget";
+pub const PROJECT_MANAGER_RECENT_PROJECTS_WIDGET_ID: &str =
+    "builtin.project-manager.recent-projects-widget";
+pub const PROJECT_MANAGER_PROJECT_CATALOG_WIDGET_ID: &str =
+    "builtin.project-manager.project-catalog-widget";
+pub const PROJECT_MANAGER_DIRECTORY_DATA_SOURCE_ID: &str =
+    "builtin.project-manager.project-directory-data-source";
+pub const PROJECT_MANAGER_QUICK_ACTIONS_DATA_SOURCE_ID: &str =
+    "builtin.project-manager.quick-actions-data-source";
+pub const PROJECT_MANAGER_RECENT_PROJECTS_DATA_SOURCE_ID: &str =
+    "builtin.project-manager.recent-projects-data-source";
+pub const PROJECT_MANAGER_PROJECT_CATALOG_DATA_SOURCE_ID: &str =
+    "builtin.project-manager.project-catalog-data-source";
+pub const PROJECT_MANAGER_SELECT_ROOT_COMMAND_ID: &str =
+    "builtin.project-manager.select-project-root-command";
+pub const PROJECT_MANAGER_CLEAR_ROOT_COMMAND_ID: &str =
+    "builtin.project-manager.clear-project-root-command";
+pub const PROJECT_MANAGER_CREATE_PROJECT_COMMAND_ID: &str =
+    "builtin.project-manager.create-project-command";
+pub const PROJECT_MANAGER_IMPORT_PROJECT_COMMAND_ID: &str =
+    "builtin.project-manager.import-project-command";
+pub const PROJECT_MANAGER_OPEN_PROJECT_COMMAND_ID: &str =
+    "builtin.project-manager.open-project-command";
+pub const PROJECT_MANAGER_IGNORE_PROJECT_COMMAND_ID: &str =
+    "builtin.project-manager.ignore-project-command";
+pub const PROJECT_MANAGER_RESTORE_IGNORED_PROJECT_COMMAND_ID: &str =
+    "builtin.project-manager.restore-ignored-project-command";
+pub const PROJECT_MANAGER_SHOW_IGNORED_PROJECTS_COMMAND_ID: &str =
+    "builtin.project-manager.show-ignored-projects-command";
+pub const PROJECT_MANAGER_REMOVE_RECENT_PROJECT_COMMAND_ID: &str =
+    "builtin.project-manager.remove-recent-project-command";
 pub const LAN_MAIN_TOOL_ID: &str = "builtin.lan-collaboration.main-tool";
 pub const LAN_PROJECT_TOOL_ID: &str = "builtin.lan-collaboration.project-tool";
 pub const LAN_SHELL_TAB_ID: &str = "builtin.lan-collaboration.shell-tab";
@@ -602,6 +636,29 @@ pub fn project_manager_module() -> RegisteredModule {
                 surfaces: vec![
                     PROJECT_MANAGER_HOME_SURFACE_ID.into(),
                     PROJECT_MANAGER_WORKSPACE_SURFACE_ID.into(),
+                ],
+                widgets: vec![
+                    PROJECT_MANAGER_DIRECTORY_WIDGET_ID.into(),
+                    PROJECT_MANAGER_QUICK_ACTIONS_WIDGET_ID.into(),
+                    PROJECT_MANAGER_RECENT_PROJECTS_WIDGET_ID.into(),
+                    PROJECT_MANAGER_PROJECT_CATALOG_WIDGET_ID.into(),
+                ],
+                data_sources: vec![
+                    PROJECT_MANAGER_DIRECTORY_DATA_SOURCE_ID.into(),
+                    PROJECT_MANAGER_QUICK_ACTIONS_DATA_SOURCE_ID.into(),
+                    PROJECT_MANAGER_RECENT_PROJECTS_DATA_SOURCE_ID.into(),
+                    PROJECT_MANAGER_PROJECT_CATALOG_DATA_SOURCE_ID.into(),
+                ],
+                commands: vec![
+                    PROJECT_MANAGER_SELECT_ROOT_COMMAND_ID.into(),
+                    PROJECT_MANAGER_CLEAR_ROOT_COMMAND_ID.into(),
+                    PROJECT_MANAGER_CREATE_PROJECT_COMMAND_ID.into(),
+                    PROJECT_MANAGER_IMPORT_PROJECT_COMMAND_ID.into(),
+                    PROJECT_MANAGER_OPEN_PROJECT_COMMAND_ID.into(),
+                    PROJECT_MANAGER_IGNORE_PROJECT_COMMAND_ID.into(),
+                    PROJECT_MANAGER_RESTORE_IGNORED_PROJECT_COMMAND_ID.into(),
+                    PROJECT_MANAGER_SHOW_IGNORED_PROJECTS_COMMAND_ID.into(),
+                    PROJECT_MANAGER_REMOVE_RECENT_PROJECT_COMMAND_ID.into(),
                 ],
                 ..ModuleContributions::default()
             },
@@ -1354,6 +1411,9 @@ mod project_resource_tests {
                 PROJECT_MANAGER_WORKSPACE_SURFACE_ID.to_string(),
             ]
         );
+        assert_eq!(module.manifest.contributes.widgets.len(), 4);
+        assert_eq!(module.manifest.contributes.data_sources.len(), 4);
+        assert_eq!(module.manifest.contributes.commands.len(), 9);
     }
 
     #[test]
@@ -1413,6 +1473,32 @@ mod project_resource_tests {
             ("shellTabs", PROJECT_MANAGER_SHELL_TAB_ID),
             ("surfaces", PROJECT_MANAGER_HOME_SURFACE_ID),
             ("surfaces", PROJECT_MANAGER_WORKSPACE_SURFACE_ID),
+            ("widgets", PROJECT_MANAGER_DIRECTORY_WIDGET_ID),
+            ("widgets", PROJECT_MANAGER_QUICK_ACTIONS_WIDGET_ID),
+            ("widgets", PROJECT_MANAGER_RECENT_PROJECTS_WIDGET_ID),
+            ("widgets", PROJECT_MANAGER_PROJECT_CATALOG_WIDGET_ID),
+            ("dataSources", PROJECT_MANAGER_DIRECTORY_DATA_SOURCE_ID),
+            ("dataSources", PROJECT_MANAGER_QUICK_ACTIONS_DATA_SOURCE_ID),
+            (
+                "dataSources",
+                PROJECT_MANAGER_RECENT_PROJECTS_DATA_SOURCE_ID,
+            ),
+            (
+                "dataSources",
+                PROJECT_MANAGER_PROJECT_CATALOG_DATA_SOURCE_ID,
+            ),
+            ("commands", PROJECT_MANAGER_SELECT_ROOT_COMMAND_ID),
+            ("commands", PROJECT_MANAGER_CLEAR_ROOT_COMMAND_ID),
+            ("commands", PROJECT_MANAGER_CREATE_PROJECT_COMMAND_ID),
+            ("commands", PROJECT_MANAGER_IMPORT_PROJECT_COMMAND_ID),
+            ("commands", PROJECT_MANAGER_OPEN_PROJECT_COMMAND_ID),
+            ("commands", PROJECT_MANAGER_IGNORE_PROJECT_COMMAND_ID),
+            (
+                "commands",
+                PROJECT_MANAGER_RESTORE_IGNORED_PROJECT_COMMAND_ID,
+            ),
+            ("commands", PROJECT_MANAGER_SHOW_IGNORED_PROJECTS_COMMAND_ID),
+            ("commands", PROJECT_MANAGER_REMOVE_RECENT_PROJECT_COMMAND_ID),
             ("tools", LAN_MAIN_TOOL_ID),
             ("tools", LAN_PROJECT_TOOL_ID),
             ("shellTabs", LAN_SHELL_TAB_ID),

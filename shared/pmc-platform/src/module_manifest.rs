@@ -46,6 +46,8 @@ pub struct ModuleContributions {
     #[serde(default)]
     pub data_sources: Vec<String>,
     #[serde(default)]
+    pub commands: Vec<String>,
+    #[serde(default)]
     pub settings_sections: Vec<String>,
     #[serde(default)]
     pub context_commands: Vec<String>,
@@ -248,6 +250,7 @@ impl ValidateContract for ModuleManifestV1 {
             ("surfaces", &self.contributes.surfaces),
             ("widgets", &self.contributes.widgets),
             ("dataSources", &self.contributes.data_sources),
+            ("commands", &self.contributes.commands),
             ("settingsSections", &self.contributes.settings_sections),
             ("contextCommands", &self.contributes.context_commands),
             ("workflowNodes", &self.contributes.workflow_nodes),

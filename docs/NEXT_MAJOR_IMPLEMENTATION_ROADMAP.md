@@ -494,7 +494,7 @@ R7-0 已于 2026-08-05 完成人工验收：共享合同已增加组件角色、
 
 R7-1 已实现 Profile 新建、复制、名称与说明编辑、模块选择、显式组件选择、依赖预检和修订冲突保护，并于 2026-08-05 完成人工验收。当前运行方案不能直接修改，必须复制后编辑；创建、复制、保存都不会自动切换运行方案。详细边界和验收见 `NEXT_MAJOR_R7_PROFILE_DRAFT_EDITOR.md`。
 
-R7-2 负责 Shell、主页与导航装配：让 `shellLayout.home` 真正驱动主页，提供不可撤下的最小安全主页，并把当前项目主页和项目 Shell 入口归属到可停用的 `builtin.project-manager`。R7-2A 已于 2026-08-05 完成 Home Resolver、安全回退和桌面往返验收；R7-2B 已新增项目管理器模块、项目标签所有权、停用撤下和会话恢复过滤，当前为 `verifying`。详细拆分、启动优先级和验收见 `NEXT_MAJOR_R7_SHELL_HOME_COMPOSITION.md`。
+R7-2 负责 Shell、主页与导航装配：让 `shellLayout.home` 真正驱动主页，提供不可撤下的最小安全主页，并把当前项目主页和项目 Shell 入口归属到可停用的 `builtin.project-manager`。R7-2A 已于 2026-08-05 完成 Home Resolver、安全回退和桌面往返验收；R7-2B 已完成项目管理器模块、项目标签所有权、停用撤下、会话暂存与热恢复验收；R7-2C 已拆分项目主页 Surface、Widget、DataSource 和 Command，当前为 `verifying`。详细拆分、启动优先级和验收见 `NEXT_MAJOR_R7_SHELL_HOME_COMPOSITION.md`。
 
 ### 目标
 
@@ -505,8 +505,9 @@ R7-2 负责 Shell、主页与导航装配：让 `shellLayout.home` 真正驱动�
 - [已验收] R7-0：模块到组件的依赖合同、Profile 显式组件和组件目录；
 - [已验收] R7-1：方案新建/复制、模块与显式组件选择、依赖校验和修订安全保存；
 - [已验收] R7-2A：Profile Home Resolver、默认项目主页与最小安全主页；
-- [验证中] R7-2B：项目管理器模块、项目 Shell 所有权和恢复过滤；
-- [待实施] R7-2C-E：主页 Widget、导航编辑和会话资源收敛；
+- [已验收] R7-2B：项目管理器模块、项目 Shell 所有权、会话暂存和热恢复；
+- [验证中] R7-2C：项目主页 Surface、Widget、DataSource 和 Command 贡献；
+- [待实施] R7-2D-E：主页导航编辑和会话资源收敛；
 - 添加/移除模块；
 - 显示显式组件、模块传递组件以及被依赖原因；
 - 选择首页和导航页面；
