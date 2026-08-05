@@ -268,13 +268,24 @@ export interface ProfileComponentSelection {
   [key: string]: unknown;
 }
 
+export interface ProfilePresentationBinding {
+  id: string;
+  versionRequirement?: string;
+  variant?: string;
+  settings?: JsonObject;
+  [key: string]: unknown;
+}
+
 export type ShellNavigationKind = 'top-bar' | 'side-bar' | 'minimal';
 
 export interface ProfileShellLayout {
   home?: string;
   navigation?: string[];
   pinnedTools?: string[];
+  /** Compatibility fallback until installable Shell templates own the full frame. */
   navigationKind?: ShellNavigationKind;
+  shellTemplate?: ProfilePresentationBinding;
+  themePreset?: ProfilePresentationBinding;
   [key: string]: unknown;
 }
 
@@ -327,6 +338,8 @@ export interface ProfileSurface {
   kind: SurfaceKind;
   layout: SurfaceLayoutKind;
   contribution?: string;
+  template?: ProfilePresentationBinding;
+  themePreset?: ProfilePresentationBinding;
   widgets?: ProfileWidget[];
   settings?: JsonObject;
   [key: string]: unknown;

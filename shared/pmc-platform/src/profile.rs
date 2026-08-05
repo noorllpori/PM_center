@@ -34,6 +34,20 @@ fn default_version_requirement() -> String {
     "*".into()
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfilePresentationBinding {
+    pub id: String,
+    #[serde(default = "default_version_requirement")]
+    pub version_requirement: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
+    #[serde(default)]
+    pub settings: BTreeMap<String, Value>,
+    #[serde(flatten)]
+    pub extensions: ExtensionFields,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum ShellNavigationKind {
@@ -53,6 +67,10 @@ pub struct ProfileShellLayout {
     pub pinned_tools: Vec<String>,
     #[serde(default = "default_navigation_kind")]
     pub navigation_kind: ShellNavigationKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_template: Option<ProfilePresentationBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme_preset: Option<ProfilePresentationBinding>,
     #[serde(flatten)]
     pub extensions: ExtensionFields,
 }
@@ -68,6 +86,8 @@ impl Default for ProfileShellLayout {
             navigation: Vec::new(),
             pinned_tools: Vec::new(),
             navigation_kind: default_navigation_kind(),
+            shell_template: None,
+            theme_preset: None,
             extensions: ExtensionFields::new(),
         }
     }
@@ -165,6 +185,10 @@ pub struct ProfileSurface {
     pub layout: SurfaceLayoutKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contribution: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<ProfilePresentationBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme_preset: Option<ProfilePresentationBinding>,
     #[serde(default)]
     pub widgets: Vec<ProfileWidget>,
     #[serde(default)]
@@ -334,6 +358,13 @@ impl ValidateContract for WorkspaceProfileV1 {
             }
         }
 
+        if let Some(binding) = &self.shell_layout.shell_template {
+            validate_presentation_binding(binding, "$.shellLayout.shellTemplate")?;
+        }
+        if let Some(binding) = &self.shell_layout.theme_preset {
+            validate_presentation_binding(binding, "$.shellLayout.themePreset")?;
+        }
+
         let mut data_source_ids = BTreeSet::new();
         for (index, source) in self.data_sources.iter().enumerate() {
             validate_local_id(&source.id, &format!("$.dataSources[{index}].id"))?;
@@ -356,6 +387,15 @@ impl ValidateContract for WorkspaceProfileV1 {
             }
             if let Some(contribution) = &surface.contribution {
                 validate_stable_id(contribution, &format!("$.surfaces[{index}].contribution"))?;
+            }
+            if let Some(binding) = &surface.template {
+                validate_presentation_binding(binding, &format!("$.surfaces[{index}].template"))?;
+            }
+            if let Some(binding) = &surface.theme_preset {
+                validate_presentation_binding(
+                    binding,
+                    &format!("$.surfaces[{index}].themePreset"),
+                )?;
             }
             let mut widget_ids = BTreeSet::new();
             for (widget_index, widget) in surface.widgets.iter().enumerate() {
@@ -439,6 +479,21 @@ impl ValidateContract for WorkspaceProfileV1 {
         }
         Ok(())
     }
+}
+
+fn validate_presentation_binding(
+    binding: &ProfilePresentationBinding,
+    path: &str,
+) -> ContractResult<()> {
+    validate_stable_id(&binding.id, &format!("{path}.id"))?;
+    validate_version_requirement(
+        &binding.version_requirement,
+        &format!("{path}.versionRequirement"),
+    )?;
+    if let Some(variant) = &binding.variant {
+        validate_local_id(variant, &format!("{path}.variant"))?;
+    }
+    Ok(())
 }
 
 fn validate_visibility_rule<'a>(

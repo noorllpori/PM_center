@@ -92,7 +92,7 @@ Rust 定向测试额外验证诊断 manifest 六类贡献完整，并与全部�
 ## 8. 未包含
 
 - 不提供 Profile 布局编辑或 Widget 拖拽网格；
-- 不允许第三方任意 React/HTML 注入；
+- R5 不允许第三方任意 React、脚本或未经净化的 HTML 注入；后续受控 `base.html` 表现模板按 `NEXT_MAJOR_PRESENTATION_TEMPLATE_ARCHITECTURE.md` 进入独立模板运行时，不属于本轮 Widget 渲染器；
 - 不实现 DataSource 网络轮询、缓存策略或跨进程订阅协议；
 - 不执行 WorkflowNode；
 - 不改变静态 Tauri 命令注册；

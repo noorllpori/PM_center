@@ -102,6 +102,7 @@ Profile 的 `shellLayout.home` 指向主页 Surface。默认迁移 Profile 继�
 ### R7-2D 实现记录
 
 - Profile 编辑器新增“界面装配”，可选择启动主页以及顶部、侧边、紧凑三种导航模式。
+- 三种模式从 2026-08-06 起定义为内置 ShellTemplate 的兼容预设；后续模板运行时通过 `shellTemplate` 替代新增的固定 `navigationKind` 分支，旧 Profile 继续兼容。
 - 导航页面、快捷栏工具和项目主页 Widget 均可添加、移除及拖动排序；Widget 可在侧栏和内容区之间切换。
 - 添加 Widget 时自动补齐所需 DataSource；移除模块时同步清理其 Surface、Widget、DataSource、Command、Pin 和导航引用。
 - 编辑器提供实时结构预览以及最多 50 步撤销/重做；保存只更新草稿，不自动切换当前 Profile。

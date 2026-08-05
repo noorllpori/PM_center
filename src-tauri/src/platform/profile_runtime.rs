@@ -2275,6 +2275,8 @@ fn project_home_surface() -> ProfileSurface {
         kind: SurfaceKind::Dashboard,
         layout: SurfaceLayoutKind::ContributionDefined,
         contribution: Some(PROJECT_HOME_CONTRIBUTION_ID.into()),
+        template: None,
+        theme_preset: None,
         widgets: vec![
             project_home_widget(
                 "project-directory",
@@ -3495,6 +3497,8 @@ mod tests {
             kind: SurfaceKind::ShellPage,
             layout: SurfaceLayoutKind::ContributionDefined,
             contribution: Some("test.layout-provider.surface".into()),
+            template: None,
+            theme_preset: None,
             widgets: vec![ProfileWidget {
                 id: "layout-widget".into(),
                 widget: "test.layout-provider.widget".into(),

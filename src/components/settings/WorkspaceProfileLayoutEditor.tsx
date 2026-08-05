@@ -49,14 +49,34 @@ interface DragState {
   id: string;
 }
 
-const NAVIGATION_KIND_OPTIONS: Array<{
+const SHELL_TEMPLATE_OPTIONS: Array<{
   value: ShellNavigationKind;
+  templateId: string;
   label: string;
+  description: string;
   icon: typeof PanelTop;
 }> = [
-  { value: 'top-bar', label: '顶部', icon: PanelTop },
-  { value: 'side-bar', label: '侧边', icon: PanelLeft },
-  { value: 'minimal', label: '紧凑', icon: Menu },
+  {
+    value: 'top-bar',
+    templateId: 'builtin.shell.top-bar',
+    label: '顶部',
+    description: '导航和工具位于窗口顶部',
+    icon: PanelTop,
+  },
+  {
+    value: 'side-bar',
+    templateId: 'builtin.shell.side-bar',
+    label: '侧边',
+    description: '主导航位于左侧',
+    icon: PanelLeft,
+  },
+  {
+    value: 'minimal',
+    templateId: 'builtin.shell.compact',
+    label: '紧凑',
+    description: '减少固定导航占用',
+    icon: Menu,
+  },
 ];
 
 function contributionTitle(id: string) {
@@ -211,12 +231,17 @@ export function WorkspaceProfileLayoutEditor({
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 px-3 py-2.5 dark:border-gray-700">
               <div className="flex items-center gap-2">
                 <Menu className="h-4 w-4 text-emerald-600" />
-                <h4 className="text-sm font-semibold">主导航</h4>
+                <div>
+                  <h4 className="text-sm font-semibold">Shell 模板</h4>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400">当前提供三种内置兼容模板</p>
+                </div>
               </div>
               <div className="inline-flex overflow-hidden rounded-md border border-gray-200 dark:border-gray-700">
-                {NAVIGATION_KIND_OPTIONS.map((option) => {
+                {SHELL_TEMPLATE_OPTIONS.map((option) => {
                   const Icon = option.icon;
-                  const active = (draft.shellLayout?.navigationKind ?? 'top-bar') === option.value;
+                  const active = draft.shellLayout?.shellTemplate?.id
+                    ? draft.shellLayout.shellTemplate.id === option.templateId
+                    : (draft.shellLayout?.navigationKind ?? 'top-bar') === option.value;
                   return (
                     <button
                       key={option.value}
@@ -225,6 +250,10 @@ export function WorkspaceProfileLayoutEditor({
                         profile.shellLayout = {
                           ...(profile.shellLayout ?? {}),
                           navigationKind: option.value,
+                          shellTemplate: {
+                            id: option.templateId,
+                            versionRequirement: '*',
+                          },
                         };
                       })}
                       className={`inline-flex h-8 items-center gap-1 border-r border-gray-200 px-2 text-xs last:border-r-0 dark:border-gray-700 ${
@@ -232,7 +261,7 @@ export function WorkspaceProfileLayoutEditor({
                           ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'
                           : 'text-gray-500 hover:bg-gray-50 dark:hover:bg-gray-800'
                       }`}
-                      title={`${option.label}导航`}
+                      title={option.description}
                     >
                       <Icon className="h-3.5 w-3.5" />
                       {option.label}

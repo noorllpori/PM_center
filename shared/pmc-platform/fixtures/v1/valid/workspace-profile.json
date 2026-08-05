@@ -25,7 +25,18 @@
     "home": "render-dashboard",
     "navigation": ["render-dashboard"],
     "pinnedTools": ["render.center", "render.farm-controller"],
-    "navigationKind": "top-bar"
+    "navigationKind": "top-bar",
+    "shellTemplate": {
+      "id": "builtin.shell.top-bar",
+      "versionRequirement": "*",
+      "settings": {
+        "density": "comfortable"
+      }
+    },
+    "themePreset": {
+      "id": "builtin.theme.nexora-default",
+      "versionRequirement": "*"
+    }
   },
   "dataSources": [
     {
@@ -40,6 +51,11 @@
       "title": "渲染控制台",
       "kind": "dashboard",
       "layout": "responsive-grid",
+      "template": {
+        "id": "builtin.surface.dashboard-grid",
+        "versionRequirement": "*",
+        "variant": "default"
+      },
       "widgets": [
         {
           "id": "queue-summary",

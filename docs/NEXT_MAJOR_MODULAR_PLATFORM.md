@@ -379,7 +379,15 @@ Module Manager 应统一登记：
   "shellLayout": {
     "home": "render-dashboard",
     "navigation": ["render-dashboard", "render-queue", "node-manager"],
-    "pinnedTools": ["render.center", "render.farm-controller"]
+    "pinnedTools": ["render.center", "render.farm-controller"],
+    "shellTemplate": {
+      "id": "builtin.shell.top-bar",
+      "versionRequirement": "*"
+    },
+    "themePreset": {
+      "id": "builtin.theme.nexora-default",
+      "versionRequirement": "*"
+    }
   },
   "surfaces": [
     {
@@ -423,14 +431,16 @@ Profile 分为迁移生成方案、用户创建方案、外部导入方案、可
 
 ### 8.2 DIY 装配自由度
 
-装配系统至少需要允许用户配置六类内容：
+装配系统至少需要允许用户配置八类内容：
 
 1. **能力与模块**：选择文件、媒体、局域网、渲染、Python、任务等能力组合。
 2. **页面与表面**：选择首页、工作区标签、独立页面、详情面板、侧栏和仪表盘。
-3. **布局**：决定导航位置、面板比例、响应式网格、默认展开状态和窄窗口策略。
-4. **入口与命令**：将模块命令放到工具栏、功能中心、右键菜单、快捷键或页面按钮。
-5. **数据源**：绑定项目目录、媒体资料库、局域网全局数据库、渲染队列或组件数据。
-6. **工作流**：把触发器、组件节点、条件、重试、确认和结果提交连接起来。
+3. **Shell 与页面模板**：选择可安装的基础 HTML 模板、命名插槽、页面结构和响应式变体。
+4. **主题与外观**：选择颜色、字体、密度、图标、阴影、动画和页面级主题覆盖。
+5. **入口与命令**：将模块命令放到工具栏、功能中心、右键菜单、快捷键或页面按钮。
+6. **数据源**：绑定项目目录、媒体资料库、局域网全局数据库、渲染队列或组件数据。
+7. **布局参数**：决定面板比例、响应式网格、默认展开状态和窄窗口策略。
+8. **工作流**：把触发器、组件节点、条件、重试、确认和结果提交连接起来。
 
 所以 Profile 不是简单的 `enabledModules[]`。它是完整的应用装配描述，能够决定 Nexora 启动后“看起来像什么、先打开什么、能做什么、各动作怎样连接”。
 
@@ -440,7 +450,7 @@ Nexora 宿主本身不等于项目管理器。最小 Shell 始终保留窗口与
 
 现有项目主页必须从写死的 `WelcomeScreen` 迁移为模块贡献。规划新增 `builtin.project-manager` 管理项目目录、创建/导入、最近项目、项目列表、项目 Shell 标签和文件工作区；既有 `builtin.project-resources` 保留数据库、TreeCache、Watcher 和项目关闭释放等资源层。项目管理器依赖项目资源层，渲染或媒体模块可以只依赖资源层，不被强制绑定到项目管理主页。
 
-截图中的项目主页继续拆成可装配 Widget：项目目录、快速操作、最近打开和项目列表。Profile 使用 `shellLayout.home` 指向主页 Surface；模块关闭时对应 Surface/Widget 自动撤下。没有配置主页、主页贡献缺失或所属模块不可用时，Shell 必须显示最小安全主页，不能白屏。
+截图中的项目主页继续拆成可装配 Widget：项目目录、快速操作、最近打开和项目列表。它只是 `builtin.project-manager` 提供的一个普通 Surface，不再是宿主中特殊的固定主页。Profile 使用 `shellLayout.home` 指向任意有效主页 Surface；该 Surface 直接占据主页宿主，不会再打开一个同名标签。模块关闭时对应 Surface/Widget 自动撤下。没有配置主页、主页贡献缺失或所属模块不可用时，Shell 必须显示最小安全主页，不能白屏。
 
 启动目标分为两层：
 
@@ -451,7 +461,7 @@ Nexora 宿主本身不等于项目管理器。最小 Shell 始终保留窗口与
 
 ### 8.4 装配编辑器
 
-第一版装配编辑器建议使用结构化表单和可视化布局编辑，不立即开放任意 React/HTML 注入：
+第一版装配编辑器使用结构化表单和可视化布局编辑。后续允许安装带受控 `base.html` 和 CSS 的表现模板，但不开放任意 React、JavaScript 或未经净化的 HTML 注入：
 
 - 左侧显示可用模块、页面、部件、命令和工作流；
 - 中间是当前 Shell、导航、工具栏和页面布局预览；
@@ -461,17 +471,27 @@ Nexora 宿主本身不等于项目管理器。最小 Shell 始终保留窗口与
 - 保存前执行依赖、冲突、权限、路径和响应式布局检查；
 - 任意装配都可以复制、重命名、导出和恢复历史版本。
 
-布局 schema 必须是受控且版本化的数据结构。第三方组件只能贡献声明过的页面或部件，不能直接取得整个主 WebView 的任意执行权限。
+布局 schema 必须是受控且版本化的数据结构。第三方组件只能贡献声明过的页面、部件、模板或主题，不能直接取得整个主 WebView 的任意执行权限。
+
+### 8.5 表现模板、可替换 Shell 与主题
+
+现有 `top-bar / side-bar / minimal` 只作为三个内置 ShellTemplate 的兼容入口。长期运行时由 `shellLayout.shellTemplate` 选择整个应用外壳，由 Surface 的 `template` 选择页面结构，由 `themePreset` 提供视觉令牌。旧 `navigationKind` 继续读取并映射到内置模板，但不再扩展新的写死布局分支。
+
+模板包可以包含受控 `base.html`、CSS、图标、图片、预览和模板 schema。功能通过 `<pm-surface-host>`、`<pm-navigation>`、`<pm-toolbar>`、命名 Widget 区域和注册命令进入模板。模板不得包含脚本、任意远程资源、原始 Tauri 调用或绕过 CapabilityGateway 的行为。
+
+Profile 保存模板 ID、版本约束、变体和参数；实际 HTML/CSS 属于可安装组件包。`.pmc-workspace` 可以在严格包检查后携带模板包，从而复现完整外观。模板缺失、损坏或不兼容时保留旧 Shell 或回退不可撤下的恢复 Shell。
+
+完整包结构、安全白名单、编辑器、迁移和验收见 `NEXT_MAJOR_PRESENTATION_TEMPLATE_ARCHITECTURE.md`。
 
 ## 9. 配置、装配空间和组件包导出
 
 ### 9.1 `.pmc-profile`
 
-轻量装配方案文件，包含模块 ID 和版本约束、普通设置、工具栏 Pin、Shell/工作区布局、逻辑工具需求及工作流引用，不包含二进制组件和大型资料。
+轻量装配方案文件，包含模块 ID 和版本约束、普通设置、工具栏 Pin、Shell/页面模板引用与参数、主题、工作区布局、逻辑工具需求及工作流引用，不包含模板资源、二进制组件和大型资料。
 
 ### 9.2 `.pmc-workspace`
 
-装配空间文件，包含一个 Profile、工作流、渲染预设、媒体分类结构、标签模板、组件依赖清单、项目模板和相对路径资源。它用于把一套工作方式交给别人，不默认包含业务项目文件。
+装配空间文件，包含一个 Profile、工作流、渲染预设、媒体分类结构、标签模板、组件依赖清单、项目模板和相对路径资源。通过 R10 包安全检查后，它也可以携带 Profile 引用的表现模板包，实现外观的自包含复现。它用于把一套工作方式交给别人，不默认包含业务项目文件。
 
 ### 9.3 `.pmc-pack`
 

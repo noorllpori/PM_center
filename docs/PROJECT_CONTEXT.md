@@ -104,7 +104,7 @@ React invoke/listen
 | 脚本/任务 | `ScriptRunner.tsx`、`TaskPanel/`、`taskStore.ts` | 用户脚本、日志、取消/重试与任务面板聚合。 |
 | 设置 | `SettingsPanel.tsx`、`settings/settingsContributionImplementationRegistry.ts`、`settingsStore.ts`、`settings/LocalWebConsoleSettingsSection.tsx` | R7-3 按 `settingsSections` 贡献装配一级范围与二级页面，右侧只挂载当前设置页；模块停用后所属设置即时撤下。普通设置中心与不可停用恢复内核的边界见 `NEXT_MAJOR_R7_SETTINGS_CONTRIBUTIONS.md`。 |
 | 功能中心 | `features/builtinTools.ts`、`features/contributionRegistry.ts`、`features/contributionDataSources.ts`、`features/contributionCatalogDiagnostics.ts`、`stores/contributionRegistryStore.ts`、`components/file-manager/index.tsx` | `Alt+Q` 工具入口；R5 已让工具、Pin、Shell/工作区标签、设置区、右键命令、Widget、DataSource 和节点目录按模块状态动态出现或撤下，并提供目录一致性、实现覆盖、缺失状态和订阅释放诊断。智能剪贴板仍调用独立 Win32 窗口。 |
-| 装配方案运行时 | `platform/profile_runtime.rs`、`platform/profile_package.rs`、`api/workspaceProfiles.ts`、`stores/workspaceProfileStore.ts`、`WorkspaceProfileDiagnosticsSection.tsx`、`WorkspaceProfileEditorDialog.tsx`、`WorkspaceProfileLayoutEditor.tsx`、`features/profileLayout.ts`、`features/profileHome.ts`、`components/shell/ProfileHomeSurface.tsx`、`components/shell/ProfileNavigationBar.tsx` | R6 已完成迁移、事务切换、会话归属和恢复；R7 装配编辑、布局所有权、窄窗口导航和项目资源恢复已验收。R8-1 增加确定性 `.pmc-profile` 导出、严格包检查、导入预览和导入为新方案；导入不会自动应用。 |
+| 装配方案运行时 | `platform/profile_runtime.rs`、`platform/profile_package.rs`、`api/workspaceProfiles.ts`、`stores/workspaceProfileStore.ts`、`WorkspaceProfileDiagnosticsSection.tsx`、`WorkspaceProfileEditorDialog.tsx`、`WorkspaceProfileLayoutEditor.tsx`、`features/profileLayout.ts`、`features/profileHome.ts`、`components/shell/ProfileHomeSurface.tsx`、`components/shell/ProfileNavigationBar.tsx` | R6 已完成迁移、事务切换、会话归属和恢复；R7 装配编辑、布局所有权、窄窗口导航和项目资源恢复已验收。R8-1 增加确定性 `.pmc-profile` 导出、严格包检查、导入预览和导入为新方案；R8-P 已开始增加 Shell/Page/Theme 模板引用，第三方 HTML 渲染器仍待 R9-P/R10-P。 |
 | 说明组件 | `components/ui/HelpAssistant.tsx` | 复杂或不可逆概念旁的问号说明；支持文字、图片、视频及自动避让定位。 |
 
 状态 Store 的所有权：
@@ -250,6 +250,7 @@ React invoke/listen
 - R8-1 的方案包只允许 `manifest.json` 和 `profile.json`，使用 BLAKE3 校验并拒绝敏感字段、聊天资料、本机绝对路径、损坏包、路径穿越和超限内容；导入只创建新方案，不自动应用或安装依赖；
 - 可选 `builtin.local-web-console` 默认停用，只允许从本机浏览器访问白名单控制面；不得把它扩展为通用 `invoke`、Shell、文件系统或未经配对的局域网远控入口；
 - 静态启动页由 `shellLayout.home` 决定，复杂启动窗口和条件行为在 R11 通过受控 `app.started` 工作流实现；恢复流程始终优先，目标不可用时回退最小安全主页；
+- 主页不再是固定业务页面：`shellLayout.home` 指向的 Surface 直接成为主页，现有项目主页只是项目管理器贡献。顶部、侧边和紧凑是三个内置 ShellTemplate 兼容预设，后续由受控 `base.html`、PageTemplate 和 ThemePreset 重绘整体结构；完整合同见 `NEXT_MAJOR_PRESENTATION_TEMPLATE_ARCHITECTURE.md`；
 - 当前功能中心 Pin 只是入口偏好，不能作为模块启停。真正停用必须停止端口、watcher、调度器、原生线程、子进程和数据库资源；
 - 现有 Python 插件作为兼容组件保留，后续扩展到受控 Python Worker、原生独立进程、隔离 DLL 和资料包；
 - 渲染农场复用局域网传输与项目同步，不依赖聊天 UI，远程执行必须增加设备信任、权限和任务协议；

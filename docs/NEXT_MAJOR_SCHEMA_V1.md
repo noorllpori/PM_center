@@ -79,14 +79,19 @@ Profile 可以声明：
 - 启用模块及版本约束；
 - 显式启用组件及版本约束；模块传递依赖由运行时另外解析；
 - 模块普通设置；
-- 首页、导航形式、导航页面和 Pin 工具；
+- 首页、导航页面和 Pin 工具；
+- ShellTemplate、PageTemplate 和 ThemePreset 的版本化引用、变体和参数；
 - Surface 及受控布局；
 - Widget 实例、响应式网格位置、数据源和可见条件；
 - DataSource；
 - 工具栏、功能中心、右键、快捷键和页面动作绑定；
 - 工作流触发绑定和字符串变量。
 
-布局和逻辑保持分离：Profile 只绑定工作流，不在布局字段内存放节点图。可见条件是受控结构，不允许注入 React、HTML 或任意 JavaScript。
+布局和逻辑保持分离：Profile 只绑定工作流，不在布局字段内存放节点图。可见条件是受控结构。schema v1 允许引用模板，但不允许把任意 React、JavaScript 或未经净化的 HTML 当作功能实现注入主 WebView。
+
+`ProfilePresentationBinding` 使用稳定 ID、SemVer requirement、可选变体和普通 JSON 设置。`shellLayout.shellTemplate` 控制应用外壳，`shellLayout.themePreset` 控制全局主题，Surface 的 `template` / `themePreset` 控制页面结构和局部主题。旧 `navigationKind` 长期读取并映射到三个内置 ShellTemplate，只作为兼容字段。
+
+模板的实际 `base.html`、CSS 和资源不直接存入 `.pmc-profile`，而由可安装模板组件包提供；自包含交付由 `.pmc-workspace` 携带经过安全检查的包。完整安全边界见 `docs/NEXT_MAJOR_PRESENTATION_TEMPLATE_ARCHITECTURE.md`。
 
 `shellLayout.home` 是静态默认主页，只能引用当前 Profile 中声明的 Surface。没有配置、引用失效或所属模块不可用时，宿主回退到不可撤下的最小安全主页。复杂启动行为不增加平行的脚本字段，而是通过 `workflowBindings` 将受控 `app.started` 事件绑定到 Workflow；真正执行进入 R11。
 

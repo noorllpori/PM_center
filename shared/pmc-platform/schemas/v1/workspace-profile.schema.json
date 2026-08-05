@@ -174,6 +174,33 @@
       ],
       "type": "object"
     },
+    "ProfilePresentationBinding": {
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "settings": {
+          "additionalProperties": true,
+          "default": {},
+          "type": "object"
+        },
+        "variant": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "versionRequirement": {
+          "default": "*",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
     "ProfileShellLayout": {
       "additionalProperties": true,
       "properties": {
@@ -204,6 +231,26 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "shellTemplate": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProfilePresentationBinding"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "themePreset": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProfilePresentationBinding"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "type": "object"
@@ -230,6 +277,26 @@
           "additionalProperties": true,
           "default": {},
           "type": "object"
+        },
+        "template": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProfilePresentationBinding"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "themePreset": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProfilePresentationBinding"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "title": {
           "type": [
