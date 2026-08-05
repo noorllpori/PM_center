@@ -1,6 +1,6 @@
 # R6-3 Profile 会话归属与中断恢复
 
-> 状态：`verifying`
+> 状态：`accepted`
 >
 > 日期：2026-08-04
 >
@@ -115,10 +115,10 @@ profile-switch-journal.json
 
 - [x] 切到空白 Profile，退出并重启后仍为 0 个正式模块和 1 个 Pin；
 - [x] 切回当前 PM Center Profile，退出并重启后恢复 5 个正式模块和原 Pin 顺序；
-- [ ] 在不同 Profile 保存的项目会话只提示兼容恢复，不会改变当前全局 Profile；
-- [ ] 不可用的局域网、渲染、缓存等贡献标签不会被旧会话重新打开；
+- [x] 在不同 Profile 保存的项目会话只提示兼容恢复，不会改变当前全局 Profile；
+- [x] 不可用的局域网、渲染等贡献标签不会被旧会话重新打开；缓存标签在项目资源模块可用时正常恢复；
 - [x] 设置页可看到切换日志路径和最近恢复结果；
-- [ ] 深色主题与窄窗口下恢复提示和 Profile 诊断区无重叠。
+- [x] 窄窗口下恢复提示和 Profile 诊断区无重叠；当前版本在 `App.tsx` 固定浅色主题，深色验收不适用。
 
 本轮桌面实测执行了完整往返：
 
@@ -143,6 +143,8 @@ python-environments
 
 `app-session.json` 为 v4，记录 Profile `local.current-pm-center` revision 1，并恢复 `D:\Project\20260630@打印机` 的项目文件页；切换完成和各次重启后均无残留 `profile-switch-journal.json`。
 
+跨 Profile 兼容验收额外使用仅启用 `builtin.project-resources` 的临时 Profile：旧会话中的渲染、局域网工作区和 Shell 局域网页均被过滤，缓存管理因其贡献仍可用而正确恢复；当前全局 Profile 始终保持测试方案，没有被旧会话反向切换。2026-08-05 完成人工验收，未发现问题；验收后已删除临时 Profile 并恢复正式方案、5 个正式模块、6 个固定工具和项目文件页会话。
+
 ## 8. 下一步
 
-人工验收通过后，R6 可以作为 R7 的稳定依赖。R7 从普通空白 Profile 开始实现 DIY 装配编辑器，包括模块选择、Pin/导航/Surface 布局、预览、撤销重做和版本历史。
+R6 已通过人工验收，可以作为 R7 的稳定依赖。R7 从普通空白 Profile 开始实现 DIY 装配编辑器，包括模块选择、Pin/导航/Surface 布局、预览、撤销重做和版本历史。

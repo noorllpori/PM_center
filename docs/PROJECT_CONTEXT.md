@@ -236,7 +236,7 @@ React invoke/listen
 
 已有 README 的 TODO 是产品愿望清单。近期实现应优先延续现有基础，而不是重新造平行系统：
 
-- 下一超大版本的主线是“统一内核 + Capability + Module + Component + Workflow + Profile”，不维护四套长期分叉代码；
+- 下一超大版本的主线是“统一宿主运行时 + Capability + Module + Component + Workflow + Profile”，不维护四套长期分叉代码；这里的宿主运行时不是组件分类，所有正式组件统一支持安装、卸载和升级；
 - Profile 是用户可新建、修改、导出和分享的装配方案；项目管理器、媒体管理器、通信端和 Blender 渲染器只是验证系统能力的参考组合，不得写死为固定枚举；
 - R6-2 已提供“当前 PM Center 装配方案”和普通“空白装配空间”的切换预览。预览只读，实际切换按目标模块集合执行并在失败时恢复旧集合；快捷栏 Pin 由 Profile 中稳定 Tool 贡献 ID 驱动；
 - 当前功能中心 Pin 只是入口偏好，不能作为模块启停。真正停用必须停止端口、watcher、调度器、原生线程、子进程和数据库资源；

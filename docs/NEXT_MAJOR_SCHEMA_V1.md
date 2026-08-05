@@ -77,6 +77,7 @@ R1 只冻结“模块、装配方案、组件、工作流和包如何表达”�
 Profile 可以声明：
 
 - 启用模块及版本约束；
+- 显式启用组件及版本约束；模块传递依赖由运行时另外解析；
 - 模块普通设置；
 - 首页、导航形式、导航页面和 Pin 工具；
 - Surface 及受控布局；
@@ -100,9 +101,11 @@ data-pack
 builtin-rust
 ```
 
-除 `builtin-rust` 外均必须声明使用 `/` 的包内相对入口；绝对路径、反斜杠和 `..` 会被拒绝。`builtin-rust` 不能伪造外部入口。
+除 `builtin-rust` 外均必须声明使用 `/` 的包内相对入口；绝对路径、反斜杠和 `..` 会被拒绝。`builtin-rust` 是迁移期兼容标记，仅用于让已编译进宿主的旧实现经过统一合同，不进入正式可安装组件目录，不能伪造外部入口，也不代表组件等级或额外权限。所有正式组件包必须可安装和卸载。
 
-组件可贡献工具动作、Widget、DataSource 和带类型输入/输出端口的工作流节点。资源限制目前包含最大内存、最大并行和超时；真正的进程监督在 R9 实现。
+组件统一使用同一安装、卸载、升级、权限和依赖模型，不划分“内核组件”和“普通组件”。可选 `role`、`distribution`、`uiMode` 只描述组件用途、分发来源和 UI 承载方式。组件可贡献工具动作、Widget、DataSource 和带类型输入/输出端口的工作流节点；资源限制目前包含最大内存、最大并行和超时，真正的进程监督在 R9 实现。
+
+模块与组件之间使用 `requiresComponents` / `optionalComponents`，Profile 使用可选 `enabledComponents`。这些字段为 schema v1 的向后兼容可选扩展；依赖缺失、版本不兼容和循环必须在带注册表的验证阶段拒绝。`pmc.blendio` 是首个默认随包分发但可卸载的 `native-process` 服务组件；HDA、PPT、PDF 等格式组件沿用相同合同，详细规则见 `docs/NEXT_MAJOR_COMPONENT_DEPENDENCY_MODEL.md`。
 
 ## 8. Workflow Manifest v1
 

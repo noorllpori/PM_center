@@ -10,7 +10,7 @@
 
 本文件记录 PM Center 下一超大版本的产品方向、当前代码基础、目标架构、模块边界、组件协议、装配方案、数据模型、迁移路线和验收标准。
 
-这次演进不是把 PM Center 拆成四套互相独立的软件，也不是只在功能中心隐藏若干按钮。目标是把现有单体功能升级成同一个稳定内核上的可组合平台：
+这次演进不是把 PM Center 拆成四套互相独立的软件，也不是只在功能中心隐藏若干按钮。目标是把现有单体功能升级成同一个稳定宿主运行时上的可组合平台：
 
 - 用户可以关闭不需要的模块，并真正停止对应后台服务和资源占用；
 - 用户可以从空白装配空间开始，也可以复制、修改或导入任意装配方案；
@@ -23,7 +23,7 @@
 
 ## 2. 已确定的产品决策
 
-1. PM Center 保持一个主代码库和一个统一内核，不维护“项目版、聊天版、媒体版、渲染版”四个长期分支。
+1. PM Center 保持一个主代码库和一个统一宿主运行时，不维护“项目版、聊天版、媒体版、渲染版”四个长期分支。宿主运行时不是组件等级，所有正式组件使用统一安装、卸载和权限模型。
 2. `Workspace Profile` 是用户自己创建和分享的“装配方案”，不是系统预先规定的工作模式。项目管理器、媒体管理器、局域网通信端和 Blender 渲染器只是四个参考成品。
 3. 第一阶段实现运行时模块化。关闭模块后代码仍可存在于安装目录，但入口、命令、服务和资源都停止使用。
 4. 物理裁剪安装包属于后续能力。只有模块协议稳定后，才考虑按 Profile 构建精简安装包或下载可选组件包。
@@ -268,7 +268,11 @@ render.result-review
 | `native-process` | 高性能扫描、哈希、编解码、同步 | 独立 EXE/sidecar |
 | `native-library` | 供应商 DLL 或算法库 | 独立组件宿主加载 |
 | `data-pack` | 模板、预设、分类规则、图标、模型和资料 | 只读资源挂载 |
-| `builtin-rust` | 官方核心高风险能力 | 编译进 PM Center，由模块守卫控制 |
+| `builtin-rust` | 迁移现有宿主 Rust 实现 | 临时兼容 adapter，不进入正式可安装组件目录 |
+
+组件是可安装、卸载、升级和版本化的能力单元，不等同于页面或产品模块。组件不区分“内核”和“普通”等级；`role`、`distribution` 和 `uiMode` 只描述用途、来源和界面方式，不改变 Capability 与生命周期规则。模块通过 `requiresComponents` / `optionalComponents` 声明组件依赖；Profile 可以通过 `enabledComponents` 显式激活仅用于工具动作、Widget、DataSource 或工作流节点的组件。运行时会把显式组件与模块传递依赖合并为有效组件集合。
+
+首个正式组件为 `pmc.blendio`：它默认随安装包分发但允许卸载、重装和升级；渲染中心依赖它完成 `.blend` 场景预检，项目资源模块可选使用它生成预览和结构化详情。“Blender 文件解析器”由宿主 UI 调用该无头服务组件。HDA、PPT、PDF 等格式读取器使用相同机制，详细边界见 `docs/NEXT_MAJOR_COMPONENT_DEPENDENCY_MODEL.md`。
 
 ### 6.5 Workflow 工作流层
 
@@ -291,6 +295,9 @@ render.result-review
     {"id": "render.batch", "versionRequirement": "^1.0"},
     {"id": "lan.transport", "versionRequirement": "^1.0"},
     {"id": "lan.project-sync", "versionRequirement": "^1.0"}
+  ],
+  "requiresComponents": [
+    {"id": "pmc.blendio", "versionRequirement": "^1.0"}
   ],
   "optionalModules": [
     {"id": "lan.chat", "versionRequirement": "*"}
@@ -512,7 +519,7 @@ Python 可以继续负责组织参数和调用原生组件，并不需要为了�
 
 - PM Center 内置 Python 是默认受控运行时；
 - Blender 内部脚本使用目标 Blender 自带 Python；
-- 普通组件不得污染内置 Python 的全局 site-packages；
+- Python 组件不得污染内置 Python 的全局 site-packages；
 - 每个组件使用锁定 requirements、vendor 或组件级隔离环境；
 - 组件包记录 Python 和依赖版本；
 - 安装、升级、卸载依赖进入任务中心并可诊断；
@@ -544,7 +551,7 @@ pmc-component-host.exe
 
 组件宿主负责校验 DLL 哈希、签名、架构和 ABI，转发日志和进度，监控崩溃、超时与内存，并按风险决定是否一组件一宿主。组件崩溃后可以重启宿主，但不能重复提交已经完成的结果。
 
-官方高可信、必须与核心共享内存的数据路径可以编译为 `builtin-rust`，普通第三方不开放主进程内加载。
+`builtin-rust` 只用于把当前已编译进宿主的旧实现接入统一合同，是迁移期兼容标记，不进入正式组件目录。所有正式组件包都必须支持安装和卸载，并使用独立进程、隔离 DLL、Python 或资料包运行时；无论来源是安装包、商城还是本地导入，均经过相同的权限和依赖检查。
 
 ### 10.5 Component Manifest v1
 
@@ -556,6 +563,9 @@ pmc-component-host.exe
   "version": "1.0.0",
   "apiVersion": "1",
   "runtime": "native-process",
+  "role": "service",
+  "distribution": "marketplace",
+  "uiMode": "contributed",
   "platforms": ["windows-x64"],
   "entry": "bin/windows-x64/duplicate-detector.exe",
   "capabilities": ["project.files.read"],
@@ -579,6 +589,8 @@ pmc-component-host.exe
   }
 }
 ```
+
+模块依赖组件、Profile 显式组件和组件附属功能的统一规则见 `docs/NEXT_MAJOR_COMPONENT_DEPENDENCY_MODEL.md`。组件贡献出来的工具动作不是另一份解析实现；例如 Blender 文件解析器、渲染预检和工作流节点必须共同调用 `pmc.blendio` 的稳定命令面。
 
 ### 10.6 组件通信
 
@@ -986,7 +998,7 @@ logs/components/
 - 为启动、项目打开、局域网、渲染和插件建立回归测试；
 - 记录现有后台线程、端口、进程、数据库和快捷键资源。
 
-### 阶段 1：模块化内核
+### 阶段 1：模块化宿主运行时
 
 - 新增 `module_manager` 和 `capability_gateway`；
 - 新增模块注册表、依赖解析、状态机和 ResourceRegistry；
