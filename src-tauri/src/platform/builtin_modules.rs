@@ -19,6 +19,10 @@ use std::time::Duration;
 pub const SMART_CLIPBOARD_MODULE_ID: &str = "builtin.smart-clipboard";
 pub const LAN_COLLABORATION_MODULE_ID: &str = "builtin.lan-collaboration";
 pub const PROJECT_MANAGER_MODULE_ID: &str = "builtin.project-manager";
+pub const SETTINGS_CENTER_MODULE_ID: &str = "builtin.settings-center";
+pub const SESSION_RUNTIME_MODULE_ID: &str = "builtin.session-runtime";
+pub const DESKTOP_INTEGRATION_MODULE_ID: &str = "builtin.desktop-integration";
+pub const EXTERNAL_TOOLS_MODULE_ID: &str = "builtin.external-tools";
 pub use crate::automation_runtime::AUTOMATION_RUNTIME_MODULE_ID;
 pub use crate::local_web_console::LOCAL_WEB_CONSOLE_MODULE_ID;
 pub use crate::project_resources::PROJECT_RESOURCES_MODULE_ID;
@@ -97,6 +101,16 @@ pub const SMART_CLIPBOARD_SURFACE_ID: &str = "builtin.smart-clipboard.native-sur
 pub use crate::local_web_console::LOCAL_WEB_CONSOLE_TOOL_ID;
 pub const LOCAL_WEB_CONSOLE_SETTINGS_SECTION_ID: &str =
     "builtin.local-web-console.settings-section";
+pub const SETTINGS_CENTER_TOOL_ID: &str = "core.settings.tool";
+pub const SETTINGS_CENTER_ABOUT_SECTION_ID: &str = "core.settings.about-section";
+pub const SETTINGS_CENTER_COMPONENTS_GLOBAL_SECTION_ID: &str =
+    "builtin.settings-center.component-settings-global-section";
+pub const SETTINGS_CENTER_COMPONENTS_PROJECT_SECTION_ID: &str =
+    "builtin.settings-center.component-settings-project-section";
+pub const SESSION_SETTINGS_SECTION_ID: &str = "builtin.session-runtime.settings-section";
+pub const DESKTOP_SETTINGS_SECTION_ID: &str = "builtin.desktop-integration.settings-section";
+pub const EXTERNAL_TOOLS_SETTINGS_SECTION_ID: &str = "builtin.external-tools.settings-section";
+pub const BLENDER_FILE_PARSER_TOOL_ID: &str = "core.blender-file-parser.tool";
 pub const DIAGNOSTIC_BASE_ID: &str = "diagnostic.runtime-base";
 pub const DIAGNOSTIC_WORKER_ID: &str = "diagnostic.runtime-worker";
 pub const DIAGNOSTIC_FAILING_ID: &str = "diagnostic.runtime-failing";
@@ -114,6 +128,136 @@ pub const DIAGNOSTIC_CONTRIBUTION_WORKFLOW_NODE_ID: &str =
     "diagnostic.contribution-sample.echo-node";
 
 struct AutomationRuntimeLifecycle;
+
+struct ContributionHostLifecycle {
+    health_message: &'static str,
+}
+
+impl ContributionHostLifecycle {
+    const fn new(health_message: &'static str) -> Self {
+        Self { health_message }
+    }
+}
+
+impl ModuleLifecycle for ContributionHostLifecycle {
+    fn start<'a>(&'a self, _context: ModuleContext) -> LifecycleFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn stop<'a>(&'a self, _context: ModuleContext) -> LifecycleFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn health<'a>(&'a self, _context: ModuleContext) -> LifecycleFuture<'a, ModuleHealth> {
+        Box::pin(async move { Ok(ModuleHealth::healthy(self.health_message)) })
+    }
+}
+
+fn contribution_host_module(
+    id: &str,
+    name: &str,
+    description: &str,
+    capabilities: Vec<Capability>,
+    contributes: ModuleContributions,
+    health_message: &'static str,
+) -> RegisteredModule {
+    let mut extensions = ExtensionFields::new();
+    extensions.insert("defaultEnabled".into(), Value::Bool(true));
+    RegisteredModule {
+        manifest: ModuleManifestV1 {
+            schema_version: 1,
+            id: id.into(),
+            name: name.into(),
+            description: description.into(),
+            version: "1.0.0".into(),
+            api_version: "1".into(),
+            scope: ModuleScope::Global,
+            builtin: true,
+            requires_modules: Vec::new(),
+            optional_modules: Vec::new(),
+            requires_components: Vec::new(),
+            optional_components: Vec::new(),
+            conflicts: Vec::new(),
+            capabilities,
+            background_services: Vec::new(),
+            contributes,
+            data_policy: ModuleDataPolicy::default(),
+            extensions,
+        },
+        lifecycle: Arc::new(ContributionHostLifecycle::new(health_message)),
+        diagnostic: false,
+    }
+}
+
+pub fn settings_center_module() -> RegisteredModule {
+    contribution_host_module(
+        SETTINGS_CENTER_MODULE_ID,
+        "设置中心",
+        "提供普通设置窗口、设置导航和组件 Schema 设置宿主；恢复设置由独立内核提供。",
+        vec![
+            Capability::AppProfileRead,
+            Capability::AppSettingsRead,
+            Capability::AppSettingsWrite,
+        ],
+        ModuleContributions {
+            tools: vec![SETTINGS_CENTER_TOOL_ID.into()],
+            settings_sections: vec![
+                SETTINGS_CENTER_COMPONENTS_GLOBAL_SECTION_ID.into(),
+                SETTINGS_CENTER_COMPONENTS_PROJECT_SECTION_ID.into(),
+                SETTINGS_CENTER_ABOUT_SECTION_ID.into(),
+            ],
+            ..ModuleContributions::default()
+        },
+        "普通设置窗口和 Schema 设置宿主可用",
+    )
+}
+
+pub fn session_runtime_module() -> RegisteredModule {
+    contribution_host_module(
+        SESSION_RUNTIME_MODULE_ID,
+        "会话运行时",
+        "管理会话恢复和标签关闭确认等软件级会话偏好。",
+        vec![Capability::AppSettingsRead, Capability::AppSettingsWrite],
+        ModuleContributions {
+            settings_sections: vec![SESSION_SETTINGS_SECTION_ID.into()],
+            ..ModuleContributions::default()
+        },
+        "会话恢复与标签确认设置可用",
+    )
+}
+
+pub fn desktop_integration_module() -> RegisteredModule {
+    contribution_host_module(
+        DESKTOP_INTEGRATION_MODULE_ID,
+        "桌面集成",
+        "管理系统登录自启动等桌面环境集成功能。",
+        vec![Capability::AppSettingsRead, Capability::AppSettingsWrite],
+        ModuleContributions {
+            settings_sections: vec![DESKTOP_SETTINGS_SECTION_ID.into()],
+            ..ModuleContributions::default()
+        },
+        "桌面集成设置可用",
+    )
+}
+
+pub fn external_tools_module() -> RegisteredModule {
+    contribution_host_module(
+        EXTERNAL_TOOLS_MODULE_ID,
+        "外部工具",
+        "管理 Blender、FFmpeg、FFprobe 路径、版本检测和 Blender 文件解析入口。",
+        vec![
+            Capability::AppSettingsRead,
+            Capability::AppSettingsWrite,
+            Capability::FilesystemExternalRead,
+        ],
+        ModuleContributions {
+            tools: vec![BLENDER_FILE_PARSER_TOOL_ID.into()],
+            settings_sections: vec![EXTERNAL_TOOLS_SETTINGS_SECTION_ID.into()],
+            ..ModuleContributions::default()
+        },
+        "Blender、FFmpeg 和 FFprobe 设置可用",
+    )
+}
 
 impl ModuleLifecycle for AutomationRuntimeLifecycle {
     fn start<'a>(&'a self, context: ModuleContext) -> LifecycleFuture<'a, ()> {
@@ -348,10 +492,16 @@ pub fn render_center_module() -> RegisteredModule {
             api_version: "1".into(),
             scope: ModuleScope::Global,
             builtin: true,
-            requires_modules: vec![ModuleDependency {
-                id: PROJECT_RESOURCES_MODULE_ID.into(),
-                version_requirement: "^1.0".into(),
-            }],
+            requires_modules: vec![
+                ModuleDependency {
+                    id: PROJECT_RESOURCES_MODULE_ID.into(),
+                    version_requirement: "^1.0".into(),
+                },
+                ModuleDependency {
+                    id: EXTERNAL_TOOLS_MODULE_ID.into(),
+                    version_requirement: "^1.0".into(),
+                },
+            ],
             optional_modules: Vec::new(),
             requires_components: vec![ComponentDependency {
                 id: PM_BLENDIO_COMPONENT_ID.into(),

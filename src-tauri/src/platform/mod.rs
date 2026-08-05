@@ -1,6 +1,7 @@
 mod builtin_components;
 mod builtin_modules;
 mod capability_gateway;
+mod component_settings;
 mod module_manager;
 mod profile_runtime;
 mod resource_registry;
@@ -28,17 +29,21 @@ pub use capability_gateway::{
     CapabilityOperationResult, CapabilitySecurityDiagnosticResult, CapabilityTokenRequest,
     CapabilityTokenResponse,
 };
+pub use component_settings::{
+    ComponentSettingsRequest, ComponentSettingsSnapshot, SaveComponentSettingsRequest,
+};
 
 use builtin_components::builtin_component_manifests;
 use builtin_modules::{
-    automation_runtime_component, automation_runtime_module, diagnostic_components,
-    diagnostic_modules, lan_collaboration_component, lan_collaboration_module,
-    local_web_console_component, local_web_console_module, project_manager_module,
-    project_resources_component, project_resources_module, render_center_component,
-    render_center_module, smart_clipboard_component, smart_clipboard_module, DiagnosticControls,
-    DIAGNOSTIC_BASE_ID,
+    automation_runtime_component, automation_runtime_module, desktop_integration_module,
+    diagnostic_components, diagnostic_modules, external_tools_module, lan_collaboration_component,
+    lan_collaboration_module, local_web_console_component, local_web_console_module,
+    project_manager_module, project_resources_component, project_resources_module,
+    render_center_component, render_center_module, session_runtime_module, settings_center_module,
+    smart_clipboard_component, smart_clipboard_module, DiagnosticControls, DIAGNOSTIC_BASE_ID,
 };
 use capability_gateway::{run_security_diagnostic, CapabilityGateway};
+use component_settings::ComponentSettingsStore;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -50,6 +55,7 @@ pub struct PlatformRuntime {
     pub manager: Arc<ModuleManager>,
     pub gateway: Arc<CapabilityGateway>,
     pub profiles: WorkspaceProfileRuntime,
+    component_settings: ComponentSettingsStore,
     profile_switch_lock: tokio::sync::Mutex<()>,
     controls: Arc<DiagnosticControls>,
 }
@@ -65,6 +71,10 @@ impl PlatformRuntime {
         crate::render_center::initialize_lifecycle_control();
         let controls = Arc::new(DiagnosticControls::default());
         let mut modules = diagnostic_modules(controls.clone());
+        modules.push(settings_center_module());
+        modules.push(session_runtime_module());
+        modules.push(desktop_integration_module());
+        modules.push(external_tools_module());
         modules.push(smart_clipboard_module(app_data_dir.to_path_buf()));
         modules.push(lan_collaboration_module(
             app_data_dir.to_path_buf(),
@@ -117,10 +127,35 @@ impl PlatformRuntime {
                 app_data_dir,
                 component_manifests,
             ),
+            component_settings: ComponentSettingsStore::new(app_data_dir),
             profile_switch_lock: tokio::sync::Mutex::new(()),
             controls,
         })
     }
+}
+
+#[tauri::command]
+pub fn get_component_settings(
+    request: ComponentSettingsRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<ComponentSettingsSnapshot, String> {
+    let manifest = runtime
+        .profiles
+        .component_manifest(&request.component_id)
+        .ok_or_else(|| format!("组件未安装: {}", request.component_id))?;
+    runtime.component_settings.get(&manifest, &request)
+}
+
+#[tauri::command]
+pub fn save_component_settings(
+    request: SaveComponentSettingsRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<ComponentSettingsSnapshot, String> {
+    let manifest = runtime
+        .profiles
+        .component_manifest(&request.target.component_id)
+        .ok_or_else(|| format!("组件未安装: {}", request.target.component_id))?;
+    runtime.component_settings.save(&manifest, &request)
 }
 
 #[derive(Debug, Clone, Deserialize)]

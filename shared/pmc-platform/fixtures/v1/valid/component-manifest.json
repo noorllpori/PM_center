@@ -47,7 +47,37 @@
       }
     ],
     "widgets": ["media.analysis-summary"],
-    "dataSources": ["media.analysis-results"]
+    "dataSources": ["media.analysis-results"],
+    "settingsSections": [
+      {
+        "id": "media.file-analyzer.general-settings",
+        "title": "分析设置",
+        "description": "由宿主统一渲染和保存。",
+        "scope": "global",
+        "order": 100,
+        "fields": [
+          {
+            "id": "parallelism",
+            "label": "并行分析数",
+            "type": "integer",
+            "required": true,
+            "defaultValue": 2,
+            "minimum": 1,
+            "maximum": 8
+          },
+          {
+            "id": "mode",
+            "label": "分析模式",
+            "type": "enum",
+            "defaultValue": "balanced",
+            "options": [
+              { "value": "balanced", "label": "均衡" },
+              { "value": "thorough", "label": "完整" }
+            ]
+          }
+        ]
+      }
+    ]
   },
   "resources": {
     "maxMemoryMb": 1024,

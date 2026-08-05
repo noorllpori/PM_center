@@ -11,11 +11,11 @@ const SHELL_HOME_RENDERER_IDS = new Set(Object.keys(SHELL_SURFACE_RENDERERS));
 export function ProfileHomeSurface({
   onOpenProject,
   settingsLoaded,
-  onOpenSettings,
+  onOpenRecovery,
 }: {
   onOpenProject: (path: string) => Promise<void> | void;
   settingsLoaded: boolean;
-  onOpenSettings: () => void;
+  onOpenRecovery: () => void;
 }) {
   const profile = useWorkspaceProfileStore((state) => state.snapshot?.currentProfile ?? null);
   const runtimeError = useWorkspaceProfileStore((state) => state.error);
@@ -30,7 +30,7 @@ export function ProfileHomeSurface({
       <MinimalSafeHome
         resolution={resolution}
         runtimeError={runtimeError}
-        onOpenSettings={onOpenSettings}
+        onOpenRecovery={onOpenRecovery}
       />
     );
   }

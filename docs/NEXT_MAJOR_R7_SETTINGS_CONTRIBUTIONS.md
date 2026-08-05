@@ -26,7 +26,7 @@
 
 普通设置中心负责设置工具入口、弹窗或页面外壳、范围切换、导航、搜索和设置区宿主。它默认启用，最终可以像普通模块一样被 Profile 停用。
 
-在独立的恢复入口和恢复 Surface 真正落地前，`builtin.settings-center` 仍作为核心入口保留，不能提前允许用户停用，否则会失去重新启用模块的路径。
+独立恢复入口现已落地，因此 `builtin.settings-center` 可以像普通模块一样停用。主标签栏和最小安全主页始终保留 `core.recovery-settings` 入口，避免用户失去恢复路径。
 
 ## 3. 设置贡献合同
 
@@ -47,17 +47,18 @@
 
 | 设置区域 | 目标所有者 | 本轮状态 |
 | --- | --- | --- |
-| 启动恢复、标签关闭确认 | 会话运行时 | 暂由核心常规区承载，后续拆分 |
-| 开机自动启动 | 桌面集成 | 暂由核心常规区承载，后续拆分 |
-| 全局排除规则、项目规则 | `builtin.project-resources` | 本轮接入 |
-| Python、任务脚本、全局/项目插件 | `builtin.automation-runtime` | 本轮接入 |
-| Blender、FFmpeg、FFprobe | 外部工具模块 | 暂由核心工具区承载，后续拆分 |
-| 最近项目、忽略项目 | `builtin.project-manager` | 本轮接入 |
-| 本机网页控制台 | `builtin.local-web-console` | 本轮接入 |
-| Module/Profile/Capability 诊断 | `core.recovery-settings` | 本轮登记为常驻恢复区 |
-| 关于与退出 | 设置中心 / 恢复内核 | 本轮保持常驻 |
+| 启动恢复、标签关闭确认 | `builtin.session-runtime` | 已拆分 |
+| 开机自动启动 | `builtin.desktop-integration` | 已拆分 |
+| 全局排除规则、项目规则 | `builtin.project-resources` | 已接入 |
+| Python、任务脚本、全局/项目插件 | `builtin.automation-runtime` | 已接入 |
+| Blender、FFmpeg、FFprobe、Blend 解析器 | `builtin.external-tools` | 已拆分 |
+| 最近项目、忽略项目 | `builtin.project-manager` | 已接入 |
+| 本机网页控制台 | `builtin.local-web-console` | 已接入 |
+| Module/Profile/Capability 诊断、默认装配恢复 | `core.recovery-settings` | 已迁出普通设置中心 |
+| Schema 设置宿主、关于 | `builtin.settings-center` | 已收敛为宿主能力 |
+| 退出程序 | `core.recovery-settings` / `builtin.settings-center` | 两个入口均保留 |
 
-本轮先完成目录、动态可用性、导航和渲染宿主的纵向链路，不在一个改动中重写全部设置表单。后续模块化只需要迁移所有权和 renderer/schema，不再改变设置中心的装配方式。
+内置业务设置继续使用受信 renderer，组件包可通过 Schema 声明设置字段并由宿主统一渲染。后续迁移新设置只需要明确所有者并选择 renderer 或 Schema，不再修改设置中心装配机制。
 
 ## 5. 运行时行为
 
@@ -83,6 +84,8 @@
 
 ### R7-3A：目录与动态装配
 
+状态：已验收（2026-08-05）。
+
 - 扩充 `SettingsSectionContributionDefinition`；
 - 登记当前全部设置导航；
 - 增加受信 renderer inventory；
@@ -92,6 +95,8 @@
 
 ### R7-3B：恢复 Surface
 
+状态：已实施，待人工验收。
+
 - 从 `MinimalSafeHome` 提供独立恢复入口；
 - 抽取 Profile、模块、组件、依赖诊断和默认装配恢复；
 - 在普通设置中心不可用时仍能打开；
@@ -99,12 +104,16 @@
 
 ### R7-3C：Schema 设置与组件包
 
+状态：已实施，待人工验收。
+
 - 定义版本化 settings schema；
 - 提供路径选择、敏感值、校验、默认值和作用域存储；
 - 安装后的组件可以只通过 manifest/schema 增加设置；
 - 受信 renderer 继续只供内置宿主实现使用。
 
 ### R7-3D：所有权收敛
+
+状态：已实施，待人工验收。
 
 - 拆分会话、桌面集成和外部工具模块；
 - 将常规和工具设置迁移给真实所有者；
@@ -130,3 +139,8 @@
 6. 重新启用模块后设置恢复，原值不丢失且不会自动执行任务；
 7. 在停用确认框中取消，模块、贡献和后台资源完全不变化；
 8. 桌面、窄窗口、浅色和深色主题下导航与正文不重叠。
+9. 停用普通设置中心后，设置工具和普通设置窗口撤下，但主标签栏及最小安全主页仍可打开恢复设置；
+10. 从恢复设置可查看 Profile、模块、组件和 Capability 诊断，并能恢复默认装配或退出程序；
+11. 当前没有运行时组件声明 Schema 时显示明确空状态；平台合同 fixture 与 Rust 测试覆盖全局/项目存储、必填、类型、数值范围和默认值校验，项目值写入项目 `.pm_center`；
+12. 停用会话运行时、桌面集成或外部工具后，只撤下各自拥有的设置；停用外部工具时 Blender 文件解析器入口与窗口同步撤下；
+13. 恢复默认装配不会覆盖自定义 Profile，空白装配不依赖普通设置中心，取消任何停用确认均为零副作用。

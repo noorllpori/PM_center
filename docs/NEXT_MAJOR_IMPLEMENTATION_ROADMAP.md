@@ -70,7 +70,7 @@ D0 架构记录
 | R4 | 现有模块生命周期接入 | accepted | R2、R3 | 2026-08-04 已完成渲染中心最终验收 |
 | R5 | 前端 Contribution Registry | accepted | R1、R2 | 2026-08-04 已完成 R5-4 最终验收 |
 | R6 | 装配方案运行时与兼容迁移 | accepted | R4、R5 | 2026-08-05 已完成跨 Profile 会话、贡献过滤、重启恢复和窄窗口最终验收 |
-| R7 | DIY 装配编辑器 MVP | implementing | R6 | R7-0、R7-1、R7-2A/B/C 和本机网页控制台已验收；R7-3A 设置贡献化实施中 |
+| R7 | DIY 装配编辑器 MVP | implementing | R6 | R7-0、R7-1、R7-2A/B/C、R7-3A 和本机网页控制台已验收；R7-3B/C/D 已实施待人工验收 |
 | R8 | Profile 导入导出 | pending | R6、R7 | 需要跨机器导入验收 |
 | R9 | 统一组件运行时 | pending | R3、R6 | 按运行时类型验收 |
 | R10 | 隔离 DLL 宿主与组件包安全 | pending | R9 | 需要崩溃和签名验收 |
@@ -498,7 +498,7 @@ R7-2 负责 Shell、主页与导航装配：让 `shellLayout.home` 真正驱动�
 
 R7 同期增加可选的 `builtin.local-web-console`：通过仅监听 `127.0.0.1` 的受令牌保护 HTTP 服务，在真实浏览器中提供状态、部分设置、主窗口显示/隐藏、重启和退出。该模块默认停用，不开放任意 Tauri 命令，并由 Module Manager/ResourceRegistry 统一清理。实现与验收边界见 `NEXT_MAJOR_R7_LOCAL_WEB_CONSOLE.md`。
 
-R7-3 负责设置中心贡献化。设置架构分为不可停用的 `core.recovery-settings` 和最终可停用的 `builtin.settings-center`：前者只保留 Profile、模块、组件、依赖恢复和退出，后者装配普通业务设置。R7-3A 先让目录、范围、导航和内容跟随运行时贡献即时撤下；R7-3B 完成独立恢复 Surface 后，才允许普通设置中心被 Profile 停用。详细合同、迁移所有权和验收见 `NEXT_MAJOR_R7_SETTINGS_CONTRIBUTIONS.md`。
+R7-3 负责设置中心贡献化。设置架构已拆分为不可停用的 `core.recovery-settings` 和可停用的 `builtin.settings-center`：前者保留 Profile、模块、组件、Capability 诊断、默认装配恢复和退出，后者只负责普通设置宿主。R7-3A 已完成人工验收；R7-3B/C/D 已实现独立恢复 Surface、组件 Schema 设置以及会话/桌面集成/外部工具所有权拆分，当前待人工验收。详细合同、迁移所有权和验收见 `NEXT_MAJOR_R7_SETTINGS_CONTRIBUTIONS.md`。
 
 ### 目标
 
@@ -512,8 +512,10 @@ R7-3 负责设置中心贡献化。设置架构分为不可停用的 `core.recov
 - [已验收] R7-2B：项目管理器模块、项目 Shell 所有权、会话暂存和热恢复；
 - [已验收] R7-2C：项目主页 Surface、Widget、DataSource 和 Command 贡献；
 - [已验收] R7 本机网页控制台：localhost 服务、设置同步、窗口控制和应用重启恢复；
-- [实施中] R7-3A：设置贡献目录、动态范围/导航、受信 renderer 和模块停用确认；
-- [待实施] R7-3B-D：恢复 Surface、Schema 设置和设置所有权收敛；
+- [已验收] R7-3A：设置贡献目录、动态范围/导航、受信 renderer 和模块停用确认；
+- [待验收] R7-3B：独立恢复 Surface、默认装配恢复和普通设置中心可停用；
+- [待验收] R7-3C：组件 Schema 设置合同、统一渲染、校验及全局/项目存储；
+- [待验收] R7-3D：会话、桌面集成、外部工具设置所有权收敛；
 - [待实施] R7-2D-E：主页导航编辑和会话资源收敛；
 - 添加/移除模块；
 - 显示显式组件、模块传递组件以及被依赖原因；

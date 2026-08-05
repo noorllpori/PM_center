@@ -50,6 +50,13 @@
           },
           "type": "array"
         },
+        "settingsSections": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ComponentSettingsSection"
+          },
+          "type": "array"
+        },
         "toolActions": {
           "default": [],
           "items": {
@@ -146,6 +153,42 @@
       ],
       "type": "string"
     },
+    "ComponentSettingsSection": {
+      "additionalProperties": true,
+      "properties": {
+        "description": {
+          "default": "",
+          "type": "string"
+        },
+        "fields": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/SettingsField"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "order": {
+          "default": 0,
+          "format": "int32",
+          "type": "integer"
+        },
+        "scope": {
+          "$ref": "#/definitions/SettingsScope"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "scope",
+        "title"
+      ],
+      "type": "object"
+    },
     "ComponentUiMode": {
       "enum": [
         "none",
@@ -199,6 +242,102 @@
         "artifact",
         "string-list",
         "file-list"
+      ],
+      "type": "string"
+    },
+    "SettingsField": {
+      "additionalProperties": true,
+      "properties": {
+        "defaultValue": true,
+        "description": {
+          "default": "",
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "maximum": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "minimum": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "options": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/SettingsOption"
+          },
+          "type": "array"
+        },
+        "placeholder": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "required": {
+          "default": false,
+          "type": "boolean"
+        },
+        "sensitive": {
+          "default": false,
+          "type": "boolean"
+        },
+        "type": {
+          "$ref": "#/definitions/SettingsFieldType"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "type"
+      ],
+      "type": "object"
+    },
+    "SettingsFieldType": {
+      "enum": [
+        "string",
+        "integer",
+        "number",
+        "boolean",
+        "path",
+        "file",
+        "directory",
+        "enum",
+        "string-list"
+      ],
+      "type": "string"
+    },
+    "SettingsOption": {
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "value"
+      ],
+      "type": "object"
+    },
+    "SettingsScope": {
+      "enum": [
+        "global",
+        "project"
       ],
       "type": "string"
     },
@@ -276,6 +415,7 @@
       ],
       "default": {
         "dataSources": [],
+        "settingsSections": [],
         "toolActions": [],
         "widgets": [],
         "workflowNodes": []

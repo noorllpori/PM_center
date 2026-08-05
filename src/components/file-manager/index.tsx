@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { PythonEnvManager } from '../PythonEnvManager';
 import { SettingsPanel } from '../SettingsPanel';
+import { RecoverySettingsPanel } from '../settings/RecoverySettingsPanel';
 import { TaskPanel } from '../TaskPanel';
 import { openStandaloneDirectoryViewer } from './openStandaloneDirectoryViewer';
 import { openStandaloneImageViewer } from '../image-viewer/openStandaloneImageViewer';
@@ -17,6 +18,7 @@ import { ProjectSessionProvider } from './ProjectSessionProvider';
 import { ShellTabBar } from '../shell/ShellTabBar';
 import { ContributedShellSurface } from '../shell/ContributedShellSurface';
 import { ProfileHomeSurface } from '../shell/ProfileHomeSurface';
+import { OPEN_RECOVERY_SETTINGS_EVENT } from '../../features/recoverySettings';
 import { Dialog } from '../Dialog';
 import { ProjectLocationDialog } from './ProjectLocationDialog';
 import { createProjectStore, type ProjectStoreApi } from '../../stores/projectStore';
@@ -322,6 +324,7 @@ export function FileManager() {
   const [isPythonEnvOpen, setIsPythonEnvOpen] = useState(false);
   const [isTaskCenterOpen, setIsTaskCenterOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isRecoverySettingsOpen, setIsRecoverySettingsOpen] = useState(false);
   const [isBlenderFileParserOpen, setIsBlenderFileParserOpen] = useState(false);
   const [blenderParserInitialFilePath, setBlenderParserInitialFilePath] = useState<string | null>(null);
   const [isSettingsLoaded, setIsSettingsLoaded] = useState(false);
@@ -369,6 +372,25 @@ export function FileManager() {
     contributionSnapshot,
     TOOL_CONTRIBUTIONS.mdtOverview,
   );
+  const settingsToolAvailable = isContributionAvailable(
+    contributionSnapshot,
+    TOOL_CONTRIBUTIONS.settings,
+  );
+  const blenderParserToolAvailable = isContributionAvailable(
+    contributionSnapshot,
+    TOOL_CONTRIBUTIONS.blenderFileParser,
+  );
+
+  useEffect(() => {
+    const openRecoverySettings = () => setIsRecoverySettingsOpen(true);
+    window.addEventListener(OPEN_RECOVERY_SETTINGS_EVENT, openRecoverySettings);
+    return () => window.removeEventListener(OPEN_RECOVERY_SETTINGS_EVENT, openRecoverySettings);
+  }, []);
+
+  useEffect(() => {
+    if (!settingsToolAvailable) setIsSettingsOpen(false);
+    if (!blenderParserToolAvailable) setIsBlenderFileParserOpen(false);
+  }, [blenderParserToolAvailable, settingsToolAvailable]);
 
   useEffect(() => {
     let isActive = true;
@@ -1495,6 +1517,7 @@ export function FileManager() {
         onActivateTab={activateTab}
         onCloseTab={handleCloseShellTab}
         onReorderTabs={reorderTabs}
+        onOpenRecovery={() => setIsRecoverySettingsOpen(true)}
       />
 
       <div className="flex-1 min-h-0 overflow-hidden">
@@ -1517,7 +1540,7 @@ export function FileManager() {
           <ProfileHomeSurface
             onOpenProject={handleOpenProject}
             settingsLoaded={isSettingsLoaded}
-            onOpenSettings={() => setIsSettingsOpen(true)}
+            onOpenRecovery={() => setIsRecoverySettingsOpen(true)}
           />
         ) : null}
       </div>
@@ -1534,7 +1557,7 @@ export function FileManager() {
         >
           <TaskPanel isOpen={isTaskCenterOpen && taskToolAvailable} onClose={() => setIsTaskCenterOpen(false)} />
           <SettingsPanel
-            isOpen={isSettingsOpen}
+            isOpen={isSettingsOpen && settingsToolAvailable}
             onClose={() => setIsSettingsOpen(false)}
             defaultScope="project"
             onOpenProject={handleOpenProject}
@@ -1544,7 +1567,7 @@ export function FileManager() {
         <>
           <TaskPanel isOpen={isTaskCenterOpen && taskToolAvailable} onClose={() => setIsTaskCenterOpen(false)} />
           <SettingsPanel
-            isOpen={isSettingsOpen}
+            isOpen={isSettingsOpen && settingsToolAvailable}
             onClose={() => setIsSettingsOpen(false)}
             defaultScope="global"
             onOpenProject={handleOpenProject}
@@ -1552,8 +1575,13 @@ export function FileManager() {
         </>
       )}
 
+      <RecoverySettingsPanel
+        isOpen={isRecoverySettingsOpen}
+        onClose={() => setIsRecoverySettingsOpen(false)}
+      />
+
       <BlenderFileParserDialog
-        isOpen={isBlenderFileParserOpen}
+        isOpen={isBlenderFileParserOpen && blenderParserToolAvailable}
         onClose={() => setIsBlenderFileParserOpen(false)}
         projectPath={activeProjectSession?.projectStore.getState().projectPath}
         projectName={activeProjectSession?.projectStore.getState().projectName}

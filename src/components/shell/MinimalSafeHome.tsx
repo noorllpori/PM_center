@@ -2,7 +2,7 @@ import {
   AlertTriangle,
   LayoutDashboard,
   Loader2,
-  Settings,
+  ShieldAlert,
   ShieldCheck,
   Wrench,
 } from 'lucide-react';
@@ -19,11 +19,11 @@ import type { FallbackProfileHome } from '../../features/profileHome';
 export function MinimalSafeHome({
   resolution,
   runtimeError,
-  onOpenSettings,
+  onOpenRecovery,
 }: {
   resolution: FallbackProfileHome;
   runtimeError?: string | null;
-  onOpenSettings: () => void;
+  onOpenRecovery: () => void;
 }) {
   const isLoading = resolution.code === 'PROFILE_LOADING' && !runtimeError;
   const profile = resolution.profile;
@@ -60,7 +60,7 @@ export function MinimalSafeHome({
               </p>
               {!isLoading ? (
                 <p className="mt-2 text-xs leading-5 text-gray-500 dark:text-gray-400">
-                  这里不会加载项目扫描或业务页面，你仍可打开功能中心和全局设置修正装配方案。
+                  这里不会加载项目扫描或业务页面，你仍可打开恢复设置修正装配方案。
                 </p>
               ) : null}
             </div>
@@ -99,11 +99,11 @@ export function MinimalSafeHome({
           </button>
           <button
             type="button"
-            onClick={onOpenSettings}
+            onClick={onOpenRecovery}
             className="inline-flex h-9 items-center gap-2 rounded-md border border-gray-300 bg-white px-3.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
           >
-            <Settings className="h-4 w-4" />
-            全局设置
+            <ShieldAlert className="h-4 w-4" />
+            恢复设置
           </button>
         </div>
 

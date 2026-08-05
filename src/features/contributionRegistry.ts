@@ -8,11 +8,15 @@ import type {
 
 export const BUILTIN_MODULE_IDS = {
   automationRuntime: 'builtin.automation-runtime',
+  desktopIntegration: 'builtin.desktop-integration',
+  externalTools: 'builtin.external-tools',
   lanCollaboration: 'builtin.lan-collaboration',
   localWebConsole: 'builtin.local-web-console',
   projectManager: 'builtin.project-manager',
   projectResources: 'builtin.project-resources',
   renderCenter: 'builtin.render-center',
+  sessionRuntime: 'builtin.session-runtime',
+  settingsCenter: 'builtin.settings-center',
   smartClipboard: 'builtin.smart-clipboard',
 } as const;
 
@@ -59,9 +63,13 @@ export const TOOL_CONTRIBUTIONS = {
   lanProject: contribution('builtin.lan-collaboration.project-tool', 'tools', BUILTIN_MODULE_IDS.lanCollaboration),
   pythonEnvironments: contribution('builtin.automation-runtime.python-tool', 'tools', BUILTIN_MODULE_IDS.automationRuntime),
   taskCenter: contribution('builtin.automation-runtime.task-tool', 'tools', BUILTIN_MODULE_IDS.automationRuntime),
-  settings: contribution('core.settings.tool', 'tools', null),
+  settings: contribution('core.settings.tool', 'tools', BUILTIN_MODULE_IDS.settingsCenter),
   mdtOverview: contribution('builtin.project-resources.mdt-tool', 'tools', BUILTIN_MODULE_IDS.projectResources),
-  blenderFileParser: contribution('core.blender-file-parser.tool', 'tools', null),
+  blenderFileParser: contribution(
+    'core.blender-file-parser.tool',
+    'tools',
+    BUILTIN_MODULE_IDS.externalTools,
+  ),
   smartClipboard: contribution('builtin.smart-clipboard.tool', 'tools', BUILTIN_MODULE_IDS.smartClipboard),
   localWebConsole: contribution(
     'builtin.local-web-console.tool',
@@ -435,9 +443,12 @@ export type SettingsScope = 'global' | 'project';
 export type SettingsNavigationIconKey =
   | 'about'
   | 'automation'
+  | 'components'
+  | 'desktop'
   | 'exclusions'
   | 'history'
   | 'platform'
+  | 'session'
   | 'sliders'
   | 'tools'
   | 'web-console';
@@ -445,14 +456,16 @@ export type SettingsNavigationIconKey =
 export type SettingsSectionRendererId =
   | 'builtin.automation-runtime.global-settings'
   | 'builtin.automation-runtime.project-settings'
+  | 'builtin.desktop-integration.settings'
+  | 'builtin.external-tools.settings'
   | 'builtin.local-web-console.settings'
   | 'builtin.project-manager.history-settings'
   | 'builtin.project-resources.global-exclusions-settings'
   | 'builtin.project-resources.project-rules-settings'
-  | 'core.settings.about-settings'
-  | 'core.settings.general-settings'
-  | 'core.settings.recovery-settings'
-  | 'core.settings.tool-settings';
+  | 'builtin.session-runtime.settings'
+  | 'builtin.settings-center.component-settings-global'
+  | 'builtin.settings-center.component-settings-project'
+  | 'core.settings.about-settings';
 
 export type SettingsSectionAvailability = 'always' | 'module-running';
 
@@ -468,16 +481,27 @@ export interface SettingsSectionContributionDefinition extends ContributionDefin
 }
 
 export const SETTINGS_SECTION_CONTRIBUTIONS = {
-  general: settingsSection({
-    id: 'core.settings.general-section',
-    moduleId: null,
-    owner: 'core.settings-center',
+  session: settingsSection({
+    id: 'builtin.session-runtime.settings-section',
+    moduleId: BUILTIN_MODULE_IDS.sessionRuntime,
+    owner: BUILTIN_MODULE_IDS.sessionRuntime,
     scope: 'global',
     order: 100,
-    navigationId: 'general',
-    title: '常规',
-    iconKey: 'sliders',
-    rendererId: 'core.settings.general-settings',
+    navigationId: 'session',
+    title: '会话',
+    iconKey: 'session',
+    rendererId: 'builtin.session-runtime.settings',
+  }),
+  desktop: settingsSection({
+    id: 'builtin.desktop-integration.settings-section',
+    moduleId: BUILTIN_MODULE_IDS.desktopIntegration,
+    owner: BUILTIN_MODULE_IDS.desktopIntegration,
+    scope: 'global',
+    order: 150,
+    navigationId: 'desktop',
+    title: '桌面集成',
+    iconKey: 'desktop',
+    rendererId: 'builtin.desktop-integration.settings',
   }),
   localWebConsole: settingsSection({
     id: 'builtin.local-web-console.settings-section',
@@ -513,15 +537,15 @@ export const SETTINGS_SECTION_CONTRIBUTIONS = {
     rendererId: 'builtin.automation-runtime.global-settings',
   }),
   tools: settingsSection({
-    id: 'core.settings.tool-section',
-    moduleId: null,
-    owner: 'core.settings-center',
+    id: 'builtin.external-tools.settings-section',
+    moduleId: BUILTIN_MODULE_IDS.externalTools,
+    owner: BUILTIN_MODULE_IDS.externalTools,
     scope: 'global',
     order: 500,
     navigationId: 'tools',
     title: '工具与 Blender',
     iconKey: 'tools',
-    rendererId: 'core.settings.tool-settings',
+    rendererId: 'builtin.external-tools.settings',
   }),
   projectHistory: settingsSection({
     id: 'builtin.project-manager.history-settings-section',
@@ -534,21 +558,32 @@ export const SETTINGS_SECTION_CONTRIBUTIONS = {
     iconKey: 'history',
     rendererId: 'builtin.project-manager.history-settings',
   }),
-  recovery: settingsSection({
-    id: 'core.recovery-settings.settings-section',
-    moduleId: null,
-    owner: 'core.recovery-settings',
+  componentSettingsGlobal: settingsSection({
+    id: 'builtin.settings-center.component-settings-global-section',
+    moduleId: BUILTIN_MODULE_IDS.settingsCenter,
+    owner: BUILTIN_MODULE_IDS.settingsCenter,
     scope: 'global',
     order: 700,
-    navigationId: 'platform',
-    title: '装配与权限',
-    iconKey: 'platform',
-    rendererId: 'core.settings.recovery-settings',
+    navigationId: 'components',
+    title: '组件设置',
+    iconKey: 'components',
+    rendererId: 'builtin.settings-center.component-settings-global',
+  }),
+  componentSettingsProject: settingsSection({
+    id: 'builtin.settings-center.component-settings-project-section',
+    moduleId: BUILTIN_MODULE_IDS.settingsCenter,
+    owner: BUILTIN_MODULE_IDS.settingsCenter,
+    scope: 'project',
+    order: 300,
+    navigationId: 'project-components',
+    title: '组件设置',
+    iconKey: 'components',
+    rendererId: 'builtin.settings-center.component-settings-project',
   }),
   about: settingsSection({
     id: 'core.settings.about-section',
-    moduleId: null,
-    owner: 'core.settings-center',
+    moduleId: BUILTIN_MODULE_IDS.settingsCenter,
+    owner: BUILTIN_MODULE_IDS.settingsCenter,
     scope: 'global',
     order: 800,
     navigationId: 'about',

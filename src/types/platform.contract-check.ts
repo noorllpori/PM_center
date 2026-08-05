@@ -29,6 +29,21 @@ export const platformContractTypeExamples = {
     uiMode: 'contributed',
     platforms: ['windows-x64'],
     entry: 'bin/windows-x64/analyzer.exe',
+    contributes: {
+      settingsSections: [{
+        id: 'media.file-analyzer.general-settings',
+        title: '分析设置',
+        scope: 'global',
+        fields: [{
+          id: 'parallelism',
+          label: '并行分析数',
+          type: 'integer',
+          defaultValue: 2,
+          minimum: 1,
+          maximum: 8,
+        }],
+      }],
+    },
   } satisfies ComponentManifestV1,
   profile: {
     schemaVersion: 1,

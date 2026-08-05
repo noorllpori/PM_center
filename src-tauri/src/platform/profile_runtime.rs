@@ -1,10 +1,11 @@
 use chrono::Utc;
 use pmc_platform::{
     parse_workspace_profile, validate_profile_with_catalogs, CommandPlacement,
-    ComponentDistribution, ComponentManifestV1, ComponentRole, ComponentRuntime, ComponentUiMode,
-    ContractResult, DataSourceScope, ExtensionFields, ModuleManifestV1, ProfileCommandBinding,
-    ProfileDataSource, ProfileModuleSelection, ProfileShellLayout, ProfileSurface, ProfileWidget,
-    SurfaceKind, SurfaceLayoutKind, WorkspaceProfileV1, PLATFORM_SCHEMA_VERSION,
+    ComponentDistribution, ComponentManifestV1, ComponentRole, ComponentRuntime,
+    ComponentSettingsSection, ComponentUiMode, ContractResult, DataSourceScope, ExtensionFields,
+    ModuleManifestV1, ProfileCommandBinding, ProfileDataSource, ProfileModuleSelection,
+    ProfileShellLayout, ProfileSurface, ProfileWidget, SurfaceKind, SurfaceLayoutKind,
+    WorkspaceProfileV1, PLATFORM_SCHEMA_VERSION,
 };
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
@@ -21,6 +22,7 @@ const PROFILE_RUNTIME_SCHEMA_VERSION: u16 = 1;
 const PROFILE_SWITCH_JOURNAL_SCHEMA_VERSION: u16 = 1;
 const MIGRATED_PROFILE_ID: &str = "local.current-pm-center";
 const BLANK_PROFILE_ID: &str = "local.blank-workspace";
+const DEFAULT_PROFILE_ID: &str = "local.default-pm-center";
 const MIGRATION_SOURCE: &str = "current-pm-center";
 const PROJECT_MANAGER_MODULE_ID: &str = "builtin.project-manager";
 const PROJECT_HOME_PROFILE_SURFACE_ID: &str = "pm-center-project-home";
@@ -39,6 +41,7 @@ const CREATE_PROJECT_COMMAND_ID: &str = "builtin.project-manager.create-project-
 const IMPORT_PROJECT_COMMAND_ID: &str = "builtin.project-manager.import-project-command";
 const OPEN_PROJECT_COMMAND_ID: &str = "builtin.project-manager.open-project-command";
 const SHELL_HOME_MIGRATION_VERSION: u16 = 3;
+const SETTINGS_OWNERSHIP_MIGRATION_VERSION: u16 = 1;
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -223,6 +226,7 @@ pub struct WorkspaceProfileComponentSummary {
     pub effective_enabled: bool,
     pub required_by_modules: Vec<String>,
     pub required_by_components: Vec<String>,
+    pub settings_sections: Vec<ComponentSettingsSection>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -231,6 +235,7 @@ pub struct WorkspaceProfileRuntimeSnapshot {
     pub current_profile: WorkspaceProfileV1,
     pub profiles: Vec<WorkspaceProfileSummary>,
     pub components: Vec<WorkspaceProfileComponentSummary>,
+    pub default_profile_id: String,
     pub repository_path: String,
     pub state_path: String,
     pub journal_path: String,
@@ -412,6 +417,8 @@ impl WorkspaceProfileRuntime {
         fs::create_dir_all(&self.repository_path)
             .map_err(|error| io_error("创建装配方案目录失败", &self.repository_path, error))?;
         self.ensure_blank_profile(manifests)?;
+        self.ensure_default_profile(manifests)?;
+        self.ensure_settings_ownership_migration(manifests)?;
         self.ensure_migrated_profile_home(manifests)?;
 
         if self.state_path.exists() {
@@ -540,6 +547,13 @@ impl WorkspaceProfileRuntime {
             )
         })?;
         self.read_profile_document_locked(profile_id)
+    }
+
+    pub fn component_manifest(&self, component_id: &str) -> Option<ComponentManifestV1> {
+        self.component_manifests
+            .iter()
+            .find(|manifest| manifest.id == component_id)
+            .cloned()
     }
 
     pub fn validate_draft(
@@ -1327,6 +1341,26 @@ impl WorkspaceProfileRuntime {
         write_new_json(&path, &profile)
     }
 
+    fn ensure_default_profile(
+        &self,
+        manifests: &[ModuleManifestV1],
+    ) -> Result<(), WorkspaceProfileRuntimeError> {
+        let path = self.profile_path(DEFAULT_PROFILE_ID);
+        if path.exists() {
+            return Ok(());
+        }
+        let profile = build_default_profile(manifests);
+        self.validate_profile(&profile, manifests)
+            .map_err(|error| {
+                WorkspaceProfileRuntimeError::new(
+                    WorkspaceProfileRuntimeErrorCode::ProfileDocumentInvalid,
+                    format!("默认装配方案无效：{}（{}）", error.message, error.path),
+                    Some(&path),
+                )
+            })?;
+        write_new_json(&path, &profile)
+    }
+
     fn ensure_migrated_profile_home(
         &self,
         manifests: &[ModuleManifestV1],
@@ -1423,6 +1457,94 @@ impl WorkspaceProfileRuntime {
         replace_json(&path, &profile)
     }
 
+    fn ensure_settings_ownership_migration(
+        &self,
+        manifests: &[ModuleManifestV1],
+    ) -> Result<(), WorkspaceProfileRuntimeError> {
+        if self.journal_path.exists() {
+            return Ok(());
+        }
+        let target_ids = [
+            "builtin.settings-center",
+            "builtin.session-runtime",
+            "builtin.desktop-integration",
+            "builtin.external-tools",
+        ];
+        let manifests_by_id = manifests
+            .iter()
+            .map(|manifest| (manifest.id.as_str(), manifest))
+            .collect::<BTreeMap<_, _>>();
+        if !target_ids.iter().all(|id| manifests_by_id.contains_key(id)) {
+            return Ok(());
+        }
+        let entries = fs::read_dir(&self.repository_path)
+            .map_err(|error| io_error("读取装配方案目录失败", &self.repository_path, error))?;
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                io_error("读取装配方案目录项失败", &self.repository_path, error)
+            })?;
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(mut profile) = self.read_profile(&path) else {
+                continue;
+            };
+            if profile.id == BLANK_PROFILE_ID || profile.id == DEFAULT_PROFILE_ID {
+                continue;
+            }
+            let migrated = profile
+                .extensions
+                .get("settingsOwnershipMigration")
+                .and_then(|value| value.get("version"))
+                .and_then(serde_json::Value::as_u64)
+                .is_some_and(|version| version >= u64::from(SETTINGS_OWNERSHIP_MIGRATION_VERSION));
+            if migrated {
+                continue;
+            }
+            let selected = profile
+                .enabled_modules
+                .iter()
+                .map(|selection| selection.id.as_str())
+                .collect::<BTreeSet<_>>();
+            let additions = target_ids
+                .iter()
+                .filter(|id| !selected.contains(**id))
+                .filter_map(|id| manifests_by_id.get(id).copied())
+                .map(|manifest| ProfileModuleSelection {
+                    id: manifest.id.clone(),
+                    version_requirement: format!("^{}", manifest.version),
+                    extensions: ExtensionFields::new(),
+                })
+                .collect::<Vec<_>>();
+            profile.enabled_modules.extend(additions);
+            profile
+                .enabled_modules
+                .sort_by(|left, right| left.id.cmp(&right.id));
+            profile
+                .enabled_modules
+                .dedup_by(|left, right| left.id == right.id);
+            profile.extensions.insert(
+                "settingsOwnershipMigration".into(),
+                json!({
+                    "version": SETTINGS_OWNERSHIP_MIGRATION_VERSION,
+                    "migratedAt": Utc::now().timestamp_millis(),
+                }),
+            );
+            profile.revision = profile.revision.saturating_add(1);
+            self.validate_profile(&profile, manifests)
+                .map_err(|error| {
+                    WorkspaceProfileRuntimeError::new(
+                        WorkspaceProfileRuntimeErrorCode::ProfileDocumentInvalid,
+                        format!("设置所有权迁移失败：{}（{}）", error.message, error.path),
+                        Some(&path),
+                    )
+                })?;
+            replace_json(&path, &profile)?;
+        }
+        Ok(())
+    }
+
     fn snapshot_locked(
         &self,
         manifests: &[ModuleManifestV1],
@@ -1468,6 +1590,7 @@ impl WorkspaceProfileRuntime {
             current_profile,
             profiles,
             components,
+            default_profile_id: DEFAULT_PROFILE_ID.into(),
             repository_path: self.repository_path.to_string_lossy().into_owned(),
             state_path: self.state_path.to_string_lossy().into_owned(),
             journal_path: self.journal_path.to_string_lossy().into_owned(),
@@ -1989,20 +2112,120 @@ fn build_blank_profile() -> WorkspaceProfileV1 {
         schema_version: PLATFORM_SCHEMA_VERSION,
         id: BLANK_PROFILE_ID.into(),
         name: "空白装配空间".into(),
-        description: "不启用非核心模块，仅保留设置入口；用于从最小状态开始组装自己的 PM Center。"
-            .into(),
+        description:
+            "不启用普通模块，仅保留不可停用的恢复入口；用于从最小状态开始组装自己的 PM Center。"
+                .into(),
         revision: 1,
         enabled_modules: Vec::new(),
         enabled_components: Vec::new(),
         module_settings: BTreeMap::new(),
         component_settings: BTreeMap::new(),
-        shell_layout: ProfileShellLayout {
-            pinned_tools: vec!["core.settings.tool".into()],
-            ..ProfileShellLayout::default()
-        },
+        shell_layout: ProfileShellLayout::default(),
         surfaces: Vec::new(),
         data_sources: Vec::new(),
         command_bindings: Vec::new(),
+        workflow_bindings: Vec::new(),
+        variables: BTreeMap::new(),
+        extensions,
+    }
+}
+
+fn build_default_profile(manifests: &[ModuleManifestV1]) -> WorkspaceProfileV1 {
+    let manifest_by_id = manifests
+        .iter()
+        .map(|manifest| (manifest.id.as_str(), manifest))
+        .collect::<BTreeMap<_, _>>();
+    let mut enabled_ids = manifests
+        .iter()
+        .filter(|manifest| {
+            manifest
+                .extensions
+                .get("defaultEnabled")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        })
+        .map(|manifest| manifest.id.clone())
+        .collect::<BTreeSet<_>>();
+    loop {
+        let dependencies = enabled_ids
+            .iter()
+            .filter_map(|id| manifest_by_id.get(id.as_str()))
+            .flat_map(|manifest| {
+                manifest
+                    .requires_modules
+                    .iter()
+                    .map(|dependency| dependency.id.clone())
+            })
+            .collect::<Vec<_>>();
+        let previous_len = enabled_ids.len();
+        enabled_ids.extend(dependencies);
+        if enabled_ids.len() == previous_len {
+            break;
+        }
+    }
+
+    let mut enabled_modules = enabled_ids
+        .iter()
+        .filter_map(|id| manifest_by_id.get(id.as_str()))
+        .map(|manifest| ProfileModuleSelection {
+            id: manifest.id.clone(),
+            version_requirement: format!("^{}", manifest.version),
+            extensions: ExtensionFields::new(),
+        })
+        .collect::<Vec<_>>();
+    enabled_modules.sort_by(|left, right| left.id.cmp(&right.id));
+
+    let project_manager_enabled = enabled_ids.contains(PROJECT_MANAGER_MODULE_ID);
+    let mut pinned_tools = Vec::new();
+    for (module_id, tool_id) in [
+        ("builtin.render-center", "builtin.render-center.tool"),
+        (
+            "builtin.project-resources",
+            "builtin.project-resources.cache-tool",
+        ),
+        (
+            "builtin.lan-collaboration",
+            "builtin.lan-collaboration.main-tool",
+        ),
+    ] {
+        if enabled_ids.contains(module_id) {
+            pinned_tools.push(tool_id.into());
+        }
+    }
+    let mut extensions = ExtensionFields::new();
+    extensions.insert(
+        "template".into(),
+        json!({ "kind": "pm-center-default", "version": 1 }),
+    );
+    WorkspaceProfileV1 {
+        schema_version: PLATFORM_SCHEMA_VERSION,
+        id: DEFAULT_PROFILE_ID.into(),
+        name: "PM Center 默认装配".into(),
+        description: "按当前版本默认启用模块生成；用于独立恢复入口，不覆盖用户自定义方案。".into(),
+        revision: 1,
+        enabled_modules,
+        enabled_components: Vec::new(),
+        module_settings: BTreeMap::new(),
+        component_settings: BTreeMap::new(),
+        shell_layout: ProfileShellLayout {
+            home: project_manager_enabled.then(|| PROJECT_HOME_PROFILE_SURFACE_ID.into()),
+            pinned_tools,
+            ..ProfileShellLayout::default()
+        },
+        surfaces: project_manager_enabled
+            .then(project_home_surface)
+            .into_iter()
+            .collect(),
+        data_sources: if project_manager_enabled {
+            project_home_data_sources()
+        } else {
+            Vec::new()
+        },
+        command_bindings: if project_manager_enabled {
+            project_home_command_bindings()
+        } else {
+            Vec::new()
+        },
         workflow_bindings: Vec::new(),
         variables: BTreeMap::new(),
         extensions,
@@ -2131,6 +2354,7 @@ fn component_summaries(
                 .unwrap_or_default()
                 .into_iter()
                 .collect(),
+            settings_sections: manifest.contributes.settings_sections.clone(),
         })
         .collect::<Vec<_>>();
     summaries.sort_by(|left, right| {
@@ -2948,7 +3172,14 @@ mod tests {
         )
         .unwrap();
         let snapshot = runtime.snapshot(&manifests).unwrap();
-        assert_eq!(snapshot.profiles.len(), 3);
+        assert!(snapshot
+            .profiles
+            .iter()
+            .any(|profile| profile.id == BLANK_PROFILE_ID));
+        assert!(snapshot
+            .profiles
+            .iter()
+            .any(|profile| profile.id == DEFAULT_PROFILE_ID));
         assert!(snapshot
             .profiles
             .iter()
@@ -3024,13 +3255,153 @@ mod tests {
             .unwrap();
         let blank = runtime.profile(BLANK_PROFILE_ID, &manifests).unwrap();
         assert!(blank.enabled_modules.is_empty());
-        assert_eq!(blank.shell_layout.pinned_tools, vec!["core.settings.tool"]);
+        assert!(blank.shell_layout.pinned_tools.is_empty());
         assert!(blank.shell_layout.home.is_none());
         assert!(blank.surfaces.is_empty());
         assert!(snapshot
             .profiles
             .iter()
             .any(|profile| profile.id == BLANK_PROFILE_ID));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn default_profile_contains_default_modules_and_required_dependencies() {
+        let root = test_root("default-profile-dependencies");
+        let runtime = WorkspaceProfileRuntime::new(&root);
+        let dependency = manifest("builtin.dependency", "1.2.0");
+        let mut feature = manifest("builtin.default-feature", "2.3.0");
+        feature
+            .extensions
+            .insert("defaultEnabled".into(), json!(true));
+        feature.requires_modules.push(ModuleDependency {
+            id: dependency.id.clone(),
+            version_requirement: "^1.0".into(),
+        });
+        let manifests = vec![dependency, feature];
+
+        let snapshot = runtime
+            .initialize_from_current_configuration(&manifests, &BTreeSet::new(), &[])
+            .unwrap();
+        let default_profile = runtime.profile(DEFAULT_PROFILE_ID, &manifests).unwrap();
+        let enabled_ids = default_profile
+            .enabled_modules
+            .iter()
+            .map(|selection| selection.id.as_str())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(snapshot.default_profile_id, DEFAULT_PROFILE_ID);
+        assert_eq!(
+            enabled_ids,
+            BTreeSet::from(["builtin.default-feature", "builtin.dependency"])
+        );
+        assert_eq!(default_profile.revision, 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn creating_default_profile_does_not_overwrite_a_custom_profile() {
+        let root = test_root("default-profile-preserves-custom");
+        let profiles = root.join("profiles");
+        fs::create_dir_all(&profiles).unwrap();
+        let mut custom = build_blank_profile();
+        custom.id = "local.custom-workspace".into();
+        custom.name = "自定义装配".into();
+        custom.revision = 7;
+        let custom_path = profiles.join("local.custom-workspace.json");
+        fs::write(&custom_path, serde_json::to_vec_pretty(&custom).unwrap()).unwrap();
+        let original = fs::read(&custom_path).unwrap();
+
+        let mut alpha = manifest("builtin.alpha", "1.0.0");
+        alpha
+            .extensions
+            .insert("defaultEnabled".into(), json!(true));
+        let runtime = WorkspaceProfileRuntime::new(&root);
+        runtime
+            .initialize_from_current_configuration(&[alpha], &BTreeSet::new(), &[])
+            .unwrap();
+
+        assert_eq!(fs::read(&custom_path).unwrap(), original);
+        assert!(runtime.profile_path(DEFAULT_PROFILE_ID).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn settings_ownership_migration_is_idempotent_for_existing_profiles() {
+        let root = test_root("settings-ownership-migration");
+        let profiles = root.join("profiles");
+        fs::create_dir_all(&profiles).unwrap();
+        let target_ids = [
+            "builtin.settings-center",
+            "builtin.session-runtime",
+            "builtin.desktop-integration",
+            "builtin.external-tools",
+        ];
+        let manifests = target_ids
+            .iter()
+            .map(|id| manifest(id, "1.0.0"))
+            .collect::<Vec<_>>();
+        let profile = build_migrated_profile(&manifests, &BTreeSet::new(), &[]);
+        fs::write(
+            profiles.join(format!("{MIGRATED_PROFILE_ID}.json")),
+            serde_json::to_vec_pretty(&profile).unwrap(),
+        )
+        .unwrap();
+        let runtime = WorkspaceProfileRuntime::new(&root);
+
+        let first = runtime
+            .initialize_from_current_configuration(&manifests, &BTreeSet::new(), &[])
+            .unwrap();
+        let first_revision = first.current_profile.revision;
+        for target_id in target_ids {
+            assert!(first
+                .current_profile
+                .enabled_modules
+                .iter()
+                .any(|selection| selection.id == target_id));
+        }
+        assert_eq!(
+            first.current_profile.extensions["settingsOwnershipMigration"]["version"],
+            json!(SETTINGS_OWNERSHIP_MIGRATION_VERSION)
+        );
+
+        let second = runtime
+            .initialize_from_current_configuration(&manifests, &BTreeSet::new(), &[])
+            .unwrap();
+        assert_eq!(second.current_profile.revision, first_revision);
+        assert_eq!(
+            second.current_profile.enabled_modules,
+            first.current_profile.enabled_modules
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn settings_ownership_migration_preserves_invalid_profiles_for_diagnostics() {
+        let root = test_root("settings-migration-invalid-profile");
+        let profiles = root.join("profiles");
+        fs::create_dir_all(&profiles).unwrap();
+        fs::write(profiles.join("broken.json"), b"{broken").unwrap();
+        let manifests = [
+            "builtin.settings-center",
+            "builtin.session-runtime",
+            "builtin.desktop-integration",
+            "builtin.external-tools",
+        ]
+        .iter()
+        .map(|id| manifest(id, "1.0.0"))
+        .collect::<Vec<_>>();
+        let runtime = WorkspaceProfileRuntime::new(&root);
+
+        let snapshot = runtime
+            .initialize_from_current_configuration(&manifests, &BTreeSet::new(), &[])
+            .unwrap();
+
+        assert_eq!(fs::read(profiles.join("broken.json")).unwrap(), b"{broken");
+        assert!(snapshot
+            .profiles
+            .iter()
+            .any(|profile| matches!(profile.status, WorkspaceProfileDocumentStatus::Invalid)));
         fs::remove_dir_all(root).unwrap();
     }
 

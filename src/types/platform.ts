@@ -176,11 +176,54 @@ export interface ToolActionContribution {
   [key: string]: unknown;
 }
 
+export type SettingsScope = 'global' | 'project';
+export type SettingsFieldType =
+  | 'string'
+  | 'integer'
+  | 'number'
+  | 'boolean'
+  | 'path'
+  | 'file'
+  | 'directory'
+  | 'enum'
+  | 'string-list';
+
+export interface SettingsOption {
+  value: string;
+  label: string;
+}
+
+export interface SettingsField {
+  id: string;
+  label: string;
+  type: SettingsFieldType;
+  description?: string;
+  required?: boolean;
+  sensitive?: boolean;
+  defaultValue?: JsonValue;
+  placeholder?: string;
+  minimum?: number;
+  maximum?: number;
+  options?: SettingsOption[];
+  [key: string]: unknown;
+}
+
+export interface ComponentSettingsSection {
+  id: string;
+  title: string;
+  description?: string;
+  scope: SettingsScope;
+  order?: number;
+  fields: SettingsField[];
+  [key: string]: unknown;
+}
+
 export interface ComponentContributions {
   workflowNodes?: WorkflowNodeContribution[];
   toolActions?: ToolActionContribution[];
   widgets?: string[];
   dataSources?: string[];
+  settingsSections?: ComponentSettingsSection[];
   [key: string]: unknown;
 }
 

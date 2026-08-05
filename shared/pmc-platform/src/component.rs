@@ -123,6 +123,77 @@ pub struct ToolActionContribution {
     pub extensions: ExtensionFields,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum SettingsScope {
+    Global,
+    Project,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum SettingsFieldType {
+    String,
+    Integer,
+    Number,
+    Boolean,
+    Path,
+    File,
+    Directory,
+    Enum,
+    StringList,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsOption {
+    pub value: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsField {
+    pub id: String,
+    pub label: String,
+    #[serde(rename = "type")]
+    pub field_type: SettingsFieldType,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub sensitive: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_value: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimum: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maximum: Option<f64>,
+    #[serde(default)]
+    pub options: Vec<SettingsOption>,
+    #[serde(flatten)]
+    pub extensions: ExtensionFields,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ComponentSettingsSection {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    pub scope: SettingsScope,
+    #[serde(default)]
+    pub order: i32,
+    #[serde(default)]
+    pub fields: Vec<SettingsField>,
+    #[serde(flatten)]
+    pub extensions: ExtensionFields,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ComponentContributions {
@@ -134,6 +205,8 @@ pub struct ComponentContributions {
     pub widgets: Vec<String>,
     #[serde(default)]
     pub data_sources: Vec<String>,
+    #[serde(default)]
+    pub settings_sections: Vec<ComponentSettingsSection>,
     #[serde(flatten)]
     pub extensions: ExtensionFields,
 }
@@ -382,6 +455,7 @@ impl ValidateContract for ComponentManifestV1 {
                 }
             }
         }
+        validate_settings_sections(&self.contributes.settings_sections)?;
 
         if self.resources.max_parallelism == Some(0)
             || self.resources.max_memory_mb == Some(0)
@@ -395,6 +469,165 @@ impl ValidateContract for ComponentManifestV1 {
         }
         Ok(())
     }
+}
+
+fn validate_settings_sections(sections: &[ComponentSettingsSection]) -> ContractResult<()> {
+    let mut section_ids = BTreeSet::new();
+    for (section_index, section) in sections.iter().enumerate() {
+        let section_path = format!("$.contributes.settingsSections[{section_index}]");
+        validate_stable_id(&section.id, &format!("{section_path}.id"))?;
+        if !section_ids.insert(section.id.as_str()) {
+            return Err(ContractError::new(
+                ContractErrorCode::DuplicateId,
+                format!("{section_path}.id"),
+                format!("重复设置区 ID: {}", section.id),
+            ));
+        }
+        if section.title.trim().is_empty() {
+            return Err(ContractError::new(
+                ContractErrorCode::MalformedDocument,
+                format!("{section_path}.title"),
+                "设置区标题不能为空",
+            ));
+        }
+        if section.fields.is_empty() {
+            return Err(ContractError::new(
+                ContractErrorCode::MalformedDocument,
+                format!("{section_path}.fields"),
+                "设置区至少声明一个字段",
+            ));
+        }
+
+        let mut field_ids = BTreeSet::new();
+        for (field_index, field) in section.fields.iter().enumerate() {
+            let field_path = format!("{section_path}.fields[{field_index}]");
+            validate_local_id(&field.id, &format!("{field_path}.id"))?;
+            if !field_ids.insert(field.id.as_str()) {
+                return Err(ContractError::new(
+                    ContractErrorCode::DuplicateId,
+                    format!("{field_path}.id"),
+                    format!("重复设置字段: {}", field.id),
+                ));
+            }
+            if field.label.trim().is_empty() {
+                return Err(ContractError::new(
+                    ContractErrorCode::MalformedDocument,
+                    format!("{field_path}.label"),
+                    "设置字段标签不能为空",
+                ));
+            }
+            if field.sensitive
+                && !matches!(
+                    field.field_type,
+                    SettingsFieldType::String
+                        | SettingsFieldType::Path
+                        | SettingsFieldType::File
+                        | SettingsFieldType::Directory
+                )
+            {
+                return Err(ContractError::new(
+                    ContractErrorCode::TypeMismatch,
+                    format!("{field_path}.sensitive"),
+                    "敏感字段必须使用字符串或路径类型",
+                ));
+            }
+            if let (Some(minimum), Some(maximum)) = (field.minimum, field.maximum) {
+                if minimum > maximum {
+                    return Err(ContractError::new(
+                        ContractErrorCode::InvalidRuntimeConfiguration,
+                        field_path.clone(),
+                        "设置字段 minimum 不能大于 maximum",
+                    ));
+                }
+            }
+            if matches!(field.field_type, SettingsFieldType::Enum) {
+                if field.options.is_empty() {
+                    return Err(ContractError::new(
+                        ContractErrorCode::MalformedDocument,
+                        format!("{field_path}.options"),
+                        "枚举字段至少声明一个选项",
+                    ));
+                }
+                let mut option_values = BTreeSet::new();
+                for (option_index, option) in field.options.iter().enumerate() {
+                    if option.value.is_empty() || option.label.trim().is_empty() {
+                        return Err(ContractError::new(
+                            ContractErrorCode::MalformedDocument,
+                            format!("{field_path}.options[{option_index}]"),
+                            "枚举选项的 value 和 label 不能为空",
+                        ));
+                    }
+                    if !option_values.insert(option.value.as_str()) {
+                        return Err(ContractError::new(
+                            ContractErrorCode::DuplicateId,
+                            format!("{field_path}.options[{option_index}].value"),
+                            format!("重复枚举值: {}", option.value),
+                        ));
+                    }
+                }
+            } else if !field.options.is_empty() {
+                return Err(ContractError::new(
+                    ContractErrorCode::TypeMismatch,
+                    format!("{field_path}.options"),
+                    "只有枚举字段可以声明 options",
+                ));
+            }
+            if let Some(default_value) = &field.default_value {
+                validate_settings_value(field, default_value, &format!("{field_path}.defaultValue"))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_settings_value(
+    field: &SettingsField,
+    value: &Value,
+    path: &str,
+) -> ContractResult<()> {
+    let valid_type = match field.field_type {
+        SettingsFieldType::Boolean => value.is_boolean(),
+        SettingsFieldType::Integer => value.as_i64().is_some() || value.as_u64().is_some(),
+        SettingsFieldType::Number => value.is_number(),
+        SettingsFieldType::String
+        | SettingsFieldType::Path
+        | SettingsFieldType::File
+        | SettingsFieldType::Directory
+        | SettingsFieldType::Enum => value.is_string(),
+        SettingsFieldType::StringList => value
+            .as_array()
+            .is_some_and(|items| items.iter().all(Value::is_string)),
+    };
+    if !valid_type {
+        return Err(ContractError::new(
+            ContractErrorCode::TypeMismatch,
+            path,
+            format!("设置值类型与 {:?} 不匹配", field.field_type),
+        ));
+    }
+    if matches!(field.field_type, SettingsFieldType::Enum) {
+        let selected = value.as_str().unwrap_or_default();
+        if !field.options.iter().any(|option| option.value == selected) {
+            return Err(ContractError::new(
+                ContractErrorCode::InvalidReference,
+                path,
+                format!("枚举值不在允许范围内: {selected}"),
+            ));
+        }
+    }
+    if matches!(field.field_type, SettingsFieldType::Integer | SettingsFieldType::Number) {
+        let number = value.as_f64().unwrap_or_default();
+        if field.minimum.is_some_and(|minimum| number < minimum)
+            || field.maximum.is_some_and(|maximum| number > maximum)
+        {
+            return Err(ContractError::new(
+                ContractErrorCode::InvalidRuntimeConfiguration,
+                path,
+                "数值超出允许范围",
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub fn validate_component_graph(manifests: &[ComponentManifestV1]) -> ContractResult<()> {

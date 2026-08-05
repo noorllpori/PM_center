@@ -1,9 +1,12 @@
 import type { LucideIcon } from 'lucide-react';
 import {
   Box,
+  Boxes,
   FolderOpen,
   Globe2,
+  History,
   Info,
+  MonitorUp,
   Puzzle,
   RefreshCw,
   SlidersHorizontal,
@@ -23,9 +26,13 @@ export const SETTINGS_SECTION_IMPLEMENTATIONS: Record<
   SettingsSectionRendererId,
   TrustedSettingsSectionImplementation
 > = {
-  'core.settings.general-settings': {
+  'builtin.session-runtime.settings': {
     host: 'SettingsPanel',
-    implementationId: 'renderGeneralSettings',
+    implementationId: 'renderSessionSettings',
+  },
+  'builtin.desktop-integration.settings': {
+    host: 'SettingsPanel',
+    implementationId: 'renderDesktopIntegrationSettings',
   },
   'builtin.local-web-console.settings': {
     host: 'SettingsPanel',
@@ -39,7 +46,7 @@ export const SETTINGS_SECTION_IMPLEMENTATIONS: Record<
     host: 'SettingsPanel',
     implementationId: 'renderGlobalAutomationSettings',
   },
-  'core.settings.tool-settings': {
+  'builtin.external-tools.settings': {
     host: 'SettingsPanel',
     implementationId: 'renderToolSettings',
   },
@@ -47,9 +54,13 @@ export const SETTINGS_SECTION_IMPLEMENTATIONS: Record<
     host: 'SettingsPanel',
     implementationId: 'renderProjectHistorySettings',
   },
-  'core.settings.recovery-settings': {
+  'builtin.settings-center.component-settings-global': {
     host: 'SettingsPanel',
-    implementationId: 'renderRecoverySettings',
+    implementationId: 'ComponentSchemaSettingsSection.global',
+  },
+  'builtin.settings-center.component-settings-project': {
+    host: 'SettingsPanel',
+    implementationId: 'ComponentSchemaSettingsSection.project',
   },
   'core.settings.about-settings': {
     host: 'SettingsPanel',
@@ -68,9 +79,12 @@ export const SETTINGS_SECTION_IMPLEMENTATIONS: Record<
 const SETTINGS_NAVIGATION_ICONS: Record<SettingsNavigationIconKey, LucideIcon> = {
   about: Info,
   automation: Puzzle,
+  components: Boxes,
+  desktop: MonitorUp,
   exclusions: FolderOpen,
   history: RefreshCw,
   platform: Box,
+  session: History,
   sliders: SlidersHorizontal,
   tools: Wrench,
   'web-console': Globe2,

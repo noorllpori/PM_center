@@ -35,10 +35,9 @@ import {
   Puzzle,
 } from 'lucide-react';
 import { AlertDialog, ConfirmDialog, Dialog } from './Dialog';
-import { ModuleDiagnosticsSection } from './settings/ModuleDiagnosticsSection';
-import { CapabilityDiagnosticsSection } from './settings/CapabilityDiagnosticsSection';
-import { WorkspaceProfileDiagnosticsSection } from './settings/WorkspaceProfileDiagnosticsSection';
+import { ComponentSchemaSettingsSection } from './settings/ComponentSchemaSettingsSection';
 import { LocalWebConsoleSettingsSection } from './settings/LocalWebConsoleSettingsSection';
+import { OPEN_RECOVERY_SETTINGS_EVENT } from '../features/recoverySettings';
 import { useOptionalProjectStoreShallow } from '../stores/projectStore';
 import { useContributionRegistryStore } from '../stores/contributionRegistryStore';
 import { BlenderInstallationInfo, ToolPaths, useSettingsStore } from '../stores/settingsStore';
@@ -266,7 +265,7 @@ export function SettingsPanel({
   }));
 
   const [activeScope, setActiveScope] = useState<SettingsScope>('global');
-  const [activeNavigationId, setActiveNavigationId] = useState<SettingsNavigationId>('general');
+  const [activeNavigationId, setActiveNavigationId] = useState<SettingsNavigationId>('session');
   const settingsScrollRef = useRef<HTMLDivElement>(null);
   const [globalPatterns, setGlobalPatterns] = useState<string[]>(DEFAULT_EXCLUDE_PATTERNS);
   const [projectPatterns, setProjectPatterns] = useState<string[]>([]);
@@ -1843,11 +1842,11 @@ export function SettingsPanel({
 
   const renderGlobalSettings = () => (
     <div className="space-y-4">
-      {isSettingsPageActive('core.settings.general-settings', 'general') ? (
+      {isSettingsPageActive('builtin.session-runtime.settings', 'session') ? (
         <section id="settings-global-general" className="scroll-mt-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
         <div className="flex items-center gap-2 mb-3">
           <SlidersHorizontal className="w-4 h-4 text-blue-500" />
-          <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">常规</h4>
+          <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">会话与标签</h4>
         </div>
         <div className="space-y-4">
           <label className="flex items-start gap-3 text-sm text-gray-700 dark:text-gray-300">
@@ -1861,30 +1860,6 @@ export function SettingsPanel({
               启动后恢复上次会话
               <span className="block text-xs text-gray-500 mt-1">
                 会自动恢复上次打开的项目标签、工作区标签和独立窗口。关闭后将始终先进入主页。
-              </span>
-            </span>
-          </label>
-
-          <label
-            className={`flex items-start gap-3 text-sm text-gray-700 dark:text-gray-300 ${
-              !launchOnStartupAvailable ? 'opacity-60' : ''
-            }`}
-          >
-            <input
-              type="checkbox"
-              checked={launchOnStartup}
-              disabled={!launchOnStartupAvailable || isUpdatingLaunchOnStartup}
-              onChange={(event) => void handleToggleLaunchOnStartup(event.target.checked)}
-              className="mt-0.5 rounded"
-            />
-            <span>
-              开机自动启动
-              <span className="block text-xs text-gray-500 mt-1">
-                {launchOnStartupAvailable
-                  ? isUpdatingLaunchOnStartup
-                    ? '正在更新系统启动项...'
-                    : '在系统登录后自动启动 PM Center。'
-                  : '当前环境暂时无法读取系统自启动状态。'}
               </span>
             </span>
           </label>
@@ -1911,6 +1886,36 @@ export function SettingsPanel({
             </label>
           </div>
         </div>
+        </section>
+      ) : null}
+
+      {isSettingsPageActive('builtin.desktop-integration.settings', 'desktop') ? (
+        <section id="settings-global-desktop" className="scroll-mt-4 rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
+          <div className="mb-3 flex items-center gap-2">
+            <SlidersHorizontal className="h-4 w-4 text-blue-500" />
+            <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">桌面集成</h4>
+          </div>
+          <label className={`flex items-start gap-3 text-sm text-gray-700 dark:text-gray-300 ${
+            !launchOnStartupAvailable ? 'opacity-60' : ''
+          }`}>
+            <input
+              type="checkbox"
+              checked={launchOnStartup}
+              disabled={!launchOnStartupAvailable || isUpdatingLaunchOnStartup}
+              onChange={(event) => void handleToggleLaunchOnStartup(event.target.checked)}
+              className="mt-0.5 rounded"
+            />
+            <span>
+              开机自动启动
+              <span className="mt-1 block text-xs text-gray-500">
+                {launchOnStartupAvailable
+                  ? isUpdatingLaunchOnStartup
+                    ? '正在更新系统启动项...'
+                    : '在系统登录后自动启动 PM Center。'
+                  : '当前环境暂时无法读取系统自启动状态。'}
+              </span>
+            </span>
+          </label>
         </section>
       ) : null}
 
@@ -1982,7 +1987,7 @@ export function SettingsPanel({
         </section>
       ) : null}
 
-      {isSettingsPageActive('core.settings.tool-settings', 'tools') ? (
+      {isSettingsPageActive('builtin.external-tools.settings', 'tools') ? (
         <section id="settings-global-tools" className="scroll-mt-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
         <div className="flex items-center gap-2 mb-3">
           <Wrench className="w-4 h-4 text-blue-500" />
@@ -2298,14 +2303,8 @@ export function SettingsPanel({
         </section>
       ) : null}
 
-      {isSettingsPageActive('core.settings.recovery-settings', 'platform') ? (
-        <div id="settings-global-platform" className="scroll-mt-4 space-y-4">
-          <WorkspaceProfileDiagnosticsSection />
-
-          <ModuleDiagnosticsSection />
-
-          <CapabilityDiagnosticsSection />
-        </div>
+      {isSettingsPageActive('builtin.settings-center.component-settings-global', 'components') ? (
+        <ComponentSchemaSettingsSection scope="global" />
       ) : null}
 
       {isSettingsPageActive('core.settings.about-settings', 'about') ? (
@@ -2393,6 +2392,10 @@ export function SettingsPanel({
         </div>
       ) : null}
 
+      {isSettingsPageActive('builtin.settings-center.component-settings-project', 'project-components') ? (
+        <ComponentSchemaSettingsSection scope="project" projectPath={projectPath} />
+      ) : null}
+
       {needsProjectRefresh
         && isSettingsPageActive('builtin.project-resources.project-rules-settings', 'project-rules') && (
         <div className="flex items-start gap-2 rounded-lg border border-yellow-200 bg-yellow-50 px-3 py-2 text-sm text-yellow-700">
@@ -2475,14 +2478,24 @@ export function SettingsPanel({
               })}
             </nav>
 
-            {displayedScope === 'project' && projectName ? (
-              <div className="mt-auto border-t border-gray-200 px-2 pt-3 dark:border-gray-800">
-                <p className="text-[11px] text-gray-500 dark:text-gray-400">当前项目</p>
-                <p className="mt-1 truncate text-xs font-medium text-gray-700 dark:text-gray-200" title={projectName}>
-                  {projectName}
-                </p>
-              </div>
-            ) : null}
+            <div className="mt-auto space-y-3 border-t border-gray-200 px-2 pt-3 dark:border-gray-800">
+              <button
+                type="button"
+                onClick={() => window.dispatchEvent(new Event(OPEN_RECOVERY_SETTINGS_EVENT))}
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-amber-700 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-950/30"
+              >
+                <Box className="h-3.5 w-3.5" />
+                打开恢复设置
+              </button>
+              {displayedScope === 'project' && projectName ? (
+                <div>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400">当前项目</p>
+                  <p className="mt-1 truncate text-xs font-medium text-gray-700 dark:text-gray-200" title={projectName}>
+                    {projectName}
+                  </p>
+                </div>
+              ) : null}
+            </div>
           </aside>
 
           <div className="shrink-0 border-b border-gray-200 bg-gray-50/80 p-3 dark:border-gray-800 dark:bg-gray-950/40 md:hidden">

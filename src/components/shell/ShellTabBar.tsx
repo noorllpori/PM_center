@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Folder, Home, MessagesSquare, X } from 'lucide-react';
+import { Folder, Home, MessagesSquare, ShieldAlert, X } from 'lucide-react';
 import { ConfirmDialog } from '../Dialog';
 import type { ShellTab } from '../../stores/shellTabStore';
 import { useSettingsStore } from '../../stores/settingsStore';
@@ -10,6 +10,7 @@ interface ShellTabBarProps {
   onActivateTab: (tabId: string) => void;
   onCloseTab: (tabId: string) => void;
   onReorderTabs: (fromId: string, toId: string) => void;
+  onOpenRecovery: () => void;
 }
 
 function getTabIcon(tab: ShellTab) {
@@ -31,6 +32,7 @@ export function ShellTabBar({
   onActivateTab,
   onCloseTab,
   onReorderTabs,
+  onOpenRecovery,
 }: ShellTabBarProps) {
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
@@ -58,7 +60,8 @@ export function ShellTabBar({
   return (
     <>
       <div className="border-b border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
-        <div className="flex items-stretch gap-1 overflow-x-auto px-2 py-1">
+        <div className="flex min-w-0 items-stretch">
+        <div className="flex min-w-0 flex-1 items-stretch gap-1 overflow-x-auto px-2 py-1">
           {tabs.map((tab) => {
             const isActive = tab.id === activeTabId;
             const isDropTarget = tab.id === dropTargetId && tab.id !== 'home';
@@ -141,6 +144,17 @@ export function ShellTabBar({
               </div>
             );
           })}
+        </div>
+        <div className="flex shrink-0 items-center border-l border-gray-200 px-1.5 dark:border-gray-700">
+          <button
+            type="button"
+            onClick={onOpenRecovery}
+            className="flex h-7 w-7 items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-amber-50 hover:text-amber-700 dark:text-gray-400 dark:hover:bg-amber-950/30 dark:hover:text-amber-300"
+            title="恢复设置"
+          >
+            <ShieldAlert className="h-4 w-4" />
+          </button>
+        </div>
         </div>
       </div>
       <ConfirmDialog

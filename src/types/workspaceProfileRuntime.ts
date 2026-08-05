@@ -1,5 +1,6 @@
 import type {
   ComponentDistribution,
+  ComponentSettingsSection,
   ComponentRole,
   ComponentRuntime,
   ComponentUiMode,
@@ -44,6 +45,7 @@ export interface WorkspaceProfileComponentSummary {
   effectiveEnabled: boolean;
   requiredByModules: string[];
   requiredByComponents: string[];
+  settingsSections: ComponentSettingsSection[];
 }
 
 export interface WorkspaceProfileDraftValidation {
@@ -76,6 +78,7 @@ export interface WorkspaceProfileRuntimeSnapshot {
   currentProfile: WorkspaceProfileV1;
   profiles: WorkspaceProfileSummary[];
   components: WorkspaceProfileComponentSummary[];
+  defaultProfileId: string;
   repositoryPath: string;
   statePath: string;
   journalPath: string;

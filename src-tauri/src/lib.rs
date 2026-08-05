@@ -1459,6 +1459,8 @@ pub fn run() {
             platform::switch_workspace_profile,
             platform::finalize_workspace_profile_switch,
             platform::rollback_workspace_profile_switch,
+            platform::get_component_settings,
+            platform::save_component_settings,
             platform::get_platform_module,
             platform::preview_disable_platform_module,
             platform::enable_platform_module,
