@@ -346,6 +346,13 @@ export function SettingsPanel({
   const isSettingsRendererAvailable = (rendererId: SettingsSectionRendererId) => (
     availableSettingsRendererIds.has(rendererId)
   );
+  const isSettingsPageActive = (
+    rendererId: SettingsSectionRendererId,
+    navigationId: SettingsNavigationId,
+  ) => (
+    isSettingsRendererAvailable(rendererId)
+      && resolvedActiveNavigationId === navigationId
+  );
 
   const handleScopeChange = (scope: SettingsScope) => {
     if (scope === 'project' && !hasProjectScope) {
@@ -358,32 +365,7 @@ export function SettingsPanel({
 
   const handleNavigationChange = (navigationId: SettingsNavigationId) => {
     setActiveNavigationId(navigationId);
-    const container = settingsScrollRef.current;
-    const target = document.getElementById(`settings-${displayedScope}-${navigationId}`);
-    if (!container || !target) {
-      return;
-    }
-    const nextTop = container.scrollTop
-      + target.getBoundingClientRect().top
-      - container.getBoundingClientRect().top
-      - 16;
-    container.scrollTo({ top: Math.max(0, nextTop), behavior: 'smooth' });
-  };
-
-  const handleSettingsScroll = () => {
-    const container = settingsScrollRef.current;
-    if (!container || navigationItems.length === 0) {
-      return;
-    }
-    const activationTop = container.getBoundingClientRect().top + 32;
-    let visibleId = navigationItems[0].id;
-    navigationItems.forEach((item) => {
-      const target = document.getElementById(`settings-${displayedScope}-${item.id}`);
-      if (target && target.getBoundingClientRect().top <= activationTop) {
-        visibleId = item.id;
-      }
-    });
-    setActiveNavigationId((current) => (current === visibleId ? current : visibleId));
+    settingsScrollRef.current?.scrollTo({ top: 0 });
   };
 
   useEffect(() => {
@@ -1861,7 +1843,7 @@ export function SettingsPanel({
 
   const renderGlobalSettings = () => (
     <div className="space-y-4">
-      {isSettingsRendererAvailable('core.settings.general-settings') ? (
+      {isSettingsPageActive('core.settings.general-settings', 'general') ? (
         <section id="settings-global-general" className="scroll-mt-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
         <div className="flex items-center gap-2 mb-3">
           <SlidersHorizontal className="w-4 h-4 text-blue-500" />
@@ -1932,11 +1914,11 @@ export function SettingsPanel({
         </section>
       ) : null}
 
-      {isSettingsRendererAvailable('builtin.local-web-console.settings') ? (
+      {isSettingsPageActive('builtin.local-web-console.settings', 'web-console') ? (
         <LocalWebConsoleSettingsSection />
       ) : null}
 
-      {isSettingsRendererAvailable('builtin.project-resources.global-exclusions-settings') ? (
+      {isSettingsPageActive('builtin.project-resources.global-exclusions-settings', 'exclusions') ? (
         <div id="settings-global-exclusions" className="scroll-mt-4">
           {renderExcludeRulesSection({
             title: '全局排除规则',
@@ -1952,7 +1934,7 @@ export function SettingsPanel({
         </div>
       ) : null}
 
-      {isSettingsRendererAvailable('builtin.automation-runtime.global-settings') && (
+      {isSettingsPageActive('builtin.automation-runtime.global-settings', 'automation') && (
         <section id="settings-global-automation" className="scroll-mt-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
           <div className="flex items-center gap-2 mb-3">
             <FolderOpen className="w-4 h-4 text-blue-500" />
@@ -1976,7 +1958,7 @@ export function SettingsPanel({
         </section>
       )}
 
-      {isSettingsRendererAvailable('builtin.automation-runtime.global-settings')
+      {isSettingsPageActive('builtin.automation-runtime.global-settings', 'automation')
         ? renderPluginSection({
             title: '全局插件',
             description: '扫描应用级插件目录，供所有项目使用。项目内同 id 插件会覆盖这里的全局插件。',
@@ -1985,7 +1967,7 @@ export function SettingsPanel({
           })
         : null}
 
-      {isSettingsRendererAvailable('builtin.project-manager.history-settings') ? (
+      {isSettingsPageActive('builtin.project-manager.history-settings', 'history') ? (
         <section className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
         <div className="flex items-center gap-2 mb-3">
           <HelpCircle className="w-4 h-4 text-blue-500" />
@@ -2000,7 +1982,7 @@ export function SettingsPanel({
         </section>
       ) : null}
 
-      {isSettingsRendererAvailable('core.settings.tool-settings') ? (
+      {isSettingsPageActive('core.settings.tool-settings', 'tools') ? (
         <section id="settings-global-tools" className="scroll-mt-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
         <div className="flex items-center gap-2 mb-3">
           <Wrench className="w-4 h-4 text-blue-500" />
@@ -2227,7 +2209,7 @@ export function SettingsPanel({
         </section>
       ) : null}
 
-      {isSettingsRendererAvailable('builtin.project-manager.history-settings') ? (
+      {isSettingsPageActive('builtin.project-manager.history-settings', 'history') ? (
         <section id="settings-global-history" className="scroll-mt-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
         <div className="flex items-center gap-2 mb-3">
           <Settings className="w-4 h-4 text-blue-500" />
@@ -2316,7 +2298,7 @@ export function SettingsPanel({
         </section>
       ) : null}
 
-      {isSettingsRendererAvailable('core.settings.recovery-settings') ? (
+      {isSettingsPageActive('core.settings.recovery-settings', 'platform') ? (
         <div id="settings-global-platform" className="scroll-mt-4 space-y-4">
           <WorkspaceProfileDiagnosticsSection />
 
@@ -2326,7 +2308,7 @@ export function SettingsPanel({
         </div>
       ) : null}
 
-      {isSettingsRendererAvailable('core.settings.about-settings') ? (
+      {isSettingsPageActive('core.settings.about-settings', 'about') ? (
         <>
         <section id="settings-global-about" className="scroll-mt-4 rounded-xl border border-red-200 dark:border-red-900/40 bg-white dark:bg-gray-900 p-4">
         <div className="flex items-center gap-2 mb-3">
@@ -2372,7 +2354,7 @@ export function SettingsPanel({
 
   const renderProjectSettings = () => (
     <div className="space-y-4">
-      {isSettingsRendererAvailable('builtin.project-resources.project-rules-settings') ? (
+      {isSettingsPageActive('builtin.project-resources.project-rules-settings', 'project-rules') ? (
         <>
           <div id="settings-project-project-rules" className="scroll-mt-4">
             {renderExcludeRulesSection({
@@ -2400,7 +2382,7 @@ export function SettingsPanel({
         </>
       ) : null}
 
-      {isSettingsRendererAvailable('builtin.automation-runtime.project-settings') ? (
+      {isSettingsPageActive('builtin.automation-runtime.project-settings', 'project-plugins') ? (
         <div id="settings-project-project-plugins" className="scroll-mt-4">
           {renderPluginSection({
             title: '项目插件',
@@ -2412,7 +2394,7 @@ export function SettingsPanel({
       ) : null}
 
       {needsProjectRefresh
-        && isSettingsRendererAvailable('builtin.project-resources.project-rules-settings') && (
+        && isSettingsPageActive('builtin.project-resources.project-rules-settings', 'project-rules') && (
         <div className="flex items-start gap-2 rounded-lg border border-yellow-200 bg-yellow-50 px-3 py-2 text-sm text-yellow-700">
           <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
           <span>排除规则已更新，关闭设置后会自动刷新当前项目。</span>
@@ -2546,7 +2528,6 @@ export function SettingsPanel({
 
           <main
             ref={settingsScrollRef}
-            onScroll={handleSettingsScroll}
             className="min-h-0 min-w-0 flex-1 overflow-y-auto bg-gray-50/40 p-4 dark:bg-gray-950/20 sm:p-5"
           >
             {displayedScope === 'global' ? renderGlobalSettings() : renderProjectSettings()}
