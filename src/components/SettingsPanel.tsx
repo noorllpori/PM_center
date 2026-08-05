@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -65,6 +65,16 @@ import type {
 } from '../types/plugin';
 
 type SettingsScope = 'global' | 'project';
+type SettingsNavigationId =
+  | 'general'
+  | 'exclusions'
+  | 'automation'
+  | 'tools'
+  | 'history'
+  | 'platform'
+  | 'about'
+  | 'project-rules'
+  | 'project-plugins';
 
 interface SettingsPanelProps {
   isOpen: boolean;
@@ -262,6 +272,8 @@ export function SettingsPanel({
   }));
 
   const [activeScope, setActiveScope] = useState<SettingsScope>('global');
+  const [activeNavigationId, setActiveNavigationId] = useState<SettingsNavigationId>('general');
+  const settingsScrollRef = useRef<HTMLDivElement>(null);
   const [globalPatterns, setGlobalPatterns] = useState<string[]>(DEFAULT_EXCLUDE_PATTERNS);
   const [projectPatterns, setProjectPatterns] = useState<string[]>([]);
   const [newPattern, setNewPattern] = useState('');
@@ -300,6 +312,61 @@ export function SettingsPanel({
 
   const hasProjectScope = isInitialized && !!projectPath;
   const resolvedDefaultScope = hasProjectScope && defaultScope === 'project' ? 'project' : 'global';
+  const globalNavigationItems = [
+    { id: 'general' as const, label: '常规', icon: SlidersHorizontal },
+    { id: 'exclusions' as const, label: '排除规则', icon: FolderOpen },
+    { id: 'automation' as const, label: '脚本与插件', icon: Puzzle },
+    { id: 'tools' as const, label: '工具与 Blender', icon: Wrench },
+    { id: 'history' as const, label: '历史记录', icon: RefreshCw },
+    { id: 'platform' as const, label: '装配与权限', icon: Box },
+    { id: 'about' as const, label: '关于与退出', icon: Info },
+  ];
+  const projectNavigationItems = [
+    { id: 'project-rules' as const, label: '项目规则', icon: FolderOpen },
+    { id: 'project-plugins' as const, label: '项目插件', icon: Puzzle },
+  ];
+  const navigationItems = activeScope === 'global'
+    ? globalNavigationItems.filter((item) => item.id !== 'automation' || automationSettingsAvailable)
+    : projectNavigationItems.filter((item) => item.id !== 'project-plugins' || automationSettingsAvailable);
+
+  const handleScopeChange = (scope: SettingsScope) => {
+    if (scope === 'project' && !hasProjectScope) {
+      return;
+    }
+    setActiveScope(scope);
+    setActiveNavigationId(scope === 'global' ? 'general' : 'project-rules');
+    settingsScrollRef.current?.scrollTo({ top: 0 });
+  };
+
+  const handleNavigationChange = (navigationId: SettingsNavigationId) => {
+    setActiveNavigationId(navigationId);
+    const container = settingsScrollRef.current;
+    const target = document.getElementById(`settings-${activeScope}-${navigationId}`);
+    if (!container || !target) {
+      return;
+    }
+    const nextTop = container.scrollTop
+      + target.getBoundingClientRect().top
+      - container.getBoundingClientRect().top
+      - 16;
+    container.scrollTo({ top: Math.max(0, nextTop), behavior: 'smooth' });
+  };
+
+  const handleSettingsScroll = () => {
+    const container = settingsScrollRef.current;
+    if (!container || navigationItems.length === 0) {
+      return;
+    }
+    const activationTop = container.getBoundingClientRect().top + 32;
+    let visibleId = navigationItems[0].id;
+    navigationItems.forEach((item) => {
+      const target = document.getElementById(`settings-${activeScope}-${item.id}`);
+      if (target && target.getBoundingClientRect().top <= activationTop) {
+        visibleId = item.id;
+      }
+    });
+    setActiveNavigationId((current) => (current === visibleId ? current : visibleId));
+  };
 
   useEffect(() => {
     if (!isOpen) {
@@ -308,6 +375,8 @@ export function SettingsPanel({
 
     void loadSettings();
     setActiveScope(resolvedDefaultScope);
+    setActiveNavigationId(resolvedDefaultScope === 'project' ? 'project-rules' : 'general');
+    settingsScrollRef.current?.scrollTo({ top: 0 });
     setGlobalPatterns(globalExcludePatterns);
   }, [isOpen, loadSettings, resolvedDefaultScope]);
 
@@ -1735,7 +1804,7 @@ export function SettingsPanel({
 
   const renderGlobalSettings = () => (
     <div className="space-y-4">
-      <section className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
+      <section id="settings-global-general" className="scroll-mt-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
         <div className="flex items-center gap-2 mb-3">
           <SlidersHorizontal className="w-4 h-4 text-blue-500" />
           <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">常规</h4>
@@ -1804,20 +1873,22 @@ export function SettingsPanel({
         </div>
       </section>
 
-      {renderExcludeRulesSection({
-        title: '全局排除规则',
-        description: '对所有项目统一生效。默认已包含 .blend1/.blend2/... 这类 Blender 备份文件规则。',
-        patterns: globalPatterns,
-        emptyText: '暂无全局排除规则',
-        onClear: () => {
-          if (confirm('确定要清空所有全局排除规则吗？')) {
-            void saveGlobalPatterns([]);
-          }
-        },
-      })}
+      <div id="settings-global-exclusions" className="scroll-mt-4">
+        {renderExcludeRulesSection({
+          title: '全局排除规则',
+          description: '对所有项目统一生效。默认已包含 .blend1/.blend2/... 这类 Blender 备份文件规则。',
+          patterns: globalPatterns,
+          emptyText: '暂无全局排除规则',
+          onClear: () => {
+            if (confirm('确定要清空所有全局排除规则吗？')) {
+              void saveGlobalPatterns([]);
+            }
+          },
+        })}
+      </div>
 
       {automationSettingsAvailable && (
-        <section className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
+        <section id="settings-global-automation" className="scroll-mt-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
           <div className="flex items-center gap-2 mb-3">
             <FolderOpen className="w-4 h-4 text-blue-500" />
             <div className="flex-1">
@@ -1862,7 +1933,7 @@ export function SettingsPanel({
         </div>
       </section>
 
-      <section className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
+      <section id="settings-global-tools" className="scroll-mt-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
         <div className="flex items-center gap-2 mb-3">
           <Wrench className="w-4 h-4 text-blue-500" />
           <div className="flex-1">
@@ -2087,7 +2158,7 @@ export function SettingsPanel({
         </div>
       </section>
 
-      <section className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
+      <section id="settings-global-history" className="scroll-mt-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
         <div className="flex items-center gap-2 mb-3">
           <Settings className="w-4 h-4 text-blue-500" />
           <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">历史与忽略列表</h4>
@@ -2174,13 +2245,15 @@ export function SettingsPanel({
         </div>
       </section>
 
-      <WorkspaceProfileDiagnosticsSection />
+      <div id="settings-global-platform" className="scroll-mt-4 space-y-4">
+        <WorkspaceProfileDiagnosticsSection />
 
-      <ModuleDiagnosticsSection />
+        <ModuleDiagnosticsSection />
 
-      <CapabilityDiagnosticsSection />
+        <CapabilityDiagnosticsSection />
+      </div>
 
-      <section className="rounded-xl border border-red-200 dark:border-red-900/40 bg-white dark:bg-gray-900 p-4">
+      <section id="settings-global-about" className="scroll-mt-4 rounded-xl border border-red-200 dark:border-red-900/40 bg-white dark:bg-gray-900 p-4">
         <div className="flex items-center gap-2 mb-3">
           <Power className="w-4 h-4 text-red-500" />
           <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">程序退出</h4>
@@ -2222,17 +2295,19 @@ export function SettingsPanel({
 
   const renderProjectSettings = () => (
     <div className="space-y-4">
-      {renderExcludeRulesSection({
-        title: '项目排除规则',
-        description: `当前项目：${projectName || '未打开项目'}。这里只追加项目专属规则；全局规则会继续一起生效。`,
-        patterns: projectPatterns,
-        emptyText: '暂无项目专属排除规则',
-        onClear: () => {
-          if (confirm('确定要清空当前项目的所有排除规则吗？')) {
-            saveProjectPatterns([]);
-          }
-        },
-      })}
+      <div id="settings-project-project-rules" className="scroll-mt-4">
+        {renderExcludeRulesSection({
+          title: '项目排除规则',
+          description: `当前项目：${projectName || '未打开项目'}。这里只追加项目专属规则；全局规则会继续一起生效。`,
+          patterns: projectPatterns,
+          emptyText: '暂无项目专属排除规则',
+          onClear: () => {
+            if (confirm('确定要清空当前项目的所有排除规则吗？')) {
+              saveProjectPatterns([]);
+            }
+          },
+        })}
+      </div>
 
       {projectPath && (
         <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
@@ -2244,14 +2319,16 @@ export function SettingsPanel({
         </div>
       )}
 
-      {automationSettingsAvailable
-        ? renderPluginSection({
+      {automationSettingsAvailable ? (
+        <div id="settings-project-project-plugins" className="scroll-mt-4">
+          {renderPluginSection({
             title: '项目插件',
             description: `当前项目：${projectName || '未打开项目'}。这里的插件只对当前项目生效，并且会覆盖同 id 的全局插件。`,
             directoryPath: pluginDirectories?.projectPath,
             plugins: projectPlugins,
-          })
-        : null}
+          })}
+        </div>
+      ) : null}
 
       {needsProjectRefresh && (
         <div className="flex items-start gap-2 rounded-lg border border-yellow-200 bg-yellow-50 px-3 py-2 text-sm text-yellow-700">
@@ -2268,7 +2345,8 @@ export function SettingsPanel({
         isOpen={isOpen}
         onClose={() => void handleClosePanel()}
         title={`设置 · ${APP_VERSION_TEXT}`}
-        size="xl"
+        size="2xl"
+        contentClassName="min-h-0 overflow-hidden p-0"
         footer={
           <button
             onClick={() => void handleClosePanel()}
@@ -2278,32 +2356,115 @@ export function SettingsPanel({
           </button>
         }
       >
-        <div className="space-y-4">
-          <div className="flex items-center gap-2 rounded-xl bg-gray-100 dark:bg-gray-800 p-1">
-            <button
-              onClick={() => setActiveScope('global')}
-              className={`flex-1 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-                activeScope === 'global'
-                  ? 'bg-white dark:bg-gray-900 text-blue-600 shadow-sm'
-                  : 'text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100'
-              }`}
-            >
-              全局设置
-            </button>
-            <button
-              onClick={() => hasProjectScope && setActiveScope('project')}
-              disabled={!hasProjectScope}
-              className={`flex-1 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-                activeScope === 'project'
-                  ? 'bg-white dark:bg-gray-900 text-blue-600 shadow-sm'
-                  : 'text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100'
-              } disabled:opacity-50 disabled:cursor-not-allowed`}
-            >
-              项目设置
-            </button>
+        <div className="flex h-[68vh] min-h-[420px] max-h-[720px] min-w-0 flex-col md:flex-row">
+          <aside className="hidden w-52 shrink-0 flex-col border-r border-gray-200 bg-gray-50/80 p-3 dark:border-gray-800 dark:bg-gray-950/40 md:flex">
+            <p className="px-2 pb-2 text-xs font-medium text-gray-500 dark:text-gray-400">设置范围</p>
+            <div className="grid grid-cols-2 gap-1 rounded-lg bg-gray-200/70 p-1 dark:bg-gray-800">
+              <button
+                type="button"
+                onClick={() => handleScopeChange('global')}
+                className={`rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${
+                  activeScope === 'global'
+                    ? 'bg-white text-blue-600 shadow-sm dark:bg-gray-900 dark:text-blue-400'
+                    : 'text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-gray-100'
+                }`}
+              >
+                全局
+              </button>
+              <button
+                type="button"
+                onClick={() => handleScopeChange('project')}
+                disabled={!hasProjectScope}
+                className={`rounded-md px-2 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                  activeScope === 'project'
+                    ? 'bg-white text-blue-600 shadow-sm dark:bg-gray-900 dark:text-blue-400'
+                    : 'text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-gray-100'
+                }`}
+              >
+                项目
+              </button>
+            </div>
+
+            <nav className="mt-4 space-y-1" aria-label="设置分区">
+              {navigationItems.map((item) => {
+                const Icon = item.icon;
+                const isActive = activeNavigationId === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => handleNavigationChange(item.id)}
+                    aria-current={isActive ? 'page' : undefined}
+                    className={`flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm transition-colors ${
+                      isActive
+                        ? 'bg-blue-50 font-medium text-blue-700 dark:bg-blue-950/50 dark:text-blue-300'
+                        : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-gray-800 dark:hover:text-gray-100'
+                    }`}
+                  >
+                    <Icon className="h-4 w-4 shrink-0" />
+                    <span className="truncate">{item.label}</span>
+                  </button>
+                );
+              })}
+            </nav>
+
+            {activeScope === 'project' && projectName ? (
+              <div className="mt-auto border-t border-gray-200 px-2 pt-3 dark:border-gray-800">
+                <p className="text-[11px] text-gray-500 dark:text-gray-400">当前项目</p>
+                <p className="mt-1 truncate text-xs font-medium text-gray-700 dark:text-gray-200" title={projectName}>
+                  {projectName}
+                </p>
+              </div>
+            ) : null}
+          </aside>
+
+          <div className="shrink-0 border-b border-gray-200 bg-gray-50/80 p-3 dark:border-gray-800 dark:bg-gray-950/40 md:hidden">
+            <div className="flex min-w-0 items-center gap-2">
+              <div className="flex shrink-0 rounded-md bg-gray-200/70 p-0.5 dark:bg-gray-800">
+                <button
+                  type="button"
+                  onClick={() => handleScopeChange('global')}
+                  className={`rounded px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                    activeScope === 'global'
+                      ? 'bg-white text-blue-600 shadow-sm dark:bg-gray-900 dark:text-blue-400'
+                      : 'text-gray-600 dark:text-gray-300'
+                  }`}
+                >
+                  全局
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleScopeChange('project')}
+                  disabled={!hasProjectScope}
+                  className={`rounded px-2.5 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                    activeScope === 'project'
+                      ? 'bg-white text-blue-600 shadow-sm dark:bg-gray-900 dark:text-blue-400'
+                      : 'text-gray-600 dark:text-gray-300'
+                  }`}
+                >
+                  项目
+                </button>
+              </div>
+              <select
+                value={activeNavigationId}
+                onChange={(event) => handleNavigationChange(event.target.value as SettingsNavigationId)}
+                aria-label="设置分区"
+                className="min-w-0 flex-1 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-sm text-gray-700 outline-none focus:border-blue-400 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
+              >
+                {navigationItems.map((item) => (
+                  <option key={item.id} value={item.id}>{item.label}</option>
+                ))}
+              </select>
+            </div>
           </div>
 
-          {activeScope === 'global' ? renderGlobalSettings() : renderProjectSettings()}
+          <main
+            ref={settingsScrollRef}
+            onScroll={handleSettingsScroll}
+            className="min-h-0 min-w-0 flex-1 overflow-y-auto bg-gray-50/40 p-4 dark:bg-gray-950/20 sm:p-5"
+          >
+            {activeScope === 'global' ? renderGlobalSettings() : renderProjectSettings()}
+          </main>
         </div>
       </Dialog>
 

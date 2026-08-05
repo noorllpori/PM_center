@@ -8,6 +8,7 @@ interface DialogProps {
   children: React.ReactNode;
   footer?: React.ReactNode;
   size?: 'sm' | 'md' | 'lg' | 'xl' | '2xl';
+  contentClassName?: string;
 }
 
 export function Dialog({ 
@@ -16,7 +17,8 @@ export function Dialog({
   title, 
   children, 
   footer,
-  size = 'md' 
+  size = 'md',
+  contentClassName,
 }: DialogProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
   const shouldCloseOnMouseUpRef = useRef(false);
@@ -86,7 +88,7 @@ export function Dialog({
         </div>
 
         {/* 内容 */}
-        <div className="p-5 overflow-auto">
+        <div className={contentClassName ?? 'p-5 overflow-auto'}>
           {children}
         </div>
 

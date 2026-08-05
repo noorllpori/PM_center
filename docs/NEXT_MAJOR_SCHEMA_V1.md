@@ -88,6 +88,10 @@ Profile 可以声明：
 
 布局和逻辑保持分离：Profile 只绑定工作流，不在布局字段内存放节点图。可见条件是受控结构，不允许注入 React、HTML 或任意 JavaScript。
 
+`shellLayout.home` 是静态默认主页，只能引用当前 Profile 中声明的 Surface。没有配置、引用失效或所属模块不可用时，宿主回退到不可撤下的最小安全主页。复杂启动行为不增加平行的脚本字段，而是通过 `workflowBindings` 将受控 `app.started` 事件绑定到 Workflow；真正执行进入 R11。
+
+启动工作流只能调用注册过的宿主命令和贡献目标，并继续接受模块状态、项目状态与 Capability 检查。崩溃恢复、未完成 Profile 切换和用户会话恢复优先于启动工作流，防止脚本覆盖恢复状态或重复打开窗口。以上均使用现有 v1 字段语义，不需要新增 schema 字段。
+
 ## 7. Component Manifest v1
 
 运行时固定为：
