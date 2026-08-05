@@ -37,6 +37,8 @@ pub enum WorkspaceProfileRuntimeErrorCode {
     ProfileRollbackFailed,
     ProfileSwitchTransactionInvalid,
     ProfileRecoveryFailed,
+    ProfileEditBlocked,
+    ProfileRevisionConflict,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -306,6 +308,42 @@ pub struct WorkspaceProfileSwitchResult {
     pub switched_at: i64,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateWorkspaceProfileRequest {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_profile_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveWorkspaceProfileRequest {
+    pub profile: WorkspaceProfileV1,
+    pub expected_revision: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceProfileDraftValidation {
+    pub valid: bool,
+    pub selected_module_count: usize,
+    pub explicit_component_count: usize,
+    pub effective_component_count: usize,
+    pub components: Vec<WorkspaceProfileComponentSummary>,
+    pub issues: Vec<WorkspaceProfileSwitchIssue>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceProfileMutationResult {
+    pub profile: WorkspaceProfileV1,
+    pub validation: WorkspaceProfileDraftValidation,
+    pub snapshot: WorkspaceProfileRuntimeSnapshot,
+}
+
 pub struct WorkspaceProfileRuntime {
     repository_path: PathBuf,
     state_path: PathBuf,
@@ -469,6 +507,146 @@ impl WorkspaceProfileRuntime {
                 )
             })?;
         Ok(profile)
+    }
+
+    pub fn profile_document(
+        &self,
+        profile_id: &str,
+    ) -> Result<WorkspaceProfileV1, WorkspaceProfileRuntimeError> {
+        let _guard = self.operation_lock.lock().map_err(|_| {
+            WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileLockPoisoned,
+                "装配方案运行时锁已损坏",
+                None,
+            )
+        })?;
+        self.read_profile_document_locked(profile_id)
+    }
+
+    pub fn validate_draft(
+        &self,
+        profile: &WorkspaceProfileV1,
+        manifests: &[ModuleManifestV1],
+    ) -> WorkspaceProfileDraftValidation {
+        build_draft_validation(profile, manifests, &self.component_manifests)
+    }
+
+    pub fn create_profile(
+        &self,
+        request: &CreateWorkspaceProfileRequest,
+        manifests: &[ModuleManifestV1],
+    ) -> Result<WorkspaceProfileMutationResult, WorkspaceProfileRuntimeError> {
+        let _guard = self.operation_lock.lock().map_err(|_| {
+            WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileLockPoisoned,
+                "装配方案运行时锁已损坏",
+                None,
+            )
+        })?;
+        self.ensure_edit_repository_ready_locked()?;
+        let name = validate_profile_text(&request.name, "装配方案名称", 80)?;
+        let description =
+            validate_profile_text_optional(&request.description, "装配方案说明", 500)?;
+        let mut profile = if let Some(source_profile_id) = request.source_profile_id.as_deref() {
+            self.read_profile_document_locked(source_profile_id)?
+        } else {
+            build_blank_profile()
+        };
+        let profile_id = format!("local.profile-{}", Uuid::new_v4().simple());
+        profile.id = profile_id.clone();
+        profile.name = name;
+        profile.description = description;
+        profile.revision = 1;
+        profile.extensions.remove("migration");
+        profile.extensions.remove("template");
+        profile.extensions.insert(
+            "editorMetadata".into(),
+            json!({
+                "createdAt": Utc::now().timestamp_millis(),
+                "sourceProfileId": request.source_profile_id,
+            }),
+        );
+        let validation = build_draft_validation(&profile, manifests, &self.component_manifests);
+        if !validation.valid {
+            return Err(draft_validation_error(
+                "新建装配方案未通过依赖预检",
+                &validation,
+                None,
+            ));
+        }
+        let path = self.profile_path(&profile_id);
+        write_new_json(&path, &profile)?;
+        let snapshot = self.snapshot_locked(manifests)?;
+        Ok(WorkspaceProfileMutationResult {
+            profile,
+            validation,
+            snapshot,
+        })
+    }
+
+    pub fn save_profile(
+        &self,
+        request: &SaveWorkspaceProfileRequest,
+        manifests: &[ModuleManifestV1],
+    ) -> Result<WorkspaceProfileMutationResult, WorkspaceProfileRuntimeError> {
+        let _guard = self.operation_lock.lock().map_err(|_| {
+            WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileLockPoisoned,
+                "装配方案运行时锁已损坏",
+                None,
+            )
+        })?;
+        self.ensure_edit_repository_ready_locked()?;
+        if !is_valid_stable_id(&request.profile.id) {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileDocumentInvalid,
+                format!("装配方案 ID 无效：{}", request.profile.id),
+                None,
+            ));
+        }
+        let state = self.read_state()?;
+        if state.current_profile_id == request.profile.id {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileEditBlocked,
+                "当前正在运行的装配方案不能直接修改，请先复制后编辑",
+                Some(&self.profile_path(&request.profile.id)),
+            ));
+        }
+        let path = self.profile_path(&request.profile.id);
+        let existing = self.read_profile_document_locked(&request.profile.id)?;
+        if existing.revision != request.expected_revision
+            || request.profile.revision != request.expected_revision
+        {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileRevisionConflict,
+                format!(
+                    "装配方案已被其他窗口修改：预期修订 {}，当前修订 {}",
+                    request.expected_revision, existing.revision
+                ),
+                Some(&path),
+            ));
+        }
+        let mut profile = request.profile.clone();
+        profile.name = validate_profile_text(&profile.name, "装配方案名称", 80)?;
+        profile.description =
+            validate_profile_text_optional(&profile.description, "装配方案说明", 500)?;
+        profile.schema_version = PLATFORM_SCHEMA_VERSION;
+        profile.revision = existing.revision.saturating_add(1);
+        let validation = build_draft_validation(&profile, manifests, &self.component_manifests);
+        if !validation.valid {
+            return Err(draft_validation_error(
+                "装配方案草稿未通过依赖预检",
+                &validation,
+                Some(&path),
+            ));
+        }
+        replace_json(&path, &profile)?;
+        let snapshot = self.snapshot_locked(manifests)?;
+        Ok(WorkspaceProfileMutationResult {
+            profile,
+            validation,
+            snapshot,
+        })
     }
 
     pub(crate) fn begin_switch(
@@ -1231,6 +1409,41 @@ impl WorkspaceProfileRuntime {
         })
     }
 
+    fn read_profile_document_locked(
+        &self,
+        profile_id: &str,
+    ) -> Result<WorkspaceProfileV1, WorkspaceProfileRuntimeError> {
+        if !is_valid_stable_id(profile_id) {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileDocumentInvalid,
+                format!("装配方案 ID 无效：{profile_id}"),
+                None,
+            ));
+        }
+        let path = self.profile_path(profile_id);
+        let profile = self.read_profile(&path)?;
+        if profile.id != profile_id {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileDocumentInvalid,
+                "装配方案文件名与文档 ID 不一致",
+                Some(&path),
+            ));
+        }
+        Ok(profile)
+    }
+
+    fn ensure_edit_repository_ready_locked(&self) -> Result<(), WorkspaceProfileRuntimeError> {
+        if self.journal_path.exists() {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileEditBlocked,
+                "装配方案切换尚未完成，暂时不能修改方案仓库",
+                Some(&self.journal_path),
+            ));
+        }
+        fs::create_dir_all(&self.repository_path)
+            .map_err(|error| io_error("创建装配方案目录失败", &self.repository_path, error))
+    }
+
     fn list_profiles_locked(
         &self,
         manifests: &[ModuleManifestV1],
@@ -1552,6 +1765,143 @@ fn component_summaries(
             .then_with(|| left.id.cmp(&right.id))
     });
     summaries
+}
+
+fn build_draft_validation(
+    profile: &WorkspaceProfileV1,
+    manifests: &[ModuleManifestV1],
+    component_manifests: &[ComponentManifestV1],
+) -> WorkspaceProfileDraftValidation {
+    let exact = validate_profile_with_catalogs(profile, manifests, component_manifests);
+    let effective = exact.as_ref().cloned().unwrap_or_else(|_| {
+        best_effort_effective_components(profile, manifests, component_manifests)
+    });
+    let issues = compatibility_issues(profile, manifests, component_manifests);
+    WorkspaceProfileDraftValidation {
+        valid: exact.is_ok()
+            && !issues
+                .iter()
+                .any(|issue| issue.severity == WorkspaceProfileSwitchIssueSeverity::Error),
+        selected_module_count: profile.enabled_modules.len(),
+        explicit_component_count: profile.enabled_components.len(),
+        effective_component_count: effective.len(),
+        components: component_summaries(profile, manifests, component_manifests, &effective),
+        issues,
+    }
+}
+
+fn best_effort_effective_components(
+    profile: &WorkspaceProfileV1,
+    manifests: &[ModuleManifestV1],
+    component_manifests: &[ComponentManifestV1],
+) -> BTreeSet<String> {
+    let modules = manifests
+        .iter()
+        .map(|manifest| (manifest.id.as_str(), manifest))
+        .collect::<BTreeMap<_, _>>();
+    let components = component_manifests
+        .iter()
+        .map(|manifest| (manifest.id.as_str(), manifest))
+        .collect::<BTreeMap<_, _>>();
+    let mut effective = BTreeSet::new();
+    let mut roots = profile
+        .enabled_components
+        .iter()
+        .map(|selection| selection.id.clone())
+        .collect::<Vec<_>>();
+    for selection in &profile.enabled_modules {
+        if let Some(module) = modules.get(selection.id.as_str()) {
+            roots.extend(
+                module
+                    .requires_components
+                    .iter()
+                    .chain(module.optional_components.iter())
+                    .map(|dependency| dependency.id.clone()),
+            );
+        }
+    }
+    for root in roots {
+        add_best_effort_component_closure(&root, &components, &mut effective);
+    }
+    effective
+}
+
+fn add_best_effort_component_closure(
+    component_id: &str,
+    components: &BTreeMap<&str, &ComponentManifestV1>,
+    effective: &mut BTreeSet<String>,
+) {
+    if !components.contains_key(component_id) || !effective.insert(component_id.to_string()) {
+        return;
+    }
+    if let Some(component) = components.get(component_id) {
+        for dependency in component
+            .requires_components
+            .iter()
+            .chain(component.optional_components.iter())
+        {
+            add_best_effort_component_closure(&dependency.id, components, effective);
+        }
+    }
+}
+
+fn validate_profile_text(
+    value: &str,
+    label: &str,
+    max_chars: usize,
+) -> Result<String, WorkspaceProfileRuntimeError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(WorkspaceProfileRuntimeError::new(
+            WorkspaceProfileRuntimeErrorCode::ProfileDocumentInvalid,
+            format!("{label}不能为空"),
+            None,
+        ));
+    }
+    if value.chars().count() > max_chars {
+        return Err(WorkspaceProfileRuntimeError::new(
+            WorkspaceProfileRuntimeErrorCode::ProfileDocumentInvalid,
+            format!("{label}不能超过 {max_chars} 个字符"),
+            None,
+        ));
+    }
+    Ok(value.to_string())
+}
+
+fn validate_profile_text_optional(
+    value: &str,
+    label: &str,
+    max_chars: usize,
+) -> Result<String, WorkspaceProfileRuntimeError> {
+    let value = value.trim();
+    if value.chars().count() > max_chars {
+        return Err(WorkspaceProfileRuntimeError::new(
+            WorkspaceProfileRuntimeErrorCode::ProfileDocumentInvalid,
+            format!("{label}不能超过 {max_chars} 个字符"),
+            None,
+        ));
+    }
+    Ok(value.to_string())
+}
+
+fn draft_validation_error(
+    message: &str,
+    validation: &WorkspaceProfileDraftValidation,
+    path: Option<&Path>,
+) -> WorkspaceProfileRuntimeError {
+    WorkspaceProfileRuntimeError::new(
+        WorkspaceProfileRuntimeErrorCode::ProfileEditBlocked,
+        message,
+        path,
+    )
+    .with_details(
+        validation
+            .issues
+            .iter()
+            .filter(|issue| issue.severity == WorkspaceProfileSwitchIssueSeverity::Error)
+            .map(|issue| format!("{}: {}", issue.code, issue.message))
+            .collect(),
+    )
 }
 
 fn compatibility_issues(
@@ -1900,7 +2250,7 @@ mod tests {
     use pmc_platform::{
         Capability, ComponentContributions, ComponentDependency, ComponentDistribution,
         ComponentResourceLimits, ComponentRole, ComponentRuntime, ComponentUiMode,
-        ModuleContributions, ModuleDataPolicy, ModuleScope, PlatformTarget,
+        ModuleContributions, ModuleDataPolicy, ModuleDependency, ModuleScope, PlatformTarget,
     };
 
     fn test_root(label: &str) -> PathBuf {
@@ -2138,6 +2488,207 @@ mod tests {
             .profiles
             .iter()
             .any(|profile| profile.id == BLANK_PROFILE_ID));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn copied_profile_gets_a_new_id_without_modifying_the_source() {
+        let root = test_root("copy-profile");
+        let runtime = WorkspaceProfileRuntime::new(&root);
+        let manifests = vec![manifest("builtin.alpha", "1.0.0")];
+        let snapshot = runtime
+            .initialize_from_current_configuration(
+                &manifests,
+                &BTreeSet::from(["builtin.alpha".to_string()]),
+                &["builtin.alpha.tool".into()],
+            )
+            .unwrap();
+        let source_id = snapshot.current_profile.id.clone();
+        let source_path = runtime.profile_path(&source_id);
+        let source_before = fs::read(&source_path).unwrap();
+
+        let result = runtime
+            .create_profile(
+                &CreateWorkspaceProfileRequest {
+                    name: "Alpha Copy".into(),
+                    description: "editable copy".into(),
+                    source_profile_id: Some(source_id.clone()),
+                },
+                &manifests,
+            )
+            .unwrap();
+
+        assert_ne!(result.profile.id, source_id);
+        assert!(result.profile.id.starts_with("local.profile-"));
+        assert_eq!(result.profile.name, "Alpha Copy");
+        assert_eq!(result.profile.revision, 1);
+        assert_eq!(fs::read(&source_path).unwrap(), source_before);
+        assert_eq!(
+            serde_json::to_value(runtime.profile_document(&source_id).unwrap()).unwrap(),
+            serde_json::to_value(snapshot.current_profile).unwrap()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn saving_a_profile_increments_its_revision() {
+        let root = test_root("save-revision");
+        let runtime = WorkspaceProfileRuntime::new(&root);
+        runtime
+            .initialize_from_current_configuration(&[], &BTreeSet::new(), &[])
+            .unwrap();
+        let created = runtime
+            .create_profile(
+                &CreateWorkspaceProfileRequest {
+                    name: "Editable".into(),
+                    description: String::new(),
+                    source_profile_id: None,
+                },
+                &[],
+            )
+            .unwrap();
+        let mut profile = created.profile;
+        profile.name = "Edited".into();
+
+        let saved = runtime
+            .save_profile(
+                &SaveWorkspaceProfileRequest {
+                    profile,
+                    expected_revision: 1,
+                },
+                &[],
+            )
+            .unwrap();
+
+        assert_eq!(saved.profile.revision, 2);
+        assert_eq!(saved.profile.name, "Edited");
+        assert_eq!(
+            runtime
+                .profile_document(&saved.profile.id)
+                .unwrap()
+                .revision,
+            2
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stale_profile_revision_is_rejected() {
+        let root = test_root("stale-revision");
+        let runtime = WorkspaceProfileRuntime::new(&root);
+        runtime
+            .initialize_from_current_configuration(&[], &BTreeSet::new(), &[])
+            .unwrap();
+        let created = runtime
+            .create_profile(
+                &CreateWorkspaceProfileRequest {
+                    name: "Editable".into(),
+                    description: String::new(),
+                    source_profile_id: None,
+                },
+                &[],
+            )
+            .unwrap();
+        let stale = created.profile.clone();
+        runtime
+            .save_profile(
+                &SaveWorkspaceProfileRequest {
+                    profile: created.profile,
+                    expected_revision: 1,
+                },
+                &[],
+            )
+            .unwrap();
+
+        let error = runtime
+            .save_profile(
+                &SaveWorkspaceProfileRequest {
+                    profile: stale,
+                    expected_revision: 1,
+                },
+                &[],
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error.code,
+            WorkspaceProfileRuntimeErrorCode::ProfileRevisionConflict
+        ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn current_profile_cannot_be_edited_directly() {
+        let root = test_root("current-edit");
+        let runtime = WorkspaceProfileRuntime::new(&root);
+        let snapshot = runtime
+            .initialize_from_current_configuration(&[], &BTreeSet::new(), &[])
+            .unwrap();
+
+        let error = runtime
+            .save_profile(
+                &SaveWorkspaceProfileRequest {
+                    profile: snapshot.current_profile,
+                    expected_revision: 1,
+                },
+                &[],
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error.code,
+            WorkspaceProfileRuntimeErrorCode::ProfileEditBlocked
+        ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn invalid_dependency_save_keeps_the_existing_file_unchanged() {
+        let root = test_root("invalid-save");
+        let runtime = WorkspaceProfileRuntime::new(&root);
+        let mut alpha = manifest("builtin.alpha", "1.0.0");
+        alpha.requires_modules.push(ModuleDependency {
+            id: "builtin.beta".into(),
+            version_requirement: "^1.0".into(),
+        });
+        let manifests = vec![alpha, manifest("builtin.beta", "1.0.0")];
+        runtime
+            .initialize_from_current_configuration(&manifests, &BTreeSet::new(), &[])
+            .unwrap();
+        let created = runtime
+            .create_profile(
+                &CreateWorkspaceProfileRequest {
+                    name: "Editable".into(),
+                    description: String::new(),
+                    source_profile_id: None,
+                },
+                &manifests,
+            )
+            .unwrap();
+        let path = runtime.profile_path(&created.profile.id);
+        let before = fs::read(&path).unwrap();
+        let mut invalid = created.profile;
+        invalid.enabled_modules.push(ProfileModuleSelection {
+            id: "builtin.alpha".into(),
+            version_requirement: "^1.0".into(),
+            extensions: ExtensionFields::new(),
+        });
+
+        let error = runtime
+            .save_profile(
+                &SaveWorkspaceProfileRequest {
+                    profile: invalid,
+                    expected_revision: 1,
+                },
+                &manifests,
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error.code,
+            WorkspaceProfileRuntimeErrorCode::ProfileEditBlocked
+        ));
+        assert_eq!(fs::read(&path).unwrap(), before);
         fs::remove_dir_all(root).unwrap();
     }
 

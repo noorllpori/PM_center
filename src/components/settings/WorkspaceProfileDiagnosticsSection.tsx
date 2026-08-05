@@ -3,14 +3,18 @@ import {
   AlertTriangle,
   ArrowRight,
   CheckCircle2,
+  Copy,
   Layers3,
   Loader2,
   PackageOpen,
+  Pencil,
+  Plus,
   RefreshCw,
   ShieldAlert,
 } from 'lucide-react';
 import { useWorkspaceProfileStore } from '../../stores/workspaceProfileStore';
-import { ConfirmDialog } from '../Dialog';
+import { ConfirmDialog, InputDialog } from '../Dialog';
+import { WorkspaceProfileEditorDialog } from './WorkspaceProfileEditorDialog';
 
 const STATUS_META = {
   ready: {
@@ -55,14 +59,23 @@ export function WorkspaceProfileDiagnosticsSection() {
   const snapshot = useWorkspaceProfileStore((state) => state.snapshot);
   const isLoading = useWorkspaceProfileStore((state) => state.isLoading);
   const isSwitching = useWorkspaceProfileStore((state) => state.isSwitching);
+  const isMutating = useWorkspaceProfileStore((state) => state.isMutating);
   const error = useWorkspaceProfileStore((state) => state.error);
   const switchPreview = useWorkspaceProfileStore((state) => state.switchPreview);
   const switchMessage = useWorkspaceProfileStore((state) => state.switchMessage);
   const refresh = useWorkspaceProfileStore((state) => state.refresh);
   const previewSwitch = useWorkspaceProfileStore((state) => state.previewSwitch);
   const switchProfile = useWorkspaceProfileStore((state) => state.switchProfile);
+  const createProfile = useWorkspaceProfileStore((state) => state.createProfile);
   const clearSwitchPreview = useWorkspaceProfileStore((state) => state.clearSwitchPreview);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [createDialog, setCreateDialog] = useState<{
+    kind: 'blank' | 'copy';
+    sourceProfileId?: string;
+    sourceDescription?: string;
+  } | null>(null);
+  const [newProfileName, setNewProfileName] = useState('');
+  const [editorProfileId, setEditorProfileId] = useState<string | null>(null);
   const currentSummary = snapshot?.profiles.find((profile) => profile.current) ?? null;
   const currentProfile = snapshot?.currentProfile ?? null;
 
@@ -75,6 +88,33 @@ export function WorkspaceProfileDiagnosticsSection() {
         '模块切换或状态提交失败时会自动恢复原 Profile。',
       ].join('\n')
     : '';
+
+  const openCreateDialog = (
+    kind: 'blank' | 'copy',
+    sourceProfileId?: string,
+    sourceName?: string,
+    sourceDescription?: string,
+  ) => {
+    setCreateDialog({ kind, sourceProfileId, sourceDescription });
+    setNewProfileName(kind === 'copy' ? `${sourceName || '装配方案'} 副本` : '新装配方案');
+  };
+
+  const createAndEditProfile = async () => {
+    if (!createDialog || !newProfileName.trim()) return;
+    try {
+      const result = await createProfile({
+        name: newProfileName.trim(),
+        description: createDialog.kind === 'copy'
+          ? createDialog.sourceDescription || '从现有装配方案复制，可独立修改。'
+          : '从空白状态创建的装配方案。',
+        sourceProfileId: createDialog.sourceProfileId ?? null,
+      });
+      setCreateDialog(null);
+      setEditorProfileId(result.profile.id);
+    } catch {
+      // The store keeps the structured backend error visible in this section.
+    }
+  };
 
   return (
     <section className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
@@ -90,15 +130,26 @@ export function WorkspaceProfileDiagnosticsSection() {
             </p>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() => void refresh()}
-          disabled={isLoading || isSwitching}
-          className="flex h-8 w-8 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 disabled:opacity-50 dark:hover:bg-gray-800"
-          title="刷新装配方案诊断"
-        >
-          <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => openCreateDialog('blank')}
+            disabled={isLoading || isSwitching || isMutating || Boolean(snapshot?.pendingSwitch)}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            新建方案
+          </button>
+          <button
+            type="button"
+            onClick={() => void refresh()}
+            disabled={isLoading || isSwitching || isMutating}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 disabled:opacity-50 dark:hover:bg-gray-800"
+            title="刷新装配方案诊断"
+          >
+            <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+          </button>
+        </div>
       </div>
 
       {error ? (
@@ -180,15 +231,37 @@ export function WorkspaceProfileDiagnosticsSection() {
                       <p key={issue} className="mt-1 text-xs text-amber-700 dark:text-amber-300">{issue}</p>
                     ))}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => void previewSwitch(profile.id)}
-                    disabled={profile.status !== 'ready' || isLoading || isSwitching}
-                    className="inline-flex h-8 items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
-                  >
-                    {isLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowRight className="h-3.5 w-3.5" />}
-                    查看影响
-                  </button>
+                  <div className="flex flex-wrap items-center justify-end gap-1.5">
+                    {!profile.current ? (
+                      <button
+                        type="button"
+                        onClick={() => setEditorProfileId(profile.id)}
+                        disabled={profile.status === 'invalid' || isLoading || isSwitching || isMutating}
+                        className="inline-flex h-8 items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                        编辑
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => openCreateDialog('copy', profile.id, profile.name, profile.description)}
+                      disabled={profile.status !== 'ready' || isLoading || isSwitching || isMutating || Boolean(snapshot.pendingSwitch)}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                      {profile.current ? '复制编辑' : '复制'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void previewSwitch(profile.id)}
+                      disabled={profile.status !== 'ready' || isLoading || isSwitching || isMutating}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+                    >
+                      {isLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowRight className="h-3.5 w-3.5" />}
+                      查看影响
+                    </button>
+                  </div>
                 </div>
               );
             })}
@@ -394,6 +467,24 @@ export function WorkspaceProfileDiagnosticsSection() {
         confirmText="确认切换"
         cancelText="取消"
         type="warning"
+      />
+      <InputDialog
+        isOpen={Boolean(createDialog)}
+        onClose={() => setCreateDialog(null)}
+        onConfirm={() => createAndEditProfile()}
+        title={createDialog?.kind === 'copy' ? '复制装配方案' : '新建装配方案'}
+        label="方案名称"
+        value={newProfileName}
+        onChange={setNewProfileName}
+        confirmText={createDialog?.kind === 'copy' ? '复制并编辑' : '创建并编辑'}
+        disabled={isMutating || !newProfileName.trim()}
+        description="创建后不会自动切换当前运行方案；保存草稿后仍需通过“查看影响”明确应用。"
+        selectOnOpen
+      />
+      <WorkspaceProfileEditorDialog
+        isOpen={Boolean(editorProfileId)}
+        profileId={editorProfileId}
+        onClose={() => setEditorProfileId(null)}
       />
     </section>
   );

@@ -1,10 +1,12 @@
 import { create } from 'zustand';
 import {
+  createWorkspaceProfile,
   finalizeWorkspaceProfileSwitch,
   getWorkspaceProfileRuntime,
   initializeWorkspaceProfileRuntime,
   previewWorkspaceProfileSwitch,
   rollbackWorkspaceProfileSwitch,
+  saveWorkspaceProfile,
   switchWorkspaceProfile,
 } from '../api/workspaceProfiles';
 import { PLATFORM_MODULE_RUNTIME_CHANGED_EVENT } from '../api/platformModules';
@@ -14,6 +16,9 @@ import {
   useBuiltinToolsStore,
 } from './builtinToolsStore';
 import type {
+  CreateWorkspaceProfileRequest,
+  SaveWorkspaceProfileRequest,
+  WorkspaceProfileMutationResult,
   WorkspaceProfileRuntimeCommandError,
   WorkspaceProfileRuntimeSnapshot,
   WorkspaceProfileSwitchPreview,
@@ -24,6 +29,7 @@ interface WorkspaceProfileState {
   isInitialized: boolean;
   isLoading: boolean;
   isSwitching: boolean;
+  isMutating: boolean;
   error: string | null;
   switchPreview: WorkspaceProfileSwitchPreview | null;
   switchMessage: string | null;
@@ -31,6 +37,8 @@ interface WorkspaceProfileState {
   refresh: () => Promise<void>;
   previewSwitch: (profileId: string) => Promise<void>;
   switchProfile: (profileId: string) => Promise<void>;
+  createProfile: (request: CreateWorkspaceProfileRequest) => Promise<WorkspaceProfileMutationResult>;
+  saveProfile: (request: SaveWorkspaceProfileRequest) => Promise<WorkspaceProfileMutationResult>;
   clearSwitchPreview: () => void;
 }
 
@@ -56,6 +64,7 @@ export const useWorkspaceProfileStore = create<WorkspaceProfileState>((set, get)
   isInitialized: false,
   isLoading: false,
   isSwitching: false,
+  isMutating: false,
   error: null,
   switchPreview: null,
   switchMessage: null,
@@ -184,6 +193,34 @@ export const useWorkspaceProfileStore = create<WorkspaceProfileState>((set, get)
       }
     } finally {
       set({ isSwitching: false });
+    }
+  },
+
+  createProfile: async (request) => {
+    set({ isMutating: true, error: null, switchMessage: null });
+    try {
+      const result = await createWorkspaceProfile(request);
+      set({ snapshot: result.snapshot, error: null });
+      return result;
+    } catch (error) {
+      set({ error: formatRuntimeError(error) });
+      throw error;
+    } finally {
+      set({ isMutating: false });
+    }
+  },
+
+  saveProfile: async (request) => {
+    set({ isMutating: true, error: null, switchMessage: null });
+    try {
+      const result = await saveWorkspaceProfile(request);
+      set({ snapshot: result.snapshot, error: null });
+      return result;
+    } catch (error) {
+      set({ error: formatRuntimeError(error) });
+      throw error;
+    } finally {
+      set({ isMutating: false });
     }
   },
 

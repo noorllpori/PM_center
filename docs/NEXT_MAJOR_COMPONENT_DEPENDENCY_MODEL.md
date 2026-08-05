@@ -1,6 +1,6 @@
 # 下一代统一组件依赖模型与 BlenderIO 定位
 
-> 状态：`r7-0-implementing`
+> 状态：`r7-0-accepted`
 >
 > 日期：2026-08-05
 >

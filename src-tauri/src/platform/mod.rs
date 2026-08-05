@@ -10,10 +10,12 @@ pub use module_manager::{
     ModuleRuntimeOverview, ModuleState, StopStrategy,
 };
 pub use profile_runtime::{
-    InitializeWorkspaceProfileRuntimeRequest, PreviewWorkspaceProfileSwitchRequest,
-    SwitchWorkspaceProfileRequest, WorkspaceProfileRuntime, WorkspaceProfileRuntimeError,
-    WorkspaceProfileRuntimeErrorCode, WorkspaceProfileRuntimeSnapshot, WorkspaceProfileSwitchPhase,
-    WorkspaceProfileSwitchPreview, WorkspaceProfileSwitchResult,
+    CreateWorkspaceProfileRequest, InitializeWorkspaceProfileRuntimeRequest,
+    PreviewWorkspaceProfileSwitchRequest, SaveWorkspaceProfileRequest,
+    SwitchWorkspaceProfileRequest, WorkspaceProfileDraftValidation, WorkspaceProfileMutationResult,
+    WorkspaceProfileRuntime, WorkspaceProfileRuntimeError, WorkspaceProfileRuntimeErrorCode,
+    WorkspaceProfileRuntimeSnapshot, WorkspaceProfileSwitchPhase, WorkspaceProfileSwitchPreview,
+    WorkspaceProfileSwitchResult,
 };
 
 pub use builtin_modules::{
@@ -207,6 +209,43 @@ pub fn get_workspace_profile_runtime(
         .map(|module| module.manifest)
         .collect::<Vec<_>>();
     runtime.profiles.snapshot(&manifests)
+}
+
+#[tauri::command]
+pub fn get_workspace_profile_document(
+    profile_id: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<pmc_platform::WorkspaceProfileV1, WorkspaceProfileRuntimeError> {
+    runtime.profiles.profile_document(&profile_id)
+}
+
+#[tauri::command]
+pub fn validate_workspace_profile_draft(
+    profile: pmc_platform::WorkspaceProfileV1,
+    runtime: State<'_, PlatformRuntime>,
+) -> WorkspaceProfileDraftValidation {
+    let manifests = formal_module_manifests(&runtime);
+    runtime.profiles.validate_draft(&profile, &manifests)
+}
+
+#[tauri::command]
+pub async fn create_workspace_profile(
+    request: CreateWorkspaceProfileRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<WorkspaceProfileMutationResult, WorkspaceProfileRuntimeError> {
+    let _guard = runtime.profile_switch_lock.lock().await;
+    let manifests = formal_module_manifests(&runtime);
+    runtime.profiles.create_profile(&request, &manifests)
+}
+
+#[tauri::command]
+pub async fn save_workspace_profile(
+    request: SaveWorkspaceProfileRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<WorkspaceProfileMutationResult, WorkspaceProfileRuntimeError> {
+    let _guard = runtime.profile_switch_lock.lock().await;
+    let manifests = formal_module_manifests(&runtime);
+    runtime.profiles.save_profile(&request, &manifests)
 }
 
 #[tauri::command]
@@ -473,6 +512,17 @@ fn profile_module_ids(
         .enabled_modules
         .iter()
         .map(|selection| selection.id.clone())
+        .collect()
+}
+
+fn formal_module_manifests(runtime: &PlatformRuntime) -> Vec<pmc_platform::ModuleManifestV1> {
+    runtime
+        .manager
+        .overview()
+        .modules
+        .into_iter()
+        .filter(|module| !module.diagnostic)
+        .map(|module| module.manifest)
         .collect()
 }
 

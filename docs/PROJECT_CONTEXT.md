@@ -102,7 +102,7 @@ React invoke/listen
 | 脚本/任务 | `ScriptRunner.tsx`、`TaskPanel/`、`taskStore.ts` | 用户脚本、日志、取消/重试与任务面板聚合。 |
 | 设置 | `SettingsPanel.tsx`、`settingsStore.ts` | 全局工具路径、Blender 版本、排除规则、启动偏好、插件等。 |
 | 功能中心 | `features/builtinTools.ts`、`features/contributionRegistry.ts`、`features/contributionDataSources.ts`、`features/contributionCatalogDiagnostics.ts`、`stores/contributionRegistryStore.ts`、`components/file-manager/index.tsx` | `Alt+Q` 工具入口；R5 已让工具、Pin、Shell/工作区标签、设置区、右键命令、Widget、DataSource 和节点目录按模块状态动态出现或撤下，并提供目录一致性、实现覆盖、缺失状态和订阅释放诊断。智能剪贴板仍调用独立 Win32 窗口。 |
-| 装配方案运行时 | `platform/profile_runtime.rs`、`api/workspaceProfiles.ts`、`stores/workspaceProfileStore.ts`、`WorkspaceProfileDiagnosticsSection.tsx` | R6-1 将现有正式模块期望状态和功能栏 Pin 幂等迁移为普通 `WorkspaceProfileV1`，保存在软件级 `profiles/`；当前只读诊断，不驱动模块或布局切换。 |
+| 装配方案运行时 | `platform/profile_runtime.rs`、`api/workspaceProfiles.ts`、`stores/workspaceProfileStore.ts`、`WorkspaceProfileDiagnosticsSection.tsx`、`WorkspaceProfileEditorDialog.tsx` | R6 已完成迁移、事务切换、会话归属和恢复；R7-1 增加方案新建、复制、模块/显式组件草稿编辑、依赖预检和 revision 安全保存。当前运行方案必须复制后编辑，保存不会自动应用。 |
 | 说明组件 | `components/ui/HelpAssistant.tsx` | 复杂或不可逆概念旁的问号说明；支持文字、图片、视频及自动避让定位。 |
 
 状态 Store 的所有权：
@@ -239,7 +239,7 @@ React invoke/listen
 - 下一超大版本的主线是“统一宿主运行时 + Capability + Module + Component + Workflow + Profile”，不维护四套长期分叉代码；这里的宿主运行时不是组件分类，所有正式组件统一支持安装、卸载和升级；
 - Profile 是用户可新建、修改、导出和分享的装配方案；项目管理器、媒体管理器、通信端和 Blender 渲染器只是验证系统能力的参考组合，不得写死为固定枚举；
 - R6-2 已提供“当前 PM Center 装配方案”和普通“空白装配空间”的切换预览。预览只读，实际切换按目标模块集合执行并在失败时恢复旧集合；快捷栏 Pin 由 Profile 中稳定 Tool 贡献 ID 驱动；
-- R6-3 已完成 Profile 会话归属和中断恢复并验收；当前进入 R7。R7-0 已建立正式组件目录和依赖合同，`pmc.blendio` 作为首个 bundled 但可卸载的组件登记，渲染中心必需依赖、项目资源可选依赖；实际组件安装器和外部进程监督仍属于 R9/R10；
+- R6-3 已完成 Profile 会话归属和中断恢复并验收；R7-0 组件目录和依赖合同已验收，`pmc.blendio` 作为首个 bundled 但可卸载的组件登记；R7-1 已进入草稿编辑器人工验收。实际组件下载、安装、卸载、升级和外部进程监督仍属于 R9/R10；
 - 当前功能中心 Pin 只是入口偏好，不能作为模块启停。真正停用必须停止端口、watcher、调度器、原生线程、子进程和数据库资源；
 - 现有 Python 插件作为兼容组件保留，后续扩展到受控 Python Worker、原生独立进程、隔离 DLL 和资料包；
 - 渲染农场复用局域网传输与项目同步，不依赖聊天 UI，远程执行必须增加设备信任、权限和任务协议；

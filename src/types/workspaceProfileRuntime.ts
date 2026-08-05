@@ -46,6 +46,32 @@ export interface WorkspaceProfileComponentSummary {
   requiredByComponents: string[];
 }
 
+export interface WorkspaceProfileDraftValidation {
+  valid: boolean;
+  selectedModuleCount: number;
+  explicitComponentCount: number;
+  effectiveComponentCount: number;
+  components: WorkspaceProfileComponentSummary[];
+  issues: WorkspaceProfileSwitchIssue[];
+}
+
+export interface WorkspaceProfileMutationResult {
+  profile: WorkspaceProfileV1;
+  validation: WorkspaceProfileDraftValidation;
+  snapshot: WorkspaceProfileRuntimeSnapshot;
+}
+
+export interface CreateWorkspaceProfileRequest {
+  name: string;
+  description?: string;
+  sourceProfileId?: string | null;
+}
+
+export interface SaveWorkspaceProfileRequest {
+  profile: WorkspaceProfileV1;
+  expectedRevision: number;
+}
+
 export interface WorkspaceProfileRuntimeSnapshot {
   currentProfile: WorkspaceProfileV1;
   profiles: WorkspaceProfileSummary[];
