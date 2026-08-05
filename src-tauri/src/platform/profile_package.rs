@@ -1,11 +1,14 @@
 use super::{
     WorkspaceProfileDraftValidation, WorkspaceProfileMutationResult, WorkspaceProfileRuntime,
     WorkspaceProfileRuntimeError, WorkspaceProfileRuntimeErrorCode,
+    WorkspaceProfileRuntimeSnapshot,
 };
+use chrono::Utc;
 use pmc_platform::{
     parse_package_header, parse_workspace_profile, ContentDigest, DigestAlgorithm, ExtensionFields,
-    ModuleManifestV1, PackageHeaderV1, PackageKind, PackagePayloadDescriptor, WorkspaceProfileV1,
-    PACKAGE_FORMAT_VERSION, PACKAGE_MAGIC, PLATFORM_SCHEMA_VERSION,
+    ModuleManifestV1, PackageHeaderV1, PackageKind, PackagePayloadDescriptor, ProfilePathVariable,
+    ProfilePathVariableKind, ProfileToolAlias, WorkspaceProfileV1, PACKAGE_FORMAT_VERSION,
+    PACKAGE_MAGIC, PLATFORM_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -45,6 +48,26 @@ pub struct ProfilePackageExportResult {
 pub struct ImportWorkspaceProfilePackageRequest {
     pub package_path: String,
     pub name: String,
+    #[serde(default)]
+    pub tool_mappings: Vec<ProfileLocalBindingInput>,
+    #[serde(default)]
+    pub path_mappings: Vec<ProfileLocalBindingInput>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProfileLocalBindingMode {
+    Automatic,
+    Path,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileLocalBindingInput {
+    pub id: String,
+    pub mode: ProfileLocalBindingMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -81,15 +104,38 @@ pub struct ProfilePackageImportPreview {
     pub surface_count: usize,
     pub widget_count: usize,
     pub pinned_tool_count: usize,
+    pub tool_aliases: Vec<ProfileToolAlias>,
+    pub path_variables: Vec<ProfilePathVariable>,
+    pub reusable_binding_presets: Vec<ProfileLocalBindingPreset>,
     pub missing_module_ids: Vec<String>,
     pub missing_component_ids: Vec<String>,
     pub issues: Vec<ProfilePackageIssue>,
     pub can_import: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileLocalBindingPreset {
+    pub profile_id: String,
+    pub profile_name: String,
+    pub tool_mappings: Vec<ProfileLocalBindingInput>,
+    pub path_mappings: Vec<ProfileLocalBindingInput>,
+}
+
 struct InspectedProfilePackage {
     preview: ProfilePackageImportPreview,
     profile: WorkspaceProfileV1,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredProfileLocalBindings {
+    schema_version: u16,
+    profile_id: String,
+    package_id: String,
+    created_at: i64,
+    tool_mappings: Vec<ProfileLocalBindingInput>,
+    path_mappings: Vec<ProfileLocalBindingInput>,
 }
 
 pub fn export_profile_package(
@@ -238,12 +284,31 @@ pub fn import_profile_package(
                 .collect(),
         ));
     }
-    runtime.import_profile_document(
+    let bindings = validate_local_bindings(&inspected.profile, request)?;
+    let imported = runtime.import_profile_document(
         &inspected.profile,
         &request.name,
         &inspected.preview.package_id,
         manifests,
-    )
+    )?;
+    let stored = StoredProfileLocalBindings {
+        schema_version: 1,
+        profile_id: imported.profile.id.clone(),
+        package_id: inspected.preview.package_id,
+        created_at: Utc::now().timestamp_millis(),
+        tool_mappings: bindings.0,
+        path_mappings: bindings.1,
+    };
+    if let Err(mut binding_error) = write_local_bindings(runtime, &stored) {
+        if let Err(rollback_error) = runtime.delete_profile(&imported.profile.id, manifests) {
+            binding_error.details.push(format!(
+                "本机映射写入失败后，导入方案回滚也失败：{}",
+                rollback_error.message
+            ));
+        }
+        return Err(binding_error);
+    }
+    Ok(imported)
 }
 
 fn inspect_profile_package_internal(
@@ -477,6 +542,8 @@ fn inspect_profile_package_internal(
         .iter()
         .map(|surface| surface.widgets.len())
         .sum();
+    let reusable_binding_presets =
+        collect_reusable_binding_presets(&profile, runtime, &snapshot);
     let preview = ProfilePackageImportPreview {
         package_path: path.to_string_lossy().into_owned(),
         package_id: header.package_id,
@@ -491,12 +558,126 @@ fn inspect_profile_package_internal(
         surface_count: profile.surfaces.len(),
         widget_count,
         pinned_tool_count: profile.shell_layout.pinned_tools.len(),
+        tool_aliases: profile.tool_aliases.clone(),
+        path_variables: profile.path_variables.clone(),
+        reusable_binding_presets,
         missing_module_ids,
         missing_component_ids,
         issues,
         can_import,
     };
     Ok(InspectedProfilePackage { preview, profile })
+}
+
+fn collect_reusable_binding_presets(
+    target_profile: &WorkspaceProfileV1,
+    runtime: &WorkspaceProfileRuntime,
+    snapshot: &WorkspaceProfileRuntimeSnapshot,
+) -> Vec<ProfileLocalBindingPreset> {
+    let mut presets = Vec::new();
+    for summary in &snapshot.profiles {
+        let bindings_path = runtime.local_bindings_path(&summary.id);
+        let Ok(bytes) = fs::read(&bindings_path) else {
+            continue;
+        };
+        let Ok(stored) = serde_json::from_slice::<StoredProfileLocalBindings>(&bytes) else {
+            continue;
+        };
+        if stored.profile_id != summary.id {
+            continue;
+        }
+        let Ok(source_profile) = runtime.profile_document(&summary.id) else {
+            continue;
+        };
+
+        let stored_tools = stored
+            .tool_mappings
+            .iter()
+            .map(|mapping| (mapping.id.as_str(), mapping))
+            .collect::<BTreeMap<_, _>>();
+        let mut tool_mappings = target_profile
+            .tool_aliases
+            .iter()
+            .filter_map(|target_alias| {
+                source_profile
+                    .tool_aliases
+                    .iter()
+                    .find(|source_alias| source_alias.tool == target_alias.tool)
+                    .and_then(|source_alias| stored_tools.get(source_alias.id.as_str()))
+                    .filter(|mapping| reusable_mapping_is_available(mapping, true))
+                    .map(|mapping| ProfileLocalBindingInput {
+                        id: target_alias.id.clone(),
+                        mode: mapping.mode,
+                        path: mapping.path.clone(),
+                    })
+            })
+            .collect::<Vec<_>>();
+
+        let source_variables = source_profile
+            .path_variables
+            .iter()
+            .map(|variable| (variable.id.as_str(), variable))
+            .collect::<BTreeMap<_, _>>();
+        let stored_paths = stored
+            .path_mappings
+            .iter()
+            .map(|mapping| (mapping.id.as_str(), mapping))
+            .collect::<BTreeMap<_, _>>();
+        let mut path_mappings = target_profile
+            .path_variables
+            .iter()
+            .filter_map(|target_variable| {
+                source_variables
+                    .get(target_variable.id.as_str())
+                    .filter(|source_variable| source_variable.kind == target_variable.kind)
+                    .and_then(|_| stored_paths.get(target_variable.id.as_str()))
+                    .filter(|mapping| {
+                        reusable_mapping_is_available(
+                            mapping,
+                            matches!(target_variable.kind, ProfilePathVariableKind::File),
+                        )
+                    })
+                    .map(|mapping| ProfileLocalBindingInput {
+                        id: target_variable.id.clone(),
+                        mode: mapping.mode,
+                        path: mapping.path.clone(),
+                    })
+            })
+            .collect::<Vec<_>>();
+
+        if tool_mappings.is_empty() && path_mappings.is_empty() {
+            continue;
+        }
+        tool_mappings.sort_by(|left, right| left.id.cmp(&right.id));
+        path_mappings.sort_by(|left, right| left.id.cmp(&right.id));
+        presets.push(ProfileLocalBindingPreset {
+            profile_id: summary.id.clone(),
+            profile_name: summary.name.clone(),
+            tool_mappings,
+            path_mappings,
+        });
+    }
+    presets.sort_by(|left, right| left.profile_name.cmp(&right.profile_name));
+    presets
+}
+
+fn reusable_mapping_is_available(mapping: &ProfileLocalBindingInput, expect_file: bool) -> bool {
+    match mapping.mode {
+        ProfileLocalBindingMode::Automatic => mapping
+            .path
+            .as_deref()
+            .is_none_or(|path| path.trim().is_empty()),
+        ProfileLocalBindingMode::Path => mapping.path.as_deref().is_some_and(|value| {
+            let metadata = fs::metadata(value);
+            metadata.is_ok_and(|metadata| {
+                if expect_file {
+                    metadata.is_file()
+                } else {
+                    metadata.is_dir()
+                }
+            })
+        }),
+    }
 }
 
 fn portable_profile(profile: &WorkspaceProfileV1) -> WorkspaceProfileV1 {
@@ -513,7 +694,291 @@ fn portable_profile(profile: &WorkspaceProfileV1) -> WorkspaceProfileV1 {
     ] {
         portable.extensions.remove(key);
     }
+    ensure_builtin_tool_aliases(&mut portable);
     portable
+}
+
+fn ensure_builtin_tool_aliases(profile: &mut WorkspaceProfileV1) {
+    let enabled = profile
+        .enabled_modules
+        .iter()
+        .map(|module| module.id.clone())
+        .collect::<BTreeSet<_>>();
+    if enabled.contains("builtin.render-center") {
+        ensure_tool_alias(
+            profile,
+            "render-blender",
+            "nexora.tool.blender",
+            true,
+            "渲染中心使用的 Blender 可执行文件",
+        );
+        ensure_tool_alias(
+            profile,
+            "render-ffmpeg",
+            "nexora.tool.ffmpeg",
+            false,
+            "渲染结果打包使用的 FFmpeg",
+        );
+    }
+    if enabled.contains("builtin.automation-runtime") {
+        ensure_tool_alias(
+            profile,
+            "automation-python",
+            "nexora.tool.python",
+            true,
+            "任务、Python 和旧插件使用的 Python 环境",
+        );
+    }
+    if enabled.contains("builtin.external-tools") {
+        ensure_tool_alias(
+            profile,
+            "media-ffprobe",
+            "nexora.tool.ffprobe",
+            false,
+            "视频信息分析使用的 FFprobe",
+        );
+    }
+    profile
+        .tool_aliases
+        .sort_by(|left, right| left.id.cmp(&right.id));
+}
+
+fn ensure_tool_alias(
+    profile: &mut WorkspaceProfileV1,
+    id: &str,
+    tool: &str,
+    required: bool,
+    description: &str,
+) {
+    if profile.tool_aliases.iter().any(|alias| alias.id == id) {
+        return;
+    }
+    profile.tool_aliases.push(ProfileToolAlias {
+        id: id.into(),
+        tool: tool.into(),
+        version_requirement: "*".into(),
+        required,
+        description: description.into(),
+        extensions: ExtensionFields::new(),
+    });
+}
+
+fn validate_local_bindings(
+    profile: &WorkspaceProfileV1,
+    request: &ImportWorkspaceProfilePackageRequest,
+) -> Result<
+    (Vec<ProfileLocalBindingInput>, Vec<ProfileLocalBindingInput>),
+    WorkspaceProfileRuntimeError,
+> {
+    let tool_aliases = profile
+        .tool_aliases
+        .iter()
+        .map(|alias| (alias.id.as_str(), alias))
+        .collect::<BTreeMap<_, _>>();
+    let path_variables = profile
+        .path_variables
+        .iter()
+        .map(|variable| (variable.id.as_str(), variable))
+        .collect::<BTreeMap<_, _>>();
+    let mut tool_mappings = BTreeMap::new();
+    for mapping in &request.tool_mappings {
+        let Some(alias) = tool_aliases.get(mapping.id.as_str()) else {
+            return Err(mapping_error(
+                request,
+                format!("工具映射引用了不存在的别名：{}", mapping.id),
+            ));
+        };
+        if tool_mappings.contains_key(mapping.id.as_str()) {
+            return Err(mapping_error(
+                request,
+                format!("工具别名重复映射：{}", mapping.id),
+            ));
+        }
+        let normalized = match mapping.mode {
+            ProfileLocalBindingMode::Automatic => {
+                if mapping
+                    .path
+                    .as_deref()
+                    .is_some_and(|path| !path.trim().is_empty())
+                {
+                    return Err(mapping_error(
+                        request,
+                        format!("自动工具映射不能同时指定路径：{}", mapping.id),
+                    ));
+                }
+                ProfileLocalBindingInput {
+                    id: mapping.id.clone(),
+                    mode: ProfileLocalBindingMode::Automatic,
+                    path: None,
+                }
+            }
+            ProfileLocalBindingMode::Path => ProfileLocalBindingInput {
+                id: mapping.id.clone(),
+                mode: ProfileLocalBindingMode::Path,
+                path: Some(validate_mapping_path(
+                    mapping.path.as_deref(),
+                    true,
+                    &format!("工具 {} ({})", alias.id, alias.tool),
+                    request,
+                )?),
+            },
+        };
+        tool_mappings.insert(mapping.id.as_str(), normalized);
+    }
+
+    let mut path_mappings = BTreeMap::new();
+    for mapping in &request.path_mappings {
+        let Some(variable) = path_variables.get(mapping.id.as_str()) else {
+            return Err(mapping_error(
+                request,
+                format!("路径映射引用了不存在的变量：{}", mapping.id),
+            ));
+        };
+        if path_mappings.contains_key(mapping.id.as_str()) {
+            return Err(mapping_error(
+                request,
+                format!("路径变量重复映射：{}", mapping.id),
+            ));
+        }
+        if mapping.mode != ProfileLocalBindingMode::Path {
+            return Err(mapping_error(
+                request,
+                format!("路径变量必须选择本机文件或目录：{}", mapping.id),
+            ));
+        }
+        let expect_file = matches!(variable.kind, ProfilePathVariableKind::File);
+        let normalized = ProfileLocalBindingInput {
+            id: mapping.id.clone(),
+            mode: ProfileLocalBindingMode::Path,
+            path: Some(validate_mapping_path(
+                mapping.path.as_deref(),
+                expect_file,
+                &format!("路径变量 {}", variable.id),
+                request,
+            )?),
+        };
+        path_mappings.insert(mapping.id.as_str(), normalized);
+    }
+
+    let mut missing = profile
+        .tool_aliases
+        .iter()
+        .filter(|alias| alias.required && !tool_mappings.contains_key(alias.id.as_str()))
+        .map(|alias| format!("工具 {} ({})", alias.id, alias.tool))
+        .chain(
+            profile
+                .path_variables
+                .iter()
+                .filter(|variable| {
+                    variable.required && !path_mappings.contains_key(variable.id.as_str())
+                })
+                .map(|variable| format!("路径 {} ({:?})", variable.id, variable.kind)),
+        )
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        missing.sort();
+        return Err(package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageMappingRequired,
+            "导入前必须完成本机工具和路径映射",
+            Some(Path::new(&request.package_path)),
+        )
+        .with_details(missing));
+    }
+
+    Ok((
+        tool_mappings.into_values().collect(),
+        path_mappings.into_values().collect(),
+    ))
+}
+
+fn validate_mapping_path(
+    value: Option<&str>,
+    expect_file: bool,
+    label: &str,
+    request: &ImportWorkspaceProfilePackageRequest,
+) -> Result<String, WorkspaceProfileRuntimeError> {
+    let value = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| mapping_error(request, format!("{label} 尚未选择本机路径")))?;
+    if !is_absolute_machine_path(value) || value.to_ascii_lowercase().starts_with("file://") {
+        return Err(mapping_error(
+            request,
+            format!("{label} 必须使用本机绝对路径"),
+        ));
+    }
+    let path = PathBuf::from(value);
+    let metadata = fs::metadata(&path)
+        .map_err(|error| mapping_error(request, format!("{label} 路径不可用：{error}")))?;
+    if expect_file && !metadata.is_file() {
+        return Err(mapping_error(request, format!("{label} 必须指向文件")));
+    }
+    if !expect_file && !metadata.is_dir() {
+        return Err(mapping_error(request, format!("{label} 必须指向目录")));
+    }
+    fs::canonicalize(&path)
+        .map(|path| path.to_string_lossy().into_owned())
+        .map_err(|error| mapping_error(request, format!("{label} 路径无法规范化：{error}")))
+}
+
+fn mapping_error(
+    request: &ImportWorkspaceProfilePackageRequest,
+    message: impl Into<String>,
+) -> WorkspaceProfileRuntimeError {
+    package_error(
+        WorkspaceProfileRuntimeErrorCode::ProfilePackageMappingRequired,
+        message,
+        Some(Path::new(&request.package_path)),
+    )
+}
+
+fn write_local_bindings(
+    runtime: &WorkspaceProfileRuntime,
+    bindings: &StoredProfileLocalBindings,
+) -> Result<(), WorkspaceProfileRuntimeError> {
+    let destination = runtime.local_bindings_path(&bindings.profile_id);
+    let parent = destination.parent().ok_or_else(|| {
+        package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfileIoError,
+            "本机映射路径缺少父目录",
+            Some(&destination),
+        )
+    })?;
+    fs::create_dir_all(parent)
+        .map_err(|error| package_io_error("创建本机映射目录失败", parent, error))?;
+    let mut bytes = serde_json::to_vec_pretty(bindings).map_err(|error| {
+        package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
+            format!("序列化本机映射失败：{error}"),
+            Some(&destination),
+        )
+    })?;
+    bytes.push(b'\n');
+    let temporary = parent.join(format!(
+        ".{}.{}.tmp",
+        destination
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("profile-bindings.json"),
+        Uuid::new_v4().simple()
+    ));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| package_io_error("创建本机映射临时文件失败", &temporary, error))?;
+        file.write_all(&bytes)
+            .map_err(|error| package_io_error("写入本机映射失败", &temporary, error))?;
+        file.sync_all()
+            .map_err(|error| package_io_error("同步本机映射失败", &temporary, error))?;
+        fs::rename(&temporary, &destination)
+            .map_err(|error| package_io_error("提交本机映射失败", &destination, error))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
 }
 
 fn canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, WorkspaceProfileRuntimeError> {
@@ -834,6 +1299,8 @@ mod tests {
             &ImportWorkspaceProfilePackageRequest {
                 package_path: first.to_string_lossy().into_owned(),
                 name: preview.suggested_name,
+                tool_mappings: Vec::new(),
+                path_mappings: Vec::new(),
             },
             &runtime,
             &[],
@@ -960,6 +1427,8 @@ mod tests {
             &ImportWorkspaceProfilePackageRequest {
                 package_path: package.to_string_lossy().into_owned(),
                 name: "Should not import".into(),
+                tool_mappings: Vec::new(),
+                path_mappings: Vec::new(),
             },
             &runtime,
             &[],
@@ -974,6 +1443,108 @@ mod tests {
     }
 
     #[test]
+    fn required_tool_and_path_mappings_are_stored_outside_the_profile() {
+        let root = temp_root("local-bindings");
+        fs::create_dir_all(&root).unwrap();
+        let package = root.join("mapped.pmc-profile");
+        let executable = root.join("tool.exe");
+        let output = root.join("output");
+        fs::write(&executable, b"test executable").unwrap();
+        fs::create_dir_all(&output).unwrap();
+
+        let mut source = profile("Mapped profile");
+        source.tool_aliases.push(ProfileToolAlias {
+            id: "render-tool".into(),
+            tool: "nexora.tool.blender".into(),
+            version_requirement: "*".into(),
+            required: true,
+            description: "test tool".into(),
+            extensions: ExtensionFields::new(),
+        });
+        source.path_variables.push(ProfilePathVariable {
+            id: "output-root".into(),
+            kind: ProfilePathVariableKind::Directory,
+            required: true,
+            description: "test output".into(),
+            extensions: ExtensionFields::new(),
+        });
+        export_profile_package(&source, package.to_str().unwrap()).unwrap();
+
+        let runtime = initialized_runtime(&root.join("runtime"));
+        let preview = inspect_profile_package(package.to_str().unwrap(), &runtime, &[]).unwrap();
+        assert_eq!(preview.tool_aliases.len(), 1);
+        assert_eq!(preview.path_variables.len(), 1);
+        let before = runtime.snapshot(&[]).unwrap().profiles.len();
+        let missing_error = import_profile_package(
+            &ImportWorkspaceProfilePackageRequest {
+                package_path: package.to_string_lossy().into_owned(),
+                name: "Missing mappings".into(),
+                tool_mappings: Vec::new(),
+                path_mappings: Vec::new(),
+            },
+            &runtime,
+            &[],
+        )
+        .unwrap_err();
+        assert!(matches!(
+            missing_error.code,
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageMappingRequired
+        ));
+        assert_eq!(runtime.snapshot(&[]).unwrap().profiles.len(), before);
+
+        let imported = import_profile_package(
+            &ImportWorkspaceProfilePackageRequest {
+                package_path: package.to_string_lossy().into_owned(),
+                name: "Mapped import".into(),
+                tool_mappings: vec![ProfileLocalBindingInput {
+                    id: "render-tool".into(),
+                    mode: ProfileLocalBindingMode::Path,
+                    path: Some(executable.to_string_lossy().into_owned()),
+                }],
+                path_mappings: vec![ProfileLocalBindingInput {
+                    id: "output-root".into(),
+                    mode: ProfileLocalBindingMode::Path,
+                    path: Some(output.to_string_lossy().into_owned()),
+                }],
+            },
+            &runtime,
+            &[],
+        )
+        .unwrap();
+        let bindings_path = runtime.local_bindings_path(&imported.profile.id);
+        assert!(bindings_path.is_file());
+        let stored = fs::read_to_string(bindings_path).unwrap();
+        assert!(stored.contains("render-tool"));
+        assert!(stored.contains("output-root"));
+        let profile_json = serde_json::to_string(&imported.profile).unwrap();
+        assert!(!profile_json.contains(executable.to_string_lossy().as_ref()));
+        assert!(!profile_json.contains(output.to_string_lossy().as_ref()));
+
+        let reuse_preview =
+            inspect_profile_package(package.to_str().unwrap(), &runtime, &[]).unwrap();
+        assert_eq!(reuse_preview.reusable_binding_presets.len(), 1);
+        let preset = &reuse_preview.reusable_binding_presets[0];
+        let canonical_executable = fs::canonicalize(&executable).unwrap();
+        let canonical_output = fs::canonicalize(&output).unwrap();
+        assert_eq!(preset.profile_id, imported.profile.id);
+        assert_eq!(preset.tool_mappings.len(), 1);
+        assert_eq!(preset.tool_mappings[0].id, "render-tool");
+        assert_eq!(
+            preset.tool_mappings[0].path.as_deref(),
+            Some(canonical_executable.to_string_lossy().as_ref())
+        );
+        assert_eq!(preset.path_mappings.len(), 1);
+        assert_eq!(preset.path_mappings[0].id, "output-root");
+        assert_eq!(
+            preset.path_mappings[0].path.as_deref(),
+            Some(canonical_output.to_string_lossy().as_ref())
+        );
+        runtime.delete_profile(&imported.profile.id, &[]).unwrap();
+        assert!(!runtime.local_bindings_path(&imported.profile.id).exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn name_conflict_never_overwrites_existing_profile() {
         let root = temp_root("name-conflict");
         fs::create_dir_all(&root).unwrap();
@@ -983,6 +1554,8 @@ mod tests {
         let request = ImportWorkspaceProfilePackageRequest {
             package_path: package.to_string_lossy().into_owned(),
             name: "Shared name".into(),
+            tool_mappings: Vec::new(),
+            path_mappings: Vec::new(),
         };
         import_profile_package(&request, &runtime, &[]).unwrap();
         let count = runtime.snapshot(&[]).unwrap().profiles.len();

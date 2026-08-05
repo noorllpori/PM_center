@@ -48,6 +48,41 @@ pub struct ProfilePresentationBinding {
     pub extensions: ExtensionFields,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileToolAlias {
+    pub id: String,
+    pub tool: String,
+    #[serde(default = "default_version_requirement")]
+    pub version_requirement: String,
+    #[serde(default = "default_true")]
+    pub required: bool,
+    #[serde(default)]
+    pub description: String,
+    #[serde(flatten)]
+    pub extensions: ExtensionFields,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProfilePathVariableKind {
+    File,
+    Directory,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfilePathVariable {
+    pub id: String,
+    pub kind: ProfilePathVariableKind,
+    #[serde(default = "default_true")]
+    pub required: bool,
+    #[serde(default)]
+    pub description: String,
+    #[serde(flatten)]
+    pub extensions: ExtensionFields,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum ShellNavigationKind {
@@ -285,6 +320,10 @@ pub struct WorkspaceProfileV1 {
     #[serde(default)]
     pub component_settings: BTreeMap<String, Value>,
     #[serde(default)]
+    pub tool_aliases: Vec<ProfileToolAlias>,
+    #[serde(default)]
+    pub path_variables: Vec<ProfilePathVariable>,
+    #[serde(default)]
     pub shell_layout: ProfileShellLayout,
     #[serde(default)]
     pub surfaces: Vec<ProfileSurface>,
@@ -326,6 +365,27 @@ impl ValidateContract for WorkspaceProfileV1 {
         }
         for component_id in self.component_settings.keys() {
             validate_stable_id(component_id, &format!("$.componentSettings.{component_id}"))?;
+        }
+        let mut tool_alias_ids = BTreeSet::new();
+        for (index, alias) in self.tool_aliases.iter().enumerate() {
+            let path = format!("$.toolAliases[{index}]");
+            validate_local_id(&alias.id, &format!("{path}.id"))?;
+            validate_stable_id(&alias.tool, &format!("{path}.tool"))?;
+            validate_version_requirement(
+                &alias.version_requirement,
+                &format!("{path}.versionRequirement"),
+            )?;
+            if !tool_alias_ids.insert(alias.id.as_str()) {
+                return duplicate(format!("{path}.id"), &alias.id);
+            }
+        }
+        let mut path_variable_ids = BTreeSet::new();
+        for (index, variable) in self.path_variables.iter().enumerate() {
+            let path = format!("$.pathVariables[{index}]");
+            validate_local_id(&variable.id, &format!("{path}.id"))?;
+            if !path_variable_ids.insert(variable.id.as_str()) {
+                return duplicate(format!("{path}.id"), &variable.id);
+            }
         }
         validate_stable_id(&self.id, "$.id")?;
         if self.name.trim().is_empty() {

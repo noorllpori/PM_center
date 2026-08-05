@@ -7,6 +7,7 @@ import {
   Copy,
   Download,
   FileArchive,
+  FolderOpen,
   Layers3,
   Loader2,
   PackageOpen,
@@ -22,6 +23,8 @@ import {
   inspectWorkspaceProfilePackage,
 } from '../../api/workspaceProfiles';
 import { useWorkspaceProfileStore } from '../../stores/workspaceProfileStore';
+import { usePythonEnvStore } from '../../stores/pythonEnvStore';
+import { useSettingsStore } from '../../stores/settingsStore';
 import type {
   ProfilePackageImportPreview,
   WorkspaceProfileRuntimeCommandError,
@@ -61,6 +64,16 @@ const COMPONENT_UI_LABEL = {
   hosted: '宿主界面',
   contributed: '组件界面',
 } as const;
+
+const AUTOMATIC_TOOL_MAPPING = '__automatic__';
+
+function toolDisplayName(tool: string) {
+  if (tool.endsWith('.blender')) return 'Blender';
+  if (tool.endsWith('.ffmpeg')) return 'FFmpeg';
+  if (tool.endsWith('.ffprobe')) return 'FFprobe';
+  if (tool.endsWith('.python')) return 'Python';
+  return tool;
+}
 
 function formatDate(timestamp: number) {
   return timestamp
@@ -105,6 +118,10 @@ export function WorkspaceProfileDiagnosticsSection() {
   const importProfilePackage = useWorkspaceProfileStore((state) => state.importProfilePackage);
   const deleteProfile = useWorkspaceProfileStore((state) => state.deleteProfile);
   const clearSwitchPreview = useWorkspaceProfileStore((state) => state.clearSwitchPreview);
+  const toolPaths = useSettingsStore((state) => state.toolPaths);
+  const blenderInstallations = useSettingsStore((state) => state.blenderInstallations);
+  const pythonEnvs = usePythonEnvStore((state) => state.envs);
+  const selectedPythonEnvId = usePythonEnvStore((state) => state.selectedEnvId);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [createDialog, setCreateDialog] = useState<{
     kind: 'blank' | 'copy';
@@ -116,11 +133,59 @@ export function WorkspaceProfileDiagnosticsSection() {
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
   const [importPreview, setImportPreview] = useState<ProfilePackageImportPreview | null>(null);
   const [importName, setImportName] = useState('');
+  const [importToolMappings, setImportToolMappings] = useState<Record<string, string>>({});
+  const [importPathMappings, setImportPathMappings] = useState<Record<string, string>>({});
+  const [importBindingPresetId, setImportBindingPresetId] = useState('');
   const [packageBusy, setPackageBusy] = useState<string | null>(null);
   const [packageNotice, setPackageNotice] = useState<string | null>(null);
   const [packageError, setPackageError] = useState<string | null>(null);
   const currentSummary = snapshot?.profiles.find((profile) => profile.current) ?? null;
   const currentProfile = snapshot?.currentProfile ?? null;
+  const toolCandidates = (tool: string) => {
+    const candidates: Array<{ path: string; label: string }> = [];
+    if (tool.endsWith('.blender')) {
+      if (toolPaths.blender) candidates.push({ path: toolPaths.blender, label: '当前 Blender' });
+      blenderInstallations.forEach((installation) => {
+        candidates.push({
+          path: installation.path,
+          label: installation.version ? `Blender ${installation.version}` : 'Blender',
+        });
+      });
+    } else if (tool.endsWith('.ffmpeg') && toolPaths.ffmpeg) {
+      candidates.push({ path: toolPaths.ffmpeg, label: '当前 FFmpeg' });
+    } else if (tool.endsWith('.ffprobe') && toolPaths.ffprobe) {
+      candidates.push({ path: toolPaths.ffprobe, label: '当前 FFprobe' });
+    } else if (tool.endsWith('.python')) {
+      pythonEnvs.forEach((environment) => {
+        candidates.push({
+          path: environment.path,
+          label: `${environment.name}${environment.version ? ` · ${environment.version}` : ''}`,
+        });
+      });
+    }
+    const seen = new Set<string>();
+    return candidates.filter((candidate) => {
+      const key = candidate.path.toLowerCase().replace(/\\/g, '/');
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+  const preferredToolPath = (tool: string) => {
+    if (tool.endsWith('.blender')) return toolPaths.blender ?? '';
+    if (tool.endsWith('.ffmpeg')) return toolPaths.ffmpeg ?? '';
+    if (tool.endsWith('.ffprobe')) return toolPaths.ffprobe ?? '';
+    if (tool.endsWith('.python')) {
+      return pythonEnvs.find((environment) => environment.id === selectedPythonEnvId)?.path
+        ?? pythonEnvs.find((environment) => environment.isEmbedded)?.path
+        ?? '';
+    }
+    return '';
+  };
+  const mappingsReady = importPreview
+    ? importPreview.toolAliases.every((alias) => !alias.required || Boolean(importToolMappings[alias.id]))
+      && importPreview.pathVariables.every((variable) => !variable.required || Boolean(importPathMappings[variable.id]))
+    : false;
 
   const confirmationMessage = switchPreview
     ? [
@@ -200,6 +265,11 @@ export function WorkspaceProfileDiagnosticsSection() {
       const preview = await inspectWorkspaceProfilePackage(packagePath);
       setImportPreview(preview);
       setImportName(preview.suggestedName);
+      setImportToolMappings(Object.fromEntries(
+        preview.toolAliases.map((alias) => [alias.id, preferredToolPath(alias.tool)]),
+      ));
+      setImportPathMappings({});
+      setImportBindingPresetId('');
     } catch (inspectError) {
       setPackageError(packageErrorMessage(inspectError));
     } finally {
@@ -215,8 +285,24 @@ export function WorkspaceProfileDiagnosticsSection() {
       const result = await importProfilePackage({
         packagePath: importPreview.packagePath,
         name: importName.trim(),
+        toolMappings: importPreview.toolAliases.flatMap((alias) => {
+          const value = importToolMappings[alias.id];
+          if (!value) return [];
+          return [{
+            id: alias.id,
+            mode: value === AUTOMATIC_TOOL_MAPPING ? 'automatic' as const : 'path' as const,
+            path: value === AUTOMATIC_TOOL_MAPPING ? null : value,
+          }];
+        }),
+        pathMappings: importPreview.pathVariables.flatMap((variable) => {
+          const path = importPathMappings[variable.id];
+          return path ? [{ id: variable.id, mode: 'path' as const, path }] : [];
+        }),
       });
       setImportPreview(null);
+      setImportToolMappings({});
+      setImportPathMappings({});
+      setImportBindingPresetId('');
       setPackageNotice(`已导入“${result.profile.name}”，当前运行方案未改变。`);
     } catch (importError) {
       setPackageError(packageErrorMessage(importError));
@@ -671,7 +757,12 @@ export function WorkspaceProfileDiagnosticsSection() {
       <Dialog
         isOpen={Boolean(importPreview)}
         onClose={() => {
-          if (packageBusy !== 'import') setImportPreview(null);
+          if (packageBusy !== 'import') {
+            setImportPreview(null);
+            setImportToolMappings({});
+            setImportPathMappings({});
+            setImportBindingPresetId('');
+          }
         }}
         title="导入装配方案"
         size="lg"
@@ -679,7 +770,12 @@ export function WorkspaceProfileDiagnosticsSection() {
           <>
             <button
               type="button"
-              onClick={() => setImportPreview(null)}
+              onClick={() => {
+                setImportPreview(null);
+                setImportToolMappings({});
+                setImportPathMappings({});
+                setImportBindingPresetId('');
+              }}
               disabled={packageBusy === 'import'}
               className="rounded-md px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-300 dark:hover:bg-gray-800"
             >
@@ -688,7 +784,7 @@ export function WorkspaceProfileDiagnosticsSection() {
             <button
               type="button"
               onClick={() => void importPackage()}
-              disabled={!importPreview?.canImport || !importName.trim() || packageBusy === 'import'}
+              disabled={!importPreview?.canImport || !mappingsReady || !importName.trim() || packageBusy === 'import'}
               className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-2 text-sm text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {packageBusy === 'import' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
@@ -706,8 +802,8 @@ export function WorkspaceProfileDiagnosticsSection() {
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">{importPreview.profileName}</p>
-                  <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${importPreview.canImport ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300' : 'bg-red-100 text-red-700 dark:bg-red-950/50 dark:text-red-300'}`}>
-                    {importPreview.canImport ? '检查通过' : '存在阻塞'}
+                  <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${!importPreview.canImport ? 'bg-red-100 text-red-700 dark:bg-red-950/50 dark:text-red-300' : mappingsReady ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300'}`}>
+                    {!importPreview.canImport ? '存在阻塞' : mappingsReady ? '检查通过' : '等待本机映射'}
                   </span>
                 </div>
                 <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{importPreview.description || '无方案说明'}</p>
@@ -732,6 +828,145 @@ export function WorkspaceProfileDiagnosticsSection() {
               ))}
             </div>
 
+            {(importPreview.toolAliases.length > 0 || importPreview.pathVariables.length > 0) ? (
+              <div className="space-y-3 rounded-md border border-indigo-200 bg-indigo-50/50 p-3 dark:border-indigo-900 dark:bg-indigo-950/20">
+                <div>
+                  <p className="text-xs font-semibold text-indigo-900 dark:text-indigo-200">本机工具与路径映射</p>
+                  <p className="mt-0.5 text-[11px] text-indigo-700/80 dark:text-indigo-300/70">
+                    映射只保存在本机，不写入可分享的装配方案。
+                  </p>
+                </div>
+                {importPreview.reusableBindingPresets.length > 0 ? (
+                  <label className="block rounded-md border border-indigo-200 bg-white/70 p-2 dark:border-indigo-900 dark:bg-gray-950/40">
+                    <span className="mb-1 block text-[11px] font-medium text-gray-700 dark:text-gray-300">沿用其他方案的相同选项</span>
+                    <select
+                      value={importBindingPresetId}
+                      onChange={(event) => {
+                        const presetId = event.target.value;
+                        setImportBindingPresetId(presetId);
+                        const preset = importPreview.reusableBindingPresets.find((item) => item.profileId === presetId);
+                        if (!preset) return;
+                        setImportToolMappings((values) => ({
+                          ...values,
+                          ...Object.fromEntries(preset.toolMappings.flatMap((mapping) => {
+                            const value = mapping.mode === 'automatic' ? AUTOMATIC_TOOL_MAPPING : mapping.path;
+                            return value ? [[mapping.id, value]] : [];
+                          })),
+                        }));
+                        setImportPathMappings((values) => ({
+                          ...values,
+                          ...Object.fromEntries(preset.pathMappings.flatMap((mapping) => (
+                            mapping.path ? [[mapping.id, mapping.path]] : []
+                          ))),
+                        }));
+                      }}
+                      disabled={packageBusy === 'import'}
+                      className="h-9 w-full rounded-md border border-gray-200 bg-white px-2 text-xs dark:border-gray-700 dark:bg-gray-900"
+                    >
+                      <option value="">不沿用，单独设置</option>
+                      {importPreview.reusableBindingPresets.map((preset) => (
+                        <option key={preset.profileId} value={preset.profileId}>
+                          {preset.profileName} · {preset.toolMappings.length + preset.pathMappings.length} 项可复用
+                        </option>
+                      ))}
+                    </select>
+                    <span className="mt-1 block text-[10px] text-gray-500">只复制相同工具和同名路径的当前值，不会与原方案建立关联。</span>
+                  </label>
+                ) : null}
+                {importPreview.toolAliases.map((alias) => {
+                  const candidates = toolCandidates(alias.tool);
+                  const current = importToolMappings[alias.id] ?? '';
+                  const hasCustomValue = current
+                    && current !== AUTOMATIC_TOOL_MAPPING
+                    && !candidates.some((candidate) => candidate.path === current);
+                  return (
+                    <div key={alias.id} className="grid gap-2 sm:grid-cols-[minmax(150px,0.75fr)_minmax(220px,1.25fr)_auto] sm:items-center">
+                      <div className="min-w-0">
+                        <p className="truncate text-xs font-medium text-gray-800 dark:text-gray-200">
+                          {toolDisplayName(alias.tool)}
+                          {alias.required ? <span className="ml-1 text-red-500">*</span> : null}
+                        </p>
+                        <p className="truncate font-mono text-[10px] text-gray-500" title={alias.description || alias.id}>
+                          {alias.id} · {alias.versionRequirement || '*'}
+                        </p>
+                      </div>
+                      <select
+                        value={current}
+                        onChange={(event) => setImportToolMappings((values) => ({
+                          ...values,
+                          [alias.id]: event.target.value,
+                        }))}
+                        disabled={packageBusy === 'import'}
+                        className="h-9 min-w-0 rounded-md border border-gray-200 bg-white px-2 text-xs dark:border-gray-700 dark:bg-gray-900"
+                      >
+                        <option value="">请选择映射</option>
+                        <option value={AUTOMATIC_TOOL_MAPPING}>使用系统自动检测</option>
+                        {candidates.map((candidate) => (
+                          <option key={candidate.path} value={candidate.path}>
+                            {candidate.label} · {candidate.path}
+                          </option>
+                        ))}
+                        {hasCustomValue ? <option value={current}>{current}</option> : null}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const selected = await open({
+                            title: `选择 ${toolDisplayName(alias.tool)} 可执行文件`,
+                            multiple: false,
+                            directory: false,
+                          });
+                          if (selected && !Array.isArray(selected)) {
+                            setImportToolMappings((values) => ({ ...values, [alias.id]: selected }));
+                          }
+                        }}
+                        disabled={packageBusy === 'import'}
+                        className="inline-flex h-9 items-center justify-center gap-1 rounded-md border border-gray-200 bg-white px-2 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+                      >
+                        <FolderOpen className="h-3.5 w-3.5" />
+                        选择
+                      </button>
+                    </div>
+                  );
+                })}
+                {importPreview.pathVariables.map((variable) => (
+                  <div key={variable.id} className="grid gap-2 sm:grid-cols-[minmax(150px,0.75fr)_minmax(220px,1.25fr)_auto] sm:items-center">
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-medium text-gray-800 dark:text-gray-200">
+                        {variable.description || variable.id}
+                        {variable.required ? <span className="ml-1 text-red-500">*</span> : null}
+                      </p>
+                      <p className="font-mono text-[10px] text-gray-500">{variable.id} · {variable.kind === 'directory' ? '目录' : '文件'}</p>
+                    </div>
+                    <input
+                      value={importPathMappings[variable.id] ?? ''}
+                      readOnly
+                      placeholder={variable.required ? '尚未选择' : '可选，不映射'}
+                      className="h-9 min-w-0 rounded-md border border-gray-200 bg-white px-2 text-xs dark:border-gray-700 dark:bg-gray-900"
+                    />
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const selected = await open({
+                          title: variable.description || `选择 ${variable.id}`,
+                          multiple: false,
+                          directory: variable.kind === 'directory',
+                        });
+                        if (selected && !Array.isArray(selected)) {
+                          setImportPathMappings((values) => ({ ...values, [variable.id]: selected }));
+                        }
+                      }}
+                      disabled={packageBusy === 'import'}
+                      className="inline-flex h-9 items-center justify-center gap-1 rounded-md border border-gray-200 bg-white px-2 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+                    >
+                      <FolderOpen className="h-3.5 w-3.5" />
+                      选择
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
             <label className="block">
               <span className="mb-1.5 block text-xs font-medium text-gray-700 dark:text-gray-300">导入后的方案名称</span>
               <input
@@ -741,7 +976,7 @@ export function WorkspaceProfileDiagnosticsSection() {
                 disabled={packageBusy === 'import'}
                 className="h-9 w-full rounded-md border border-gray-200 bg-white px-3 text-sm outline-none focus:border-indigo-400 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
               />
-              <span className="mt-1 block text-[11px] text-gray-500">导入只新增方案，不会切换当前运行状态，也不会安装缺失模块或组件。</span>
+              <span className="mt-1 block text-[11px] text-gray-500">导入只新增方案，不会切换当前运行状态，也不会安装缺失模块或组件；本机路径单独保存。</span>
             </label>
 
             {(importPreview.missingModuleIds.length > 0 || importPreview.missingComponentIds.length > 0) ? (

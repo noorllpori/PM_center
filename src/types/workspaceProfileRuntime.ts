@@ -4,6 +4,8 @@ import type {
   ComponentRole,
   ComponentRuntime,
   ComponentUiMode,
+  ProfilePathVariable,
+  ProfileToolAlias,
   WorkspaceProfileV1,
 } from './platform';
 
@@ -109,15 +111,35 @@ export interface ProfilePackageImportPreview {
   surfaceCount: number;
   widgetCount: number;
   pinnedToolCount: number;
+  toolAliases: ProfileToolAlias[];
+  pathVariables: ProfilePathVariable[];
+  reusableBindingPresets: ProfileLocalBindingPreset[];
   missingModuleIds: string[];
   missingComponentIds: string[];
   issues: ProfilePackageIssue[];
   canImport: boolean;
 }
 
+export type ProfileLocalBindingMode = 'automatic' | 'path';
+
+export interface ProfileLocalBindingInput {
+  id: string;
+  mode: ProfileLocalBindingMode;
+  path?: string | null;
+}
+
+export interface ProfileLocalBindingPreset {
+  profileId: string;
+  profileName: string;
+  toolMappings: ProfileLocalBindingInput[];
+  pathMappings: ProfileLocalBindingInput[];
+}
+
 export interface ImportWorkspaceProfilePackageRequest {
   packagePath: string;
   name: string;
+  toolMappings?: ProfileLocalBindingInput[];
+  pathMappings?: ProfileLocalBindingInput[];
 }
 
 export interface WorkspaceProfileRuntimeSnapshot {

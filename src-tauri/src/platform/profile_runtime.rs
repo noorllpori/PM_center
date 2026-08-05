@@ -68,6 +68,7 @@ pub enum WorkspaceProfileRuntimeErrorCode {
     ProfilePackageTooLarge,
     ProfilePackageDigestMismatch,
     ProfilePackageNameConflict,
+    ProfilePackageMappingRequired,
     ProfileDeleteBlocked,
 }
 
@@ -953,6 +954,10 @@ impl WorkspaceProfileRuntime {
                 }
             }
             return Err(mapped);
+        }
+        let local_bindings_path = self.local_bindings_path(profile_id);
+        if local_bindings_path.exists() {
+            let _ = fs::remove_file(local_bindings_path);
         }
         self.snapshot_locked(manifests)
     }
@@ -2200,6 +2205,12 @@ impl WorkspaceProfileRuntime {
     fn profile_path(&self, profile_id: &str) -> PathBuf {
         self.repository_path.join(format!("{profile_id}.json"))
     }
+
+    pub(crate) fn local_bindings_path(&self, profile_id: &str) -> PathBuf {
+        self.repository_path
+            .join("local-bindings")
+            .join(format!("{profile_id}.json"))
+    }
 }
 
 fn build_migrated_profile(
@@ -2254,6 +2265,8 @@ fn build_migrated_profile(
         enabled_components: Vec::new(),
         module_settings: BTreeMap::new(),
         component_settings: BTreeMap::new(),
+        tool_aliases: Vec::new(),
+        path_variables: Vec::new(),
         shell_layout: ProfileShellLayout {
             home: Some(PROJECT_HOME_PROFILE_SURFACE_ID.into()),
             pinned_tools,
@@ -2477,6 +2490,8 @@ fn build_blank_profile() -> WorkspaceProfileV1 {
         enabled_components: Vec::new(),
         module_settings: BTreeMap::new(),
         component_settings: BTreeMap::new(),
+        tool_aliases: Vec::new(),
+        path_variables: Vec::new(),
         shell_layout: ProfileShellLayout::default(),
         surfaces: Vec::new(),
         data_sources: Vec::new(),
@@ -2564,6 +2579,8 @@ fn build_default_profile(manifests: &[ModuleManifestV1]) -> WorkspaceProfileV1 {
         enabled_components: Vec::new(),
         module_settings: BTreeMap::new(),
         component_settings: BTreeMap::new(),
+        tool_aliases: Vec::new(),
+        path_variables: Vec::new(),
         shell_layout: ProfileShellLayout {
             home: project_manager_enabled.then(|| PROJECT_HOME_PROFILE_SURFACE_ID.into()),
             pinned_tools,

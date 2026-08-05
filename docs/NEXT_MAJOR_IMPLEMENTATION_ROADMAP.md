@@ -561,9 +561,9 @@ R7-3 负责设置中心贡献化。设置架构已拆分为不可停用的 `core
 
 ## 14. R8：Profile 和装配空间导入导出
 
-状态：`verifying`（R8-1）
+状态：`verifying`（R8-2）
 
-分阶段合同和验收详见 `NEXT_MAJOR_R8_PROFILE_PACKAGES.md`。R8-1 只负责安全、确定性的 `.pmc-profile` 方案包；导入始终创建新方案，不自动应用，也不自动安装缺失模块或组件。
+分阶段合同和验收详见 `NEXT_MAJOR_R8_PROFILE_PACKAGES.md`。R8-1 已完成安全、确定性的 `.pmc-profile` 方案包；R8-2 已接入逻辑工具别名、路径变量、导入映射和本机独立绑定，等待人工验收。导入始终创建新方案，不自动应用，也不自动安装缺失模块或组件。
 
 ### 目标
 
@@ -579,6 +579,8 @@ R7-3 负责设置中心贡献化。设置架构已拆分为不可停用的 `core
 - 可选 `.pmc-workspace` 骨架。
 - 表现模板 ID、版本、变体和参数的可移植引用；
 - 缺失 ShellTemplate、PageTemplate 和 ThemePreset 的导入预检。
+- Blender、FFmpeg、FFprobe、Python 和普通文件/目录变量的本机映射；
+- 映射保存在 Profile 外部，并作为 R9 ComponentGateway 的解析输入。
 
 ### 自动验收
 

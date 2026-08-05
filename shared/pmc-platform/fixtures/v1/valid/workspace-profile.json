@@ -21,6 +21,28 @@
       "scanMetadata": true
     }
   },
+  "toolAliases": [
+    {
+      "id": "render-blender",
+      "tool": "nexora.tool.blender",
+      "versionRequirement": ">=4.5",
+      "description": "渲染任务使用的 Blender"
+    },
+    {
+      "id": "render-ffmpeg",
+      "tool": "nexora.tool.ffmpeg",
+      "versionRequirement": "*",
+      "description": "序列帧打包工具"
+    }
+  ],
+  "pathVariables": [
+    {
+      "id": "render-output-root",
+      "kind": "directory",
+      "required": false,
+      "description": "可选的渲染输出根目录"
+    }
+  ],
   "shellLayout": {
     "home": "render-dashboard",
     "navigation": ["render-dashboard"],

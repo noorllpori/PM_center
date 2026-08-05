@@ -1,6 +1,6 @@
 # R8 Profile 与装配空间包
 
-> 状态：`verifying`（R8-1）
+> 状态：`verifying`（R8-2）
 >
 > 日期：2026-08-05
 >
@@ -32,6 +32,16 @@
 - 增加组件/模块版本差异、可替代依赖和贡献冲突的分组处理界面。
 - 仍不自动下载或安装依赖；安装动作由 R9/R10 的组件管理器显式执行。
 
+#### R8-2 实现记录
+
+- Profile schema v1 增加 `toolAliases` 和 `pathVariables`。工具使用稳定 ID，例如 `nexora.tool.blender`、`nexora.tool.ffmpeg`、`nexora.tool.ffprobe` 和 `nexora.tool.python`，Profile 内只保存逻辑别名、版本要求、是否必需和说明。
+- 导出时根据启用模块幂等补齐内置需求：渲染中心声明 Blender 和可选 FFmpeg，自动化运行时声明 Python，外部工具模块声明可选 FFprobe；用户显式声明的同名别名优先。
+- 导入预览返回工具别名和路径变量。前端优先列出设置中的 Blender 版本、FFmpeg/FFprobe 路径和 Python 环境，也允许选择“系统自动检测”或手动选择本机文件/目录。
+- 必需映射未完成时导入按钮不可用；后端仍会重新检查重复、未知别名、绝对路径、文件/目录类型和实际存在性，不能只信任前端。
+- 本机绝对路径写入应用数据目录 `profiles/local-bindings/<profile-id>.json`，不进入 Profile 和 `.pmc-profile`。绑定写入失败时回滚刚创建的 Profile；删除 Profile 时同步清理绑定文件。
+- 导入时可沿用其他方案中相同稳定工具或同名、同类型路径变量的本机映射。沿用操作复制解析后的值，不保存跨 Profile 引用，源方案后续修改或删除不会影响新方案。
+- `automatic` 只表示用户明确允许运行时使用系统或 Nexora 的自动检测结果。组件实际通过别名解析绑定进入 R9 ComponentGateway，不允许组件自行读取 Profile 私有映射文件。
+
 ### R8-3：装配空间骨架
 
 - 增加可选 `.pmc-workspace`，组合 Profile、变量声明和可移植的工作区骨架。
@@ -54,6 +64,14 @@
 - `import_workspace_profile_package(request)`：重新检查后原子创建新方案。
 - `delete_workspace_profile(profileId)`：删除非当前的用户方案或旧迁移方案，当前、默认与空白恢复方案拒绝删除。
 
+R8-2 扩展：
+
+- `WorkspaceProfileV1.toolAliases[]`：逻辑工具别名、稳定工具 ID、版本要求和必需状态。
+- `WorkspaceProfileV1.pathVariables[]`：本机文件/目录变量及必需状态。
+- `ProfilePackageImportPreview.toolAliases/pathVariables`：导入前展示需要映射的内容。
+- `ImportWorkspaceProfilePackageRequest.toolMappings/pathMappings`：提交用户明确选择的本机绑定。
+- `ProfileLocalBindingInput.mode`：`automatic` 或 `path`。
+
 导入提交使用 Profile 运行时与切换流程共享的锁。检查失败、名称冲突或依赖缺失时，现有方案目录和当前运行状态保持不变。
 
 ## 4. 自动验收
@@ -65,6 +83,8 @@
 5. schema、format、kind 或摘要算法不支持时返回稳定错误码。
 6. 缺失或版本不兼容模块/组件时只显示预览问题，不写入新方案。
 7. 名称冲突不覆盖现有方案，用户改名后才可导入。
+8. 必需工具或路径未映射时不创建 Profile；映射成功后 Profile JSON 不含本机绝对路径，独立绑定文件包含规范化后的本机路径。
+9. 绑定文件写入失败会回滚导入，删除 Profile 后对应绑定文件消失。
 
 ## 5. 人工验收
 
@@ -74,5 +94,7 @@
 4. 再次导入同一个包，确认自动建议“副本”名称，使用已存在名称时明确阻止。
 5. 在方案设置中加入本机 Blender 或 FFmpeg 绝对路径，确认 R8-1 拒绝导出并指出 JSON 路径。
 6. 新建或导入一个方案，点击“删除”后先取消，确认方案仍存在；再次确认删除后列表移除该方案，当前与系统恢复方案不受影响。
+7. 导出一个启用了渲染中心和自动化运行时的方案，再导入该包，确认出现 Blender、Python 以及可选 FFmpeg 映射；未完成必需映射时不能导入。
+8. 选择设置中已有 Blender/Python，或使用系统自动检测后导入，确认当前运行方案没有切换；重新导出该方案时包内不包含本机绝对路径。
 
-R8-1 验收后进入 R8-2；跨机器工具路径复现不作为 R8-1 完成条件。
+R8-2 验收后进入 R8-3 装配空间骨架；组件消费本机别名绑定属于 R9 ComponentGateway 的前置输入，不在 R8 内直接启动工具。

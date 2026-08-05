@@ -276,6 +276,25 @@ export interface ProfilePresentationBinding {
   [key: string]: unknown;
 }
 
+export interface ProfileToolAlias {
+  id: string;
+  tool: string;
+  versionRequirement?: string;
+  required?: boolean;
+  description?: string;
+  [key: string]: unknown;
+}
+
+export type ProfilePathVariableKind = 'file' | 'directory';
+
+export interface ProfilePathVariable {
+  id: string;
+  kind: ProfilePathVariableKind;
+  required?: boolean;
+  description?: string;
+  [key: string]: unknown;
+}
+
 export type ShellNavigationKind = 'top-bar' | 'side-bar' | 'minimal';
 
 export interface ProfileShellLayout {
@@ -393,6 +412,8 @@ export interface WorkspaceProfileV1 {
   enabledComponents?: ProfileComponentSelection[];
   moduleSettings?: Record<string, JsonValue>;
   componentSettings?: Record<string, JsonValue>;
+  toolAliases?: ProfileToolAlias[];
+  pathVariables?: ProfilePathVariable[];
   shellLayout?: ProfileShellLayout;
   surfaces?: ProfileSurface[];
   dataSources?: ProfileDataSource[];
