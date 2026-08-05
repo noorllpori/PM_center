@@ -6,6 +6,8 @@ import { CacheManagerSurface } from '../file-manager/CacheManagerSurface';
 import { LanProjectPlaceholderSurface } from '../file-manager/LanProjectPlaceholderSurface';
 import { RenderCenterSurface } from '../file-manager/RenderCenterSurface';
 import { LanCollaborationSurface } from '../lan/LanCollaborationSurface';
+import { ProjectHomeSurface } from '../shell/ProjectHomeSurface';
+import { ProjectWorkspace } from '../file-manager/ProjectWorkspace';
 import { ContributionDiagnosticsSurface } from './ContributionDiagnosticsSurface';
 import { getContributedWidgetRendererIds } from './ContributedWidget';
 
@@ -32,6 +34,8 @@ export const SHELL_SURFACE_RENDERERS: Record<
   string,
   ComponentType<ContributionSurfaceRendererProps>
 > = {
+  [SURFACE_CONTRIBUTIONS.projectHome.id]: ProjectHomeSurface,
+  [SURFACE_CONTRIBUTIONS.projectWorkspace.id]: ProjectWorkspace,
   [SURFACE_CONTRIBUTIONS.lanMain.id]: LanCollaborationSurface,
 };
 

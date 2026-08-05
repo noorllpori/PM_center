@@ -22,6 +22,7 @@ import {
   runPlatformModuleHealthCheck,
 } from '../../api/platformModules';
 import type {
+  PlatformDisablePreview,
   PlatformDiagnosticResult,
   PlatformModuleCommandError,
   PlatformModuleRuntimeOverview,
@@ -32,6 +33,7 @@ import {
   DIAGNOSTIC_CONTRIBUTION_MODULE_ID,
 } from '../../features/contributionRegistry';
 import { useContributionRegistryStore } from '../../stores/contributionRegistryStore';
+import { ConfirmDialog } from '../Dialog';
 
 const STATE_LABELS: Record<PlatformModuleState, string> = {
   disabled: '已停用',
@@ -84,6 +86,10 @@ export function ModuleDiagnosticsSection() {
   const [error, setError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<PlatformDiagnosticResult | null>(null);
   const [injections, setInjections] = useState<Record<string, boolean>>({});
+  const [disableConfirmation, setDisableConfirmation] = useState<{
+    moduleId: string;
+    preview: PlatformDisablePreview;
+  } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -128,20 +134,25 @@ export function ModuleDiagnosticsSection() {
           return;
         }
         const preview = await previewDisablePlatformModule(moduleId);
-        if (
-          !preview.canDisableGracefully
-          && !confirm(`${preview.message}\n\n将按依赖关系级联停用：\n${preview.runningDependents.join('\n')}`)
-        ) {
+        if (!preview.canDisableGracefully) {
+          setDisableConfirmation({ moduleId, preview });
           return;
         }
-        await disablePlatformModule(
-          moduleId,
-          preview.canDisableGracefully ? 'graceful' : 'cascade',
-        );
+        await disablePlatformModule(moduleId, 'graceful');
       });
     },
     [runAction],
   );
+
+  const confirmCascadeDisable = useCallback(() => {
+    const confirmation = disableConfirmation;
+    if (!confirmation) {
+      return;
+    }
+    setDisableConfirmation(null);
+    void runAction(`${confirmation.moduleId}:disable`, () =>
+      disablePlatformModule(confirmation.moduleId, 'cascade'));
+  }, [disableConfirmation, runAction]);
 
   const toggleInjection = useCallback(
     async (moduleId: string, point: string) => {
@@ -170,7 +181,8 @@ export function ModuleDiagnosticsSection() {
   );
 
   return (
-    <section className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
+    <>
+      <section className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -428,6 +440,19 @@ export function ModuleDiagnosticsSection() {
           运行 100 次泄漏检查
         </button>
       </div>
-    </section>
+      </section>
+      <ConfirmDialog
+        isOpen={Boolean(disableConfirmation)}
+        onClose={() => setDisableConfirmation(null)}
+        onConfirm={confirmCascadeDisable}
+        title="级联停用模块"
+        message={disableConfirmation
+          ? `${disableConfirmation.preview.message}\n\n将按依赖关系级联停用：\n${disableConfirmation.preview.runningDependents.join('\n')}`
+          : ''}
+        confirmText="确认停用"
+        cancelText="取消"
+        type="warning"
+      />
+    </>
   );
 }

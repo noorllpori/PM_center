@@ -2,8 +2,8 @@ use chrono::Utc;
 use pmc_platform::{
     parse_workspace_profile, validate_profile_with_catalogs, ComponentDistribution,
     ComponentManifestV1, ComponentRole, ComponentRuntime, ComponentUiMode, ContractResult,
-    ExtensionFields, ModuleManifestV1, ProfileModuleSelection, ProfileShellLayout,
-    WorkspaceProfileV1, PLATFORM_SCHEMA_VERSION,
+    ExtensionFields, ModuleManifestV1, ProfileModuleSelection, ProfileShellLayout, ProfileSurface,
+    SurfaceKind, SurfaceLayoutKind, WorkspaceProfileV1, PLATFORM_SCHEMA_VERSION,
 };
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
@@ -21,6 +21,10 @@ const PROFILE_SWITCH_JOURNAL_SCHEMA_VERSION: u16 = 1;
 const MIGRATED_PROFILE_ID: &str = "local.current-pm-center";
 const BLANK_PROFILE_ID: &str = "local.blank-workspace";
 const MIGRATION_SOURCE: &str = "current-pm-center";
+const PROJECT_MANAGER_MODULE_ID: &str = "builtin.project-manager";
+const PROJECT_HOME_PROFILE_SURFACE_ID: &str = "pm-center-project-home";
+const PROJECT_HOME_CONTRIBUTION_ID: &str = "builtin.project-manager.home-surface";
+const SHELL_HOME_MIGRATION_VERSION: u16 = 2;
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -394,6 +398,7 @@ impl WorkspaceProfileRuntime {
         fs::create_dir_all(&self.repository_path)
             .map_err(|error| io_error("创建装配方案目录失败", &self.repository_path, error))?;
         self.ensure_blank_profile(manifests)?;
+        self.ensure_migrated_profile_home(manifests)?;
 
         if self.state_path.exists() {
             return self.snapshot_locked(manifests);
@@ -1241,6 +1246,100 @@ impl WorkspaceProfileRuntime {
         write_new_json(&path, &profile)
     }
 
+    fn ensure_migrated_profile_home(
+        &self,
+        manifests: &[ModuleManifestV1],
+    ) -> Result<(), WorkspaceProfileRuntimeError> {
+        let path = self.profile_path(MIGRATED_PROFILE_ID);
+        if !path.exists() || self.journal_path.exists() {
+            return Ok(());
+        }
+        let mut profile = self.read_profile(&path)?;
+        if profile.id != MIGRATED_PROFILE_ID {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfilePersistenceConflict,
+                format!(
+                    "迁移文件 ID 与预期不一致：{} != {MIGRATED_PROFILE_ID}",
+                    profile.id
+                ),
+                Some(&path),
+            ));
+        }
+
+        let has_project_home = profile.surfaces.iter().any(|surface| {
+            surface.id == PROJECT_HOME_PROFILE_SURFACE_ID
+                && surface.contribution.as_deref() == Some(PROJECT_HOME_CONTRIBUTION_ID)
+        });
+        let project_manager_manifest = manifests
+            .iter()
+            .find(|manifest| manifest.id == PROJECT_MANAGER_MODULE_ID);
+        let should_enable_project_manager = project_manager_manifest
+            .filter(|manager| {
+                manager.requires_modules.iter().all(|dependency| {
+                    profile
+                        .enabled_modules
+                        .iter()
+                        .any(|selection| selection.id == dependency.id)
+                })
+            })
+            .is_some();
+        let has_project_manager = profile
+            .enabled_modules
+            .iter()
+            .any(|selection| selection.id == PROJECT_MANAGER_MODULE_ID);
+        let already_current = profile.shell_layout.home.as_deref()
+            == Some(PROJECT_HOME_PROFILE_SURFACE_ID)
+            && has_project_home
+            && (!should_enable_project_manager || has_project_manager);
+        if already_current {
+            return Ok(());
+        }
+
+        if !has_project_home {
+            if profile
+                .surfaces
+                .iter()
+                .any(|surface| surface.id == PROJECT_HOME_PROFILE_SURFACE_ID)
+            {
+                return Ok(());
+            }
+            profile.surfaces.push(project_home_surface());
+        }
+        profile.shell_layout.home = Some(PROJECT_HOME_PROFILE_SURFACE_ID.into());
+
+        if should_enable_project_manager && !has_project_manager {
+            let manager = project_manager_manifest.expect("project manager manifest checked");
+            profile.enabled_modules.push(ProfileModuleSelection {
+                id: manager.id.clone(),
+                version_requirement: format!("^{}", manager.version),
+                extensions: ExtensionFields::new(),
+            });
+            profile
+                .enabled_modules
+                .sort_by(|left, right| left.id.cmp(&right.id));
+        }
+        profile.revision = profile.revision.saturating_add(1);
+        profile.extensions.insert(
+            "shellHomeMigration".into(),
+            json!({
+                "version": SHELL_HOME_MIGRATION_VERSION,
+                "updatedAt": Utc::now().timestamp_millis(),
+            }),
+        );
+        self.validate_profile(&profile, manifests)
+            .map_err(|error| {
+                WorkspaceProfileRuntimeError::new(
+                    WorkspaceProfileRuntimeErrorCode::ProfileDocumentInvalid,
+                    format!(
+                        "迁移装配方案主页升级失败：{}（{}）",
+                        error.message, error.path
+                    ),
+                    Some(&path),
+                )
+            })?;
+        replace_json(&path, &profile)
+    }
+
     fn snapshot_locked(
         &self,
         manifests: &[ModuleManifestV1],
@@ -1594,15 +1693,29 @@ fn build_migrated_profile(
         module_settings: BTreeMap::new(),
         component_settings: BTreeMap::new(),
         shell_layout: ProfileShellLayout {
+            home: Some(PROJECT_HOME_PROFILE_SURFACE_ID.into()),
             pinned_tools,
             ..ProfileShellLayout::default()
         },
-        surfaces: Vec::new(),
+        surfaces: vec![project_home_surface()],
         data_sources: Vec::new(),
         command_bindings: Vec::new(),
         workflow_bindings: Vec::new(),
         variables: BTreeMap::new(),
         extensions,
+    }
+}
+
+fn project_home_surface() -> ProfileSurface {
+    ProfileSurface {
+        id: PROJECT_HOME_PROFILE_SURFACE_ID.into(),
+        title: Some("项目主页".into()),
+        kind: SurfaceKind::Dashboard,
+        layout: SurfaceLayoutKind::ContributionDefined,
+        contribution: Some(PROJECT_HOME_CONTRIBUTION_ID.into()),
+        widgets: Vec::new(),
+        settings: BTreeMap::new(),
+        extensions: ExtensionFields::new(),
     }
 }
 
@@ -2352,6 +2465,15 @@ mod tests {
             .unwrap();
         assert_eq!(first.current_profile.enabled_modules.len(), 1);
         assert_eq!(first.current_profile.shell_layout.pinned_tools.len(), 1);
+        assert_eq!(
+            first.current_profile.shell_layout.home.as_deref(),
+            Some(PROJECT_HOME_PROFILE_SURFACE_ID)
+        );
+        assert_eq!(first.current_profile.surfaces.len(), 1);
+        assert_eq!(
+            first.current_profile.surfaces[0].contribution.as_deref(),
+            Some(PROJECT_HOME_CONTRIBUTION_ID)
+        );
 
         let second = runtime
             .initialize_from_current_configuration(
@@ -2367,6 +2489,102 @@ mod tests {
         assert_eq!(
             second.current_profile.shell_layout.pinned_tools,
             vec!["builtin.alpha.tool"]
+        );
+        assert_eq!(
+            second.current_profile.revision,
+            first.current_profile.revision
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn existing_migrated_profile_receives_project_home_once() {
+        let root = test_root("home-migration");
+        let profiles = root.join("profiles");
+        fs::create_dir_all(&profiles).unwrap();
+        let mut legacy = build_migrated_profile(&[], &BTreeSet::new(), &[]);
+        legacy.shell_layout.home = None;
+        legacy.surfaces.clear();
+        legacy.revision = 7;
+        fs::write(
+            profiles.join(format!("{MIGRATED_PROFILE_ID}.json")),
+            serde_json::to_vec_pretty(&legacy).unwrap(),
+        )
+        .unwrap();
+
+        let runtime = WorkspaceProfileRuntime::new(&root);
+        let first = runtime
+            .initialize_from_current_configuration(&[], &BTreeSet::new(), &[])
+            .unwrap();
+        assert_eq!(first.current_profile.revision, 8);
+        assert_eq!(
+            first.current_profile.shell_layout.home.as_deref(),
+            Some(PROJECT_HOME_PROFILE_SURFACE_ID)
+        );
+        assert_eq!(first.current_profile.surfaces.len(), 1);
+        assert_eq!(
+            first.current_profile.surfaces[0].contribution.as_deref(),
+            Some(PROJECT_HOME_CONTRIBUTION_ID)
+        );
+
+        let second = runtime
+            .initialize_from_current_configuration(&[], &BTreeSet::new(), &[])
+            .unwrap();
+        assert_eq!(second.current_profile.revision, 8);
+        assert_eq!(second.current_profile.surfaces.len(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn existing_migrated_profile_receives_project_manager_once() {
+        let root = test_root("project-manager-migration");
+        let profiles = root.join("profiles");
+        fs::create_dir_all(&profiles).unwrap();
+
+        let resources = manifest("builtin.project-resources", "1.0.0");
+        let mut manager = manifest(PROJECT_MANAGER_MODULE_ID, "1.0.0");
+        manager
+            .requires_modules
+            .push(pmc_platform::ModuleDependency {
+                id: resources.id.clone(),
+                version_requirement: "^1.0".into(),
+            });
+        let manifests = vec![resources, manager];
+        let mut legacy = build_migrated_profile(
+            &manifests,
+            &BTreeSet::from(["builtin.project-resources".to_string()]),
+            &[],
+        );
+        legacy.revision = 5;
+        fs::write(
+            profiles.join(format!("{MIGRATED_PROFILE_ID}.json")),
+            serde_json::to_vec_pretty(&legacy).unwrap(),
+        )
+        .unwrap();
+
+        let runtime = WorkspaceProfileRuntime::new(&root);
+        let first = runtime
+            .initialize_from_current_configuration(&manifests, &BTreeSet::new(), &[])
+            .unwrap();
+        assert_eq!(first.current_profile.revision, 6);
+        assert!(first
+            .current_profile
+            .enabled_modules
+            .iter()
+            .any(|selection| selection.id == PROJECT_MANAGER_MODULE_ID));
+
+        let second = runtime
+            .initialize_from_current_configuration(&manifests, &BTreeSet::new(), &[])
+            .unwrap();
+        assert_eq!(second.current_profile.revision, 6);
+        assert_eq!(
+            second
+                .current_profile
+                .enabled_modules
+                .iter()
+                .filter(|selection| selection.id == PROJECT_MANAGER_MODULE_ID)
+                .count(),
+            1
         );
         fs::remove_dir_all(root).unwrap();
     }
@@ -2484,6 +2702,8 @@ mod tests {
         let blank = runtime.profile(BLANK_PROFILE_ID, &manifests).unwrap();
         assert!(blank.enabled_modules.is_empty());
         assert_eq!(blank.shell_layout.pinned_tools, vec!["core.settings.tool"]);
+        assert!(blank.shell_layout.home.is_none());
+        assert!(blank.surfaces.is_empty());
         assert!(snapshot
             .profiles
             .iter()

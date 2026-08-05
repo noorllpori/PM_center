@@ -61,13 +61,23 @@ export const useShellTabStore = create<ShellTabState>()((set, get) => ({
   activeTabId: HOME_TAB_ID,
 
   openProjectTab: (projectPath, title) => {
+    const definition = SHELL_TAB_CONTRIBUTIONS.project;
     const normalizedProjectPath = normalizeProjectPath(projectPath);
     const existingTab = get().tabs.find(
       (tab) => tab.type === 'project' && tab.normalizedProjectPath === normalizedProjectPath,
     );
 
     if (existingTab) {
-      set({ activeTabId: existingTab.id });
+      set((state) => ({
+        tabs: state.tabs.map((tab) => tab.id === existingTab.id
+          ? {
+              ...tab,
+              contributionId: definition.id,
+              moduleId: definition.moduleId || undefined,
+            }
+          : tab),
+        activeTabId: existingTab.id,
+      }));
       return existingTab.id;
     }
 
@@ -78,6 +88,8 @@ export const useShellTabStore = create<ShellTabState>()((set, get) => ({
       closable: true,
       projectPath,
       normalizedProjectPath,
+      contributionId: definition.id,
+      moduleId: definition.moduleId || undefined,
     };
 
     set((state) => ({
@@ -90,7 +102,7 @@ export const useShellTabStore = create<ShellTabState>()((set, get) => ({
 
   openShellContributionTab: (contributionId) => {
     const definition = SHELL_TAB_CONTRIBUTION_BY_ID.get(contributionId);
-    if (!definition) {
+    if (!definition || definition.instanceMode !== 'singleton') {
       return null;
     }
     const existingTab = get().tabs.find(

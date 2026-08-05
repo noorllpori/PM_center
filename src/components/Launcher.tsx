@@ -4,7 +4,11 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { useLauncherStore } from '../stores/launcherStore';
 import { Rocket, Plus, X, Edit2, Trash2, Save, FolderOpen, Play } from 'lucide-react';
 import { BuiltinToolsCenter } from './BuiltinToolsCenter';
-import { BUILTIN_TOOLS_ICON, type OpenBuiltinTool } from '../features/builtinTools';
+import {
+  BUILTIN_TOOLS_ICON,
+  OPEN_BUILTIN_TOOLS_CENTER_EVENT,
+  type OpenBuiltinTool,
+} from '../features/builtinTools';
 
 // 启动软件
 async function launchSoftware(path: string) {
@@ -379,9 +383,14 @@ export function LauncherButton({
         setIsOpen((value) => !value);
       }
     };
+    const handleOpenRequest = () => setIsOpen(true);
 
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener(OPEN_BUILTIN_TOOLS_CENTER_EVENT, handleOpenRequest);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener(OPEN_BUILTIN_TOOLS_CENTER_EVENT, handleOpenRequest);
+    };
   }, []);
 
   return (

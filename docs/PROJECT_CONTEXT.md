@@ -102,7 +102,7 @@ React invoke/listen
 | 脚本/任务 | `ScriptRunner.tsx`、`TaskPanel/`、`taskStore.ts` | 用户脚本、日志、取消/重试与任务面板聚合。 |
 | 设置 | `SettingsPanel.tsx`、`settingsStore.ts` | 全局工具路径、Blender 版本、排除规则、启动偏好、插件等。 |
 | 功能中心 | `features/builtinTools.ts`、`features/contributionRegistry.ts`、`features/contributionDataSources.ts`、`features/contributionCatalogDiagnostics.ts`、`stores/contributionRegistryStore.ts`、`components/file-manager/index.tsx` | `Alt+Q` 工具入口；R5 已让工具、Pin、Shell/工作区标签、设置区、右键命令、Widget、DataSource 和节点目录按模块状态动态出现或撤下，并提供目录一致性、实现覆盖、缺失状态和订阅释放诊断。智能剪贴板仍调用独立 Win32 窗口。 |
-| 装配方案运行时 | `platform/profile_runtime.rs`、`api/workspaceProfiles.ts`、`stores/workspaceProfileStore.ts`、`WorkspaceProfileDiagnosticsSection.tsx`、`WorkspaceProfileEditorDialog.tsx` | R6 已完成迁移、事务切换、会话归属和恢复；R7-1 增加方案新建、复制、模块/显式组件草稿编辑、依赖预检和 revision 安全保存。当前运行方案必须复制后编辑，保存不会自动应用。 |
+| 装配方案运行时 | `platform/profile_runtime.rs`、`api/workspaceProfiles.ts`、`stores/workspaceProfileStore.ts`、`WorkspaceProfileDiagnosticsSection.tsx`、`WorkspaceProfileEditorDialog.tsx`、`features/profileHome.ts`、`components/shell/ProfileHomeSurface.tsx` | R6 已完成迁移、事务切换、会话归属和恢复；R7-1 的方案草稿编辑已验收；R7-2A 已让 `shellLayout.home` 驱动默认主页并提供安全回退；R7-2B 已让默认方案幂等补入项目管理器。当前运行方案必须复制后编辑，保存不会自动应用。 |
 | 说明组件 | `components/ui/HelpAssistant.tsx` | 复杂或不可逆概念旁的问号说明；支持文字、图片、视频及自动避让定位。 |
 
 状态 Store 的所有权：
@@ -192,6 +192,7 @@ React invoke/listen
 - 局域网联系人、消息和头像属于软件级全局数据，保存在应用数据目录的 `lan_collaboration.db` 与头像缓存中，不写入项目 `.pm_center`。外层 Shell 的“局域网主面板”承载联系人、大厅和私聊；项目内 `p2p` 标签是独立的功能预留入口，暂不承载聊天界面。
 - `builtin.lan-collaboration` 默认启用并统一拥有 UDP 31523、TCP 31524、Server 连接和活动传输。停用先拒绝新命令，再取消传输、关闭连接并等待监听任务退出；联系人、聊天、头像、接收文件和设置继续保留。
 - `builtin.project-resources` 默认启用并管理已打开项目的 `data.db` 注册表、TreeCache 注册表、当前活动项目 watcher 和脏目录修复任务。关闭外层项目标签先撤销项目租约，再释放句柄，防止迟到异步任务重新占用 `.pm_center`。
+- `builtin.project-manager` 默认启用并依赖 `builtin.project-resources`，拥有项目主页、最近项目、动态项目 Shell 标签和文件工作区。停用后撤下项目 UI、阻止自动打开和会话恢复，但不反向停用仍被渲染等模块使用的项目资源层。
 - `builtin.automation-runtime` 默认启用并管理普通任务、Python/venv/pip 和旧插件动作进程。停用先拒绝新启动，再取消任务并终止登记的进程树；任务历史、脚本、venv、插件、设置和依赖数据保留。渲染中心的 Blender Worker 与渲染前后置脚本由 `builtin.render-center` 独立托管。
 - 局域网提供两个稳定入口：主面板与主页、项目标签同级并保持全局单例；项目功能标签在每个项目内保持单例并参与项目会话恢复。当前不提供无项目独立窗口入口。
 - 局域网消息保留一个大厅与一对一私聊，记录默认保留 30 天；联系人离线后继续保留。任何文件传输、远程执行或渲染农场扩展都必须先定义权限、路径边界、失败恢复和用户确认。
@@ -239,8 +240,8 @@ React invoke/listen
 - 下一超大版本的主线是“统一宿主运行时 + Capability + Module + Component + Workflow + Profile”，不维护四套长期分叉代码；这里的宿主运行时不是组件分类，所有正式组件统一支持安装、卸载和升级；
 - Profile 是用户可新建、修改、导出和分享的装配方案；项目管理器、媒体管理器、通信端和 Blender 渲染器只是验证系统能力的参考组合，不得写死为固定枚举；
 - R6-2 已提供“当前 PM Center 装配方案”和普通“空白装配空间”的切换预览。预览只读，实际切换按目标模块集合执行并在失败时恢复旧集合；快捷栏 Pin 由 Profile 中稳定 Tool 贡献 ID 驱动；
-- R6-3 已完成 Profile 会话归属和中断恢复并验收；R7-0 组件目录和依赖合同已验收，`pmc.blendio` 作为首个 bundled 但可卸载的组件登记；R7-1 已进入草稿编辑器人工验收。实际组件下载、安装、卸载、升级和外部进程监督仍属于 R9/R10；
-- R7-2 将把当前写死的 `WelcomeScreen` 改为 Profile 驱动主页：新增可停用的 `builtin.project-manager` 管理项目主页和项目 Shell，`builtin.project-resources` 保留数据库/Watcher 等资源层；停用项目管理器后最小 Shell、工具中心、全局设置和其他模块仍可正常使用；
+- R6-3 已完成 Profile 会话归属和中断恢复并验收；R7-0 组件目录和依赖合同、R7-1 草稿编辑器均已验收，`pmc.blendio` 作为首个 bundled 但可卸载的组件登记。实际组件下载、安装、卸载、升级和外部进程监督仍属于 R9/R10；
+- R7-2A 已把主页入口改为 Profile Home Resolver，并完成安全主页人工验收；R7-2B 已新增可停用的 `builtin.project-manager` 管理项目主页和项目 Shell，项目标签带稳定贡献所有权，停用时撤下会话并释放对应句柄；`builtin.project-resources` 继续保留数据库/Watcher 等资源层；
 - 静态启动页由 `shellLayout.home` 决定，复杂启动窗口和条件行为在 R11 通过受控 `app.started` 工作流实现；恢复流程始终优先，目标不可用时回退最小安全主页；
 - 当前功能中心 Pin 只是入口偏好，不能作为模块启停。真正停用必须停止端口、watcher、调度器、原生线程、子进程和数据库资源；
 - 现有 Python 插件作为兼容组件保留，后续扩展到受控 Python Worker、原生独立进程、隔离 DLL 和资料包；

@@ -18,6 +18,7 @@ use std::time::Duration;
 
 pub const SMART_CLIPBOARD_MODULE_ID: &str = "builtin.smart-clipboard";
 pub const LAN_COLLABORATION_MODULE_ID: &str = "builtin.lan-collaboration";
+pub const PROJECT_MANAGER_MODULE_ID: &str = "builtin.project-manager";
 pub use crate::automation_runtime::AUTOMATION_RUNTIME_MODULE_ID;
 pub use crate::project_resources::PROJECT_RESOURCES_MODULE_ID;
 pub use crate::render_center::RENDER_CENTER_MODULE_ID;
@@ -38,6 +39,10 @@ pub const PROJECT_CACHE_SURFACE_ID: &str = "builtin.project-resources.cache-surf
 pub const PROJECT_MDT_SURFACE_ID: &str = "builtin.project-resources.mdt-surface";
 pub const PROJECT_COLLECTION_CONTEXT_COMMANDS_ID: &str =
     "builtin.project-resources.collection-context-commands";
+pub const PROJECT_MANAGER_SHELL_TAB_ID: &str = "builtin.project-manager.project-shell-tab";
+pub const PROJECT_MANAGER_HOME_SURFACE_ID: &str = "builtin.project-manager.home-surface";
+pub const PROJECT_MANAGER_WORKSPACE_SURFACE_ID: &str =
+    "builtin.project-manager.project-workspace-surface";
 pub const LAN_MAIN_TOOL_ID: &str = "builtin.lan-collaboration.main-tool";
 pub const LAN_PROJECT_TOOL_ID: &str = "builtin.lan-collaboration.project-tool";
 pub const LAN_SHELL_TAB_ID: &str = "builtin.lan-collaboration.shell-tab";
@@ -536,6 +541,75 @@ pub fn project_resources_component() -> CapabilityComponentRegistration {
         version: "1.0.0".into(),
         module_id: PROJECT_RESOURCES_MODULE_ID.into(),
         capabilities: project_resource_capabilities(),
+    }
+}
+
+struct ProjectManagerLifecycle;
+
+impl ModuleLifecycle for ProjectManagerLifecycle {
+    fn start<'a>(&'a self, _context: ModuleContext) -> LifecycleFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn stop<'a>(&'a self, _context: ModuleContext) -> LifecycleFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn health<'a>(&'a self, _context: ModuleContext) -> LifecycleFuture<'a, ModuleHealth> {
+        Box::pin(async {
+            Ok(ModuleHealth::healthy(
+                "项目主页、项目标签和文件工作区入口可用",
+            ))
+        })
+    }
+}
+
+fn project_manager_capabilities() -> Vec<Capability> {
+    vec![
+        Capability::ProjectOpen,
+        Capability::ProjectFilesRead,
+        Capability::ProjectFilesWrite,
+        Capability::ProjectMetadataRead,
+        Capability::ProjectMetadataWrite,
+    ]
+}
+
+pub fn project_manager_module() -> RegisteredModule {
+    let mut extensions = ExtensionFields::new();
+    extensions.insert("defaultEnabled".into(), Value::Bool(true));
+    RegisteredModule {
+        manifest: ModuleManifestV1 {
+            schema_version: 1,
+            id: PROJECT_MANAGER_MODULE_ID.into(),
+            name: "项目管理器".into(),
+            description: "提供项目主页、项目目录、最近项目、项目标签和文件工作区。".into(),
+            version: "1.0.0".into(),
+            api_version: "1".into(),
+            scope: ModuleScope::Global,
+            builtin: true,
+            requires_modules: vec![ModuleDependency {
+                id: PROJECT_RESOURCES_MODULE_ID.into(),
+                version_requirement: "^1.0".into(),
+            }],
+            optional_modules: Vec::new(),
+            requires_components: Vec::new(),
+            optional_components: Vec::new(),
+            conflicts: Vec::new(),
+            capabilities: project_manager_capabilities(),
+            background_services: Vec::new(),
+            contributes: ModuleContributions {
+                shell_tabs: vec![PROJECT_MANAGER_SHELL_TAB_ID.into()],
+                surfaces: vec![
+                    PROJECT_MANAGER_HOME_SURFACE_ID.into(),
+                    PROJECT_MANAGER_WORKSPACE_SURFACE_ID.into(),
+                ],
+                ..ModuleContributions::default()
+            },
+            data_policy: ModuleDataPolicy::default(),
+            extensions,
+        },
+        lifecycle: Arc::new(ProjectManagerLifecycle),
+        diagnostic: false,
     }
 }
 
@@ -1254,6 +1328,35 @@ mod project_resource_tests {
     }
 
     #[test]
+    fn project_manager_manifest_owns_project_shell_and_depends_on_resources() {
+        let module = project_manager_module();
+        assert_eq!(module.manifest.id, PROJECT_MANAGER_MODULE_ID);
+        assert_eq!(module.manifest.scope, ModuleScope::Global);
+        assert_eq!(
+            module.manifest.extensions.get("defaultEnabled"),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(
+            module.manifest.requires_modules,
+            vec![ModuleDependency {
+                id: PROJECT_RESOURCES_MODULE_ID.into(),
+                version_requirement: "^1.0".into(),
+            }]
+        );
+        assert_eq!(
+            module.manifest.contributes.shell_tabs,
+            vec![PROJECT_MANAGER_SHELL_TAB_ID.to_string()]
+        );
+        assert_eq!(
+            module.manifest.contributes.surfaces,
+            vec![
+                PROJECT_MANAGER_HOME_SURFACE_ID.to_string(),
+                PROJECT_MANAGER_WORKSPACE_SURFACE_ID.to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn render_center_manifest_owns_worker_and_commit_capabilities() {
         let module = render_center_module();
         assert_eq!(module.manifest.id, RENDER_CENTER_MODULE_ID);
@@ -1307,6 +1410,9 @@ mod project_resource_tests {
             ("surfaces", PROJECT_CACHE_SURFACE_ID),
             ("surfaces", PROJECT_MDT_SURFACE_ID),
             ("contextCommands", PROJECT_COLLECTION_CONTEXT_COMMANDS_ID),
+            ("shellTabs", PROJECT_MANAGER_SHELL_TAB_ID),
+            ("surfaces", PROJECT_MANAGER_HOME_SURFACE_ID),
+            ("surfaces", PROJECT_MANAGER_WORKSPACE_SURFACE_ID),
             ("tools", LAN_MAIN_TOOL_ID),
             ("tools", LAN_PROJECT_TOOL_ID),
             ("shellTabs", LAN_SHELL_TAB_ID),

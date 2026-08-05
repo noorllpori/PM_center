@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
-import { WelcomeScreen } from '../WelcomeScreen';
 import { PythonEnvManager } from '../PythonEnvManager';
 import { SettingsPanel } from '../SettingsPanel';
 import { TaskPanel } from '../TaskPanel';
@@ -17,6 +16,7 @@ import { CLOSE_MDT_OVERVIEW_EVENT, ProjectWorkspace } from './ProjectWorkspace';
 import { ProjectSessionProvider } from './ProjectSessionProvider';
 import { ShellTabBar } from '../shell/ShellTabBar';
 import { ContributedShellSurface } from '../shell/ContributedShellSurface';
+import { ProfileHomeSurface } from '../shell/ProfileHomeSurface';
 import { Dialog } from '../Dialog';
 import { ProjectLocationDialog } from './ProjectLocationDialog';
 import { createProjectStore, type ProjectStoreApi } from '../../stores/projectStore';
@@ -308,11 +308,16 @@ export function FileManager() {
     contributionSnapshot,
     SHELL_TAB_CONTRIBUTIONS.lan,
   );
+  const projectShellAvailable = isShellTabContributionAvailable(
+    contributionSnapshot,
+    SHELL_TAB_CONTRIBUTIONS.project,
+  );
   const contributionShellTabs = useMemo(
-    () => tabs.filter((tab) => Boolean(tab.contributionId)),
+    () => tabs.filter((tab) => tab.type !== 'project' && Boolean(tab.contributionId)),
     [tabs],
   );
-  const isContributionShellActive = Boolean(activeShellTab?.contributionId);
+  const isContributionShellActive = activeShellTab?.type !== 'project'
+    && Boolean(activeShellTab?.contributionId);
 
   const [isPythonEnvOpen, setIsPythonEnvOpen] = useState(false);
   const [isTaskCenterOpen, setIsTaskCenterOpen] = useState(false);
@@ -405,6 +410,30 @@ export function FileManager() {
         .getState()
         .closeContributionTabs([SHELL_TAB_CONTRIBUTIONS.lan.id]);
     }
+    if (!projectShellAvailable) {
+      const shellState = useShellTabStore.getState();
+      const projectTabs = shellState.tabs.filter(
+        (tab) => tab.type === 'project' && tab.projectPath,
+      );
+      shellState.closeContributionTabs([SHELL_TAB_CONTRIBUTIONS.project.id]);
+      projectTabs.forEach((tab) => {
+        const normalizedPath = normalizeProjectPath(tab.projectPath!);
+        const subscriptions = sessionSubscriptionsRef.current.get(normalizedPath);
+        subscriptions?.unsubscribeProject();
+        subscriptions?.unsubscribeWorkspace();
+        sessionSubscriptionsRef.current.delete(normalizedPath);
+        sessionsRef.current.delete(normalizedPath);
+        void invoke('release_project_resources', {
+          projectPath: tab.projectPath,
+        }).catch((error) => {
+          console.warn('Failed to release disabled project session:', tab.projectPath, error);
+        });
+      });
+      setPendingProjectOpen(null);
+      setProjectLocationCandidates([]);
+      setProjectLocationSearchError(null);
+      setHasSearchedProjectLocation(false);
+    }
     if (!pythonToolAvailable) {
       setIsPythonEnvOpen(false);
     }
@@ -417,6 +446,7 @@ export function FileManager() {
   }, [
     lanShellAvailable,
     mdtToolAvailable,
+    projectShellAvailable,
     pythonToolAvailable,
     taskToolAvailable,
     unavailableWorkspaceContributionIds,
@@ -434,7 +464,9 @@ export function FileManager() {
     return () => window.clearTimeout(timeout);
   }, [hideToast, toast.isOpen, toast.tone]);
 
-  const activeProjectSession = activeShellTab?.type === 'project' && activeShellTab.projectPath
+  const activeProjectSession = projectShellAvailable
+    && activeShellTab?.type === 'project'
+    && activeShellTab.projectPath
     ? sessionsRef.current.get(normalizeProjectPath(activeShellTab.projectPath)) ?? null
     : null;
 
@@ -663,14 +695,32 @@ export function FileManager() {
     path: string,
     options?: OpenProjectOptions,
   ) => {
+    const unavailableReason = getShellTabContributionUnavailableReason(
+      useContributionRegistryStore.getState().snapshot,
+      SHELL_TAB_CONTRIBUTIONS.project,
+    );
+    if (unavailableReason) {
+      throw new Error(`项目管理器不可用：${unavailableReason}`);
+    }
+
     const session = await ensureProjectSession(path);
+    const unavailableAfterOpen = getShellTabContributionUnavailableReason(
+      useContributionRegistryStore.getState().snapshot,
+      SHELL_TAB_CONTRIBUTIONS.project,
+    );
+    if (unavailableAfterOpen) {
+      unregisterSessionPersistence(path);
+      sessionsRef.current.delete(normalizeProjectPath(path));
+      void invoke('release_project_resources', { projectPath: path }).catch(() => undefined);
+      throw new Error(`项目管理器不可用：${unavailableAfterOpen}`);
+    }
     const projectName = session.projectStore.getState().projectName || getProjectNameFromPath(path);
     openProjectTab(path, projectName);
     if (!options?.skipRecentTracking) {
       await addRecentProject(path, projectName);
     }
     return session;
-  }, [addRecentProject, ensureProjectSession, openProjectTab]);
+  }, [addRecentProject, ensureProjectSession, openProjectTab, unregisterSessionPersistence]);
 
   const closeProjectLocationDialog = useCallback(() => {
     if (isOpeningResolvedProject) {
@@ -686,6 +736,19 @@ export function FileManager() {
     path: string,
     options?: OpenProjectOptions,
   ) => {
+    const unavailableReason = getShellTabContributionUnavailableReason(
+      useContributionRegistryStore.getState().snapshot,
+      SHELL_TAB_CONTRIBUTIONS.project,
+    );
+    if (unavailableReason) {
+      showToast({
+        title: '项目管理器不可用',
+        message: unavailableReason,
+        tone: 'warning',
+      });
+      return false;
+    }
+
     try {
       const report = await inspectProjectLocation(path);
       if (report.status === 'ready') {
@@ -780,13 +843,17 @@ export function FileManager() {
       contributionRegistry,
       SHELL_TAB_CONTRIBUTIONS.lan,
     );
+    const canRestoreProjects = isShellTabContributionAvailable(
+      contributionRegistry,
+      SHELL_TAB_CONTRIBUTIONS.project,
+    );
 
     if (canRestoreLan && sessionSnapshot.utilityTabs.includes('lan')) {
       useShellTabStore.getState().openLanTab();
       restoredAnything = true;
     }
 
-    for (const projectTab of sessionSnapshot.projectTabs) {
+    for (const projectTab of canRestoreProjects ? sessionSnapshot.projectTabs : []) {
       try {
         const report = await inspectProjectLocation(projectTab.projectPath);
         if (report.status !== 'ready') {
@@ -845,7 +912,7 @@ export function FileManager() {
       }
     }
 
-    if (sessionSnapshot.activeTab.type === 'project') {
+    if (sessionSnapshot.activeTab.type === 'project' && canRestoreProjects) {
       const activeProjectTab = useShellTabStore
         .getState()
         .findProjectTab(sessionSnapshot.activeTab.projectPath);
@@ -901,6 +968,14 @@ export function FileManager() {
           : false;
 
         if (restoredFromSession || recentProjects.length === 0) {
+          return;
+        }
+
+        const projectManagerUnavailable = getShellTabContributionUnavailableReason(
+          useContributionRegistryStore.getState().snapshot,
+          SHELL_TAB_CONTRIBUTIONS.project,
+        );
+        if (projectManagerUnavailable) {
           return;
         }
 
@@ -1370,9 +1445,10 @@ export function FileManager() {
             <ProjectWorkspace />
           </ProjectSessionProvider>
         ) : !isContributionShellActive ? (
-          <WelcomeScreen
+          <ProfileHomeSurface
             onOpenProject={handleOpenProject}
             settingsLoaded={isSettingsLoaded}
+            onOpenSettings={() => setIsSettingsOpen(true)}
           />
         ) : null}
       </div>

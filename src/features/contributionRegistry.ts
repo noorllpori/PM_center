@@ -9,6 +9,7 @@ import type {
 export const BUILTIN_MODULE_IDS = {
   automationRuntime: 'builtin.automation-runtime',
   lanCollaboration: 'builtin.lan-collaboration',
+  projectManager: 'builtin.project-manager',
   projectResources: 'builtin.project-resources',
   renderCenter: 'builtin.render-center',
   smartClipboard: 'builtin.smart-clipboard',
@@ -75,6 +76,24 @@ export interface SurfaceContributionDefinition extends ContributionDefinition {
 }
 
 export const SURFACE_CONTRIBUTIONS = {
+  projectHome: {
+    ...contribution(
+      'builtin.project-manager.home-surface',
+      'surfaces',
+      BUILTIN_MODULE_IDS.projectManager,
+    ),
+    title: '项目主页',
+    host: 'shell',
+  },
+  projectWorkspace: {
+    ...contribution(
+      'builtin.project-manager.project-workspace-surface',
+      'surfaces',
+      BUILTIN_MODULE_IDS.projectManager,
+    ),
+    title: '项目工作区',
+    host: 'shell',
+  },
   automationPython: {
     ...contribution(
       'builtin.automation-runtime.python-surface',
@@ -299,16 +318,30 @@ export const CONTEXT_COMMAND_CONTRIBUTIONS = {
 
 export interface ShellTabContributionDefinition extends ContributionDefinition {
   tabId: string;
-  tabType: 'lan';
+  tabType: 'lan' | 'project';
+  instanceMode: 'singleton' | 'per-project';
   title: string;
   surfaceId: string;
 }
 
 export const SHELL_TAB_CONTRIBUTIONS = {
+  project: {
+    ...contribution(
+      'builtin.project-manager.project-shell-tab',
+      'shellTabs',
+      BUILTIN_MODULE_IDS.projectManager,
+    ),
+    tabId: 'project-workspace',
+    tabType: 'project',
+    instanceMode: 'per-project',
+    title: '项目工作区',
+    surfaceId: SURFACE_CONTRIBUTIONS.projectWorkspace.id,
+  },
   lan: {
     ...contribution('builtin.lan-collaboration.shell-tab', 'shellTabs', BUILTIN_MODULE_IDS.lanCollaboration),
     tabId: 'lan-collaboration',
     tabType: 'lan',
+    instanceMode: 'singleton',
     title: '设备协作',
     surfaceId: SURFACE_CONTRIBUTIONS.lanMain.id,
   },

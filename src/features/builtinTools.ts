@@ -20,6 +20,8 @@ import {
   type ContributionDefinition,
 } from './contributionRegistry';
 
+export const OPEN_BUILTIN_TOOLS_CENTER_EVENT = 'pm-center:open-builtin-tools-center';
+
 export type BuiltinToolId =
   | 'render-center'
   | 'cache-manager'

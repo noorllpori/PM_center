@@ -33,9 +33,9 @@ use builtin_components::builtin_component_manifests;
 use builtin_modules::{
     automation_runtime_component, automation_runtime_module, diagnostic_components,
     diagnostic_modules, lan_collaboration_component, lan_collaboration_module,
-    project_resources_component, project_resources_module, render_center_component,
-    render_center_module, smart_clipboard_component, smart_clipboard_module, DiagnosticControls,
-    DIAGNOSTIC_BASE_ID,
+    project_manager_module, project_resources_component, project_resources_module,
+    render_center_component, render_center_module, smart_clipboard_component,
+    smart_clipboard_module, DiagnosticControls, DIAGNOSTIC_BASE_ID,
 };
 use capability_gateway::{run_security_diagnostic, CapabilityGateway};
 use serde::{Deserialize, Serialize};
@@ -70,6 +70,7 @@ impl PlatformRuntime {
             app_handle,
         ));
         modules.push(project_resources_module(project_databases));
+        modules.push(project_manager_module());
         modules.push(automation_runtime_module());
         modules.push(render_center_module());
         let manager = ModuleManager::new(app_data_dir.join("module-runtime.json"), modules)?;
