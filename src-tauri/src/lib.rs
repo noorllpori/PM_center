@@ -659,7 +659,7 @@ async fn inspect_project_location(project_path: String) -> Result<ProjectLocatio
         issues.push(project_location_issue(
             "pm-center-missing",
             "warning",
-            "此目录尚未初始化为 PMC 项目。初始化只会创建 .pm_center，不会改动现有项目文件。",
+            "此目录尚未初始化为 Nexora 项目。初始化只会创建 .pm_center，不会改动现有项目文件。",
         ));
         return Ok(ProjectLocationReport {
             project_path,
@@ -1348,7 +1348,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(
             tauri_plugin_autostart::Builder::new()
-                .app_name("PM Center")
+                .app_name("Nexora")
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())

@@ -9,7 +9,9 @@ import {
 import {
   COMMAND_CONTRIBUTIONS,
   DATA_SOURCE_CONTRIBUTIONS,
+  TOOL_CONTRIBUTIONS,
   WIDGET_CONTRIBUTIONS,
+  isContributionAvailable,
 } from '../../features/contributionRegistry';
 import { useContributionRegistryStore } from '../../stores/contributionRegistryStore';
 import { useSettingsStore } from '../../stores/settingsStore';
@@ -20,7 +22,7 @@ import {
   APP_NAME,
   APP_VERSION_TEXT,
 } from '../../config/appMeta';
-import pmcLogo from '../../assets/pmc-logo.png';
+import nexoraLogo from '../../assets/nexora-logo.png';
 import { AlertDialog, ConfirmDialog, Dialog } from '../Dialog';
 import { SettingsPanel } from '../SettingsPanel';
 import {
@@ -124,6 +126,10 @@ export function ProjectHomeComposition({
     unignoreProject,
   } = useSettingsStore();
   const contributionRegistry = useContributionRegistryStore((state) => state.snapshot);
+  const settingsToolAvailable = isContributionAvailable(
+    contributionRegistry,
+    TOOL_CONTRIBUTIONS.settings,
+  );
   const [scannedProjects, setScannedProjects] = useState<ScannedProject[]>([]);
   const [isScanning, setIsScanning] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -156,6 +162,12 @@ export function ProjectHomeComposition({
         || (settingsLoaded && Boolean(projectsRootDir))
       )
   ));
+
+  useEffect(() => {
+    if (!settingsToolAvailable) {
+      setShowSettings(false);
+    }
+  }, [settingsToolAvailable]);
 
   useEffect(() => {
     if (!contentWidgets.some((widget) => widget.id === activeContentWidgetId)) {
@@ -346,7 +358,7 @@ export function ProjectHomeComposition({
         <header className="mb-8">
           <div className="flex items-start justify-between gap-4">
             <div className="flex-1 text-center">
-              <img src={pmcLogo} alt={APP_NAME} className="mx-auto mb-4 h-20 w-20 object-contain" />
+              <img src={nexoraLogo} alt={APP_NAME} className="mx-auto mb-4 h-20 w-20 object-contain" />
               <h1 className="mb-1 text-2xl font-bold text-gray-900 dark:text-gray-100">{APP_NAME}</h1>
               <p className="text-sm text-gray-500 dark:text-gray-400">项目管理与渲染工作流工具</p>
               <div className="mt-2 flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-xs text-gray-400">
@@ -356,7 +368,7 @@ export function ProjectHomeComposition({
                 <span>{APP_AUTHOR_CONTACT}</span>
               </div>
             </div>
-            <button
+            {settingsToolAvailable ? <button
               type="button"
               onClick={() => setShowSettings(true)}
               className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-gray-700 transition-colors hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
@@ -364,7 +376,7 @@ export function ProjectHomeComposition({
             >
               <Settings className="h-4 w-4" />
               <span className="text-sm">全局设置</span>
-            </button>
+            </button> : null}
           </div>
         </header>
 
@@ -442,7 +454,7 @@ export function ProjectHomeComposition({
         message={alertDialog.message}
       />
       <SettingsPanel
-        isOpen={showSettings}
+        isOpen={showSettings && settingsToolAvailable}
         onClose={() => setShowSettings(false)}
         defaultScope="global"
         onOpenProject={onOpenProject}

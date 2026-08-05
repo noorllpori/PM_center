@@ -8,7 +8,7 @@
 
 ## 1. 本轮目标
 
-建立 R6 第一条无破坏纵向链路：把当前 PM Center 的模块期望状态和功能栏 Pin 快照为一个普通 `WorkspaceProfileV1`，但暂不让 Profile 驱动模块启停、页面关闭或布局切换。
+建立 R6 第一条无破坏纵向链路：把当前 Nexora 的模块期望状态和功能栏 Pin 快照为一个普通 `WorkspaceProfileV1`，但暂不让 Profile 驱动模块启停、页面关闭或布局切换。
 
 这样可以先确认升级迁移与现有使用习惯完全一致，再在 R6-2 增加切换预览和事务切换。
 
@@ -37,7 +37,7 @@ profile-runtime.json
 - 所有非诊断模块的 `desiredEnabled` 状态；
 - 对应模块当前版本的兼容约束；
 - 当前功能栏 Pin 的稳定贡献 ID 和顺序；
-- PM Center 来源版本、迁移时间和数量摘要。
+- Nexora 来源版本、迁移时间和数量摘要。
 
 本机首次迁移结果：
 
@@ -106,7 +106,7 @@ npm run build
 npm run check:platform-contracts
 cargo test --manifest-path src-tauri/Cargo.toml --lib
 cargo check --manifest-path src-tauri/Cargo.toml --no-default-features
-cargo fmt --manifest-path src-tauri/Cargo.toml --package pm_center --check
+cargo fmt --manifest-path src-tauri/Cargo.toml --package nexora --check
 git diff --check
 ```
 
@@ -122,7 +122,7 @@ git diff --check
 
 - [x] 重启后原项目、工具栏 Pin、模块状态和已有页面没有变化；
 - [x] 全局设置出现“装配方案运行时”；
-- [x] 当前方案为“当前 PM Center 装配方案”，状态“可用”；
+- [x] 当前方案为“当前 Nexora 装配方案”，状态“可用”；
 - [x] 显示 1 个方案、5 个启用模块、6 个固定工具、revision 1；
 - [x] 方案目录和状态路径位于应用数据目录，不在项目 `.pm_center`；
 - [x] 点击刷新后数量和状态不变化；

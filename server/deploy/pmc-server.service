@@ -1,5 +1,5 @@
 [Unit]
-Description=PMC collaboration server
+Description=Nexora collaboration server
 After=network-online.target
 Wants=network-online.target
 

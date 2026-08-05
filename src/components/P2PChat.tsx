@@ -288,7 +288,7 @@ export function P2PChat({ isOpen, onClose }: P2PChatProps) {
                 <Users className="w-12 h-12 mx-auto mb-3 opacity-50" />
                 <p className="text-sm">暂无在线用户</p>
                 <p className="text-xs mt-1">确保发现服务已启动</p>
-                <p className="mx-auto mt-3 max-w-sm text-xs leading-5 text-gray-500">若对方能看到你、但这里看不到对方，请在本机 Windows Defender 防火墙中允许 PM Center 的专用网络访问：UDP 31523 和 TCP 31524；随后停止并重新开始发现。</p>
+                <p className="mx-auto mt-3 max-w-sm text-xs leading-5 text-gray-500">若对方能看到你、但这里看不到对方，请在本机 Windows Defender 防火墙中允许 Nexora 的专用网络访问：UDP 31523 和 TCP 31524；随后停止并重新开始发现。</p>
               </div>
             ) : (
               <div className="space-y-2">

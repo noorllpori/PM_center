@@ -45,7 +45,7 @@ fn blendio_component_manifest() -> ComponentManifestV1 {
             timeout_ms: Some(600_000),
             extensions: ExtensionFields::new(),
         },
-        publisher: Some("PM Center".into()),
+        publisher: Some("Nexora".into()),
         extensions,
     }
 }

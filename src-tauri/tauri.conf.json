@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "PM Center",
+  "productName": "Nexora",
   "version": "2.8.5",
   "identifier": "com.httplink.pmcenter",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [  
       {
-        "title": "PM Center",
+        "title": "Nexora",
         "width": 1400,
         "height": 900,
         "minWidth": 900,
@@ -36,7 +36,7 @@
     "publisher": "章知涵@Ninniku",
     "copyright": "Copyright (c) 2026 章知涵@Ninniku",
     "shortDescription": "项目管理与渲染工作流工具",
-    "longDescription": "PM Center 项目管理与渲染工作流工具。作者：章知涵@Ninniku；联系 QQ：2143178235。",
+    "longDescription": "Nexora 项目管理、协作与渲染工作流工具。作者：章知涵@Ninniku；联系 QQ：2143178235。",
     "windows": {
       "wix": {
         "language": "zh-CN",

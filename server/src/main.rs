@@ -133,7 +133,7 @@ async fn main() -> Result<()> {
         .init();
     let config = Config {
         bind: env::var("PMC_SERVER_BIND").unwrap_or_else(|_| "0.0.0.0:7412".to_string()),
-        name: env::var("PMC_SERVER_NAME").unwrap_or_else(|_| "PMC Server".to_string()),
+        name: env::var("PMC_SERVER_NAME").unwrap_or_else(|_| "Nexora Server".to_string()),
         password: env::var("PMC_SERVER_PASSWORD").unwrap_or_default(),
         max_transfer_bytes: env_u64("PMC_MAX_TRANSFER_BYTES", 1024 * 1024 * 1024 * 1024),
     };
@@ -159,7 +159,7 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&config.bind)
         .await
         .with_context(|| format!("failed to bind {}", config.bind))?;
-    info!(bind = %config.bind, "PMC Server started");
+    info!(bind = %config.bind, "Nexora Server started");
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),

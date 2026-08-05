@@ -8,7 +8,7 @@
   "description": "Demonstrates plugin introduction panels, persisted settings, numeric options, and sample-file selection.",
   "enabledByDefault": true,
   "settingsPanel": {
-    "summary": "这是一个演示插件，用来展示 PM Center 插件设置框架的完整能力。你可以在这里填写数字、开关、下拉项和文件选择参数，保存后插件运行时会直接拿到这些值。",
+    "summary": "这是一个演示插件，用来展示 Nexora 插件设置框架的完整能力。你可以在这里填写数字、开关、下拉项和文件选择参数，保存后插件运行时会直接拿到这些值。",
     "sections": [
       {
         "title": "适合演示什么",

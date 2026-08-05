@@ -1911,7 +1911,7 @@ export function SettingsPanel({
                 {launchOnStartupAvailable
                   ? isUpdatingLaunchOnStartup
                     ? '正在更新系统启动项...'
-                    : '在系统登录后自动启动 PM Center。'
+                    : '在系统登录后自动启动 Nexora。'
                   : '当前环境暂时无法读取系统自启动状态。'}
               </span>
             </span>

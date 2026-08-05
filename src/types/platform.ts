@@ -1,4 +1,4 @@
-/** Version 1 contracts for the next-generation PM Center modular platform. */
+/** Version 1 contracts for the next-generation Nexora modular platform. */
 
 export const PLATFORM_SCHEMA_VERSION = 1 as const;
 export const PACKAGE_MAGIC = 'PMC_PACKAGE' as const;

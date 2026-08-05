@@ -1,4 +1,4 @@
-# PM Center 下一代 DIY 可组合平台与参考装配方案规划
+# Nexora 下一代 DIY 可组合平台与参考装配方案规划
 
 > 文档状态：下一超大版本主设计草案  
 > 整理日期：2026-08-03  
@@ -8,9 +8,9 @@
 
 ## 1. 文档目的
 
-本文件记录 PM Center 下一超大版本的产品方向、当前代码基础、目标架构、模块边界、组件协议、装配方案、数据模型、迁移路线和验收标准。
+本文件记录 Nexora 下一超大版本的产品方向、当前代码基础、目标架构、模块边界、组件协议、装配方案、数据模型、迁移路线和验收标准。
 
-这次演进不是把 PM Center 拆成四套互相独立的软件，也不是只在功能中心隐藏若干按钮。目标是把现有单体功能升级成同一个稳定宿主运行时上的可组合平台：
+这次演进不是把 Nexora 拆成四套互相独立的软件，也不是只在功能中心隐藏若干按钮。目标是把现有单体功能升级成同一个稳定宿主运行时上的可组合平台：
 
 - 用户可以关闭不需要的模块，并真正停止对应后台服务和资源占用；
 - 用户可以从空白装配空间开始，也可以复制、修改或导入任意装配方案；
@@ -23,14 +23,14 @@
 
 ## 2. 已确定的产品决策
 
-1. PM Center 保持一个主代码库和一个统一宿主运行时，不维护“项目版、聊天版、媒体版、渲染版”四个长期分支。宿主运行时不是组件等级，所有正式组件使用统一安装、卸载和权限模型。
+1. Nexora 保持一个主代码库和一个统一宿主运行时，不维护“项目版、聊天版、媒体版、渲染版”四个长期分支。宿主运行时不是组件等级，所有正式组件使用统一安装、卸载和权限模型。
 2. `Workspace Profile` 是用户自己创建和分享的“装配方案”，不是系统预先规定的工作模式。项目管理器、媒体管理器、局域网通信端和 Blender 渲染器只是四个参考成品。
 3. 第一阶段实现运行时模块化。关闭模块后代码仍可存在于安装目录，但入口、命令、服务和资源都停止使用。
 4. 物理裁剪安装包属于后续能力。只有模块协议稳定后，才考虑按 Profile 构建精简安装包或下载可选组件包。
 5. “隐藏”“停用”“卸载”是三种不同操作，界面和数据处理不能混为一谈。
 6. 关闭模块不会自动删除历史数据、项目数据、聊天记录、渲染结果、脚本或插件。
 7. Python 继续承担自动化、解析、胶水逻辑和快速扩展；高性能或高稳定性场景允许使用原生独立进程或隔离 DLL。
-8. 第三方 DLL 默认不得直接加载到 PM Center 主进程，必须由独立组件宿主加载，避免组件崩溃拖垮应用。
+8. 第三方 DLL 默认不得直接加载到 Nexora 主进程，必须由独立组件宿主加载，避免组件崩溃拖垮应用。
 9. 农场远程节点不得接收并直接执行任意 Python 或任意系统命令，只接受版本化、可验证的任务协议。
 10. 系统不为任何参考装配提供特殊代码路径。示例、用户创建和外部导入的装配方案使用同一个 schema、依赖解析器和生命周期。
 11. 装配方案和装配包导出时不得包含密码、私钥、聊天记录、用户身份、机器绝对路径或其他敏感数据。
@@ -41,7 +41,7 @@
 
 用户应能使用相同的模块、组件、页面、工作流和布局能力，继续组装出素材交付台、项目审片台、自动备份站、团队文件中转站或其他尚未定义的形态。
 
-### 3.1 参考装配 A：当前 PM Center 项目管理器
+### 3.1 参考装配 A：当前 Nexora 项目管理器
 
 这是为了兼容现有用户而由迁移程序生成的初始装配结果，不是不可删除或不可修改的内置模式。升级后首次启动仍保持当前项目管理器体验，但用户可以继续拆除、替换、重新布局和导出其中模块。
 
@@ -88,7 +88,7 @@
 - 图片、文件、多文件和目录传输；
 - 文件统筹与传输记录；
 - Windows 通知、提示音和托盘运行；
-- 局域网诊断、防火墙提示和可选 PMC Server 连接。
+- 局域网诊断、防火墙提示和可选 Nexora Server 连接。
 
 默认停用项目文件、项目数据库、目录 watcher、Blender 解析、渲染和媒体归档。联系人、消息、头像和传输记录继续使用应用数据目录中的全局数据库，不写入任意项目 `.pm_center`。
 
@@ -159,7 +159,7 @@
 | 项目资源释放 | `release_project_resources`、`builtin.project-resources` | 关闭 watcher、数据库和 TreeCache 句柄，模块停用时统一释放 | 项目级 UI 贡献仍在 R5 继续拆分 |
 | Python 插件 | `src-tauri/src/plugin/mod.rs`、`automation_runtime.rs` | manifest、依赖、动作、内置 Python、模块状态守卫和进程登记 | 旧插件协议仍是兼容层，R9 再迁入统一组件宿主 |
 | 插件 SDK | `src-tauri/resources/plugin-sdk/pmc_plugin` | 请求读取、progress、toast、confirm、refresh 和 result | 只支持一次性 Python CLI 动作 |
-| Python 环境 | `python`、`python_env`、`automation_runtime.rs` | PMC 内置 Python、系统/venv/Blender Python、pip 和进程生命周期 | 缺少组件级隔离、锁定依赖和长期 Worker 管理 |
+| Python 环境 | `python`、`python_env`、`automation_runtime.rs` | Nexora 内置 Python、系统/venv/Blender Python、pip 和进程生命周期 | 缺少组件级隔离、锁定依赖和长期 Worker 管理 |
 | 任务执行 | `task/mod.rs`、`automation_runtime.rs` | 子进程、stdout/stderr、进度、取消和模块停用收敛 | 尚未抽象成通用组件宿主协议 |
 | 局域网 | `p2p/`、`builtin.lan-collaboration` | 发现、联系人、聊天、传输、服务器通道和统一启停 | 聊天、传输和未来同步仍处于同一大领域模块 |
 | 渲染中心 | `render_center/mod.rs`、`builtin.render-center` | 批次、常驻 Worker、ETA、性能、进程登记和停用恢复 | 调度主要面向本机项目，尚无远程节点与资源装配协议 |
@@ -187,7 +187,7 @@ Capability Gateway
 Component Runtime
   Python Action / Python Worker / Native Process / Isolated DLL / Data Pack
         |
-PM Center Kernel
+Nexora Kernel
   Tauri、窗口、设置、日志、任务、事件、数据库基础设施和更新机制
 ```
 
@@ -432,11 +432,11 @@ Profile 分为迁移生成方案、用户创建方案、外部导入方案、可
 5. **数据源**：绑定项目目录、媒体资料库、局域网全局数据库、渲染队列或组件数据。
 6. **工作流**：把触发器、组件节点、条件、重试、确认和结果提交连接起来。
 
-所以 Profile 不是简单的 `enabledModules[]`。它是完整的应用装配描述，能够决定 PM Center 启动后“看起来像什么、先打开什么、能做什么、各动作怎样连接”。
+所以 Profile 不是简单的 `enabledModules[]`。它是完整的应用装配描述，能够决定 Nexora 启动后“看起来像什么、先打开什么、能做什么、各动作怎样连接”。
 
 ### 8.3 最小 Shell、主页与启动目标
 
-PM Center 宿主本身不等于项目管理器。最小 Shell 始终保留窗口与主题、工具中心、全局设置、Profile/模块/组件管理、切换恢复和故障回退；这些入口不能被普通装配撤下，否则错误 Profile 会失去自救路径。最小 Shell 不是“内核组件”等级，只是宿主维持可启动、可恢复所需的固定边界。
+Nexora 宿主本身不等于项目管理器。最小 Shell 始终保留窗口与主题、工具中心、全局设置、Profile/模块/组件管理、切换恢复和故障回退；这些入口不能被普通装配撤下，否则错误 Profile 会失去自救路径。最小 Shell 不是“内核组件”等级，只是宿主维持可启动、可恢复所需的固定边界。
 
 现有项目主页必须从写死的 `WelcomeScreen` 迁移为模块贡献。规划新增 `builtin.project-manager` 管理项目目录、创建/导入、最近项目、项目列表、项目 Shell 标签和文件工作区；既有 `builtin.project-resources` 保留数据库、TreeCache、Watcher 和项目关闭释放等资源层。项目管理器依赖项目资源层，渲染或媒体模块可以只依赖资源层，不被强制绑定到项目管理主页。
 
@@ -532,7 +532,7 @@ Python 可以继续负责组织参数和调用原生组件，并不需要为了�
 
 ### 10.2 Python 环境策略
 
-- PM Center 内置 Python 是默认受控运行时；
+- Nexora 内置 Python 是默认受控运行时；
 - Blender 内部脚本使用目标 Blender 自带 Python；
 - Python 组件不得污染内置 Python 的全局 site-packages；
 - 每个组件使用锁定 requirements、vendor 或组件级隔离环境；
@@ -542,7 +542,7 @@ Python 可以继续负责组织参数和调用原生组件，并不需要为了�
 
 ### 10.3 原生独立进程
 
-`native-process` 是首选原生扩展形式。PM Center 使用 stdin/stdout、命名管道或本地 socket 与其通信。
+`native-process` 是首选原生扩展形式。Nexora 使用 stdin/stdout、命名管道或本地 socket 与其通信。
 
 优点：
 
@@ -557,7 +557,7 @@ Python 可以继续负责组织参数和调用原生组件，并不需要为了�
 第三方 `native-library` 由 `pmc-component-host.exe` 加载：
 
 ```text
-PM Center
+Nexora
   <-> 本地命名管道 / JSON-RPC
 pmc-component-host.exe
   <-> 稳定 C ABI
@@ -630,7 +630,7 @@ pmc-component-host.exe
 {"type":"error","operationId":"...","code":"SOURCE_UNREADABLE","message":"..."}
 ```
 
-所有写入型结果由 PM Center 核心验证并提交，组件不能通过伪造 `result` 绕过路径和权限检查。
+所有写入型结果由 Nexora 核心验证并提交，组件不能通过伪造 `result` 绕过路径和权限检查。
 
 ## 11. 工作流模型
 
@@ -785,7 +785,7 @@ render.farm-controller
 
 ### 14.2 节点能力报告
 
-节点至少报告设备 ID、系统和 PM Center 版本、CPU/内存/磁盘、GPU/显存/驱动、Blender 版本别名、插件组件版本、当前队列和资源、缓存内容哈希、支持的渲染引擎和输出格式。
+节点至少报告设备 ID、系统和 Nexora 版本、CPU/内存/磁盘、GPU/显存/驱动、Blender 版本别名、插件组件版本、当前队列和资源、缓存内容哈希、支持的渲染引擎和输出格式。
 
 ### 14.3 调度链路
 
@@ -970,7 +970,7 @@ logs/components/
 
 ### 18.1 默认兼容
 
-- 升级时根据当前功能、设置和布局生成一份普通的“现有 PM Center 装配方案”，保证升级前后界面和功能一致；
+- 升级时根据当前功能、设置和布局生成一份普通的“现有 Nexora 装配方案”，保证升级前后界面和功能一致；
 - 现有功能中心 Pin 迁移到这份装配方案的布局偏好中；
 - 现有插件继续由 `plugin.legacy-python` 模块加载；
 - 现有插件 `plugin.json` 不需要立即升级；
@@ -1041,7 +1041,7 @@ logs/components/
 - 实现装配切换预览；
 - 功能中心、快捷栏、Shell 和工作区标签读取模块贡献；
 - 实现 `.pmc-profile` 导入导出；
-- 迁移生成的现有 PM Center 装配保持当前用户行为。
+- 迁移生成的现有 Nexora 装配保持当前用户行为。
 
 ### 阶段 3：媒体资料管理器
 
@@ -1083,7 +1083,7 @@ logs/components/
 
 ### 可选本机浏览器控制面
 
-`builtin.local-web-console` 用于验证“完整桌面 Shell 之外的轻量 Surface”也能由模块生命周期装配。第一版固定监听 `127.0.0.1`，通过令牌和 HTTP API 白名单提供状态、部分设置、窗口显示/隐藏、重启和退出。它不等于完整 Web 版 PM Center，也不能直接开放局域网；详细边界见 `NEXT_MAJOR_R7_LOCAL_WEB_CONSOLE.md`。
+`builtin.local-web-console` 用于验证“完整桌面 Shell 之外的轻量 Surface”也能由模块生命周期装配。第一版固定监听 `127.0.0.1`，通过令牌和 HTTP API 白名单提供状态、部分设置、窗口显示/隐藏、重启和退出。它不等于完整 Web 版 Nexora，也不能直接开放局域网；详细边界见 `NEXT_MAJOR_R7_LOCAL_WEB_CONSOLE.md`。
 
 ## 20. 测试与验收基线
 
@@ -1101,7 +1101,7 @@ logs/components/
 - 未声明 Capability 的调用被拒绝；
 - 路径越界、重解析点和绝对路径注入被拒绝；
 - 组件签名、哈希、API 版本和平台不匹配；
-- DLL 崩溃不影响 PM Center 主进程；
+- DLL 崩溃不影响 Nexora 主进程；
 - 组件超时、取消、重复结果和宿主重启；
 - 导出包不包含密码、密钥、聊天记录和本机绝对路径。
 

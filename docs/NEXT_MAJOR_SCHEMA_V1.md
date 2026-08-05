@@ -1,4 +1,4 @@
-# PM Center 下一代平台合同 schema v1
+# Nexora 下一代平台合同 schema v1
 
 > 里程碑：R1  
 > 状态：`verifying`，合同候选已实现并通过自动检查，等待产品确认后冻结  

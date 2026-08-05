@@ -224,7 +224,7 @@ async function buildSnapshot() {
 
 function summary(snapshot) {
   return [
-    `PM Center ${snapshot.sourceVersion} interface baseline`,
+    `Nexora ${snapshot.sourceVersion} interface baseline`,
     `Rust modules: ${snapshot.rustModules.length}`,
     `Registered Tauri commands: ${snapshot.tauriCommands.registered.length}`,
     `Tauri command definitions: ${snapshot.tauriCommands.definitions.length}`,

@@ -2152,7 +2152,7 @@ async fn initialize_lan_service(
         .path()
         .download_dir()
         .unwrap_or_else(|_| app_data_dir.join("lan_collaboration").join("received"))
-        .join("PM Center 接收文件");
+        .join("Nexora 接收文件");
     ensure_local_settings(&conn, &default_receive_directory)?;
     transfer::recover_interrupted(&conn)?;
     server_client::recover_interrupted(&conn)?;

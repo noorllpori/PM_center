@@ -192,7 +192,7 @@ pub async fn start_server(
     let router = Router::new()
         .route("/", get(index_page))
         .route("/health", get(health))
-        .route("/assets/pmc-logo.png", get(logo))
+        .route("/assets/nexora-logo.png", get(logo))
         .route("/api/bootstrap", get(bootstrap))
         .route("/api/settings", put(update_settings))
         .route("/api/window/show", post(show_window))
@@ -316,12 +316,12 @@ async fn index_page() -> Html<&'static str> {
 async fn logo() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, HeaderValue::from_static("image/png"))],
-        include_bytes!("../../src/assets/pmc-logo.png").as_slice(),
+        include_bytes!("../../src/assets/nexora-logo.png").as_slice(),
     )
 }
 
 async fn health() -> Json<Value> {
-    Json(json!({ "ok": true, "app": "PM Center" }))
+    Json(json!({ "ok": true, "app": "Nexora" }))
 }
 
 async fn bootstrap(
@@ -379,7 +379,7 @@ async fn bootstrap(
     };
     Ok(Json(json!({
         "app": {
-            "name": "PM Center",
+            "name": "Nexora",
             "version": env!("CARGO_PKG_VERSION"),
             "windowVisible": window_visible,
             "startedAt": state.started_at,
@@ -504,7 +504,7 @@ fn authorize(headers: &HeaderMap, state: &WebState) -> Result<(), WebError> {
         .and_then(|value| value.to_str().ok());
     if actual != Some(expected.as_str()) {
         return Err(WebError::unauthorized(
-            "访问令牌无效，请从 PM Center 重新打开网页控制台",
+            "访问令牌无效，请从 Nexora 重新打开网页控制台",
         ));
     }
     Ok(())

@@ -1,4 +1,4 @@
-# PMC Server 混合协作架构
+# Nexora Server 混合协作架构
 
 ## 通道
 

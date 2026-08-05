@@ -122,7 +122,7 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     description: '打开全局联系人、大厅和私聊主面板。',
     help: [
       '这是软件级局域网入口，用于查看在线设备、联系人、大厅消息和一对一私聊，不依赖当前项目。',
-      '联系人、消息和头像保存在 PM Center 应用数据目录，不会写入项目的 .pm_center。',
+      '联系人、消息和头像保存在 Nexora 应用数据目录，不会写入项目的 .pm_center。',
       '文件发送需要对方确认；接收位置和自动接收规则可在局域网个人资料设置中管理。',
     ],
     category: 'communication',
@@ -153,9 +153,9 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     id: 'python-environments',
     contribution: TOOL_CONTRIBUTIONS.pythonEnvironments,
     title: 'Python 环境',
-    description: '检测、创建和管理 PMC 使用的 Python 环境及依赖。',
+    description: '检测、创建和管理 Nexora 使用的 Python 环境及依赖。',
     help: [
-      '检测 PMC 内置 Python、系统 Python、虚拟环境和 Blender 自带 Python，并查看解释器版本与可用状态。',
+      '检测 Nexora 内置 Python、系统 Python、虚拟环境和 Blender 自带 Python，并查看解释器版本与可用状态。',
       '可以创建或删除 venv、安装和卸载依赖包。项目脚本与插件会使用这里可用或已选择的环境。',
       '调整环境或依赖可能影响正在使用它的脚本和插件；执行删除或卸载前应先确认相关任务已停止。',
     ],
@@ -191,7 +191,7 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     help: [
       '管理 FFmpeg/FFprobe、Blender 版本、Python、开机启动、窗口行为和插件等软件级设置。',
       '打开项目后还可调整当前项目的排除规则及项目级插件设置；项目设置不会自动应用到其他项目。',
-      '工具路径留空时 PM Center 会尝试从系统 PATH 自动检测，手动指定路径则优先使用指定版本。',
+      '工具路径留空时 Nexora 会尝试从系统 PATH 自动检测，手动指定路径则优先使用指定版本。',
     ],
     category: 'system',
     icon: Settings,
@@ -240,7 +240,7 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     title: '智能剪贴板',
     description: '查看并恢复最近复制的文本、图像和文件。',
     help: [
-      'PM Center 在后台运行时记录最近复制的文本、图像、文件和文件夹，最多保存 500 条并保留 30 天。',
+      'Nexora 在后台运行时记录最近复制的文本、图像、文件和文件夹，最多保存 500 条并保留 30 天。',
       '使用 Ctrl+` 可在任意位置打开原生 Windows 历史窗口；输入文字搜索，上下键选择，Delete 删除，Esc 关闭。',
       'Enter 或双击会恢复内容并粘贴到之前的外部窗口；Ctrl+Enter 只恢复到系统剪贴板，不自动粘贴。',
     ],

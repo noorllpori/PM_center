@@ -6,7 +6,7 @@ import {
   ShieldCheck,
   Wrench,
 } from 'lucide-react';
-import pmcLogo from '../../assets/pmc-logo.png';
+import nexoraLogo from '../../assets/nexora-logo.png';
 import {
   APP_AUTHOR_CONTACT,
   APP_AUTHOR_NAME,
@@ -35,7 +35,7 @@ export function MinimalSafeHome({
     <div className="h-full overflow-y-auto bg-gray-50 px-5 py-8 dark:bg-gray-900 sm:px-8">
       <div className="mx-auto flex min-h-full max-w-3xl flex-col justify-center py-6">
         <header className="flex items-center gap-4">
-          <img src={pmcLogo} alt="" className="h-12 w-12 object-contain" />
+          <img src={nexoraLogo} alt="" className="h-12 w-12 object-contain" />
           <div className="min-w-0">
             <p className="text-xs font-medium text-gray-500 dark:text-gray-400">{APP_NAME} · {APP_VERSION_TEXT}</p>
             <h1 className="mt-1 text-xl font-semibold text-gray-900 dark:text-gray-100">最小安全主页</h1>

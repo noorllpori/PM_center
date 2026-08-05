@@ -1,8 +1,8 @@
-# PM Center
+# Nexora
 
-PM Center 是一个基于 `Tauri v2 + React 19 + Rust` 的桌面项目管理器，目标是把项目浏览、脚本任务、Python 环境、设备协作和轻量编辑能力放到一个应用里。
+Nexora 是一个基于 `Tauri v2 + React 19 + Rust` 的桌面项目管理器，目标是把项目浏览、脚本任务、Python 环境、设备协作和轻量编辑能力放到一个应用里。
 
-设备协作同时支持无需服务器的局域网 UDP 发现/TCP 直连，以及可选的独立 PMC Server。Linux 服务端、Docker Compose、systemd 和 Caddy 示例位于 [`server/`](server/README.md)。
+设备协作同时支持无需服务器的局域网 UDP 发现/TCP 直连，以及可选的独立 Nexora Server。Linux 服务端、Docker Compose、systemd 和 Caddy 示例位于 [`server/`](server/README.md)。
 
 作者：章知涵@Ninniku
 联系：QQ：2143178235
@@ -27,11 +27,11 @@ Windows MSI 安装包会在系统“已安装的应用”中显示发布者“�
 
 ### 下一超大版本：DIY 可组合装配平台
 
-下一超大版本计划将 PM Center 升级为统一内核上的 DIY 可组合模块平台。用户可以选择空白装配空间，自由组合模块、页面、工具栏、工作流、Python/原生组件和布局。
+下一超大版本计划将 Nexora 升级为统一内核上的 DIY 可组合模块平台。用户可以选择空白装配空间，自由组合模块、页面、工具栏、工作流、Python/原生组件和布局。
 
 下面四种形态只是可以用装配系统组合出来的参考成品，不是软件写死的系统模式：
 
-- PM Center 标准项目管理模式；
+- Nexora 标准项目管理模式；
 - 图像与媒体资料管理模式；
 - 类似内网通的局域网通信模式；
 - Blender 外部渲染控制端与渲染节点模式。
@@ -49,7 +49,7 @@ Windows MSI 安装包会在系统“已安装的应用”中显示发布者“�
 - [x] 预览：图片、PSD、常见视频、文本/Markdown、Blender 基础信息和目录；文本、图片、视频可在独立窗口打开并回归项目标签页。
 - [x] MDT 待办：关联文件、日志/多媒体、按时间创建、总览和 `Ctrl+Shift+M` 快速创建。
 - [x] 集合与图片序列：手工集合的创建、添加、移除、重命名和拖入；图片序列自动分组为虚拟文件，支持逐帧播放预览。
-- [x] Python 与脚本：PMC 内置/系统/Blender Python、环境检测、venv、pip、项目脚本、任务队列、日志、进度、取消和重试。
+- [x] Python 与脚本：Nexora 内置/系统/Blender Python、环境检测、venv、pip、项目脚本、任务队列、日志、进度、取消和重试。
 - [x] 插件基础：发现、校验、启停、依赖安装、参数和文件输入、项目设置、工具栏及文件右键动作。
 - [x] Blender 渲染中心：批次、作业、帧队列、预设、常驻 Worker/逐帧兼容模式、单任务并发、性能采样、ETA、帧预览、失败重试、排序、跳过及源文件变更保护。
 - [x] 渲染输出打包：使用全局配置或系统 PATH 中的 FFmpeg 将任务/批次帧序列打包为 MP4、MOV 或 WebM，并输出到项目 `renders/`。

@@ -1,12 +1,12 @@
-# PM Center 项目总览与开发约定
+# Nexora 项目总览与开发约定
 
-> 当前基线：`2.8.5`。本文件是 PM Center 的长期开发上下文；新增、修改或排查功能前，先确认其归属模块和下面的固定交互规则。README 保留对外简介和较长的愿望清单，本文件记录当前实际架构与已确定的产品约束。
+> 当前基线：`2.8.5`。本文件是 Nexora 的长期开发上下文；新增、修改或排查功能前，先确认其归属模块和下面的固定交互规则。README 保留对外简介和较长的愿望清单，本文件记录当前实际架构与已确定的产品约束。
 >
 > 下一超大版本将把现有单体功能升级为用户可 DIY 的模块装配平台。项目管理器、媒体资料管理器、局域网通信端和 Blender 渲染控制端/节点只是参考成品，不是系统写死的四种模式。完整架构见 `docs/NEXT_MAJOR_MODULAR_PLATFORM.md`，逐步开发顺序、退出门槛和确认模板见 `docs/NEXT_MAJOR_IMPLEMENTATION_ROADMAP.md`，R1 合同候选见 `docs/NEXT_MAJOR_SCHEMA_V1.md`。
 
 ## 1. 产品定位
 
-PM Center 是面向本地制作项目的 Windows 优先桌面工作台。一个项目就是一个普通目录，应用在不破坏项目业务文件的前提下，为它提供：
+Nexora 是面向本地制作项目的 Windows 优先桌面工作台。一个项目就是一个普通目录，应用在不破坏项目业务文件的前提下，为它提供：
 
 - 文件树、文件列表、搜索、标签、集合、拖放、复制/移动/系统右键；
 - 图片、视频、文本、Markdown、Blender 文件和目录的工作区预览；
@@ -16,7 +16,7 @@ PM Center 是面向本地制作项目的 Windows 优先桌面工作台。一个�
 - 局域网发现、消息和确认式传输能力；
 - 多窗口、会话恢复、系统托盘、全局唤醒和 Windows 原生智能剪贴板。
 
-业务项目可独立存在。PM Center 的项目级状态都放在项目根目录的 `.pm_center/`，此目录默认从文件树、扫描、插件扫描和渲染源扫描中排除。
+业务项目可独立存在。Nexora 的项目级状态都放在项目根目录的 `.pm_center/`，此目录默认从文件树、扫描、插件扫描和渲染源扫描中排除。
 
 ## 2. 技术与入口
 
@@ -129,7 +129,7 @@ React invoke/listen
 | 缓存中心 | `cache_manager/mod.rs` | `.pm_center` 统计、完整性检查、清理与原子重建。 |
 | 渲染中心 | `render_center/mod.rs` | 渲染数据库迁移、队列调度、常驻 Blender Worker、帧领取、ETA、性能、视频打包。 |
 | 任务 | `task/mod.rs` | Python/脚本任务生命周期、输出及进度事件。 |
-| Python | `python/mod.rs`、`python_env/mod.rs` | PMC 内置/系统 Python、Blender 解析、venv 与 pip 管理。 |
+| Python | `python/mod.rs`、`python_env/mod.rs` | Nexora 内置/系统 Python、Blender 解析、venv 与 pip 管理。 |
 | 插件 | `plugin/mod.rs` | 插件发现、校验、启停、依赖、设置与动作。 |
 | 工具路径 | `tools.rs` | FFprobe、FFmpeg、Blender 路径校验与系统自动检测。 |
 | 局域网 | `p2p/mod.rs` | 全局联系人数据库、双向在线发现、个人资料/头像同步、大厅与私聊消息；由 `builtin.lan-collaboration` 生命周期统一管理 UDP/TCP、服务器连接和传输取消。 |
@@ -161,11 +161,11 @@ React invoke/listen
 - 仅在 Windows 启用，使用独立 Win32 消息线程、原生窗口和 GDI 绘制；功能中心只负责调用 `open_smart_clipboard`，不得改成 Tauri WebView 或工作区标签。
 - 应用在后台运行时通过 `AddClipboardFormatListener` 记录 `CF_UNICODETEXT`、`CF_DIB/CF_DIBV5` 和 `CF_HDROP`，并遵守 Windows 的剪贴板历史排除格式。
 - 历史属于软件级全局数据，最多 500 条、保留 30 天，使用 BLAKE3 去重；数据库和图像载荷位于应用数据目录的 `smart_clipboard/`，清理过期记录时同步清理孤立载荷。
-- 功能中心 `Alt+Q` 和全局 `Ctrl+\`` 均可打开窗口；快捷键注册冲突只禁用该快捷键，不能阻止 PM Center 启动。
+- 功能中心 `Alt+Q` 和全局 `Ctrl+\`` 均可打开窗口；快捷键注册冲突只禁用该快捷键，不能阻止 Nexora 启动。
 - 智能剪贴板由 `builtin.smart-clipboard` 模块生命周期托管。首次升级默认启用；用户停用后会关闭原生窗口、注销监听和快捷键并等待线程退出，历史数据库与载荷继续保留；再次启用读取原数据。
 - `open_smart_clipboard` 必须验证模块处于 `running`，停用后旧入口也不能绕过模块管理直接唤起窗口。
 - 搜索框支持输入筛选；上下键选择，`Enter` 恢复并向之前的外部窗口粘贴，`Ctrl+Enter` 仅恢复，双击等同 `Enter`，`Delete` 删除，`Esc` 关闭。
-- 自动粘贴不得发送到 PM Center 自身。恢复历史前必须先验证文本、图像载荷或文件路径有效，再清空系统剪贴板。
+- 自动粘贴不得发送到 Nexora 自身。恢复历史前必须先验证文本、图像载荷或文件路径有效，再清空系统剪贴板。
 
 ### 7.4 渲染中心（重要）
 
@@ -188,7 +188,7 @@ React invoke/listen
 
 - Blender 下拉选择来自设置中的 Blender 版本管理，不在渲染表单重复维护路径列表。
 - FFprobe 用于媒体详情；FFmpeg 用于序列帧打包。全局设置可以手动固定路径，后端在未指定时允许从系统 PATH 自动检测。前端不能只以“是否手动指定”判断工具可用性。
-- Python 运行优先 PMC 内置 Python 或所选 Blender 自带 Python；插件不应自行创建第三套不透明运行时。
+- Python 运行优先 Nexora 内置 Python 或所选 Blender 自带 Python；插件不应自行创建第三套不透明运行时。
 - 插件 API、项目脚本与用户数据均视为受保护数据。新增插件能力要经 `plugin` 模块暴露，不直接由任意 UI 执行未知脚本。
 - 局域网联系人、消息和头像属于软件级全局数据，保存在应用数据目录的 `lan_collaboration.db` 与头像缓存中，不写入项目 `.pm_center`。外层 Shell 的“局域网主面板”承载联系人、大厅和私聊；项目内 `p2p` 标签是独立的功能预留入口，暂不承载聊天界面。
 - `builtin.lan-collaboration` 默认启用并统一拥有 UDP 31523、TCP 31524、Server 连接和活动传输。停用先拒绝新命令，再取消传输、关闭连接并等待监听任务退出；联系人、聊天、头像、接收文件和设置继续保留。
@@ -202,10 +202,10 @@ React invoke/listen
 - 传输模型以 `kind`、版本化 `manifest`、`itemCount`、`totalBytes` 和 `payloadFormat` 描述内容。后续目录传输、项目清单同步和增量资源拉取必须扩展这套 manifest/payload 适配器并复用进度、临时文件、BLAKE3 校验和确认协议，不得另建平行 TCP 链路。
 - 目录与项目同步的分层、manifest 规则、冲突处理和扩展阶段详见 `docs/LAN_TRANSFER_ARCHITECTURE.md`；实现新同步功能前必须先更新该契约。
 - 浏览器无法提供真实路径的拖入文件和剪贴板图片暂存在应用数据目录 `lan_collaboration/staging/`，不写入项目 `.pm_center`；失败暂存立即清理，其余记录和暂存按 30 天生命周期维护。
-- 局域网接收根目录是本机私有设置，默认位于系统下载目录的 `PM Center 接收文件/`，在“个人资料与局域网状态”中修改，绝不通过联系人资料广播。接收内容按安全化后的发送者名称分目录保存，同名自动编号；100 MB 以内且通过格式校验的图片自动接收，其他文件仍需用户确认。
-- 跨网络协作使用可选的独立 PMC Server。服务器不可用时，UDP 31523 局域网发现、TCP 31524 私聊与文件直传保持完整可用。
+- 局域网接收根目录是本机私有设置，默认位于系统下载目录的 `Nexora 接收文件/`，在“个人资料与局域网状态”中修改，绝不通过联系人资料广播。接收内容按安全化后的发送者名称分目录保存，同名自动编号；100 MB 以内且通过格式校验的图片自动接收，其他文件仍需用户确认。
+- 跨网络协作使用可选的独立 Nexora Server。服务器不可用时，UDP 31523 局域网发现、TCP 31524 私聊与文件直传保持完整可用。
 - 同一设备按稳定 `deviceId` 合并局域网与服务器在线来源。文本默认局域网优先并可回退服务器；文件在报价前固定通道，失败不自动切换。
-- PMC Server 使用 Axum、Tokio 与 SQLite WAL；消息每个会话保留最近 30 条，文件仅通过有界内存流式转发，不写入服务端磁盘。
+- Nexora Server 使用 Axum、Tokio 与 SQLite WAL；消息每个会话保留最近 30 条，文件仅通过有界内存流式转发，不写入服务端磁盘。
 
 ## 8. 扩展流程
 
@@ -240,7 +240,7 @@ React invoke/listen
 
 - 下一超大版本的主线是“统一宿主运行时 + Capability + Module + Component + Workflow + Profile”，不维护四套长期分叉代码；这里的宿主运行时不是组件分类，所有正式组件统一支持安装、卸载和升级；
 - Profile 是用户可新建、修改、导出和分享的装配方案；项目管理器、媒体管理器、通信端和 Blender 渲染器只是验证系统能力的参考组合，不得写死为固定枚举；
-- R6-2 已提供“当前 PM Center 装配方案”和普通“空白装配空间”的切换预览。预览只读，实际切换按目标模块集合执行并在失败时恢复旧集合；快捷栏 Pin 由 Profile 中稳定 Tool 贡献 ID 驱动；
+- R6-2 已提供“当前 Nexora 装配方案”和普通“空白装配空间”的切换预览。预览只读，实际切换按目标模块集合执行并在失败时恢复旧集合；快捷栏 Pin 由 Profile 中稳定 Tool 贡献 ID 驱动；
 - R6-3 已完成 Profile 会话归属和中断恢复并验收；R7-0 组件目录和依赖合同、R7-1 草稿编辑器均已验收，`pmc.blendio` 作为首个 bundled 但可卸载的组件登记。实际组件下载、安装、卸载、升级和外部进程监督仍属于 R9/R10；
 - R7-2A 已把主页入口改为 Profile Home Resolver，并完成安全主页人工验收；R7-2B 已新增可停用的 `builtin.project-manager` 管理项目主页和项目 Shell，并完成停用撤下、资源释放与热恢复验收；R7-2C 已让项目主页由 4 个 Widget、4 个 DataSource 和稳定 Command 贡献组合，默认 Profile 迁移幂等补齐这些绑定；`builtin.project-resources` 继续保留数据库/Watcher 等资源层；
 - R7-3 将设置系统拆成 `core.recovery-settings` 与 `builtin.settings-center` 两层。当前先实施设置贡献目录和动态装配；恢复 Surface 落地前，普通设置入口不能被停用。业务模块关闭后必须同步撤下自己的设置 UI，取消停用确认不得产生副作用；

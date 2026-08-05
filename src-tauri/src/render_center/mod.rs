@@ -2600,7 +2600,7 @@ async fn run_hook(
         return Ok(());
     };
     let runtime = crate::plugin::prepare_pmc_python_runtime(app_handle)
-        .map_err(|error| format!("{phase}脚本无法使用 PMC 内置 Python: {error}"))?;
+        .map_err(|error| format!("{phase}脚本无法使用 Nexora 内置 Python: {error}"))?;
     let mut command = tokio_command(&runtime.program);
     command
         .arg(script)

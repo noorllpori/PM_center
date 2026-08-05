@@ -767,7 +767,7 @@ impl CapabilityGateway {
             CapabilityOperation::Write => {
                 let path = path.ok_or_else(|| diagnostic_error("写入诊断缺少目标路径"))?;
                 let payload = format!(
-                    "PM Center Capability Gateway diagnostic {}\n",
+                    "Nexora Capability Gateway diagnostic {}\n",
                     Utc::now().to_rfc3339()
                 );
                 fs::write(&path, payload.as_bytes())
@@ -1469,14 +1469,12 @@ fn prepare_diagnostic_root(root: &Path) -> Result<(), CapabilityGatewayError> {
     }
     let sample = root.join("project").join("sample.txt");
     if !sample.exists() {
-        fs::write(&sample, b"PM Center Capability Gateway read-only sample\n").map_err(
-            |error| {
-                CapabilityGatewayError::new(
-                    CapabilityErrorCode::CapabilityPersistenceError,
-                    format!("创建权限诊断样本失败: {error}"),
-                )
-            },
-        )?;
+        fs::write(&sample, b"Nexora Capability Gateway read-only sample\n").map_err(|error| {
+            CapabilityGatewayError::new(
+                CapabilityErrorCode::CapabilityPersistenceError,
+                format!("创建权限诊断样本失败: {error}"),
+            )
+        })?;
     }
     Ok(())
 }

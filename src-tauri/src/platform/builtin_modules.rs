@@ -402,7 +402,7 @@ impl ModuleLifecycle for RenderCenterLifecycle {
             let mut details = BTreeMap::new();
             details.insert("scheduler".into(), "全局作业与 Blender 进程预算调度".into());
             details.insert("workers".into(), "常驻与逐帧 Blender Worker".into());
-            details.insert("hooks".into(), "渲染前后置 PMC Python 脚本".into());
+            details.insert("hooks".into(), "渲染前后置 Nexora Python 脚本".into());
             details.insert("packaging".into(), "FFmpeg 序列帧视频打包".into());
             context.resources.register(
                 context.module_id,
@@ -1211,7 +1211,7 @@ fn local_web_console_manifest() -> ModuleManifestV1 {
         schema_version: 1,
         id: LOCAL_WEB_CONSOLE_MODULE_ID.into(),
         name: "本机网页控制台".into(),
-        description: "通过真实浏览器查看 PM Center 状态、修改部分设置并执行受限程序控制。".into(),
+        description: "通过真实浏览器查看 Nexora 状态、修改部分设置并执行受限程序控制。".into(),
         version: "1.0.0".into(),
         api_version: "1".into(),
         scope: ModuleScope::Global,

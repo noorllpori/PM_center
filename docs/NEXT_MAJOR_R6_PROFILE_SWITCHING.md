@@ -83,21 +83,21 @@
 - `npm run check:platform-contracts` 通过，校验 6 个 schema、6 个 fixture 和 Rust 语义规则；
 - `cargo test --manifest-path src-tauri/Cargo.toml --lib` 通过，128 个测试全部成功；
 - `cargo check --manifest-path src-tauri/Cargo.toml --no-default-features` 通过，仅保留 4 条既有 dead-code 警告；
-- `cargo fmt --manifest-path src-tauri/Cargo.toml --package pm_center --check` 通过；
+- `cargo fmt --manifest-path src-tauri/Cargo.toml --package nexora --check` 通过；
 - `git diff --check` 通过。
 
 ## 7. 人工验收
 
-- [x] 全局设置显示“当前 PM Center 装配方案”和“空白装配空间”；
+- [x] 全局设置显示“当前 Nexora 装配方案”和“空白装配空间”；
 - [x] 点击“查看影响”后只出现预览，工具栏和页面不变化；
 - [x] 空白方案预览显示将停止 5 个正式模块，并提示释放 6 个后台资源；
 - [x] 确认切换后局域网、渲染、缓存、Python、任务、智能剪贴板等模块贡献撤下；
 - [x] 项目管理器核心界面和设置中心仍可使用；
-- [x] 切回“当前 PM Center 装配方案”后 5 个正式模块、10 个登记资源和原 6 个 Pin 按原顺序恢复；
+- [x] 切回“当前 Nexora 装配方案”后 5 个正式模块、10 个登记资源和原 6 个 Pin 按原顺序恢复；
 - [x] 重启后仍停留在最后成功切换的 Profile；
 - [x] 浅色和窄窗口布局无重叠；当前版本固定浅色主题，深色验收不适用。
 
-本轮使用 Tauri 开发版完成真实桌面往返：空白方案状态为 0 个正式模块、1 个固定工具；切回后 5 个正式模块均显示“运行中”，局域网监听、项目 watcher、渲染调度和智能剪贴板线程健康检查正常。重启恢复和窄窗口于 R6-3 联合验收通过，应用最终停留在“当前 PM Center 装配方案”。
+本轮使用 Tauri 开发版完成真实桌面往返：空白方案状态为 0 个正式模块、1 个固定工具；切回后 5 个正式模块均显示“运行中”，局域网监听、项目 watcher、渲染调度和智能剪贴板线程健康检查正常。重启恢复和窄窗口于 R6-3 联合验收通过，应用最终停留在“当前 Nexora 装配方案”。
 
 ## 8. 后续
 

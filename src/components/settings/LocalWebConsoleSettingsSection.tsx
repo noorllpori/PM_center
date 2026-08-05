@@ -278,14 +278,14 @@ export function LocalWebConsoleSettingsSection() {
           <ToggleRow
             checked={draft.allowRestart}
             disabled={busy}
-            label="允许重启 PM Center"
+            label="允许重启 Nexora"
             description="执行前仍需在浏览器确认。"
             onChange={(checked) => setDraft((current) => ({ ...current, allowRestart: checked }))}
           />
           <ToggleRow
             checked={draft.allowExit}
             disabled={busy}
-            label="允许退出 PM Center"
+            label="允许退出 Nexora"
             description="退出前会先停止模块和后台资源。"
             onChange={(checked) => setDraft((current) => ({ ...current, allowExit: checked }))}
           />

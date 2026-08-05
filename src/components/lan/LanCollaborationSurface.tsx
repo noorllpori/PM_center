@@ -1399,7 +1399,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
       );
       setClearSavedServerPassword(false);
       setIsServerDraftDirty(false);
-      showToast({ title: '服务器设置已保存', message: serverEnabled ? '客户端正在连接 PMC Server。' : '服务器连接已关闭。', tone: 'success' });
+      showToast({ title: '服务器设置已保存', message: serverEnabled ? '客户端正在连接 Nexora Server。' : '服务器连接已关闭。', tone: 'success' });
     } catch (serverError) {
       showToast({ title: '保存服务器设置失败', message: String(serverError), tone: 'error' });
     } finally {
@@ -1755,7 +1755,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
                   text={[
                     '局域网通道不经过外部服务端；服务器通道用于连接跨网络设备。联系人按稳定 deviceId 合并，并显示两个在线来源。',
                     '私聊中的文件和文件夹在联系人确认后保存；大厅文字和图片会在设备间同步，新设备会从在线副本合并最近 30 条内容。图片使用临时路径和 BLAKE3 完整性校验。',
-                    '无法互相发现时，请允许 PM Center 通过 Windows 专用网络防火墙访问 UDP 31523 和 TCP 31524。',
+                    '无法互相发现时，请允许 Nexora 通过 Windows 专用网络防火墙访问 UDP 31523 和 TCP 31524。',
                   ]}
                   placement="bottom-start"
                   width={360}
@@ -1837,7 +1837,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
               <div className="mt-8 border-t border-gray-200 pt-5 dark:border-gray-800">
                 <div className="flex items-center gap-1.5">
                   <Globe2 className="h-4 w-4 text-emerald-600" />
-                  <h3 className="text-sm font-semibold">独立 PMC Server</h3>
+                  <h3 className="text-sm font-semibold">独立 Nexora Server</h3>
                   <HelpAssistant
                     title="服务器协作"
                     text={[
@@ -1886,7 +1886,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
                   <button type="button" disabled={!serverStatus.connected || isTestingServer} onClick={() => void handleTestServerSpeed()} className="inline-flex h-8 items-center gap-1.5 rounded-md border border-gray-300 px-3 text-xs hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:hover:bg-gray-900"><RefreshCw className={`h-3.5 w-3.5 ${isTestingServer ? 'animate-spin' : ''}`} />测试速度</button>
                 </div>
                 <dl className="mt-4 grid gap-x-6 gap-y-2 text-xs sm:grid-cols-3">
-                  <div><dt className="text-gray-500">状态</dt><dd className="mt-0.5 font-medium">{serverStatus.connected ? `已连接 · ${serverStatus.serverName || 'PMC Server'}` : serverStatus.connecting ? '连接中...' : '未连接'}</dd></div>
+                  <div><dt className="text-gray-500">状态</dt><dd className="mt-0.5 font-medium">{serverStatus.connected ? `已连接 · ${serverStatus.serverName || 'Nexora Server'}` : serverStatus.connecting ? '连接中...' : '未连接'}</dd></div>
                   <div><dt className="text-gray-500">协议 / 在线</dt><dd className="mt-0.5">{serverStatus.protocolVersion ? `v${serverStatus.protocolVersion} · ${serverStatus.onlineCount} 台` : '-'}</dd></div>
                   <div><dt className="text-gray-500">延迟</dt><dd className="mt-0.5">{serverStatus.latencyMs == null ? '-' : `${serverStatus.latencyMs.toFixed(1)} ms`}</dd></div>
                   {serverSpeedTest && !serverSpeedTest.error ? <>
@@ -1908,9 +1908,9 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
                       <HelpAssistant
                         title="局域网发现方式"
                         text={[
-                          'PMC 默认每 4 秒通过 UDP 31523 在当前局域网广播，收到请求的设备会单播回复；消息和文件使用 TCP 31524。',
+                          'Nexora 默认每 4 秒通过 UDP 31523 在当前局域网广播，收到请求的设备会单播回复；消息和文件使用 TCP 31524。',
                           '局域网设备不依赖外部服务器。发现成功后会对已知设备 IP 发送轻量单播保活。',
-                          '跨网络设备请使用上方独立 PMC Server；服务器不可用不会影响局域网消息和文件直传。',
+                          '跨网络设备请使用上方独立 Nexora Server；服务器不可用不会影响局域网消息和文件直传。',
                         ]}
                         placement="bottom-start"
                         width={360}

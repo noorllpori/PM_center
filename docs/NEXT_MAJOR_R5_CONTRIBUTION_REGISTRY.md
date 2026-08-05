@@ -80,7 +80,7 @@ Rust 测试使用稳定常量约束内置贡献 ID，并验证同一贡献类型
 npm run build
 cargo test --manifest-path src-tauri/Cargo.toml --lib
 cargo check --manifest-path src-tauri/Cargo.toml --no-default-features
-cargo fmt --manifest-path src-tauri/Cargo.toml --package pm_center --check
+cargo fmt --manifest-path src-tauri/Cargo.toml --package nexora --check
 npm run check:platform-contracts
 git diff --check
 ```

@@ -29,7 +29,7 @@
 
 - 批渲染启用时会自动解析并激活 BlenderIO 依赖；
 - 不启用批渲染时，也可以单独激活 BlenderIO 并保留文件解析器；
-- BlenderIO 默认可随 PM Center 安装包提供，但用户仍可卸载、重装或升级；
+- BlenderIO 默认可随 Nexora 安装包提供，但用户仍可卸载、重装或升级；
 - Profile 导出时可以准确说明依赖的组件及版本；
 - 未来可以换用独立 EXE、隔离 DLL、Python 或其他兼容实现，上层模块不需要改业务接口。
 
@@ -41,7 +41,7 @@
 
 ### Component
 
-组件提供可调用能力，类似受 PM Center 管理的库或服务。它有稳定 ID、版本、运行时、命令、Capability、资源限制和健康状态，但不必拥有完整页面。
+组件提供可调用能力，类似受 Nexora 管理的库或服务。它有稳定 ID、版本、运行时、命令、Capability、资源限制和健康状态，但不必拥有完整页面。
 
 组件只使用描述维度，不使用权限等级分类：
 
@@ -53,7 +53,7 @@ uiMode: none | hosted | contributed
 
 - `role` 描述主要用途，不决定权限；
 - `distribution` 只说明来源，`bundled` 仍允许卸载和重装；
-- `uiMode=hosted` 表示组件返回结构化数据，由 PM Center 通用界面显示；
+- `uiMode=hosted` 表示组件返回结构化数据，由 Nexora 通用界面显示；
 - `uiMode=contributed` 才允许注册受控 Widget、工具动作等贡献；
 - Capability 始终按实际操作审批，任何角色和来源都不能绕过网关。
 
@@ -147,7 +147,7 @@ builtin-rust
 }
 ```
 
-`bundled` 表示安装器默认携带或首次运行时可直接安装，不表示不可卸载。Blender 文件解析器由 PM Center 的宿主界面承载；BlenderIO 自身不创建窗口，只提供结构化命令和结果。
+`bundled` 表示安装器默认携带或首次运行时可直接安装，不表示不可卸载。Blender 文件解析器由 Nexora 的宿主界面承载；BlenderIO 自身不创建窗口，只提供结构化命令和结果。
 
 稳定命令面建议为：
 
@@ -170,7 +170,7 @@ pmc.pdf-reader   -> PDF 文本、页面、元数据与预览
 pmc.psd-reader   -> PSD 图层、画布、字体与链接资源
 ```
 
-它们都是可安装组件，不需要为每种格式增加新的 PM Center 固定模块。
+它们都是可安装组件，不需要为每种格式增加新的 Nexora 固定模块。
 
 ## 5. 当前代码迁移
 

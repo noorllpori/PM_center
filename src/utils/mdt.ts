@@ -1,5 +1,6 @@
 const MDT_EXTENSION = 'mdt';
-const MDT_FRONTMATTER_COMMENT = '#此文件由PmCenter项目管理器创建';
+const MDT_FRONTMATTER_COMMENT = '#此文件由Nexora项目管理器创建';
+const LEGACY_MDT_FRONTMATTER_COMMENT = '#此文件由PmCenter项目管理器创建';
 
 const MEDIA_EXTENSIONS = new Set([
   'png',
@@ -528,7 +529,11 @@ export function ensureMdtContent(
   const frontmatterLines = frontmatter.content.split('\n');
   let changed = false;
 
-  if (!frontmatterLines.some((line) => line.trim() === MDT_FRONTMATTER_COMMENT)) {
+  const hasManagedComment = frontmatterLines.some((line) => {
+    const trimmed = line.trim();
+    return trimmed === MDT_FRONTMATTER_COMMENT || trimmed === LEGACY_MDT_FRONTMATTER_COMMENT;
+  });
+  if (!hasManagedComment) {
     frontmatterLines.unshift(MDT_FRONTMATTER_COMMENT);
     changed = true;
   }

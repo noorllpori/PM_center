@@ -1,4 +1,4 @@
-# PM Center 2.8.4 当前行为与资源基线
+# Nexora 2.8.4 当前行为与资源基线
 
 > 对应里程碑：R0  
 > 状态：verifying，静态与自动验证已完成，运行时与产品流程待验收  
@@ -188,7 +188,7 @@ Rust `setup` 当前无条件执行：
 | LAN UDP 31523 | `p2p` | App 初始化 LAN | `stop_lan_discovery` 仅切状态 | 需确认 listener 是否真正释放 |
 | LAN TCP 31524 | `p2p` | App 初始化 LAN | `stop_lan_discovery` 仅切状态 | 当前 server task/listener 生命周期需重构 |
 | LAN 发现循环 | `p2p` | `start_lan_discovery` | `is_running=false` | 需统一取消和 join |
-| PMC Server 连接 | `p2p/server_client` | 设置启用/连接 | disconnect/cancel sender | 迁入 `lan.server-bridge` |
+| Nexora Server 连接 | `p2p/server_client` | 设置启用/连接 | disconnect/cancel sender | 迁入 `lan.server-bridge` |
 | LAN 文件传输任务 | `p2p/transfer` | 发送/接受 | transfer cancellation | 已有取消基础，需统一资源登记 |
 | 任务子进程 | `task` | 运行任务/插件 | `cancel_task` | 迁入 ComponentRuntime |
 | 渲染调度状态 | `render_center::RUNTIME` | 继续队列/任务 | `shutdown_all` 或任务暂停/取消 | 迁入 `render.batch` 生命周期 |
@@ -262,7 +262,7 @@ Rust `setup` 当前无条件执行：
   -> 创建/迁移 lan_collaboration.db
   -> 恢复传输状态并清理 staging
   -> 加载/创建个人资料
-  -> 初始化 PMC Server client
+  -> 初始化 Nexora Server client
   -> start_lan_discovery
   -> 绑定 UDP 31523 和 TCP 31524
 ```
@@ -290,7 +290,7 @@ Rust `setup` 当前无条件执行：
 ```text
 扫描 plugin.json
   -> 检查 enabled 和动作
-  -> 解析 PMC 内置 Python
+  -> 解析 Nexora 内置 Python
   -> 写入临时 request JSON
   -> 启动 Python entry
   -> 读取 stdout/stderr
@@ -331,7 +331,7 @@ Rust setup
 
 下面数据必须使用同一台测试机、同一构建配置重复测量。尚未测量项不得填写估计值。
 
-| 场景 | 启动耗时 | PM Center 内存 | 空闲 CPU | 端口 | 子进程 | 状态 |
+| 场景 | 启动耗时 | Nexora 内存 | 空闲 CPU | 端口 | 子进程 | 状态 |
 | --- | ---: | ---: | ---: | --- | --- | --- |
 | 主 App，无项目 | 待测 | 待测 | 待测 | 31523/31524 待实测 | 待测 | pending |
 | 打开普通项目 | 待测 | 待测 | 待测 | 同上 | 待测 | pending |
@@ -346,7 +346,7 @@ Rust setup
 
 | 项目 | 实测值 |
 | --- | ---: |
-| PM Center 进程树 | 7 个进程（1 个主进程、6 个 WebView2） |
+| Nexora 进程树 | 7 个进程（1 个主进程、6 个 WebView2） |
 | 进程树 Working Set | 483.97 MiB |
 | 进程树 Private Memory | 385.55 MiB |
 | 主进程 Working Set | 62.12 MiB |
@@ -355,10 +355,10 @@ Rust setup
 | 32 逻辑 CPU 下 8 秒平均 CPU | 0.036% |
 | UDP | `0.0.0.0:31523` |
 | TCP 监听 | `0.0.0.0:31524` |
-| 服务器连接 | 到配置 PMC Server 的 2 条已建立 TCP 连接 |
-| PM Center 启动的 Blender/Python/FFmpeg | 0 |
+| 服务器连接 | 到配置 Nexora Server 的 2 条已建立 TCP 连接 |
+| Nexora 启动的 Blender/Python/FFmpeg | 0 |
 
-采样后终止开发实例，`pm_center` 进程、31523/31524 和 Vite 1420 监听均已消失。机器上另有用户自行启动的 Blender/Python 进程，本表通过进程树归属排除，没有计入 PM Center。
+采样后终止开发实例，`pm_center` 进程、31523/31524 和 Vite 1420 监听均已消失。机器上另有用户自行启动的 Blender/Python 进程，本表通过进程树归属排除，没有计入 Nexora。
 
 这组数据不能替代“无项目”“单 Worker 渲染”和“关闭项目后”的独立样本。尝试通过临时 `APPDATA` 隔离会话时，Tauri 仍使用 Windows Known Folder，因此没有搬动真实应用数据强行制造无项目状态；其余样本保留为后续人工/专项验收，不填估计值。
 
@@ -381,7 +381,7 @@ Rust setup
 
 ### Python 与插件
 
-- [ ] PMC 内置 Python 可检测；
+- [ ] Nexora 内置 Python 可检测；
 - [ ] 现有示例插件可以扫描和执行；
 - [ ] 日志、进度、确认、失败和取消可用；
 - [ ] 插件依赖安装/卸载行为已记录。
@@ -434,4 +434,4 @@ R0 转为 `verifying` 前必须完成：
 
 - Vite 提示 `MarkdownEditorSurface` 和主入口等产物存在超过 500 kB 的 chunk，需要在后续性能工作中评估按页面/模块拆包；
 - Rust 有 5 组 dead-code 警告，涉及 `ArchivedChange`、部分归档变更方法、`ProjectInfo`、`TreeCacheDb.project_path` 和旧 `process_dirty_dirs`；
-- 自动验收时没有运行中的 PM Center 进程，也没有 31523/31524 监听，因此运行时内存、CPU、端口和进程数据保持待测，不使用估计值。
+- 自动验收时没有运行中的 Nexora 进程，也没有 31523/31524 监听，因此运行时内存、CPU、端口和进程数据保持待测，不使用估计值。

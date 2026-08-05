@@ -16,7 +16,7 @@
 - 常驻 Blender Worker、逐帧兼容进程和渐进多开；
 - Worker 性能采样与状态事件；
 - Blender 场景检查进程；
-- 渲染前后置 PMC Python 脚本；
+- 渲染前后置 Nexora Python 脚本；
 - FFmpeg 序列帧视频打包；
 - 应用退出与异常中断后的帧状态恢复。
 
@@ -107,7 +107,7 @@ RENDER_CENTER_MODULE_STOPPING
 ```powershell
 cargo test --manifest-path src-tauri/Cargo.toml --lib
 cargo check --manifest-path src-tauri/Cargo.toml --no-default-features
-cargo fmt --manifest-path src-tauri/Cargo.toml --package pm_center --check
+cargo fmt --manifest-path src-tauri/Cargo.toml --package nexora --check
 npm run build
 npm run check:platform-contracts
 git diff --check

@@ -42,6 +42,7 @@ const IMPORT_PROJECT_COMMAND_ID: &str = "builtin.project-manager.import-project-
 const OPEN_PROJECT_COMMAND_ID: &str = "builtin.project-manager.open-project-command";
 const SHELL_HOME_MIGRATION_VERSION: u16 = 3;
 const SETTINGS_OWNERSHIP_MIGRATION_VERSION: u16 = 1;
+const BRAND_MIGRATION_VERSION: u16 = 1;
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -418,6 +419,7 @@ impl WorkspaceProfileRuntime {
             .map_err(|error| io_error("创建装配方案目录失败", &self.repository_path, error))?;
         self.ensure_blank_profile(manifests)?;
         self.ensure_default_profile(manifests)?;
+        self.ensure_brand_migration(manifests)?;
         self.ensure_settings_ownership_migration(manifests)?;
         self.ensure_migrated_profile_home(manifests)?;
 
@@ -1457,6 +1459,71 @@ impl WorkspaceProfileRuntime {
         replace_json(&path, &profile)
     }
 
+    fn ensure_brand_migration(
+        &self,
+        manifests: &[ModuleManifestV1],
+    ) -> Result<(), WorkspaceProfileRuntimeError> {
+        if self.journal_path.exists() {
+            return Ok(());
+        }
+        for profile_id in [MIGRATED_PROFILE_ID, BLANK_PROFILE_ID, DEFAULT_PROFILE_ID] {
+            let path = self.profile_path(profile_id);
+            if !path.exists() {
+                continue;
+            }
+            let mut profile = self.read_profile(&path)?;
+            if profile.id != profile_id {
+                return Err(WorkspaceProfileRuntimeError::new(
+                    WorkspaceProfileRuntimeErrorCode::ProfilePersistenceConflict,
+                    format!(
+                        "系统装配方案文件 ID 与预期不一致：{} != {profile_id}",
+                        profile.id
+                    ),
+                    Some(&path),
+                ));
+            }
+
+            let mut changed = false;
+            if profile.name == "当前 PM Center 装配方案" {
+                profile.name = "当前 Nexora 装配方案".into();
+                changed = true;
+            } else if profile.name == "PM Center 默认装配" {
+                profile.name = "Nexora 默认装配".into();
+                changed = true;
+            }
+            if profile.description.contains("PM Center") {
+                profile.description = profile.description.replace("PM Center", "Nexora");
+                changed = true;
+            }
+            if !changed {
+                continue;
+            }
+
+            profile.revision = profile.revision.saturating_add(1);
+            profile.extensions.insert(
+                "brandMigration".into(),
+                json!({
+                    "version": BRAND_MIGRATION_VERSION,
+                    "brand": "Nexora",
+                    "migratedAt": Utc::now().timestamp_millis(),
+                }),
+            );
+            self.validate_profile(&profile, manifests)
+                .map_err(|error| {
+                    WorkspaceProfileRuntimeError::new(
+                        WorkspaceProfileRuntimeErrorCode::ProfileDocumentInvalid,
+                        format!(
+                            "系统装配方案品牌迁移失败：{}（{}）",
+                            error.message, error.path
+                        ),
+                        Some(&path),
+                    )
+                })?;
+            replace_json(&path, &profile)?;
+        }
+        Ok(())
+    }
+
     fn ensure_settings_ownership_migration(
         &self,
         manifests: &[ModuleManifestV1],
@@ -1889,7 +1956,7 @@ fn build_migrated_profile(
     WorkspaceProfileV1 {
         schema_version: PLATFORM_SCHEMA_VERSION,
         id: MIGRATED_PROFILE_ID.into(),
-        name: "当前 PM Center 装配方案".into(),
+        name: "当前 Nexora 装配方案".into(),
         description:
             "由升级前的模块启用状态和功能栏 Pin 自动生成；首轮迁移不会改变当前界面或后台服务。"
                 .into(),
@@ -2113,8 +2180,7 @@ fn build_blank_profile() -> WorkspaceProfileV1 {
         id: BLANK_PROFILE_ID.into(),
         name: "空白装配空间".into(),
         description:
-            "不启用普通模块，仅保留不可停用的恢复入口；用于从最小状态开始组装自己的 PM Center。"
-                .into(),
+            "不启用普通模块，仅保留不可停用的恢复入口；用于从最小状态开始组装自己的 Nexora。".into(),
         revision: 1,
         enabled_modules: Vec::new(),
         enabled_components: Vec::new(),
@@ -2200,7 +2266,7 @@ fn build_default_profile(manifests: &[ModuleManifestV1]) -> WorkspaceProfileV1 {
     WorkspaceProfileV1 {
         schema_version: PLATFORM_SCHEMA_VERSION,
         id: DEFAULT_PROFILE_ID.into(),
-        name: "PM Center 默认装配".into(),
+        name: "Nexora 默认装配".into(),
         description: "按当前版本默认启用模块生成；用于独立恢复入口，不覆盖用户自定义方案。".into(),
         revision: 1,
         enabled_modules,
@@ -3402,6 +3468,44 @@ mod tests {
             .profiles
             .iter()
             .any(|profile| matches!(profile.status, WorkspaceProfileDocumentStatus::Invalid)));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn brand_migration_updates_reserved_profiles_without_touching_custom_profiles() {
+        let root = test_root("brand-migration");
+        let profiles = root.join("profiles");
+        fs::create_dir_all(&profiles).unwrap();
+
+        let mut migrated = build_migrated_profile(&[], &BTreeSet::new(), &[]);
+        migrated.name = "当前 PM Center 装配方案".into();
+        migrated.description = "PM Center 旧版系统方案".into();
+        fs::write(
+            profiles.join(format!("{MIGRATED_PROFILE_ID}.json")),
+            serde_json::to_vec_pretty(&migrated).unwrap(),
+        )
+        .unwrap();
+
+        let mut custom = build_blank_profile();
+        custom.id = "local.custom-brand".into();
+        custom.name = "PM Center 私人方案".into();
+        custom.description = "用户保留的旧名称".into();
+        let custom_path = profiles.join("local.custom-brand.json");
+        let custom_bytes = serde_json::to_vec_pretty(&custom).unwrap();
+        fs::write(&custom_path, &custom_bytes).unwrap();
+
+        let runtime = WorkspaceProfileRuntime::new(&root);
+        let snapshot = runtime
+            .initialize_from_current_configuration(&[], &BTreeSet::new(), &[])
+            .unwrap();
+
+        assert_eq!(snapshot.current_profile.name, "当前 Nexora 装配方案");
+        assert_eq!(snapshot.current_profile.description, "Nexora 旧版系统方案");
+        assert_eq!(
+            snapshot.current_profile.extensions["brandMigration"]["version"],
+            json!(BRAND_MIGRATION_VERSION)
+        );
+        assert_eq!(fs::read(custom_path).unwrap(), custom_bytes);
         fs::remove_dir_all(root).unwrap();
     }
 

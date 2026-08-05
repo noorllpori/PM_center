@@ -14,7 +14,7 @@
 
 - 任务中心的 Python 内联任务和旧插件任务；
 - Python 脚本、Python 文件和普通 pip 命令；
-- 系统 Python、PMC 内置 Python 和 venv 探测；
+- 系统 Python、Nexora 内置 Python 和 venv 探测；
 - venv 创建、删除、包安装、卸载和包列表；
 - 旧 Python 插件发现、设置、依赖管理和动作执行。
 
@@ -109,7 +109,7 @@ AUTOMATION_RUNTIME_MODULE_STOPPING
 ```powershell
 cargo test --manifest-path src-tauri/Cargo.toml --lib
 cargo check --manifest-path src-tauri/Cargo.toml --no-default-features
-cargo fmt --manifest-path src-tauri/Cargo.toml --package pm_center --check
+cargo fmt --manifest-path src-tauri/Cargo.toml --package nexora --check
 npm run build
 npm run check:platform-contracts
 git diff --check
@@ -119,7 +119,7 @@ git diff --check
 
 ## 8. 人工验收
 
-- [x] 启用模块后，Python 环境页能识别 PMC 内置 Python 和现有 venv；
+- [x] 启用模块后，Python 环境页能识别 Nexora 内置 Python 和现有 venv；
 - [x] 运行一个持续 20 秒以上的 Python 任务，任务中心能持续收到输出；
 - [x] 点击取消后任务显示“已取消”，任务管理器中没有对应 Python 子进程；
 - [x] 再运行一个长任务，在“模块与权限”中停用“任务、Python 与旧插件”；
@@ -137,4 +137,4 @@ git diff --check
 - R5 完成前，任务、Python 和插件入口不会随模块停用自动消失，后端会拒绝调用；
 - 当前任务队列状态仍由前端 Store 持久化，R6/R9 再统一到 Profile 和组件运行时；
 - 旧插件静态 Tauri 命令已经封堵，但细粒度文件/网络操作尚未逐次申请 Capability token；
-- 渲染中心使用的 Blender Worker 和 PMC Python 前后置脚本由下一分项统一迁移，避免两个模块同时争夺渲染进程所有权。
+- 渲染中心使用的 Blender Worker 和 Nexora Python 前后置脚本由下一分项统一迁移，避免两个模块同时争夺渲染进程所有权。

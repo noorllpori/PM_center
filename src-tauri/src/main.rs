@@ -28,5 +28,5 @@ fn main() {
     #[cfg(target_os = "windows")]
     enable_windows_extension_point_protection();
 
-    pm_center_lib::run()
+    nexora_lib::run()
 }

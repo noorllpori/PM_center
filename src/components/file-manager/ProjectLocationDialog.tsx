@@ -175,7 +175,7 @@ export function ProjectLocationDialog({
 
         {isDataDbInvalid ? (
           <p className="text-xs leading-5 text-gray-500 dark:text-gray-400">
-            请先用资源管理器备份 <code className="font-mono">.pm_center</code>，修复或恢复备份后再选择该项目目录。PMC 不会自动重建 data.db，以免覆盖标签、集合和项目记录。
+            请先用资源管理器备份 <code className="font-mono">.pm_center</code>，修复或恢复备份后再选择该项目目录。Nexora 不会自动重建 data.db，以免覆盖标签、集合和项目记录。
           </p>
         ) : null}
 
@@ -208,7 +208,7 @@ export function ProjectLocationDialog({
               </div>
             ) : hasSearched && !isSearching && !searchError ? (
               <p className="rounded-md border border-dashed border-gray-300 px-3 py-2.5 text-xs text-gray-500 dark:border-gray-700 dark:text-gray-400">
-                没有找到可识别的 PMC 项目。请确认项目磁盘已连接，或手动选择项目的新位置。
+                没有找到可识别的 Nexora 项目。请确认项目磁盘已连接，或手动选择项目的新位置。
               </p>
             ) : null}
           </div>

@@ -111,7 +111,7 @@ git diff --check
 - [ ] 再次启用后快捷键和入口恢复；
 - [ ] 停用前的文本、图像和文件历史仍能检索与恢复；
 - [ ] 连续重启模块 5 次，无重复窗口、残留线程或资源计数增长；
-- [ ] 退出 PM Center 后没有残留 `pm-center-smart-clipboard` 线程所属进程。
+- [ ] 退出 Nexora 后没有残留 `pm-center-smart-clipboard` 线程所属进程。
 
 ## 8. 回滚与已知限制
 

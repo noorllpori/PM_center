@@ -74,7 +74,7 @@ pub async fn detect_python_envs() -> Result<Vec<PythonEnv>, String> {
         if let Ok(output) = crate::automation_runtime::run_tokio_output(
             command,
             "python-probe",
-            "检测 PMC 内置 Python",
+            "检测 Nexora 内置 Python",
         )
         .await
         {

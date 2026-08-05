@@ -316,7 +316,7 @@ async fn detect_pmc_embedded_python(app_handle: &tauri::AppHandle) -> Option<Pyt
     Some(PythonEnv {
         id: "pmc_embedded_python".to_string(),
         name: format!(
-            "PMC 内置 Python {}",
+            "Nexora 内置 Python {}",
             checked.version.as_deref().unwrap_or("未知")
         ),
         path: checked.path,

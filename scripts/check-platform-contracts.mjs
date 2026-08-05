@@ -61,7 +61,7 @@ if (rustCheck.status !== 0) {
   throw new Error(`Rust platform contract tests failed with exit code ${rustCheck.status}`);
 }
 
-console.log('PM Center platform contract v1 checks passed.');
+console.log('Nexora platform contract v1 checks passed.');
 console.log(`Validated ${cases.length} schemas, ${cases.length} fixtures, and Rust semantic rules.`);
 
 function readJson(filePath) {

@@ -68,7 +68,7 @@ npm run build
 npm run check:platform-contracts
 cargo test --manifest-path src-tauri/Cargo.toml --lib
 cargo check --manifest-path src-tauri/Cargo.toml --no-default-features
-cargo fmt --manifest-path src-tauri/Cargo.toml --package pm_center --check
+cargo fmt --manifest-path src-tauri/Cargo.toml --package nexora --check
 git diff --check
 ```
 

@@ -108,13 +108,13 @@ profile-switch-journal.json
 - `cargo test --manifest-path src-tauri/Cargo.toml --lib`：133 项通过，0 项失败；
 - Profile 中断恢复与漂移收敛定向测试：12 项通过；
 - `cargo check --manifest-path src-tauri/Cargo.toml --no-default-features`：通过，仅保留 4 个既有 dead-code warning；
-- `cargo fmt --manifest-path src-tauri/Cargo.toml --package pm_center --check`：通过；
+- `cargo fmt --manifest-path src-tauri/Cargo.toml --package nexora --check`：通过；
 - `git diff --check`：通过。
 
 ## 7. 人工验收
 
 - [x] 切到空白 Profile，退出并重启后仍为 0 个正式模块和 1 个 Pin；
-- [x] 切回当前 PM Center Profile，退出并重启后恢复 5 个正式模块和原 Pin 顺序；
+- [x] 切回当前 Nexora Profile，退出并重启后恢复 5 个正式模块和原 Pin 顺序；
 - [x] 在不同 Profile 保存的项目会话只提示兼容恢复，不会改变当前全局 Profile；
 - [x] 不可用的局域网、渲染等贡献标签不会被旧会话重新打开；缓存标签在项目资源模块可用时正常恢复；
 - [x] 设置页可看到切换日志路径和最近恢复结果；

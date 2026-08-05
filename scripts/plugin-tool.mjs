@@ -93,7 +93,7 @@ async function initPlugin(targetDir, pluginIdArg) {
     apiVersion: '1',
     runtime: 'python',
     entry: 'main.py',
-    description: 'PM Center plugin',
+    description: 'Nexora plugin',
     enabledByDefault: true,
     contributes: {
       commands: [
