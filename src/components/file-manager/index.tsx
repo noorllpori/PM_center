@@ -18,7 +18,9 @@ import { ProjectSessionProvider } from './ProjectSessionProvider';
 import { ShellTabBar } from '../shell/ShellTabBar';
 import { ContributedShellSurface } from '../shell/ContributedShellSurface';
 import { ProfileHomeSurface } from '../shell/ProfileHomeSurface';
+import { ProfileNavigationBar } from '../shell/ProfileNavigationBar';
 import { OPEN_RECOVERY_SETTINGS_EVENT } from '../../features/recoverySettings';
+import { resolveProfileNavigation } from '../../features/profileLayout';
 import { Dialog } from '../Dialog';
 import { ProjectLocationDialog } from './ProjectLocationDialog';
 import { createProjectStore, type ProjectStoreApi } from '../../stores/projectStore';
@@ -285,12 +287,11 @@ export function FileManager() {
   const addRecentProject = useSettingsStore((state) => state.addRecentProject);
   const loadBuiltinToolsPreferences = useBuiltinToolsStore((state) => state.loadPreferences);
   const initializeWorkspaceProfiles = useWorkspaceProfileStore((state) => state.initialize);
-  const activeWorkspaceProfileId = useWorkspaceProfileStore(
-    (state) => state.snapshot?.currentProfile.id ?? null,
+  const activeWorkspaceProfile = useWorkspaceProfileStore(
+    (state) => state.snapshot?.currentProfile ?? null,
   );
-  const activeWorkspaceProfileRevision = useWorkspaceProfileStore(
-    (state) => state.snapshot?.currentProfile.revision ?? null,
-  );
+  const activeWorkspaceProfileId = activeWorkspaceProfile?.id ?? null;
+  const activeWorkspaceProfileRevision = activeWorkspaceProfile?.revision ?? null;
   const contributionSnapshot = useContributionRegistryStore((state) => state.snapshot);
   const showToast = useUiStore((state) => state.showToast);
   const toast = useUiStore((state) => state.toast);
@@ -314,6 +315,11 @@ export function FileManager() {
     contributionSnapshot,
     SHELL_TAB_CONTRIBUTIONS.project,
   );
+  const profileNavigationItems = useMemo(
+    () => resolveProfileNavigation(activeWorkspaceProfile, contributionSnapshot),
+    [activeWorkspaceProfile, contributionSnapshot],
+  );
+  const profileNavigationKind = activeWorkspaceProfile?.shellLayout?.navigationKind ?? 'top-bar';
   const contributionShellTabs = useMemo(
     () => tabs.filter((tab) => tab.type !== 'project' && Boolean(tab.contributionId)),
     [tabs],
@@ -347,6 +353,7 @@ export function FileManager() {
   const [isOpeningResolvedProject, setIsOpeningResolvedProject] = useState(false);
   const sessionsRef = useRef<Map<string, ProjectSession>>(new Map());
   const sessionSubscriptionsRef = useRef<Map<string, ProjectSessionSubscriptions>>(new Map());
+  const projectReleasePromisesRef = useRef<Map<string, Promise<void>>>(new Map());
   const sessionPersistTimerRef = useRef<number | null>(null);
   const hasHandledStartupProjectRef = useRef(false);
   const isRestoringSessionRef = useRef(false);
@@ -380,6 +387,24 @@ export function FileManager() {
     contributionSnapshot,
     TOOL_CONTRIBUTIONS.blenderFileParser,
   );
+
+  const openProfileNavigation = useCallback((contributionId: string) => {
+    const definition = SHELL_TAB_CONTRIBUTION_BY_ID.get(contributionId);
+    if (!definition) return;
+    const unavailableReason = getShellTabContributionUnavailableReason(
+      useContributionRegistryStore.getState().snapshot,
+      definition,
+    );
+    if (unavailableReason) {
+      showToast({
+        title: `${definition.title}不可用`,
+        message: unavailableReason,
+        tone: 'warning',
+      });
+      return;
+    }
+    useShellTabStore.getState().openShellContributionTab(contributionId);
+  }, [showToast]);
 
   useEffect(() => {
     const openRecoverySettings = () => setIsRecoverySettingsOpen(true);
@@ -594,6 +619,31 @@ export function FileManager() {
     sessionSubscriptionsRef.current.delete(normalizedPath);
   }, []);
 
+  const releaseProjectSession = useCallback((projectPath: string) => {
+    const normalizedPath = normalizeProjectPath(projectPath);
+    unregisterSessionPersistence(projectPath);
+    sessionsRef.current.delete(normalizedPath);
+
+    const existingRelease = projectReleasePromisesRef.current.get(normalizedPath);
+    if (existingRelease) {
+      return existingRelease;
+    }
+
+    const release = invoke('release_project_resources', { projectPath })
+      .catch((error) => {
+        // Closing UI state must not depend on best-effort native cleanup.
+        console.warn('Failed to release project resources:', projectPath, error);
+      })
+      .then(() => undefined)
+      .finally(() => {
+        if (projectReleasePromisesRef.current.get(normalizedPath) === release) {
+          projectReleasePromisesRef.current.delete(normalizedPath);
+        }
+      });
+    projectReleasePromisesRef.current.set(normalizedPath, release);
+    return release;
+  }, [unregisterSessionPersistence]);
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       const hasCommandModifier = event.ctrlKey || event.metaKey;
@@ -689,6 +739,14 @@ export function FileManager() {
     let session = sessionsRef.current.get(normalizedPath);
 
     if (!session) {
+      const pendingRelease = projectReleasePromisesRef.current.get(normalizedPath);
+      if (pendingRelease) {
+        await pendingRelease;
+        session = sessionsRef.current.get(normalizedPath);
+      }
+    }
+
+    if (!session) {
       session = {
         projectStore: createProjectStore(),
         workspaceTabStore: createWorkspaceTabStore(),
@@ -719,9 +777,7 @@ export function FileManager() {
       SHELL_TAB_CONTRIBUTIONS.project,
     );
     if (unavailableAfterOpen) {
-      unregisterSessionPersistence(path);
-      sessionsRef.current.delete(normalizeProjectPath(path));
-      void invoke('release_project_resources', { projectPath: path }).catch(() => undefined);
+      void releaseProjectSession(path);
       throw new Error(`项目管理器不可用：${unavailableAfterOpen}`);
     }
     const projectName = session.projectStore.getState().projectName || getProjectNameFromPath(path);
@@ -730,7 +786,7 @@ export function FileManager() {
       await addRecentProject(path, projectName);
     }
     return session;
-  }, [addRecentProject, ensureProjectSession, openProjectTab, unregisterSessionPersistence]);
+  }, [addRecentProject, ensureProjectSession, openProjectTab, releaseProjectSession]);
 
   const closeProjectLocationDialog = useCallback(() => {
     if (isOpeningResolvedProject) {
@@ -969,17 +1025,7 @@ export function FileManager() {
       );
       shellState.closeContributionTabs([SHELL_TAB_CONTRIBUTIONS.project.id]);
       projectTabs.forEach((tab) => {
-        const normalizedPath = normalizeProjectPath(tab.projectPath!);
-        const subscriptions = sessionSubscriptionsRef.current.get(normalizedPath);
-        subscriptions?.unsubscribeProject();
-        subscriptions?.unsubscribeWorkspace();
-        sessionSubscriptionsRef.current.delete(normalizedPath);
-        sessionsRef.current.delete(normalizedPath);
-        void invoke('release_project_resources', {
-          projectPath: tab.projectPath,
-        }).catch((error) => {
-          console.warn('Failed to release disabled project session:', tab.projectPath, error);
-        });
+        void releaseProjectSession(tab.projectPath!);
       });
       setPendingProjectOpen(null);
       setProjectLocationCandidates([]);
@@ -1019,6 +1065,7 @@ export function FileManager() {
     createPersistedAppSessionSnapshot,
     isSettingsLoaded,
     projectShellAvailable,
+    releaseProjectSession,
     restorePersistedSession,
     schedulePersistAppSession,
   ]);
@@ -1356,17 +1403,7 @@ export function FileManager() {
     closeTab(tabId);
 
     if (closingTab?.type === 'project' && closingTab.projectPath) {
-      unregisterSessionPersistence(closingTab.projectPath);
-      sessionsRef.current.delete(normalizeProjectPath(closingTab.projectPath));
-
-      try {
-        await invoke('release_project_resources', {
-          projectPath: closingTab.projectPath,
-        });
-      } catch (error) {
-        // Closing the tab must not depend on best-effort resource cleanup.
-        console.warn('Failed to release project resources:', closingTab.projectPath, error);
-      }
+      await releaseProjectSession(closingTab.projectPath);
     }
   };
 
@@ -1520,29 +1557,57 @@ export function FileManager() {
         onOpenRecovery={() => setIsRecoverySettingsOpen(true)}
       />
 
-      <div className="flex-1 min-h-0 overflow-hidden">
-        {contributionShellTabs.map((tab) => {
-          const isActive = tab.id === activeTabId;
-          return (
-            <div key={tab.id} className={isActive ? 'h-full' : 'hidden'}>
-              <ContributedShellSurface tab={tab} isActive={isActive} />
-            </div>
-          );
-        })}
-        {!isContributionShellActive && activeProjectSession ? (
-          <ProjectSessionProvider
-            projectStore={activeProjectSession.projectStore}
-            workspaceTabStore={activeProjectSession.workspaceTabStore}
-          >
-            <ProjectWorkspace />
-          </ProjectSessionProvider>
-        ) : !isContributionShellActive ? (
-          <ProfileHomeSurface
-            onOpenProject={handleOpenProject}
-            settingsLoaded={isSettingsLoaded}
-            onOpenRecovery={() => setIsRecoverySettingsOpen(true)}
+      {profileNavigationKind !== 'side-bar' ? (
+        <ProfileNavigationBar
+          items={profileNavigationItems}
+          kind={profileNavigationKind}
+          activeContributionId={activeShellTab?.contributionId}
+          onOpen={openProfileNavigation}
+        />
+      ) : (
+        <div className="md:hidden">
+          <ProfileNavigationBar
+            items={profileNavigationItems}
+            kind="top-bar"
+            activeContributionId={activeShellTab?.contributionId}
+            onOpen={openProfileNavigation}
+          />
+        </div>
+      )}
+
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        {profileNavigationKind === 'side-bar' ? (
+          <ProfileNavigationBar
+            items={profileNavigationItems}
+            kind="side-bar"
+            activeContributionId={activeShellTab?.contributionId}
+            onOpen={openProfileNavigation}
           />
         ) : null}
+        <div className="min-w-0 flex-1 overflow-hidden">
+          {contributionShellTabs.map((tab) => {
+            const isActive = tab.id === activeTabId;
+            return (
+              <div key={tab.id} className={isActive ? 'h-full' : 'hidden'}>
+                <ContributedShellSurface tab={tab} isActive={isActive} />
+              </div>
+            );
+          })}
+          {!isContributionShellActive && activeProjectSession ? (
+            <ProjectSessionProvider
+              projectStore={activeProjectSession.projectStore}
+              workspaceTabStore={activeProjectSession.workspaceTabStore}
+            >
+              <ProjectWorkspace />
+            </ProjectSessionProvider>
+          ) : !isContributionShellActive ? (
+            <ProfileHomeSurface
+              onOpenProject={handleOpenProject}
+              settingsLoaded={isSettingsLoaded}
+              onOpenRecovery={() => setIsRecoverySettingsOpen(true)}
+            />
+          ) : null}
+        </div>
       </div>
 
       <PythonEnvManager

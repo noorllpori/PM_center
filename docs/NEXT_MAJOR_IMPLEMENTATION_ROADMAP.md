@@ -70,7 +70,7 @@ D0 架构记录
 | R4 | 现有模块生命周期接入 | accepted | R2、R3 | 2026-08-04 已完成渲染中心最终验收 |
 | R5 | 前端 Contribution Registry | accepted | R1、R2 | 2026-08-04 已完成 R5-4 最终验收 |
 | R6 | 装配方案运行时与兼容迁移 | accepted | R4、R5 | 2026-08-05 已完成跨 Profile 会话、贡献过滤、重启恢复和窄窗口最终验收 |
-| R7 | DIY 装配编辑器 MVP | implementing | R6 | R7-0、R7-1、R7-2A/B/C、R7-3A 和本机网页控制台已验收；R7-3B/C/D 已实施待人工验收 |
+| R7 | DIY 装配编辑器 MVP | verifying | R6 | R7-0、R7-1、R7-2A/B/C、R7-3A/B/C/D 和本机网页控制台已验收；R7-2D/E 已实现待人工验收 |
 | R8 | Profile 导入导出 | pending | R6、R7 | 需要跨机器导入验收 |
 | R9 | 统一组件运行时 | pending | R3、R6 | 按运行时类型验收 |
 | R10 | 隔离 DLL 宿主与组件包安全 | pending | R9 | 需要崩溃和签名验收 |
@@ -494,11 +494,11 @@ R7-0 已于 2026-08-05 完成人工验收：共享合同已增加组件角色、
 
 R7-1 已实现 Profile 新建、复制、名称与说明编辑、模块选择、显式组件选择、依赖预检和修订冲突保护，并于 2026-08-05 完成人工验收。当前运行方案不能直接修改，必须复制后编辑；创建、复制、保存都不会自动切换运行方案。详细边界和验收见 `NEXT_MAJOR_R7_PROFILE_DRAFT_EDITOR.md`。
 
-R7-2 负责 Shell、主页与导航装配：让 `shellLayout.home` 真正驱动主页，提供不可撤下的最小安全主页，并把当前项目主页和项目 Shell 入口归属到可停用的 `builtin.project-manager`。R7-2A 已于 2026-08-05 完成 Home Resolver、安全回退和桌面往返验收；R7-2B 已完成项目管理器模块、项目标签所有权、停用撤下、会话暂存与热恢复验收；R7-2C 已拆分项目主页 Surface、Widget、DataSource 和 Command，并已完成人工验收。详细拆分、启动优先级和验收见 `NEXT_MAJOR_R7_SHELL_HOME_COMPOSITION.md`。
+R7-2 负责 Shell、主页与导航装配：让 `shellLayout.home` 真正驱动主页，提供不可撤下的最小安全主页，并把当前项目主页和项目 Shell 入口归属到可停用的 `builtin.project-manager`。R7-2A/B/C 已完成人工验收；R7-2D 已加入主页、导航、快捷栏和 Widget 装配编辑、拖动排序、预览及撤销/重做；R7-2E 已补布局所有权校验、旧 Profile 幂等迁移、项目会话统一释放和窄窗口导航，当前等待人工验收。详细拆分、启动优先级和验收见 `NEXT_MAJOR_R7_SHELL_HOME_COMPOSITION.md`。
 
 R7 同期增加可选的 `builtin.local-web-console`：通过仅监听 `127.0.0.1` 的受令牌保护 HTTP 服务，在真实浏览器中提供状态、部分设置、主窗口显示/隐藏、重启和退出。该模块默认停用，不开放任意 Tauri 命令，并由 Module Manager/ResourceRegistry 统一清理。实现与验收边界见 `NEXT_MAJOR_R7_LOCAL_WEB_CONSOLE.md`。
 
-R7-3 负责设置中心贡献化。设置架构已拆分为不可停用的 `core.recovery-settings` 和可停用的 `builtin.settings-center`：前者保留 Profile、模块、组件、Capability 诊断、默认装配恢复和退出，后者只负责普通设置宿主。R7-3A 已完成人工验收；R7-3B/C/D 已实现独立恢复 Surface、组件 Schema 设置以及会话/桌面集成/外部工具所有权拆分，当前待人工验收。详细合同、迁移所有权和验收见 `NEXT_MAJOR_R7_SETTINGS_CONTRIBUTIONS.md`。
+R7-3 负责设置中心贡献化。设置架构已拆分为不可停用的 `core.recovery-settings` 和可停用的 `builtin.settings-center`：前者保留 Profile、模块、组件、Capability 诊断、默认装配恢复和退出，后者只负责普通设置宿主。R7-3A/B/C/D 已于 2026-08-05 完成人工验收，覆盖独立恢复 Surface、组件 Schema 设置、会话/桌面集成/外部工具所有权拆分及模块停用后的设置即时撤下。详细合同、迁移所有权和验收见 `NEXT_MAJOR_R7_SETTINGS_CONTRIBUTIONS.md`。
 
 ### 目标
 
@@ -513,10 +513,11 @@ R7-3 负责设置中心贡献化。设置架构已拆分为不可停用的 `core
 - [已验收] R7-2C：项目主页 Surface、Widget、DataSource 和 Command 贡献；
 - [已验收] R7 本机网页控制台：localhost 服务、设置同步、窗口控制和应用重启恢复；
 - [已验收] R7-3A：设置贡献目录、动态范围/导航、受信 renderer 和模块停用确认；
-- [待验收] R7-3B：独立恢复 Surface、默认装配恢复和普通设置中心可停用；
-- [待验收] R7-3C：组件 Schema 设置合同、统一渲染、校验及全局/项目存储；
-- [待验收] R7-3D：会话、桌面集成、外部工具设置所有权收敛；
-- [待实施] R7-2D-E：主页导航编辑和会话资源收敛；
+- [已验收] R7-3B：独立恢复 Surface、默认装配恢复和普通设置中心可停用；
+- [已验收] R7-3C：组件 Schema 设置合同、统一渲染、校验及全局/项目存储；
+- [已验收] R7-3D：会话、桌面集成、外部工具设置所有权收敛；
+- [待验收] R7-2D：主页、导航、快捷栏和 Widget 装配编辑；
+- [待验收] R7-2E：布局所有权校验、旧 Profile 迁移、会话资源释放和窄窗口；
 - 添加/移除模块；
 - 显示显式组件、模块传递组件以及被依赖原因；
 - 选择首页和导航页面；
@@ -540,7 +541,7 @@ R7-3 负责设置中心贡献化。设置架构已拆分为不可停用的 `core
 - 无效部件、重复 ID、缺失命令和循环布局被拒绝；
 - 桌面/窄屏布局不会重叠；
 - 撤销、重做和保存恢复一致；
-- 模块停用后相关部件显示明确缺失状态，不让整个方案损坏。
+- 编辑或应用方案时，引用停用模块的 Surface、Widget、DataSource、Command、Pin 或导航会以稳定错误码阻止保存；运行时仍保留安全回退，不能白屏。
 - 缺失或版本不兼容组件会在保存/应用前阻止，并列出受影响模块和贡献。
 - 项目管理器停用后不再扫描项目，主页回退到安全 Surface，其他全局功能仍可使用。
 - `shellLayout.home` 缺失、引用失效或所属模块停用时不会白屏。

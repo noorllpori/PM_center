@@ -95,11 +95,12 @@ function resolveHomeWidgets(
   profile: WorkspaceProfileV1 | undefined,
   surface: ProfileSurface | undefined,
 ) {
-  if (!surface?.widgets?.length) {
+  const widgetsConfigured = surface?.settings?.widgetsConfigured === true;
+  if (!surface || (!widgetsConfigured && !surface.widgets?.length)) {
     return DEFAULT_HOME_WIDGETS;
   }
   const dataSources = new Map((profile?.dataSources ?? []).map((source) => [source.id, source.source]));
-  return surface.widgets
+  return (surface.widgets ?? [])
     .map<HomeWidgetPlacement>((widget) => ({
       id: widget.id,
       widgetId: widget.widget,

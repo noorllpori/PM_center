@@ -40,7 +40,8 @@ const PROJECT_CATALOG_DATA_SOURCE_ID: &str = "builtin.project-manager.project-ca
 const CREATE_PROJECT_COMMAND_ID: &str = "builtin.project-manager.create-project-command";
 const IMPORT_PROJECT_COMMAND_ID: &str = "builtin.project-manager.import-project-command";
 const OPEN_PROJECT_COMMAND_ID: &str = "builtin.project-manager.open-project-command";
-const SHELL_HOME_MIGRATION_VERSION: u16 = 3;
+const LEGACY_HOME_COMPOSITION_MIGRATION_VERSION: u16 = 3;
+const SHELL_HOME_MIGRATION_VERSION: u16 = 4;
 const SETTINGS_OWNERSHIP_MIGRATION_VERSION: u16 = 1;
 const BRAND_MIGRATION_VERSION: u16 = 1;
 
@@ -1383,59 +1384,68 @@ impl WorkspaceProfileRuntime {
             ));
         }
 
-        let has_project_home = profile.surfaces.iter().any(|surface| {
-            surface.id == PROJECT_HOME_PROFILE_SURFACE_ID
-                && surface.contribution.as_deref() == Some(PROJECT_HOME_CONTRIBUTION_ID)
-        });
-        let project_manager_manifest = manifests
-            .iter()
-            .find(|manifest| manifest.id == PROJECT_MANAGER_MODULE_ID);
-        let should_enable_project_manager = project_manager_manifest
-            .filter(|manager| {
-                manager.requires_modules.iter().all(|dependency| {
-                    profile
-                        .enabled_modules
-                        .iter()
-                        .any(|selection| selection.id == dependency.id)
-                })
-            })
-            .is_some();
-        let has_project_manager = profile
-            .enabled_modules
-            .iter()
-            .any(|selection| selection.id == PROJECT_MANAGER_MODULE_ID);
-        let already_current = profile.shell_layout.home.as_deref()
-            == Some(PROJECT_HOME_PROFILE_SURFACE_ID)
-            && has_project_home
-            && has_project_home_composition(&profile)
-            && (!should_enable_project_manager || has_project_manager);
-        if already_current {
+        let previous_migration_version = profile
+            .extensions
+            .get("shellHomeMigration")
+            .and_then(|value| value.get("version"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default();
+        if previous_migration_version >= u64::from(SHELL_HOME_MIGRATION_VERSION) {
             return Ok(());
         }
 
-        if !has_project_home {
-            if profile
-                .surfaces
-                .iter()
-                .any(|surface| surface.id == PROJECT_HOME_PROFILE_SURFACE_ID)
-            {
-                return Ok(());
-            }
-            profile.surfaces.push(project_home_surface());
-        }
-        apply_project_home_composition(&mut profile);
-        profile.shell_layout.home = Some(PROJECT_HOME_PROFILE_SURFACE_ID.into());
-
-        if should_enable_project_manager && !has_project_manager {
-            let manager = project_manager_manifest.expect("project manager manifest checked");
-            profile.enabled_modules.push(ProfileModuleSelection {
-                id: manager.id.clone(),
-                version_requirement: format!("^{}", manager.version),
-                extensions: ExtensionFields::new(),
+        // Version 3 installed the legacy project-home composition. Version 4 only
+        // records that the editable shell layout is understood, so user ordering
+        // and explicitly removed widgets are never restored during startup.
+        if previous_migration_version < u64::from(LEGACY_HOME_COMPOSITION_MIGRATION_VERSION) {
+            let has_project_home = profile.surfaces.iter().any(|surface| {
+                surface.id == PROJECT_HOME_PROFILE_SURFACE_ID
+                    && surface.contribution.as_deref() == Some(PROJECT_HOME_CONTRIBUTION_ID)
             });
-            profile
+            let project_manager_manifest = manifests
+                .iter()
+                .find(|manifest| manifest.id == PROJECT_MANAGER_MODULE_ID);
+            let should_enable_project_manager = project_manager_manifest
+                .filter(|manager| {
+                    manager.requires_modules.iter().all(|dependency| {
+                        profile
+                            .enabled_modules
+                            .iter()
+                            .any(|selection| selection.id == dependency.id)
+                    })
+                })
+                .is_some();
+            let has_project_manager = profile
                 .enabled_modules
-                .sort_by(|left, right| left.id.cmp(&right.id));
+                .iter()
+                .any(|selection| selection.id == PROJECT_MANAGER_MODULE_ID);
+
+            if !has_project_home {
+                if profile
+                    .surfaces
+                    .iter()
+                    .any(|surface| surface.id == PROJECT_HOME_PROFILE_SURFACE_ID)
+                {
+                    return Ok(());
+                }
+                profile.surfaces.push(project_home_surface());
+            }
+            if !has_project_home_composition(&profile) {
+                apply_project_home_composition(&mut profile);
+            }
+            profile.shell_layout.home = Some(PROJECT_HOME_PROFILE_SURFACE_ID.into());
+
+            if should_enable_project_manager && !has_project_manager {
+                let manager = project_manager_manifest.expect("project manager manifest checked");
+                profile.enabled_modules.push(ProfileModuleSelection {
+                    id: manager.id.clone(),
+                    version_requirement: format!("^{}", manager.version),
+                    extensions: ExtensionFields::new(),
+                });
+                profile
+                    .enabled_modules
+                    .sort_by(|left, right| left.id.cmp(&right.id));
+            }
         }
         profile.revision = profile.revision.saturating_add(1);
         profile.extensions.insert(
@@ -1952,6 +1962,13 @@ fn build_migrated_profile(
     };
     let mut extensions = ExtensionFields::new();
     extensions.insert("migration".into(), json!(migration));
+    extensions.insert(
+        "shellHomeMigration".into(),
+        json!({
+            "version": SHELL_HOME_MIGRATION_VERSION,
+            "updatedAt": now,
+        }),
+    );
 
     WorkspaceProfileV1 {
         schema_version: PLATFORM_SCHEMA_VERSION,
@@ -2588,6 +2605,7 @@ fn compatibility_issues(
         .iter()
         .map(|selection| selection.id.as_str())
         .collect::<BTreeSet<_>>();
+    let contribution_owners = ModuleContributionOwners::from_manifests(manifests);
     let mut issues = Vec::new();
 
     for selection in &profile.enabled_components {
@@ -2713,6 +2731,128 @@ fn compatibility_issues(
         }
     }
 
+    for surface in &profile.surfaces {
+        let Some(contribution_id) = surface.contribution.as_deref() else {
+            continue;
+        };
+        if let Some(module_id) =
+            disabled_contribution_provider(&contribution_owners.surfaces, contribution_id, &enabled)
+        {
+            issues.push(switch_issue(
+                "SURFACE_PROVIDER_DISABLED",
+                WorkspaceProfileSwitchIssueSeverity::Error,
+                "surface",
+                format!("页面 {} 由未启用模块 {module_id} 提供", surface.id),
+                Some(module_id.into()),
+                Some(contribution_id.into()),
+            ));
+        }
+
+        for widget in &surface.widgets {
+            if let Some(module_id) = disabled_contribution_provider(
+                &contribution_owners.widgets,
+                &widget.widget,
+                &enabled,
+            ) {
+                issues.push(switch_issue(
+                    "WIDGET_PROVIDER_DISABLED",
+                    WorkspaceProfileSwitchIssueSeverity::Error,
+                    "widget",
+                    format!("组件 {} 由未启用模块 {module_id} 提供", widget.id),
+                    Some(module_id.into()),
+                    Some(widget.widget.clone()),
+                ));
+            }
+        }
+    }
+
+    for source in &profile.data_sources {
+        if let Some(module_id) = disabled_contribution_provider(
+            &contribution_owners.data_sources,
+            &source.source,
+            &enabled,
+        ) {
+            issues.push(switch_issue(
+                "DATA_SOURCE_PROVIDER_DISABLED",
+                WorkspaceProfileSwitchIssueSeverity::Error,
+                "data-source",
+                format!("数据源 {} 由未启用模块 {module_id} 提供", source.id),
+                Some(module_id.into()),
+                Some(source.source.clone()),
+            ));
+        }
+    }
+
+    for binding in &profile.command_bindings {
+        if let Some(module_id) = disabled_contribution_provider(
+            &contribution_owners.commands,
+            &binding.command,
+            &enabled,
+        ) {
+            issues.push(switch_issue(
+                "COMMAND_PROVIDER_DISABLED",
+                WorkspaceProfileSwitchIssueSeverity::Error,
+                "command",
+                format!("命令 {} 由未启用模块 {module_id} 提供", binding.id),
+                Some(module_id.into()),
+                Some(binding.command.clone()),
+            ));
+        }
+    }
+
+    for contribution_id in &profile.shell_layout.pinned_tools {
+        if let Some(module_id) =
+            disabled_contribution_provider(&contribution_owners.tools, contribution_id, &enabled)
+        {
+            issues.push(switch_issue(
+                "PIN_PROVIDER_DISABLED",
+                WorkspaceProfileSwitchIssueSeverity::Error,
+                "pin",
+                format!("快捷栏功能 {contribution_id} 由未启用模块 {module_id} 提供"),
+                Some(module_id.into()),
+                Some(contribution_id.clone()),
+            ));
+        }
+    }
+
+    for surface_id in &profile.shell_layout.navigation {
+        let Some(surface) = profile
+            .surfaces
+            .iter()
+            .find(|surface| surface.id == *surface_id)
+        else {
+            continue;
+        };
+        let provider_has_shell_entry = surface.contribution.as_deref().is_some_and(|id| {
+            contribution_owners
+                .surfaces
+                .get(id)
+                .is_some_and(|providers| {
+                    providers.iter().any(|provider| {
+                        enabled.contains(provider.as_str())
+                            && contribution_owners
+                                .modules_with_shell_tabs
+                                .contains(provider)
+                    })
+                })
+        });
+        if !matches!(surface.kind, SurfaceKind::ShellPage) || !provider_has_shell_entry {
+            issues.push(switch_issue(
+                "NAVIGATION_ENTRY_UNSUPPORTED",
+                WorkspaceProfileSwitchIssueSeverity::Error,
+                "navigation",
+                format!("导航页面 {surface_id} 没有可用的 Shell 标签入口"),
+                surface
+                    .contribution
+                    .as_deref()
+                    .and_then(|id| contribution_owners.surfaces.get(id))
+                    .and_then(|providers| providers.first())
+                    .cloned(),
+                surface.contribution.clone(),
+            ));
+        }
+    }
+
     if let Err(error) = validate_profile_with_catalogs(profile, manifests, component_manifests) {
         if issues.is_empty() {
             issues.push(switch_issue(
@@ -2726,6 +2866,81 @@ fn compatibility_issues(
         }
     }
     issues
+}
+
+#[derive(Default)]
+struct ModuleContributionOwners {
+    surfaces: BTreeMap<String, Vec<String>>,
+    widgets: BTreeMap<String, Vec<String>>,
+    data_sources: BTreeMap<String, Vec<String>>,
+    commands: BTreeMap<String, Vec<String>>,
+    tools: BTreeMap<String, Vec<String>>,
+    modules_with_shell_tabs: BTreeSet<String>,
+}
+
+impl ModuleContributionOwners {
+    fn from_manifests(manifests: &[ModuleManifestV1]) -> Self {
+        let mut owners = Self::default();
+        for manifest in manifests {
+            record_contribution_owners(
+                &mut owners.surfaces,
+                &manifest.contributes.surfaces,
+                &manifest.id,
+            );
+            record_contribution_owners(
+                &mut owners.widgets,
+                &manifest.contributes.widgets,
+                &manifest.id,
+            );
+            record_contribution_owners(
+                &mut owners.data_sources,
+                &manifest.contributes.data_sources,
+                &manifest.id,
+            );
+            record_contribution_owners(
+                &mut owners.commands,
+                &manifest.contributes.commands,
+                &manifest.id,
+            );
+            record_contribution_owners(
+                &mut owners.tools,
+                &manifest.contributes.tools,
+                &manifest.id,
+            );
+            if !manifest.contributes.shell_tabs.is_empty() {
+                owners.modules_with_shell_tabs.insert(manifest.id.clone());
+            }
+        }
+        owners
+    }
+}
+
+fn record_contribution_owners(
+    owners: &mut BTreeMap<String, Vec<String>>,
+    contribution_ids: &[String],
+    module_id: &str,
+) {
+    for contribution_id in contribution_ids {
+        owners
+            .entry(contribution_id.clone())
+            .or_default()
+            .push(module_id.into());
+    }
+}
+
+fn disabled_contribution_provider<'a>(
+    owners: &'a BTreeMap<String, Vec<String>>,
+    contribution_id: &str,
+    enabled: &BTreeSet<&str>,
+) -> Option<&'a str> {
+    let providers = owners.get(contribution_id)?;
+    if providers
+        .iter()
+        .any(|provider| enabled.contains(provider.as_str()))
+    {
+        return None;
+    }
+    providers.first().map(String::as_str)
 }
 
 fn version_requirement_matches(requirement: &str, version: &str) -> bool {
@@ -2970,6 +3185,112 @@ mod tests {
         }
     }
 
+    fn layout_manifest() -> ModuleManifestV1 {
+        let mut manifest = manifest("test.layout-provider", "1.0.0");
+        manifest.contributes.shell_tabs = vec!["test.layout-provider.shell-tab".into()];
+        manifest.contributes.tools = vec!["test.layout-provider.tool".into()];
+        manifest.contributes.surfaces = vec!["test.layout-provider.surface".into()];
+        manifest.contributes.widgets = vec!["test.layout-provider.widget".into()];
+        manifest.contributes.data_sources = vec!["test.layout-provider.data-source".into()];
+        manifest.contributes.commands = vec!["test.layout-provider.command".into()];
+        manifest
+    }
+
+    fn profile_with_layout(provider_enabled: bool) -> WorkspaceProfileV1 {
+        let mut profile = build_blank_profile();
+        if provider_enabled {
+            profile.enabled_modules.push(ProfileModuleSelection {
+                id: "test.layout-provider".into(),
+                version_requirement: "^1.0".into(),
+                extensions: ExtensionFields::new(),
+            });
+        }
+        profile.shell_layout.navigation = vec!["layout-page".into()];
+        profile.shell_layout.pinned_tools = vec!["test.layout-provider.tool".into()];
+        profile.data_sources.push(ProfileDataSource {
+            id: "layout-source".into(),
+            source: "test.layout-provider.data-source".into(),
+            scope: DataSourceScope::Profile,
+            settings: BTreeMap::new(),
+            extensions: ExtensionFields::new(),
+        });
+        profile.surfaces.push(ProfileSurface {
+            id: "layout-page".into(),
+            title: Some("布局页面".into()),
+            kind: SurfaceKind::ShellPage,
+            layout: SurfaceLayoutKind::ContributionDefined,
+            contribution: Some("test.layout-provider.surface".into()),
+            widgets: vec![ProfileWidget {
+                id: "layout-widget".into(),
+                widget: "test.layout-provider.widget".into(),
+                data_source: Some("layout-source".into()),
+                region: Some("content".into()),
+                order: 0,
+                grid: None,
+                settings: BTreeMap::new(),
+                visible_when: None,
+                extensions: ExtensionFields::new(),
+            }],
+            settings: BTreeMap::new(),
+            extensions: ExtensionFields::new(),
+        });
+        profile.command_bindings.push(ProfileCommandBinding {
+            id: "layout-command".into(),
+            command: "test.layout-provider.command".into(),
+            placement: CommandPlacement::SurfaceAction,
+            surface: Some("layout-page".into()),
+            target: None,
+            shortcut: None,
+            order: 0,
+            settings: BTreeMap::new(),
+            extensions: ExtensionFields::new(),
+        });
+        profile
+    }
+
+    #[test]
+    fn draft_validation_rejects_layout_owned_by_a_disabled_module() {
+        let provider = layout_manifest();
+        let validation = build_draft_validation(&profile_with_layout(false), &[provider], &[]);
+        let codes = validation
+            .issues
+            .iter()
+            .map(|issue| issue.code.as_str())
+            .collect::<BTreeSet<_>>();
+
+        assert!(!validation.valid);
+        assert!(codes.contains("SURFACE_PROVIDER_DISABLED"));
+        assert!(codes.contains("WIDGET_PROVIDER_DISABLED"));
+        assert!(codes.contains("DATA_SOURCE_PROVIDER_DISABLED"));
+        assert!(codes.contains("COMMAND_PROVIDER_DISABLED"));
+        assert!(codes.contains("PIN_PROVIDER_DISABLED"));
+        assert!(codes.contains("NAVIGATION_ENTRY_UNSUPPORTED"));
+    }
+
+    #[test]
+    fn draft_validation_accepts_enabled_layout_with_a_shell_entry() {
+        let provider = layout_manifest();
+        let validation = build_draft_validation(&profile_with_layout(true), &[provider], &[]);
+
+        assert!(
+            validation.valid,
+            "unexpected issues: {:?}",
+            validation.issues
+        );
+    }
+
+    #[test]
+    fn draft_validation_rejects_navigation_without_a_shell_entry() {
+        let mut provider = layout_manifest();
+        provider.contributes.shell_tabs.clear();
+        let validation = build_draft_validation(&profile_with_layout(true), &[provider], &[]);
+
+        assert!(validation
+            .issues
+            .iter()
+            .any(|issue| issue.code == "NAVIGATION_ENTRY_UNSUPPORTED"));
+    }
+
     #[test]
     fn snapshot_reports_components_enabled_through_module_dependencies() {
         let root = test_root("component-summary");
@@ -3115,6 +3436,7 @@ mod tests {
         legacy.surfaces.clear();
         legacy.data_sources.clear();
         legacy.command_bindings.clear();
+        legacy.extensions.remove("shellHomeMigration");
         legacy.revision = 7;
         fs::write(
             profiles.join(format!("{MIGRATED_PROFILE_ID}.json")),
@@ -3168,6 +3490,7 @@ mod tests {
             &BTreeSet::from(["builtin.project-resources".to_string()]),
             &[],
         );
+        legacy.extensions.remove("shellHomeMigration");
         legacy.revision = 5;
         fs::write(
             profiles.join(format!("{MIGRATED_PROFILE_ID}.json")),
@@ -3389,6 +3712,97 @@ mod tests {
 
         assert_eq!(fs::read(&custom_path).unwrap(), original);
         assert!(runtime.profile_path(DEFAULT_PROFILE_ID).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn shell_layout_migration_is_idempotent_and_preserves_user_widget_changes() {
+        let root = test_root("shell-layout-migration");
+        let profiles = root.join("profiles");
+        fs::create_dir_all(&profiles).unwrap();
+        let mut profile = build_migrated_profile(&[], &BTreeSet::new(), &[]);
+        profile.extensions.insert(
+            "shellHomeMigration".into(),
+            json!({ "version": LEGACY_HOME_COMPOSITION_MIGRATION_VERSION }),
+        );
+        let surface = profile
+            .surfaces
+            .iter_mut()
+            .find(|surface| surface.id == PROJECT_HOME_PROFILE_SURFACE_ID)
+            .unwrap();
+        surface
+            .widgets
+            .retain(|widget| widget.id == "recent-projects");
+        surface
+            .settings
+            .insert("widgetsConfigured".into(), json!(true));
+        let expected_widgets = surface.widgets.clone();
+        fs::write(
+            profiles.join(format!("{MIGRATED_PROFILE_ID}.json")),
+            serde_json::to_vec_pretty(&profile).unwrap(),
+        )
+        .unwrap();
+
+        let runtime = WorkspaceProfileRuntime::new(&root);
+        let first = runtime
+            .initialize_from_current_configuration(&[], &BTreeSet::new(), &[])
+            .unwrap();
+        let first_revision = first.current_profile.revision;
+        let migrated_surface = first
+            .current_profile
+            .surfaces
+            .iter()
+            .find(|surface| surface.id == PROJECT_HOME_PROFILE_SURFACE_ID)
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&migrated_surface.widgets).unwrap(),
+            serde_json::to_value(&expected_widgets).unwrap()
+        );
+        assert_eq!(
+            first.current_profile.extensions["shellHomeMigration"]["version"],
+            json!(SHELL_HOME_MIGRATION_VERSION)
+        );
+
+        let second = runtime
+            .initialize_from_current_configuration(&[], &BTreeSet::new(), &[])
+            .unwrap();
+        assert_eq!(second.current_profile.revision, first_revision);
+        assert_eq!(
+            serde_json::to_value(
+                &second
+                    .current_profile
+                    .surfaces
+                    .iter()
+                    .find(|surface| surface.id == PROJECT_HOME_PROFILE_SURFACE_ID)
+                    .unwrap()
+                    .widgets
+            )
+            .unwrap(),
+            serde_json::to_value(&expected_widgets).unwrap()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn shell_layout_migration_does_not_modify_custom_profiles() {
+        let root = test_root("shell-layout-custom-profile");
+        let profiles = root.join("profiles");
+        fs::create_dir_all(&profiles).unwrap();
+        let mut custom = build_blank_profile();
+        custom.id = "local.custom-layout".into();
+        custom.name = "自定义布局".into();
+        custom.revision = 9;
+        custom.shell_layout.navigation_kind = pmc_platform::ShellNavigationKind::SideBar;
+        let custom_path = profiles.join("local.custom-layout.json");
+        let custom_bytes = serde_json::to_vec_pretty(&custom).unwrap();
+        fs::write(&custom_path, &custom_bytes).unwrap();
+
+        let runtime = WorkspaceProfileRuntime::new(&root);
+        runtime
+            .initialize_from_current_configuration(&[], &BTreeSet::new(), &[])
+            .unwrap();
+
+        assert_eq!(fs::read(custom_path).unwrap(), custom_bytes);
         fs::remove_dir_all(root).unwrap();
     }
 

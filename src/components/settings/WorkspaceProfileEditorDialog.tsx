@@ -3,11 +3,14 @@ import {
   AlertTriangle,
   Boxes,
   CheckCircle2,
+  LayoutTemplate,
   Layers3,
   Loader2,
   Package,
+  Redo2,
   RefreshCw,
   Save,
+  Undo2,
 } from 'lucide-react';
 import { getPlatformModuleRuntime } from '../../api/platformModules';
 import {
@@ -25,7 +28,9 @@ import type {
   WorkspaceProfileDraftValidation,
   WorkspaceProfileRuntimeCommandError,
 } from '../../types/workspaceProfileRuntime';
+import { removeModuleOwnedLayout } from '../../features/profileLayout';
 import { Dialog } from '../Dialog';
+import { WorkspaceProfileLayoutEditor } from './WorkspaceProfileLayoutEditor';
 
 interface WorkspaceProfileEditorDialogProps {
   isOpen: boolean;
@@ -73,8 +78,11 @@ export function WorkspaceProfileEditorDialog({
   const [validating, setValidating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const [activeEditorSection, setActiveEditorSection] = useState<'modules' | 'layout'>('modules');
   const originalDocumentRef = useRef('');
   const validationSequenceRef = useRef(0);
+  const undoStackRef = useRef<WorkspaceProfileV1[]>([]);
+  const redoStackRef = useRef<WorkspaceProfileV1[]>([]);
 
   const load = useCallback(async () => {
     if (!profileId) return;
@@ -94,6 +102,8 @@ export function WorkspaceProfileEditorDialog({
           .sort((left, right) => left.manifest.name.localeCompare(right.manifest.name, 'zh-CN')),
       );
       originalDocumentRef.current = JSON.stringify(editable);
+      undoStackRef.current = [];
+      redoStackRef.current = [];
     } catch (loadError) {
       setDraft(null);
       setModules([]);
@@ -110,6 +120,9 @@ export function WorkspaceProfileEditorDialog({
       setValidation(null);
       setError(null);
       setSaveMessage(null);
+      setActiveEditorSection('modules');
+      undoStackRef.current = [];
+      redoStackRef.current = [];
       return;
     }
     void load();
@@ -162,7 +175,35 @@ export function WorkspaceProfileEditorDialog({
   const dirty = Boolean(draft) && JSON.stringify(draft) !== originalDocumentRef.current;
 
   const updateDraft = (updater: (current: WorkspaceProfileV1) => WorkspaceProfileV1) => {
-    setDraft((current) => (current ? updater(cloneProfile(current)) : current));
+    setDraft((current) => {
+      if (!current) return current;
+      const before = cloneProfile(current);
+      const next = updater(cloneProfile(current));
+      if (JSON.stringify(next) === JSON.stringify(current)) return current;
+      undoStackRef.current = [...undoStackRef.current.slice(-49), before];
+      redoStackRef.current = [];
+      return next;
+    });
+    setSaveMessage(null);
+  };
+
+  const undoDraft = () => {
+    setDraft((current) => {
+      const previous = undoStackRef.current.pop();
+      if (!current || !previous) return current;
+      redoStackRef.current.push(cloneProfile(current));
+      return cloneProfile(previous);
+    });
+    setSaveMessage(null);
+  };
+
+  const redoDraft = () => {
+    setDraft((current) => {
+      const next = redoStackRef.current.pop();
+      if (!current || !next) return current;
+      undoStackRef.current.push(cloneProfile(current));
+      return cloneProfile(next);
+    });
     setSaveMessage(null);
   };
 
@@ -216,16 +257,11 @@ export function WorkspaceProfileEditorDialog({
       current.enabledModules = (current.enabledModules ?? []).filter(
         (selection) => !removed.has(selection.id),
       );
-      const removedTools = new Set<string>();
-      removed.forEach((id) => {
-        moduleById.get(id)?.manifest.contributes?.tools?.forEach((toolId) => removedTools.add(toolId));
+      const removedManifests = Array.from(removed).flatMap((id) => {
+        const manifest = moduleById.get(id)?.manifest;
+        return manifest ? [manifest] : [];
       });
-      current.shellLayout = {
-        ...(current.shellLayout ?? {}),
-        pinnedTools: (current.shellLayout?.pinnedTools ?? []).filter(
-          (toolId) => !removedTools.has(toolId),
-        ),
-      };
+      removeModuleOwnedLayout(current, removedManifests);
       return current;
     });
   };
@@ -265,6 +301,8 @@ export function WorkspaceProfileEditorDialog({
       setDraft(saved);
       setValidation(result.validation);
       originalDocumentRef.current = JSON.stringify(saved);
+      undoStackRef.current = [];
+      redoStackRef.current = [];
       setSaveMessage(`已保存修订 r${saved.revision ?? 1}`);
     } catch (saveError) {
       setError(formatRuntimeError(saveError));
@@ -355,6 +393,56 @@ export function WorkspaceProfileEditorDialog({
             </div>
           ) : null}
 
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 pb-3 dark:border-gray-700">
+            <div className="inline-flex overflow-hidden rounded-md border border-gray-200 dark:border-gray-700">
+              <button
+                type="button"
+                onClick={() => setActiveEditorSection('modules')}
+                className={`inline-flex h-9 items-center gap-1.5 border-r border-gray-200 px-3 text-sm dark:border-gray-700 ${
+                  activeEditorSection === 'modules'
+                    ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300'
+                    : 'text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800'
+                }`}
+              >
+                <Layers3 className="h-4 w-4" />
+                模块与组件
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveEditorSection('layout')}
+                className={`inline-flex h-9 items-center gap-1.5 px-3 text-sm ${
+                  activeEditorSection === 'layout'
+                    ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300'
+                    : 'text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800'
+                }`}
+              >
+                <LayoutTemplate className="h-4 w-4" />
+                界面装配
+              </button>
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={undoDraft}
+                disabled={undoStackRef.current.length === 0}
+                className="flex h-8 w-8 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-30 dark:hover:bg-gray-800"
+                title="撤销"
+              >
+                <Undo2 className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={redoDraft}
+                disabled={redoStackRef.current.length === 0}
+                className="flex h-8 w-8 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-30 dark:hover:bg-gray-800"
+                title="重做"
+              >
+                <Redo2 className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+
+          {activeEditorSection === 'modules' ? <>
           <div className="grid min-h-[390px] gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
             <section className="min-w-0 rounded-md border border-gray-200 dark:border-gray-700">
               <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2.5 dark:border-gray-700">
@@ -536,6 +624,13 @@ export function WorkspaceProfileEditorDialog({
               </div>
             ) : null}
           </section>
+          </> : (
+            <WorkspaceProfileLayoutEditor
+              draft={draft}
+              modules={modules.map((module) => module.manifest)}
+              onChange={updateDraft}
+            />
+          )}
         </div>
       )}
     </Dialog>

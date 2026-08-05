@@ -75,6 +75,8 @@ React invoke/listen
 3. `ProjectSessionProvider` 恢复工作区标签、路径、树状态及窗口相关会话。
 4. `watcher` 只监听当前活动项目，事件合并后写入变更记录并使相关目录缓存变脏。
 
+关闭项目标签、停用项目管理器或打开项目过程中贡献失效时，前端统一撤销该项目的 Store 订阅并调用 `release_project_resources`。同一路径重新打开会等待上一次释放完成，防止旧数据库、TreeCache 或 watcher 释放过程影响新会话；释放只关闭句柄，不删除 `.pm_center` 和项目输出。
+
 ### 4.2 `.pm_center/` 边界
 
 | 路径 | 所有者 | 处理规则 |
@@ -102,7 +104,7 @@ React invoke/listen
 | 脚本/任务 | `ScriptRunner.tsx`、`TaskPanel/`、`taskStore.ts` | 用户脚本、日志、取消/重试与任务面板聚合。 |
 | 设置 | `SettingsPanel.tsx`、`settings/settingsContributionImplementationRegistry.ts`、`settingsStore.ts`、`settings/LocalWebConsoleSettingsSection.tsx` | R7-3 按 `settingsSections` 贡献装配一级范围与二级页面，右侧只挂载当前设置页；模块停用后所属设置即时撤下。普通设置中心与不可停用恢复内核的边界见 `NEXT_MAJOR_R7_SETTINGS_CONTRIBUTIONS.md`。 |
 | 功能中心 | `features/builtinTools.ts`、`features/contributionRegistry.ts`、`features/contributionDataSources.ts`、`features/contributionCatalogDiagnostics.ts`、`stores/contributionRegistryStore.ts`、`components/file-manager/index.tsx` | `Alt+Q` 工具入口；R5 已让工具、Pin、Shell/工作区标签、设置区、右键命令、Widget、DataSource 和节点目录按模块状态动态出现或撤下，并提供目录一致性、实现覆盖、缺失状态和订阅释放诊断。智能剪贴板仍调用独立 Win32 窗口。 |
-| 装配方案运行时 | `platform/profile_runtime.rs`、`api/workspaceProfiles.ts`、`stores/workspaceProfileStore.ts`、`WorkspaceProfileDiagnosticsSection.tsx`、`WorkspaceProfileEditorDialog.tsx`、`features/profileHome.ts`、`components/shell/ProfileHomeSurface.tsx` | R6 已完成迁移、事务切换、会话归属和恢复；R7-1 的方案草稿编辑已验收；R7-2A 已让 `shellLayout.home` 驱动默认主页并提供安全回退；R7-2B 已完成项目管理器与会话热恢复；R7-2C 已把默认项目主页拆成可登记的 Surface、Widget、DataSource 和 Command，等待人工验收。当前运行方案必须复制后编辑，保存不会自动应用。 |
+| 装配方案运行时 | `platform/profile_runtime.rs`、`api/workspaceProfiles.ts`、`stores/workspaceProfileStore.ts`、`WorkspaceProfileDiagnosticsSection.tsx`、`WorkspaceProfileEditorDialog.tsx`、`WorkspaceProfileLayoutEditor.tsx`、`features/profileLayout.ts`、`features/profileHome.ts`、`components/shell/ProfileHomeSurface.tsx`、`components/shell/ProfileNavigationBar.tsx` | R6 已完成迁移、事务切换、会话归属和恢复；R7-1 与 R7-2A/B/C 已验收；R7-2D/E 已加入主页、导航、快捷栏、Widget 装配编辑、撤销/重做、窄窗口导航、贡献所有权校验和 v4 幂等迁移，等待最终人工验收。当前运行方案必须复制后编辑，保存不会自动应用。 |
 | 说明组件 | `components/ui/HelpAssistant.tsx` | 复杂或不可逆概念旁的问号说明；支持文字、图片、视频及自动避让定位。 |
 
 状态 Store 的所有权：
