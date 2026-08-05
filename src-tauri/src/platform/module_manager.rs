@@ -1779,6 +1779,8 @@ mod tests {
                 })
                 .collect(),
             optional_modules: Vec::new(),
+            requires_components: Vec::new(),
+            optional_components: Vec::new(),
             conflicts: Vec::new(),
             capabilities: Vec::new(),
             background_services: Vec::new(),

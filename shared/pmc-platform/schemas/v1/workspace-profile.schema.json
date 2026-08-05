@@ -117,6 +117,22 @@
       ],
       "type": "object"
     },
+    "ProfileComponentSelection": {
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "versionRequirement": {
+          "default": "*",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
     "ProfileDataSource": {
       "additionalProperties": true,
       "properties": {
@@ -465,6 +481,11 @@
       },
       "type": "array"
     },
+    "componentSettings": {
+      "additionalProperties": true,
+      "default": {},
+      "type": "object"
+    },
     "dataSources": {
       "default": [],
       "items": {
@@ -475,6 +496,13 @@
     "description": {
       "default": "",
       "type": "string"
+    },
+    "enabledComponents": {
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/ProfileComponentSelection"
+      },
+      "type": "array"
     },
     "enabledModules": {
       "default": [],

@@ -1,6 +1,6 @@
 use crate::ids::{
     validate_api_version, validate_local_id, validate_relative_path, validate_stable_id,
-    validate_version,
+    validate_version, validate_version_requirement,
 };
 use crate::{
     parse_value, validate_schema_version, Capability, ContractError, ContractErrorCode,
@@ -9,7 +9,7 @@ use crate::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
@@ -20,6 +20,45 @@ pub enum ComponentRuntime {
     NativeLibrary,
     DataPack,
     BuiltinRust,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ComponentRole {
+    #[default]
+    Service,
+    Feature,
+    Data,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ComponentDistribution {
+    #[default]
+    Local,
+    Bundled,
+    Marketplace,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ComponentUiMode {
+    #[default]
+    None,
+    Hosted,
+    Contributed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ComponentDependency {
+    pub id: String,
+    #[serde(default = "default_version_requirement")]
+    pub version_requirement: String,
+}
+
+fn default_version_requirement() -> String {
+    "*".into()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -124,11 +163,21 @@ pub struct ComponentManifestV1 {
     pub api_version: String,
     pub runtime: ComponentRuntime,
     #[serde(default)]
+    pub role: ComponentRole,
+    #[serde(default)]
+    pub distribution: ComponentDistribution,
+    #[serde(default)]
+    pub ui_mode: ComponentUiMode,
+    #[serde(default)]
     pub platforms: Vec<PlatformTarget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry: Option<String>,
     #[serde(default)]
     pub capabilities: Vec<Capability>,
+    #[serde(default)]
+    pub requires_components: Vec<ComponentDependency>,
+    #[serde(default)]
+    pub optional_components: Vec<ComponentDependency>,
     #[serde(default)]
     pub contributes: ComponentContributions,
     #[serde(default)]
@@ -246,6 +295,35 @@ impl ValidateContract for ComponentManifestV1 {
             }
         }
 
+        let mut dependencies = BTreeSet::new();
+        for (kind, list) in [
+            ("requiresComponents", &self.requires_components),
+            ("optionalComponents", &self.optional_components),
+        ] {
+            for (index, dependency) in list.iter().enumerate() {
+                let path = format!("$.{kind}[{index}]");
+                validate_stable_id(&dependency.id, &format!("{path}.id"))?;
+                validate_version_requirement(
+                    &dependency.version_requirement,
+                    &format!("{path}.versionRequirement"),
+                )?;
+                if dependency.id == self.id {
+                    return Err(ContractError::new(
+                        ContractErrorCode::SelfDependency,
+                        path,
+                        "组件不能依赖自身",
+                    ));
+                }
+                if !dependencies.insert(dependency.id.as_str()) {
+                    return Err(ContractError::new(
+                        ContractErrorCode::DuplicateId,
+                        path,
+                        format!("重复组件依赖: {}", dependency.id),
+                    ));
+                }
+            }
+        }
+
         let mut contribution_ids = BTreeSet::new();
         for (index, node) in self.contributes.workflow_nodes.iter().enumerate() {
             validate_stable_id(
@@ -319,6 +397,103 @@ impl ValidateContract for ComponentManifestV1 {
     }
 }
 
+pub fn validate_component_graph(manifests: &[ComponentManifestV1]) -> ContractResult<()> {
+    let mut components = HashMap::new();
+    for (index, manifest) in manifests.iter().enumerate() {
+        manifest.validate_contract()?;
+        if components.insert(manifest.id.as_str(), manifest).is_some() {
+            return Err(ContractError::new(
+                ContractErrorCode::DuplicateId,
+                format!("$[{index}].id"),
+                format!("重复组件: {}", manifest.id),
+            ));
+        }
+    }
+
+    for manifest in manifests {
+        for dependency in &manifest.requires_components {
+            validate_installed_component_dependency(manifest, dependency, &components)?;
+        }
+        for dependency in &manifest.optional_components {
+            if components.contains_key(dependency.id.as_str()) {
+                validate_installed_component_dependency(manifest, dependency, &components)?;
+            }
+        }
+    }
+
+    let mut visiting = HashSet::new();
+    let mut visited = HashSet::new();
+    for manifest in manifests {
+        visit_component(
+            manifest.id.as_str(),
+            &components,
+            &mut visiting,
+            &mut visited,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_installed_component_dependency<'a>(
+    manifest: &ComponentManifestV1,
+    dependency: &ComponentDependency,
+    components: &HashMap<&'a str, &'a ComponentManifestV1>,
+) -> ContractResult<()> {
+    let Some(target) = components.get(dependency.id.as_str()) else {
+        return Err(ContractError::new(
+            ContractErrorCode::MissingDependency,
+            format!("$.{}.requiresComponents", manifest.id),
+            format!("缺少必需组件: {}", dependency.id),
+        ));
+    };
+    let requirement = semver::VersionReq::parse(&dependency.version_requirement).unwrap();
+    let target_version = semver::Version::parse(&target.version).unwrap();
+    if !requirement.matches(&target_version) {
+        return Err(ContractError::new(
+            ContractErrorCode::MissingDependency,
+            format!("$.{}.requiresComponents", manifest.id),
+            format!(
+                "组件 {} 版本 {} 不满足 {}",
+                target.id, target.version, dependency.version_requirement
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn visit_component<'a>(
+    id: &'a str,
+    components: &HashMap<&'a str, &'a ComponentManifestV1>,
+    visiting: &mut HashSet<&'a str>,
+    visited: &mut HashSet<&'a str>,
+) -> ContractResult<()> {
+    if visited.contains(id) {
+        return Ok(());
+    }
+    if !visiting.insert(id) {
+        return Err(ContractError::new(
+            ContractErrorCode::DependencyCycle,
+            format!("$.{id}.requiresComponents"),
+            format!("组件依赖形成循环，回到 {id}"),
+        ));
+    }
+    if let Some(manifest) = components.get(id) {
+        for dependency in &manifest.requires_components {
+            visit_component(dependency.id.as_str(), components, visiting, visited)?;
+        }
+    }
+    visiting.remove(id);
+    visited.insert(id);
+    Ok(())
+}
+
+pub fn component_map(manifests: &[ComponentManifestV1]) -> BTreeMap<&str, &ComponentManifestV1> {
+    manifests
+        .iter()
+        .map(|manifest| (manifest.id.as_str(), manifest))
+        .collect()
+}
+
 fn validate_ports(ports: &[PortDefinition], path: &str) -> ContractResult<()> {
     let mut seen = BTreeSet::new();
     for (index, port) in ports.iter().enumerate() {
@@ -352,5 +527,45 @@ mod tests {
         }"#;
         let error = parse_component_manifest(input).unwrap_err();
         assert_eq!(error.code, ContractErrorCode::InvalidRelativePath);
+    }
+
+    fn component(id: &str, required: &[&str]) -> ComponentManifestV1 {
+        ComponentManifestV1 {
+            schema_version: 1,
+            id: id.into(),
+            name: id.into(),
+            description: String::new(),
+            version: "1.0.0".into(),
+            api_version: "1".into(),
+            runtime: ComponentRuntime::NativeProcess,
+            role: ComponentRole::Service,
+            distribution: ComponentDistribution::Local,
+            ui_mode: ComponentUiMode::None,
+            platforms: vec![PlatformTarget::WindowsX64],
+            entry: Some("bin/component.exe".into()),
+            capabilities: Vec::new(),
+            requires_components: required
+                .iter()
+                .map(|id| ComponentDependency {
+                    id: (*id).into(),
+                    version_requirement: "*".into(),
+                })
+                .collect(),
+            optional_components: Vec::new(),
+            contributes: ComponentContributions::default(),
+            resources: ComponentResourceLimits::default(),
+            publisher: None,
+            extensions: ExtensionFields::new(),
+        }
+    }
+
+    #[test]
+    fn rejects_component_dependency_cycles() {
+        let error = validate_component_graph(&[
+            component("test.alpha", &["test.beta"]),
+            component("test.beta", &["test.alpha"]),
+        ])
+        .unwrap_err();
+        assert_eq!(error.code, ContractErrorCode::DependencyCycle);
     }
 }

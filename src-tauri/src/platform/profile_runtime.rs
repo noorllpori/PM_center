@@ -1,7 +1,9 @@
 use chrono::Utc;
 use pmc_platform::{
-    parse_workspace_profile, validate_profile_with_modules, ExtensionFields, ModuleManifestV1,
-    ProfileModuleSelection, ProfileShellLayout, WorkspaceProfileV1, PLATFORM_SCHEMA_VERSION,
+    parse_workspace_profile, validate_profile_with_catalogs, ComponentDistribution,
+    ComponentManifestV1, ComponentRole, ComponentRuntime, ComponentUiMode, ContractResult,
+    ExtensionFields, ModuleManifestV1, ProfileModuleSelection, ProfileShellLayout,
+    WorkspaceProfileV1, PLATFORM_SCHEMA_VERSION,
 };
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
@@ -178,6 +180,8 @@ pub struct WorkspaceProfileSummary {
     pub revision: u64,
     pub current: bool,
     pub enabled_module_count: usize,
+    pub enabled_component_count: usize,
+    pub effective_component_count: usize,
     pub pinned_tool_count: usize,
     pub status: WorkspaceProfileDocumentStatus,
     pub issues: Vec<String>,
@@ -186,9 +190,27 @@ pub struct WorkspaceProfileSummary {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct WorkspaceProfileComponentSummary {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub version: String,
+    pub runtime: ComponentRuntime,
+    pub role: ComponentRole,
+    pub distribution: ComponentDistribution,
+    pub ui_mode: ComponentUiMode,
+    pub explicit_enabled: bool,
+    pub effective_enabled: bool,
+    pub required_by_modules: Vec<String>,
+    pub required_by_components: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkspaceProfileRuntimeSnapshot {
     pub current_profile: WorkspaceProfileV1,
     pub profiles: Vec<WorkspaceProfileSummary>,
+    pub components: Vec<WorkspaceProfileComponentSummary>,
     pub repository_path: String,
     pub state_path: String,
     pub journal_path: String,
@@ -288,17 +310,34 @@ pub struct WorkspaceProfileRuntime {
     repository_path: PathBuf,
     state_path: PathBuf,
     journal_path: PathBuf,
+    component_manifests: Vec<ComponentManifestV1>,
     operation_lock: Mutex<()>,
 }
 
 impl WorkspaceProfileRuntime {
     pub fn new(app_data_dir: &Path) -> Self {
+        Self::new_with_components(app_data_dir, Vec::new())
+    }
+
+    pub fn new_with_components(
+        app_data_dir: &Path,
+        component_manifests: Vec<ComponentManifestV1>,
+    ) -> Self {
         Self {
             repository_path: app_data_dir.join("profiles"),
             state_path: app_data_dir.join("profile-runtime.json"),
             journal_path: app_data_dir.join("profile-switch-journal.json"),
+            component_manifests,
             operation_lock: Mutex::new(()),
         }
+    }
+
+    fn validate_profile(
+        &self,
+        profile: &WorkspaceProfileV1,
+        manifests: &[ModuleManifestV1],
+    ) -> ContractResult<BTreeSet<String>> {
+        validate_profile_with_catalogs(profile, manifests, &self.component_manifests)
     }
 
     pub fn initialize_from_current_configuration(
@@ -328,16 +367,17 @@ impl WorkspaceProfileRuntime {
         } else {
             let profile =
                 build_migrated_profile(manifests, enabled_module_ids, legacy_pinned_tools);
-            validate_profile_with_modules(&profile, manifests).map_err(|error| {
-                WorkspaceProfileRuntimeError::new(
-                    WorkspaceProfileRuntimeErrorCode::ProfileDocumentInvalid,
-                    format!(
-                        "生成的迁移装配方案无效：{}（{}）",
-                        error.message, error.path
-                    ),
-                    Some(&profile_path),
-                )
-            })?;
+            self.validate_profile(&profile, manifests)
+                .map_err(|error| {
+                    WorkspaceProfileRuntimeError::new(
+                        WorkspaceProfileRuntimeErrorCode::ProfileDocumentInvalid,
+                        format!(
+                            "生成的迁移装配方案无效：{}（{}）",
+                            error.message, error.path
+                        ),
+                        Some(&profile_path),
+                    )
+                })?;
             write_new_json(&profile_path, &profile)?;
             profile
         };
@@ -351,16 +391,17 @@ impl WorkspaceProfileRuntime {
                 Some(&profile_path),
             ));
         }
-        validate_profile_with_modules(&current_profile, manifests).map_err(|error| {
-            WorkspaceProfileRuntimeError::new(
-                WorkspaceProfileRuntimeErrorCode::ProfileDocumentInvalid,
-                format!(
-                    "迁移装配方案与当前模块不兼容：{}（{}）",
-                    error.message, error.path
-                ),
-                Some(&profile_path),
-            )
-        })?;
+        self.validate_profile(&current_profile, manifests)
+            .map_err(|error| {
+                WorkspaceProfileRuntimeError::new(
+                    WorkspaceProfileRuntimeErrorCode::ProfileDocumentInvalid,
+                    format!(
+                        "迁移装配方案与当前模块不兼容：{}（{}）",
+                        error.message, error.path
+                    ),
+                    Some(&profile_path),
+                )
+            })?;
 
         let migration = migration_record_from_profile(&current_profile);
         let now = Utc::now().timestamp_millis();
@@ -419,13 +460,14 @@ impl WorkspaceProfileRuntime {
                 Some(&path),
             ));
         }
-        validate_profile_with_modules(&profile, manifests).map_err(|error| {
-            WorkspaceProfileRuntimeError::new(
-                WorkspaceProfileRuntimeErrorCode::ProfileSwitchBlocked,
-                format!("目标装配方案不兼容：{}（{}）", error.message, error.path),
-                Some(&path),
-            )
-        })?;
+        self.validate_profile(&profile, manifests)
+            .map_err(|error| {
+                WorkspaceProfileRuntimeError::new(
+                    WorkspaceProfileRuntimeErrorCode::ProfileSwitchBlocked,
+                    format!("目标装配方案不兼容：{}（{}）", error.message, error.path),
+                    Some(&path),
+                )
+            })?;
         Ok(profile)
     }
 
@@ -582,16 +624,17 @@ impl WorkspaceProfileRuntime {
                 Some(&profile_path),
             ));
         }
-        validate_profile_with_modules(&profile, manifests).map_err(|error| {
-            WorkspaceProfileRuntimeError::new(
-                WorkspaceProfileRuntimeErrorCode::ProfileRecoveryFailed,
-                format!(
-                    "恢复目标 Profile 不兼容：{}（{}）",
-                    error.message, error.path
-                ),
-                Some(&profile_path),
-            )
-        })?;
+        self.validate_profile(&profile, manifests)
+            .map_err(|error| {
+                WorkspaceProfileRuntimeError::new(
+                    WorkspaceProfileRuntimeErrorCode::ProfileRecoveryFailed,
+                    format!(
+                        "恢复目标 Profile 不兼容：{}（{}）",
+                        error.message, error.path
+                    ),
+                    Some(&profile_path),
+                )
+            })?;
         if let Some(transaction) = pending.as_ref() {
             if action == WorkspaceProfileStartupRecoveryAction::CompleteInterruptedSwitch
                 && transaction.to_profile_revision != profile.revision
@@ -781,7 +824,7 @@ impl WorkspaceProfileRuntime {
                 Some(&target_path),
             ));
         }
-        validate_profile_with_modules(&target, manifests).map_err(|error| {
+        self.validate_profile(&target, manifests).map_err(|error| {
             WorkspaceProfileRuntimeError::new(
                 WorkspaceProfileRuntimeErrorCode::ProfileSwitchBlocked,
                 format!("目标装配方案不兼容：{}（{}）", error.message, error.path),
@@ -836,7 +879,7 @@ impl WorkspaceProfileRuntime {
             .filter(|module| !module.diagnostic && module.desired_enabled)
             .map(|module| module.manifest.id.clone())
             .collect::<BTreeSet<_>>();
-        let mut issues = compatibility_issues(&target, &manifests);
+        let mut issues = compatibility_issues(&target, &manifests, &self.component_manifests);
 
         for module in modules.iter().filter(|module| !module.diagnostic) {
             if matches!(
@@ -1009,13 +1052,14 @@ impl WorkspaceProfileRuntime {
             return Ok(());
         }
         let profile = build_blank_profile();
-        validate_profile_with_modules(&profile, manifests).map_err(|error| {
-            WorkspaceProfileRuntimeError::new(
-                WorkspaceProfileRuntimeErrorCode::ProfileDocumentInvalid,
-                format!("空白装配方案无效：{}（{}）", error.message, error.path),
-                Some(&path),
-            )
-        })?;
+        self.validate_profile(&profile, manifests)
+            .map_err(|error| {
+                WorkspaceProfileRuntimeError::new(
+                    WorkspaceProfileRuntimeErrorCode::ProfileDocumentInvalid,
+                    format!("空白装配方案无效：{}（{}）", error.message, error.path),
+                    Some(&path),
+                )
+            })?;
         write_new_json(&path, &profile)
     }
 
@@ -1051,9 +1095,19 @@ impl WorkspaceProfileRuntime {
                 .then_with(|| left.name.cmp(&right.name))
                 .then_with(|| left.id.cmp(&right.id))
         });
+        let effective_components = self
+            .validate_profile(&current_profile, manifests)
+            .unwrap_or_default();
+        let components = component_summaries(
+            &current_profile,
+            manifests,
+            &self.component_manifests,
+            &effective_components,
+        );
         Ok(WorkspaceProfileRuntimeSnapshot {
             current_profile,
             profiles,
+            components,
             repository_path: self.repository_path.to_string_lossy().into_owned(),
             state_path: self.state_path.to_string_lossy().into_owned(),
             journal_path: self.journal_path.to_string_lossy().into_owned(),
@@ -1218,6 +1272,8 @@ impl WorkspaceProfileRuntime {
                             revision: profile.revision,
                             current: false,
                             enabled_module_count: profile.enabled_modules.len(),
+                            enabled_component_count: profile.enabled_components.len(),
+                            effective_component_count: 0,
                             pinned_tool_count: profile.shell_layout.pinned_tools.len(),
                             status: WorkspaceProfileDocumentStatus::Invalid,
                             issues: vec![format!(
@@ -1228,7 +1284,11 @@ impl WorkspaceProfileRuntime {
                         });
                         continue;
                     }
-                    let compatibility = validate_profile_with_modules(&profile, manifests);
+                    let compatibility = self.validate_profile(&profile, manifests);
+                    let effective_component_count = compatibility
+                        .as_ref()
+                        .map(BTreeSet::len)
+                        .unwrap_or_default();
                     summaries.push(WorkspaceProfileSummary {
                         id: profile.id.clone(),
                         name: profile.name.clone(),
@@ -1236,6 +1296,8 @@ impl WorkspaceProfileRuntime {
                         revision: profile.revision,
                         current: profile.id == current_profile_id,
                         enabled_module_count: profile.enabled_modules.len(),
+                        enabled_component_count: profile.enabled_components.len(),
+                        effective_component_count,
                         pinned_tool_count: profile.shell_layout.pinned_tools.len(),
                         status: if compatibility.is_ok() {
                             WorkspaceProfileDocumentStatus::Ready
@@ -1256,6 +1318,8 @@ impl WorkspaceProfileRuntime {
                     revision: 0,
                     current: false,
                     enabled_module_count: 0,
+                    enabled_component_count: 0,
+                    effective_component_count: 0,
                     pinned_tool_count: 0,
                     status: WorkspaceProfileDocumentStatus::Invalid,
                     issues: vec![error.message],
@@ -1313,7 +1377,9 @@ fn build_migrated_profile(
                 .into(),
         revision: 1,
         enabled_modules,
+        enabled_components: Vec::new(),
         module_settings: BTreeMap::new(),
+        component_settings: BTreeMap::new(),
         shell_layout: ProfileShellLayout {
             pinned_tools,
             ..ProfileShellLayout::default()
@@ -1338,7 +1404,9 @@ fn build_blank_profile() -> WorkspaceProfileV1 {
             .into(),
         revision: 1,
         enabled_modules: Vec::new(),
+        enabled_components: Vec::new(),
         module_settings: BTreeMap::new(),
+        component_settings: BTreeMap::new(),
         shell_layout: ProfileShellLayout {
             pinned_tools: vec!["core.settings.tool".into()],
             ..ProfileShellLayout::default()
@@ -1396,11 +1464,106 @@ fn module_changes(
     changes
 }
 
+fn component_summaries(
+    profile: &WorkspaceProfileV1,
+    manifests: &[ModuleManifestV1],
+    component_manifests: &[ComponentManifestV1],
+    effective: &BTreeSet<String>,
+) -> Vec<WorkspaceProfileComponentSummary> {
+    let explicit = profile
+        .enabled_components
+        .iter()
+        .map(|selection| selection.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let enabled_modules = profile
+        .enabled_modules
+        .iter()
+        .map(|selection| selection.id.as_str())
+        .collect::<BTreeSet<_>>();
+
+    let mut required_by_modules = BTreeMap::<&str, BTreeSet<String>>::new();
+    for manifest in manifests
+        .iter()
+        .filter(|manifest| enabled_modules.contains(manifest.id.as_str()))
+    {
+        for dependency in manifest
+            .requires_components
+            .iter()
+            .chain(manifest.optional_components.iter())
+        {
+            if effective.contains(&dependency.id) {
+                required_by_modules
+                    .entry(dependency.id.as_str())
+                    .or_default()
+                    .insert(manifest.id.clone());
+            }
+        }
+    }
+
+    let mut required_by_components = BTreeMap::<&str, BTreeSet<String>>::new();
+    for manifest in component_manifests
+        .iter()
+        .filter(|manifest| effective.contains(&manifest.id))
+    {
+        for dependency in manifest
+            .requires_components
+            .iter()
+            .chain(manifest.optional_components.iter())
+        {
+            if effective.contains(&dependency.id) {
+                required_by_components
+                    .entry(dependency.id.as_str())
+                    .or_default()
+                    .insert(manifest.id.clone());
+            }
+        }
+    }
+
+    let mut summaries = component_manifests
+        .iter()
+        .map(|manifest| WorkspaceProfileComponentSummary {
+            id: manifest.id.clone(),
+            name: manifest.name.clone(),
+            description: manifest.description.clone(),
+            version: manifest.version.clone(),
+            runtime: manifest.runtime,
+            role: manifest.role,
+            distribution: manifest.distribution,
+            ui_mode: manifest.ui_mode,
+            explicit_enabled: explicit.contains(manifest.id.as_str()),
+            effective_enabled: effective.contains(&manifest.id),
+            required_by_modules: required_by_modules
+                .remove(manifest.id.as_str())
+                .unwrap_or_default()
+                .into_iter()
+                .collect(),
+            required_by_components: required_by_components
+                .remove(manifest.id.as_str())
+                .unwrap_or_default()
+                .into_iter()
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+    summaries.sort_by(|left, right| {
+        right
+            .effective_enabled
+            .cmp(&left.effective_enabled)
+            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    summaries
+}
+
 fn compatibility_issues(
     profile: &WorkspaceProfileV1,
     manifests: &[ModuleManifestV1],
+    component_manifests: &[ComponentManifestV1],
 ) -> Vec<WorkspaceProfileSwitchIssue> {
     let installed = manifests
+        .iter()
+        .map(|manifest| (manifest.id.as_str(), manifest))
+        .collect::<BTreeMap<_, _>>();
+    let installed_components = component_manifests
         .iter()
         .map(|manifest| (manifest.id.as_str(), manifest))
         .collect::<BTreeMap<_, _>>();
@@ -1410,6 +1573,33 @@ fn compatibility_issues(
         .map(|selection| selection.id.as_str())
         .collect::<BTreeSet<_>>();
     let mut issues = Vec::new();
+
+    for selection in &profile.enabled_components {
+        let Some(component) = installed_components.get(selection.id.as_str()) else {
+            issues.push(switch_issue(
+                "COMPONENT_NOT_INSTALLED",
+                WorkspaceProfileSwitchIssueSeverity::Error,
+                "component",
+                format!("目标方案显式选择了未安装组件：{}", selection.id),
+                None,
+                None,
+            ));
+            continue;
+        };
+        if !version_requirement_matches(&selection.version_requirement, &component.version) {
+            issues.push(switch_issue(
+                "COMPONENT_VERSION_INCOMPATIBLE",
+                WorkspaceProfileSwitchIssueSeverity::Error,
+                "component",
+                format!(
+                    "组件 {} 当前版本 {} 不满足 {}",
+                    selection.id, component.version, selection.version_requirement
+                ),
+                None,
+                None,
+            ));
+        }
+    }
 
     for selection in &profile.enabled_modules {
         let Some(manifest) = installed.get(selection.id.as_str()) else {
@@ -1452,6 +1642,47 @@ fn compatibility_issues(
                 ));
             }
         }
+        for (required, dependency) in manifest
+            .requires_components
+            .iter()
+            .map(|dependency| (true, dependency))
+            .chain(
+                manifest
+                    .optional_components
+                    .iter()
+                    .map(|dependency| (false, dependency)),
+            )
+        {
+            let Some(component) = installed_components.get(dependency.id.as_str()) else {
+                if required {
+                    issues.push(switch_issue(
+                        "MODULE_COMPONENT_NOT_INSTALLED",
+                        WorkspaceProfileSwitchIssueSeverity::Error,
+                        "component",
+                        format!("模块 {} 需要未安装组件 {}", manifest.name, dependency.id),
+                        Some(manifest.id.clone()),
+                        None,
+                    ));
+                }
+                continue;
+            };
+            if !version_requirement_matches(&dependency.version_requirement, &component.version) {
+                issues.push(switch_issue(
+                    "MODULE_COMPONENT_VERSION_INCOMPATIBLE",
+                    WorkspaceProfileSwitchIssueSeverity::Error,
+                    "component",
+                    format!(
+                        "模块 {} 需要组件 {} {}，当前安装 {}",
+                        manifest.name,
+                        dependency.id,
+                        dependency.version_requirement,
+                        component.version
+                    ),
+                    Some(manifest.id.clone()),
+                    None,
+                ));
+            }
+        }
         for conflict in &manifest.conflicts {
             if enabled.contains(conflict.as_str()) {
                 issues.push(switch_issue(
@@ -1466,7 +1697,7 @@ fn compatibility_issues(
         }
     }
 
-    if let Err(error) = validate_profile_with_modules(profile, manifests) {
+    if let Err(error) = validate_profile_with_catalogs(profile, manifests, component_manifests) {
         if issues.is_empty() {
             issues.push(switch_issue(
                 "PROFILE_CONTRACT_BLOCKED",
@@ -1479,6 +1710,13 @@ fn compatibility_issues(
         }
     }
     issues
+}
+
+fn version_requirement_matches(requirement: &str, version: &str) -> bool {
+    VersionReq::parse(requirement)
+        .ok()
+        .zip(Version::parse(version).ok())
+        .is_some_and(|(requirement, version)| requirement.matches(&version))
 }
 
 fn switch_issue(
@@ -1659,7 +1897,11 @@ fn io_error(context: &str, path: &Path, error: std::io::Error) -> WorkspaceProfi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pmc_platform::{ModuleContributions, ModuleDataPolicy, ModuleScope};
+    use pmc_platform::{
+        Capability, ComponentContributions, ComponentDependency, ComponentDistribution,
+        ComponentResourceLimits, ComponentRole, ComponentRuntime, ComponentUiMode,
+        ModuleContributions, ModuleDataPolicy, ModuleScope, PlatformTarget,
+    };
 
     fn test_root(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("pm-center-profile-{label}-{}", Uuid::new_v4()))
@@ -1677,6 +1919,8 @@ mod tests {
             builtin: true,
             requires_modules: Vec::new(),
             optional_modules: Vec::new(),
+            requires_components: Vec::new(),
+            optional_components: Vec::new(),
             conflicts: Vec::new(),
             capabilities: Vec::new(),
             background_services: Vec::new(),
@@ -1684,6 +1928,60 @@ mod tests {
             data_policy: ModuleDataPolicy::default(),
             extensions: ExtensionFields::new(),
         }
+    }
+
+    fn component_manifest(id: &str, version: &str) -> ComponentManifestV1 {
+        ComponentManifestV1 {
+            schema_version: PLATFORM_SCHEMA_VERSION,
+            id: id.into(),
+            name: id.into(),
+            description: String::new(),
+            version: version.into(),
+            api_version: "1".into(),
+            runtime: ComponentRuntime::NativeProcess,
+            role: ComponentRole::Service,
+            distribution: ComponentDistribution::Bundled,
+            ui_mode: ComponentUiMode::Hosted,
+            platforms: vec![PlatformTarget::WindowsX64],
+            entry: Some("bin/component.exe".into()),
+            capabilities: vec![Capability::ProjectFilesRead],
+            requires_components: Vec::new(),
+            optional_components: Vec::new(),
+            contributes: ComponentContributions::default(),
+            resources: ComponentResourceLimits::default(),
+            publisher: None,
+            extensions: ExtensionFields::new(),
+        }
+    }
+
+    #[test]
+    fn snapshot_reports_components_enabled_through_module_dependencies() {
+        let root = test_root("component-summary");
+        let component = component_manifest("test.reader", "1.2.0");
+        let runtime = WorkspaceProfileRuntime::new_with_components(&root, vec![component]);
+        let mut viewer = manifest("test.viewer", "1.0.0");
+        viewer.requires_components.push(ComponentDependency {
+            id: "test.reader".into(),
+            version_requirement: "^1.0".into(),
+        });
+        let snapshot = runtime
+            .initialize_from_current_configuration(
+                &[viewer],
+                &BTreeSet::from(["test.viewer".to_string()]),
+                &[],
+            )
+            .unwrap();
+
+        assert_eq!(snapshot.components.len(), 1);
+        assert!(snapshot.components[0].effective_enabled);
+        assert!(!snapshot.components[0].explicit_enabled);
+        assert_eq!(
+            snapshot.components[0].required_by_modules,
+            vec!["test.viewer".to_string()]
+        );
+        assert_eq!(snapshot.profiles[0].effective_component_count, 1);
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

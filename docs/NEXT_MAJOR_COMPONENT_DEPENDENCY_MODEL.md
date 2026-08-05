@@ -1,6 +1,6 @@
 # 下一代统一组件依赖模型与 BlenderIO 定位
 
-> 状态：`design-approved`
+> 状态：`r7-0-implementing`
 >
 > 日期：2026-08-05
 >
@@ -178,16 +178,19 @@ pmc.psd-reader   -> PSD 图层、画布、字体与链接资源
 
 - `src-tauri/crates/blendio` 已经同时提供 Rust 库和 CLI；
 - `get_file_details`、缩略图、Blender 文件标签和解析器弹窗直接消费 BlendIO；
-- 渲染中心尚未通过正式组件依赖声明使用它。
+- R7-0 已登记 `pmc.blendio` 的正式 Component Manifest；
+- 渲染中心已通过 `requiresComponents` 声明必需依赖，项目资源已通过 `optionalComponents` 声明可选依赖；
+- Profile Runtime 已计算显式组件、模块传递组件和组件传递依赖，并在缺失、版本不兼容或循环时阻止应用；
+- 当前执行仍由宿主内 `blendio` crate adapter 完成，尚未切换到可卸载 EXE 的 ComponentGateway 调用。
 
 迁移顺序：
 
-1. 保留现有 crate 和 Tauri 命令，避免当前功能回归；
-2. 将现有 BlendIO CLI 打包为可安装的 `pmc.blendio` 组件；
-3. 注册 Component Manifest、组件服务接口和安装状态；
+1. [已完成] 保留现有 crate 和 Tauri 命令，避免当前功能回归；
+2. [R9] 将现有 BlendIO CLI 打包为可安装的 `pmc.blendio` 组件；
+3. [R7-0 部分完成] 注册 Component Manifest 和依赖目录；安装状态、安装/卸载事务进入 R9/R10；
 4. 让旧 `get_file_details` 等命令成为 ComponentGateway 的兼容 adapter；
 5. 渲染中心把场景预检、外部资源和渲染设置读取改为组件调用；
-6. 项目资源模块把 `.blend` 预览和详情声明为可选组件能力；
+6. [已完成合同] 项目资源模块把 `.blend` 预览和详情声明为可选组件能力；
 7. R9 完成统一组件运行时后，移除业务模块对 `blendio` crate 的直接引用；
 8. R11 将相同命令注册为工作流节点，R13 远程节点按组件版本报告能力。
 

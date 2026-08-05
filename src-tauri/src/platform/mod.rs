@@ -1,3 +1,4 @@
+mod builtin_components;
 mod builtin_modules;
 mod capability_gateway;
 mod module_manager;
@@ -26,6 +27,7 @@ pub use capability_gateway::{
     CapabilityTokenResponse,
 };
 
+use builtin_components::builtin_component_manifests;
 use builtin_modules::{
     automation_runtime_component, automation_runtime_module, diagnostic_components,
     diagnostic_modules, lan_collaboration_component, lan_collaboration_module,
@@ -98,10 +100,14 @@ impl PlatformRuntime {
                 error.to_string(),
             )
         })?;
+        let component_manifests = builtin_component_manifests();
         Ok(Self {
             manager,
             gateway,
-            profiles: WorkspaceProfileRuntime::new(app_data_dir),
+            profiles: WorkspaceProfileRuntime::new_with_components(
+                app_data_dir,
+                component_manifests,
+            ),
             profile_switch_lock: tokio::sync::Mutex::new(()),
             controls,
         })

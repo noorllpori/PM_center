@@ -14,6 +14,10 @@
   "optionalModules": [
     { "id": "lan.chat", "versionRequirement": "*" }
   ],
+  "requiresComponents": [
+    { "id": "media.file-analyzer", "versionRequirement": "^1.0" }
+  ],
+  "optionalComponents": [],
   "conflicts": [],
   "capabilities": [
     "project.files.read",
@@ -34,4 +38,3 @@
     "enabled": true
   }
 }
-

@@ -3,8 +3,8 @@ use crate::ids::{
     validate_version_requirement,
 };
 use crate::{
-    parse_value, validate_schema_version, Capability, ContractError, ContractErrorCode,
-    ContractResult, ExtensionFields, ValidateContract,
+    parse_value, validate_schema_version, Capability, ComponentDependency, ContractError,
+    ContractErrorCode, ContractResult, ExtensionFields, ValidateContract,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -98,6 +98,10 @@ pub struct ModuleManifestV1 {
     #[serde(default)]
     pub optional_modules: Vec<ModuleDependency>,
     #[serde(default)]
+    pub requires_components: Vec<ComponentDependency>,
+    #[serde(default)]
+    pub optional_components: Vec<ComponentDependency>,
+    #[serde(default)]
     pub conflicts: Vec<String>,
     #[serde(default)]
     pub capabilities: Vec<Capability>,
@@ -188,6 +192,28 @@ impl ValidateContract for ModuleManifestV1 {
                         ContractErrorCode::DuplicateId,
                         path,
                         format!("重复模块依赖: {}", dependency.id),
+                    ));
+                }
+            }
+        }
+
+        let mut component_dependencies = BTreeSet::new();
+        for (kind, list) in [
+            ("requiresComponents", &self.requires_components),
+            ("optionalComponents", &self.optional_components),
+        ] {
+            for (index, dependency) in list.iter().enumerate() {
+                let path = format!("$.{kind}[{index}]");
+                validate_stable_id(&dependency.id, &format!("{path}.id"))?;
+                validate_version_requirement(
+                    &dependency.version_requirement,
+                    &format!("{path}.versionRequirement"),
+                )?;
+                if !component_dependencies.insert(dependency.id.as_str()) {
+                    return Err(ContractError::new(
+                        ContractErrorCode::DuplicateId,
+                        path,
+                        format!("重复组件依赖: {}", dependency.id),
                     ));
                 }
             }
@@ -376,6 +402,8 @@ mod tests {
                 })
                 .collect(),
             optional_modules: Vec::new(),
+            requires_components: Vec::new(),
+            optional_components: Vec::new(),
             conflicts: Vec::new(),
             capabilities: Vec::new(),
             background_services: Vec::new(),

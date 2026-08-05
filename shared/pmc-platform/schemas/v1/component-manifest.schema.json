@@ -74,6 +74,29 @@
       },
       "type": "object"
     },
+    "ComponentDependency": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "versionRequirement": {
+          "default": "*",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "ComponentDistribution": {
+      "enum": [
+        "local",
+        "bundled",
+        "marketplace"
+      ],
+      "type": "string"
+    },
     "ComponentResourceLimits": {
       "additionalProperties": true,
       "properties": {
@@ -104,6 +127,14 @@
       },
       "type": "object"
     },
+    "ComponentRole": {
+      "enum": [
+        "service",
+        "feature",
+        "data"
+      ],
+      "type": "string"
+    },
     "ComponentRuntime": {
       "enum": [
         "python-action",
@@ -112,6 +143,14 @@
         "native-library",
         "data-pack",
         "builtin-rust"
+      ],
+      "type": "string"
+    },
+    "ComponentUiMode": {
+      "enum": [
+        "none",
+        "hosted",
+        "contributed"
       ],
       "type": "string"
     },
@@ -246,6 +285,14 @@
       "default": "",
       "type": "string"
     },
+    "distribution": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ComponentDistribution"
+        }
+      ],
+      "default": "local"
+    },
     "entry": {
       "type": [
         "string",
@@ -257,6 +304,13 @@
     },
     "name": {
       "type": "string"
+    },
+    "optionalComponents": {
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/ComponentDependency"
+      },
+      "type": "array"
     },
     "platforms": {
       "default": [],
@@ -271,6 +325,13 @@
         "null"
       ]
     },
+    "requiresComponents": {
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/ComponentDependency"
+      },
+      "type": "array"
+    },
     "resources": {
       "allOf": [
         {
@@ -278,6 +339,14 @@
         }
       ],
       "default": {}
+    },
+    "role": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ComponentRole"
+        }
+      ],
+      "default": "service"
     },
     "runtime": {
       "$ref": "#/definitions/ComponentRuntime"
@@ -287,6 +356,14 @@
       "format": "uint16",
       "minimum": 0.0,
       "type": "integer"
+    },
+    "uiMode": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ComponentUiMode"
+        }
+      ],
+      "default": "none"
     },
     "version": {
       "type": "string"

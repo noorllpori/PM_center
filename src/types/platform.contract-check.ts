@@ -24,6 +24,9 @@ export const platformContractTypeExamples = {
     version: '1.0.0',
     apiVersion: '1',
     runtime: 'native-process',
+    role: 'service',
+    distribution: 'marketplace',
+    uiMode: 'contributed',
     platforms: ['windows-x64'],
     entry: 'bin/windows-x64/analyzer.exe',
   } satisfies ComponentManifestV1,
@@ -32,6 +35,7 @@ export const platformContractTypeExamples = {
     id: 'example.profile',
     name: '示例装配方案',
     enabledModules: [{ id: 'project.files', versionRequirement: '^1.0' }],
+    enabledComponents: [{ id: 'media.file-analyzer', versionRequirement: '^1.0' }],
   } satisfies WorkspaceProfileV1,
   workflow: {
     schemaVersion: 1,
@@ -58,4 +62,3 @@ export const platformContractTypeExamples = {
     },
   } satisfies PackageHeaderV1,
 };
-

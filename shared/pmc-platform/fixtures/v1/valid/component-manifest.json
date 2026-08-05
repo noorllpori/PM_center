@@ -6,9 +6,14 @@
   "version": "1.2.0",
   "apiVersion": "1",
   "runtime": "native-process",
+  "role": "service",
+  "distribution": "marketplace",
+  "uiMode": "contributed",
   "platforms": ["windows-x64"],
   "entry": "bin/windows-x64/media-file-analyzer.exe",
   "capabilities": ["project.files.read"],
+  "requiresComponents": [],
+  "optionalComponents": [],
   "contributes": {
     "workflowNodes": [
       {
@@ -51,4 +56,3 @@
   },
   "publisher": "PM Center"
 }
-

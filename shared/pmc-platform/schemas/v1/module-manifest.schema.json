@@ -40,6 +40,21 @@
       ],
       "type": "string"
     },
+    "ComponentDependency": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "versionRequirement": {
+          "default": "*",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
     "ModuleContributions": {
       "additionalProperties": true,
       "properties": {
@@ -214,10 +229,24 @@
     "name": {
       "type": "string"
     },
+    "optionalComponents": {
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/ComponentDependency"
+      },
+      "type": "array"
+    },
     "optionalModules": {
       "default": [],
       "items": {
         "$ref": "#/definitions/ModuleDependency"
+      },
+      "type": "array"
+    },
+    "requiresComponents": {
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/ComponentDependency"
       },
       "type": "array"
     },

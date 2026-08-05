@@ -109,6 +109,8 @@ export interface ModuleManifestV1 {
   builtin?: boolean;
   requiresModules?: ModuleDependency[];
   optionalModules?: ModuleDependency[];
+  requiresComponents?: ComponentDependency[];
+  optionalComponents?: ComponentDependency[];
   conflicts?: string[];
   capabilities?: Capability[];
   backgroundServices?: string[];
@@ -124,6 +126,15 @@ export type ComponentRuntime =
   | 'native-library'
   | 'data-pack'
   | 'builtin-rust';
+
+export type ComponentRole = 'service' | 'feature' | 'data';
+export type ComponentDistribution = 'bundled' | 'marketplace' | 'local';
+export type ComponentUiMode = 'none' | 'hosted' | 'contributed';
+
+export interface ComponentDependency {
+  id: string;
+  versionRequirement?: string;
+}
 
 export type PlatformTarget = 'any' | 'windows-x64' | 'windows-arm64';
 
@@ -187,9 +198,14 @@ export interface ComponentManifestV1 {
   version: string;
   apiVersion: string;
   runtime: ComponentRuntime;
+  role?: ComponentRole;
+  distribution?: ComponentDistribution;
+  uiMode?: ComponentUiMode;
   platforms?: PlatformTarget[];
   entry?: string;
   capabilities?: Capability[];
+  requiresComponents?: ComponentDependency[];
+  optionalComponents?: ComponentDependency[];
   contributes?: ComponentContributions;
   resources?: ComponentResourceLimits;
   publisher?: string;
@@ -197,6 +213,12 @@ export interface ComponentManifestV1 {
 }
 
 export interface ProfileModuleSelection {
+  id: string;
+  versionRequirement?: string;
+  [key: string]: unknown;
+}
+
+export interface ProfileComponentSelection {
   id: string;
   versionRequirement?: string;
   [key: string]: unknown;
@@ -311,7 +333,9 @@ export interface WorkspaceProfileV1 {
   description?: string;
   revision?: number;
   enabledModules?: ProfileModuleSelection[];
+  enabledComponents?: ProfileComponentSelection[];
   moduleSettings?: Record<string, JsonValue>;
+  componentSettings?: Record<string, JsonValue>;
   shellLayout?: ProfileShellLayout;
   surfaces?: ProfileSurface[];
   dataSources?: ProfileDataSource[];
@@ -399,4 +423,3 @@ export interface PackageHeaderV1 {
   payload: PackagePayloadDescriptor;
   [key: string]: unknown;
 }
-

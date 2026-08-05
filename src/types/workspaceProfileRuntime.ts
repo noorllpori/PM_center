@@ -1,4 +1,10 @@
-import type { WorkspaceProfileV1 } from './platform';
+import type {
+  ComponentDistribution,
+  ComponentRole,
+  ComponentRuntime,
+  ComponentUiMode,
+  WorkspaceProfileV1,
+} from './platform';
 
 export type WorkspaceProfileDocumentStatus = 'ready' | 'blocked' | 'invalid';
 
@@ -17,15 +23,33 @@ export interface WorkspaceProfileSummary {
   revision: number;
   current: boolean;
   enabledModuleCount: number;
+  enabledComponentCount: number;
+  effectiveComponentCount: number;
   pinnedToolCount: number;
   status: WorkspaceProfileDocumentStatus;
   issues: string[];
   path: string;
 }
 
+export interface WorkspaceProfileComponentSummary {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  runtime: ComponentRuntime;
+  role: ComponentRole;
+  distribution: ComponentDistribution;
+  uiMode: ComponentUiMode;
+  explicitEnabled: boolean;
+  effectiveEnabled: boolean;
+  requiredByModules: string[];
+  requiredByComponents: string[];
+}
+
 export interface WorkspaceProfileRuntimeSnapshot {
   currentProfile: WorkspaceProfileV1;
   profiles: WorkspaceProfileSummary[];
+  components: WorkspaceProfileComponentSummary[];
   repositoryPath: string;
   statePath: string;
   journalPath: string;

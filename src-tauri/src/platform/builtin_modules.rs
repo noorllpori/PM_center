@@ -1,3 +1,4 @@
+use super::builtin_components::PM_BLENDIO_COMPONENT_ID;
 use super::capability_gateway::CapabilityComponentRegistration;
 use super::module_manager::{
     LifecycleFuture, ModuleContext, ModuleHealth, ModuleHealthLevel, ModuleLifecycle,
@@ -5,8 +6,8 @@ use super::module_manager::{
 };
 use super::resource_registry::ResourceKind;
 use pmc_platform::{
-    Capability, ExtensionFields, ModuleContributions, ModuleDataPolicy, ModuleDependency,
-    ModuleManifestV1, ModuleScope,
+    Capability, ComponentDependency, ExtensionFields, ModuleContributions, ModuleDataPolicy,
+    ModuleDependency, ModuleManifestV1, ModuleScope,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -158,6 +159,8 @@ pub fn automation_runtime_module() -> RegisteredModule {
                 id: PROJECT_RESOURCES_MODULE_ID.into(),
                 version_requirement: "^1.0".into(),
             }],
+            requires_components: Vec::new(),
+            optional_components: Vec::new(),
             conflicts: Vec::new(),
             capabilities: automation_runtime_capabilities(),
             background_services: vec!["managed-process-registry".into()],
@@ -296,6 +299,11 @@ pub fn render_center_module() -> RegisteredModule {
                 version_requirement: "^1.0".into(),
             }],
             optional_modules: Vec::new(),
+            requires_components: vec![ComponentDependency {
+                id: PM_BLENDIO_COMPONENT_ID.into(),
+                version_requirement: "^1.0".into(),
+            }],
+            optional_components: Vec::new(),
             conflicts: Vec::new(),
             capabilities: render_center_capabilities(),
             background_services: vec![
@@ -490,6 +498,11 @@ pub fn project_resources_module(
             builtin: true,
             requires_modules: Vec::new(),
             optional_modules: Vec::new(),
+            requires_components: Vec::new(),
+            optional_components: vec![ComponentDependency {
+                id: PM_BLENDIO_COMPONENT_ID.into(),
+                version_requirement: "^1.0".into(),
+            }],
             conflicts: Vec::new(),
             capabilities: project_resource_capabilities(),
             background_services: vec![
@@ -647,6 +660,8 @@ pub fn lan_collaboration_module(
             builtin: true,
             requires_modules: Vec::new(),
             optional_modules: Vec::new(),
+            requires_components: Vec::new(),
+            optional_components: Vec::new(),
             conflicts: Vec::new(),
             capabilities: lan_capabilities(),
             background_services: vec![
@@ -766,6 +781,8 @@ pub fn smart_clipboard_module(app_data_dir: PathBuf) -> RegisteredModule {
             builtin: true,
             requires_modules: Vec::new(),
             optional_modules: Vec::new(),
+            requires_components: Vec::new(),
+            optional_components: Vec::new(),
             conflicts: Vec::new(),
             capabilities: vec![Capability::ClipboardRead, Capability::ClipboardWrite],
             background_services: vec![
@@ -1026,6 +1043,8 @@ fn diagnostic_contribution_module() -> RegisteredModule {
             builtin: true,
             requires_modules: Vec::new(),
             optional_modules: Vec::new(),
+            requires_components: Vec::new(),
+            optional_components: Vec::new(),
             conflicts: Vec::new(),
             capabilities: vec![Capability::AppSettingsRead],
             background_services: Vec::new(),
@@ -1082,6 +1101,8 @@ fn diagnostic_module(
                     version_requirement: (*requirement).into(),
                 })
                 .collect(),
+            requires_components: Vec::new(),
+            optional_components: Vec::new(),
             conflicts: Vec::new(),
             capabilities: capabilities.to_vec(),
             background_services: vec!["diagnostic-heartbeat".into()],

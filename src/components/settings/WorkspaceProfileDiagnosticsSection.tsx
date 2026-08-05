@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   Layers3,
   Loader2,
+  PackageOpen,
   RefreshCw,
   ShieldAlert,
 } from 'lucide-react';
@@ -24,6 +25,24 @@ const STATUS_META = {
     label: '文件无效',
     className: 'bg-red-100 text-red-700 dark:bg-red-950/50 dark:text-red-300',
   },
+} as const;
+
+const COMPONENT_DISTRIBUTION_LABEL = {
+  bundled: '随安装包',
+  marketplace: '商城',
+  local: '本地包',
+} as const;
+
+const COMPONENT_ROLE_LABEL = {
+  service: '服务',
+  feature: '功能',
+  data: '资料',
+} as const;
+
+const COMPONENT_UI_LABEL = {
+  none: '无界面',
+  hosted: '宿主界面',
+  contributed: '组件界面',
 } as const;
 
 function formatDate(timestamp: number) {
@@ -114,10 +133,11 @@ export function WorkspaceProfileDiagnosticsSection() {
 
       {snapshot && currentProfile ? (
         <>
-          <div className="mt-3 grid grid-cols-2 gap-px overflow-hidden rounded-md border border-gray-200 bg-gray-200 sm:grid-cols-4 dark:border-gray-700 dark:bg-gray-700">
+          <div className="mt-3 grid grid-cols-2 gap-px overflow-hidden rounded-md border border-gray-200 bg-gray-200 lg:grid-cols-5 dark:border-gray-700 dark:bg-gray-700">
             {[
               ['方案数量', snapshot.profiles.length],
               ['当前模块', currentProfile.enabledModules?.length ?? 0],
+              ['有效组件', snapshot.components.filter((component) => component.effectiveEnabled).length],
               ['固定工具', currentProfile.shellLayout?.pinnedTools?.length ?? 0],
               ['修订', currentProfile.revision ?? 0],
             ].map(([label, value]) => (
@@ -154,7 +174,7 @@ export function WorkspaceProfileDiagnosticsSection() {
                     </div>
                     <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{profile.description}</p>
                     <p className="mt-1 font-mono text-[11px] text-gray-400">
-                      {profile.enabledModuleCount} 模块 · {profile.pinnedToolCount} 固定工具 · r{profile.revision}
+                      {profile.enabledModuleCount} 模块 · {profile.effectiveComponentCount} 组件 · {profile.pinnedToolCount} 固定工具 · r{profile.revision}
                     </p>
                     {profile.issues.map((issue) => (
                       <p key={issue} className="mt-1 text-xs text-amber-700 dark:text-amber-300">{issue}</p>
@@ -172,6 +192,81 @@ export function WorkspaceProfileDiagnosticsSection() {
                 </div>
               );
             })}
+          </div>
+
+          <div className="mt-4 border-t border-gray-200 pt-4 dark:border-gray-700">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div className="flex min-w-0 items-start gap-2.5">
+                <PackageOpen className="mt-0.5 h-4 w-4 shrink-0 text-gray-500" />
+                <div>
+                  <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">已安装组件</p>
+                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    “随安装包”只表示初始来源；组件仍可由后续组件管理器卸载、重装或升级。
+                  </p>
+                </div>
+              </div>
+              <span className="rounded bg-gray-100 px-2 py-1 text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                {snapshot.components.length} 个
+              </span>
+            </div>
+
+            <div className="mt-3 divide-y divide-gray-100 overflow-hidden rounded-md border border-gray-200 dark:divide-gray-800 dark:border-gray-700">
+              {snapshot.components.map((component) => (
+                <div key={component.id} className="px-3 py-3">
+                  <div className="flex flex-wrap items-start gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-sm font-medium text-gray-900 dark:text-gray-100">{component.name}</span>
+                        <span className="font-mono text-[11px] text-gray-400">{component.id} · v{component.version}</span>
+                      </div>
+                      <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{component.description}</p>
+                    </div>
+                    <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
+                      component.effectiveEnabled
+                        ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300'
+                        : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300'
+                    }`}>
+                      {component.effectiveEnabled ? '当前生效' : '当前未启用'}
+                    </span>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1.5 text-[11px]">
+                    <span className="rounded bg-gray-100 px-1.5 py-0.5 text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                      {COMPONENT_DISTRIBUTION_LABEL[component.distribution]}
+                    </span>
+                    <span className="rounded bg-gray-100 px-1.5 py-0.5 text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                      {COMPONENT_ROLE_LABEL[component.role]} · {COMPONENT_UI_LABEL[component.uiMode]}
+                    </span>
+                    <span className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                      {component.runtime}
+                    </span>
+                    {component.explicitEnabled ? (
+                      <span className="rounded bg-indigo-100 px-1.5 py-0.5 text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300">
+                        Profile 显式选择
+                      </span>
+                    ) : null}
+                    {component.requiredByModules.length > 0 ? (
+                      <span
+                        className="rounded bg-blue-100 px-1.5 py-0.5 text-blue-700 dark:bg-blue-950/50 dark:text-blue-300"
+                        title={component.requiredByModules.join('、')}
+                      >
+                        {component.requiredByModules.length} 个模块依赖
+                      </span>
+                    ) : null}
+                    {component.requiredByComponents.length > 0 ? (
+                      <span
+                        className="rounded bg-violet-100 px-1.5 py-0.5 text-violet-700 dark:bg-violet-950/50 dark:text-violet-300"
+                        title={component.requiredByComponents.join('、')}
+                      >
+                        {component.requiredByComponents.length} 个组件依赖
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+              {snapshot.components.length === 0 ? (
+                <p className="px-3 py-4 text-xs text-gray-500 dark:text-gray-400">当前没有登记已安装组件。</p>
+              ) : null}
+            </div>
           </div>
 
           {switchPreview ? (

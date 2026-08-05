@@ -1,3 +1,4 @@
+use crate::component::{component_map, ComponentManifestV1};
 use crate::ids::{validate_local_id, validate_stable_id, validate_version_requirement};
 use crate::module_manifest::{module_map, ModuleManifestV1};
 use crate::{
@@ -12,6 +13,16 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileModuleSelection {
+    pub id: String,
+    #[serde(default = "default_version_requirement")]
+    pub version_requirement: String,
+    #[serde(flatten)]
+    pub extensions: ExtensionFields,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileComponentSelection {
     pub id: String,
     #[serde(default = "default_version_requirement")]
     pub version_requirement: String,
@@ -244,7 +255,11 @@ pub struct WorkspaceProfileV1 {
     #[serde(default)]
     pub enabled_modules: Vec<ProfileModuleSelection>,
     #[serde(default)]
+    pub enabled_components: Vec<ProfileComponentSelection>,
+    #[serde(default)]
     pub module_settings: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub component_settings: BTreeMap<String, Value>,
     #[serde(default)]
     pub shell_layout: ProfileShellLayout,
     #[serde(default)]
@@ -273,6 +288,20 @@ impl ValidateContract for WorkspaceProfileV1 {
                 "$.schemaVersion",
                 format!("不支持 schemaVersion {}", self.schema_version),
             ));
+        }
+        let mut component_ids = BTreeSet::new();
+        for (index, component) in self.enabled_components.iter().enumerate() {
+            validate_stable_id(&component.id, &format!("$.enabledComponents[{index}].id"))?;
+            validate_version_requirement(
+                &component.version_requirement,
+                &format!("$.enabledComponents[{index}].versionRequirement"),
+            )?;
+            if !component_ids.insert(component.id.as_str()) {
+                return duplicate(format!("$.enabledComponents[{index}].id"), &component.id);
+            }
+        }
+        for component_id in self.component_settings.keys() {
+            validate_stable_id(component_id, &format!("$.componentSettings.{component_id}"))?;
         }
         validate_stable_id(&self.id, "$.id")?;
         if self.name.trim().is_empty() {
@@ -568,10 +597,152 @@ pub fn validate_profile_with_modules(
     Ok(())
 }
 
+pub fn validate_profile_with_catalogs(
+    profile: &WorkspaceProfileV1,
+    module_manifests: &[ModuleManifestV1],
+    component_manifests: &[ComponentManifestV1],
+) -> ContractResult<BTreeSet<String>> {
+    validate_profile_with_modules(profile, module_manifests)?;
+    crate::validate_component_graph(component_manifests)?;
+    let components = component_map(component_manifests);
+    let modules = module_map(module_manifests);
+    let mut effective = BTreeSet::new();
+
+    for selection in &profile.enabled_components {
+        validate_component_selection(selection, &components, "$.enabledComponents")?;
+        add_component_closure(&selection.id, &components, &mut effective)?;
+    }
+
+    for selection in &profile.enabled_modules {
+        let Some(module) = modules.get(selection.id.as_str()) else {
+            continue;
+        };
+        for dependency in &module.requires_components {
+            validate_component_dependency(
+                &module.id,
+                dependency,
+                &components,
+                "requiresComponents",
+            )?;
+            add_component_closure(&dependency.id, &components, &mut effective)?;
+        }
+        for dependency in &module.optional_components {
+            if components.contains_key(dependency.id.as_str()) {
+                validate_component_dependency(
+                    &module.id,
+                    dependency,
+                    &components,
+                    "optionalComponents",
+                )?;
+                add_component_closure(&dependency.id, &components, &mut effective)?;
+            }
+        }
+    }
+
+    for component_id in profile.component_settings.keys() {
+        if !effective.contains(component_id) {
+            return Err(ContractError::new(
+                ContractErrorCode::InvalidReference,
+                format!("$.componentSettings.{component_id}"),
+                "设置引用了未启用或未被依赖的组件",
+            ));
+        }
+    }
+    Ok(effective)
+}
+
+fn validate_component_selection(
+    selection: &ProfileComponentSelection,
+    components: &BTreeMap<&str, &ComponentManifestV1>,
+    path: &str,
+) -> ContractResult<()> {
+    let Some(component) = components.get(selection.id.as_str()) else {
+        return Err(ContractError::new(
+            ContractErrorCode::MissingDependency,
+            path,
+            format!("未安装组件: {}", selection.id),
+        ));
+    };
+    let requirement = semver::VersionReq::parse(&selection.version_requirement).unwrap();
+    let version = semver::Version::parse(&component.version).unwrap();
+    if !requirement.matches(&version) {
+        return Err(ContractError::new(
+            ContractErrorCode::MissingDependency,
+            path,
+            format!(
+                "组件 {} 版本 {} 不满足 {}",
+                selection.id, component.version, selection.version_requirement
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_component_dependency(
+    owner_id: &str,
+    dependency: &crate::ComponentDependency,
+    components: &BTreeMap<&str, &ComponentManifestV1>,
+    field: &str,
+) -> ContractResult<()> {
+    let Some(component) = components.get(dependency.id.as_str()) else {
+        return Err(ContractError::new(
+            ContractErrorCode::MissingDependency,
+            format!("$.{owner_id}.{field}"),
+            format!("缺少必需组件: {}", dependency.id),
+        ));
+    };
+    let requirement = semver::VersionReq::parse(&dependency.version_requirement).unwrap();
+    let version = semver::Version::parse(&component.version).unwrap();
+    if !requirement.matches(&version) {
+        return Err(ContractError::new(
+            ContractErrorCode::MissingDependency,
+            format!("$.{owner_id}.{field}"),
+            format!(
+                "组件 {} 版本 {} 不满足 {}",
+                component.id, component.version, dependency.version_requirement
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn add_component_closure(
+    component_id: &str,
+    components: &BTreeMap<&str, &ComponentManifestV1>,
+    effective: &mut BTreeSet<String>,
+) -> ContractResult<()> {
+    if !effective.insert(component_id.to_string()) {
+        return Ok(());
+    }
+    let component = components.get(component_id).ok_or_else(|| {
+        ContractError::new(
+            ContractErrorCode::MissingDependency,
+            "$.enabledComponents",
+            format!("未安装组件: {component_id}"),
+        )
+    })?;
+    for dependency in &component.requires_components {
+        validate_component_dependency(&component.id, dependency, components, "requiresComponents")?;
+        add_component_closure(&dependency.id, components, effective)?;
+    }
+    for dependency in &component.optional_components {
+        if components.contains_key(dependency.id.as_str()) {
+            validate_component_dependency(
+                &component.id,
+                dependency,
+                components,
+                "optionalComponents",
+            )?;
+            add_component_closure(&dependency.id, components, effective)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse_module_manifest;
+    use crate::{parse_component_manifest, parse_module_manifest};
 
     #[test]
     fn unknown_top_level_fields_survive_round_trip() {
@@ -626,5 +797,57 @@ mod tests {
         .unwrap();
         let error = validate_profile_with_modules(&profile, &[alpha, beta]).unwrap_err();
         assert_eq!(error.code, ContractErrorCode::ModuleConflict);
+    }
+
+    #[test]
+    fn resolves_module_component_dependencies_into_effective_set() {
+        let module = parse_module_manifest(
+            r#"{
+              "schemaVersion":1,"id":"test.viewer","name":"Viewer","version":"1.0.0",
+              "apiVersion":"1","scope":"global",
+              "requiresComponents":[{"id":"test.reader","versionRequirement":"^1.0"}]
+            }"#,
+        )
+        .unwrap();
+        let component = parse_component_manifest(
+            r#"{
+              "schemaVersion":1,"id":"test.reader","name":"Reader","version":"1.2.0",
+              "apiVersion":"1","runtime":"native-process","platforms":["windows-x64"],
+              "entry":"bin/reader.exe"
+            }"#,
+        )
+        .unwrap();
+        let profile = parse_workspace_profile(
+            r#"{
+              "schemaVersion":1,"id":"test.profile","name":"Test",
+              "enabledModules":[{"id":"test.viewer"}]
+            }"#,
+        )
+        .unwrap();
+
+        let effective = validate_profile_with_catalogs(&profile, &[module], &[component]).unwrap();
+        assert_eq!(effective, BTreeSet::from(["test.reader".to_string()]));
+    }
+
+    #[test]
+    fn blocks_profile_when_required_component_is_not_installed() {
+        let module = parse_module_manifest(
+            r#"{
+              "schemaVersion":1,"id":"test.viewer","name":"Viewer","version":"1.0.0",
+              "apiVersion":"1","scope":"global",
+              "requiresComponents":[{"id":"test.reader"}]
+            }"#,
+        )
+        .unwrap();
+        let profile = parse_workspace_profile(
+            r#"{
+              "schemaVersion":1,"id":"test.profile","name":"Test",
+              "enabledModules":[{"id":"test.viewer"}]
+            }"#,
+        )
+        .unwrap();
+
+        let error = validate_profile_with_catalogs(&profile, &[module], &[]).unwrap_err();
+        assert_eq!(error.code, ContractErrorCode::MissingDependency);
     }
 }

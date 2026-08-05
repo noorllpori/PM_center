@@ -8,9 +8,17 @@
     { "id": "render.batch", "versionRequirement": "^1.0" },
     { "id": "lan.transport", "versionRequirement": "^1.0" }
   ],
+  "enabledComponents": [
+    { "id": "media.file-analyzer", "versionRequirement": "^1.0" }
+  ],
   "moduleSettings": {
     "render.batch": {
       "maxBlenderProcesses": 4
+    }
+  },
+  "componentSettings": {
+    "media.file-analyzer": {
+      "scanMetadata": true
     }
   },
   "shellLayout": {
@@ -74,4 +82,3 @@
     "ffmpegRequirement": "ffmpeg@system-or-configured"
   }
 }
-
