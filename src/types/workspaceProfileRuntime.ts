@@ -28,7 +28,36 @@ export interface WorkspaceProfileRuntimeSnapshot {
   profiles: WorkspaceProfileSummary[];
   repositoryPath: string;
   statePath: string;
+  journalPath: string;
   migration: WorkspaceProfileMigrationRecord;
+  pendingSwitch?: WorkspaceProfilePendingSwitch | null;
+  lastRecovery?: WorkspaceProfileRecoveryRecord | null;
+}
+
+export type WorkspaceProfileSwitchPhase = 'prepared' | 'modulesApplied' | 'profileCommitted';
+
+export interface WorkspaceProfilePendingSwitch {
+  schemaVersion: number;
+  transactionId: string;
+  fromProfileId: string;
+  toProfileId: string;
+  toProfileRevision: number;
+  phase: WorkspaceProfileSwitchPhase;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type WorkspaceProfileRecoveryOutcome =
+  | 'rolledBackInterruptedSwitch'
+  | 'completedInterruptedSwitch'
+  | 'reconciledRuntimeDrift';
+
+export interface WorkspaceProfileRecoveryRecord {
+  outcome: WorkspaceProfileRecoveryOutcome;
+  profileId: string;
+  transactionId?: string | null;
+  recoveredAt: number;
+  message: string;
 }
 
 export interface WorkspaceProfileRuntimeCommandError {
@@ -80,6 +109,7 @@ export interface WorkspaceProfileSwitchPreview {
 }
 
 export interface WorkspaceProfileSwitchResult {
+  transactionId: string;
   preview: WorkspaceProfileSwitchPreview;
   snapshot: WorkspaceProfileRuntimeSnapshot;
   switchedAt: number;

@@ -1361,13 +1361,7 @@ pub fn run() {
                         app.handle().clone(),
                         db_state_for_platform.clone(),
                     )?;
-                    let manager = runtime.manager.clone();
                     app.manage(runtime);
-                    tauri::async_runtime::spawn(async move {
-                        for error in manager.restore_desired_modules().await {
-                            eprintln!("[platform] 恢复模块失败: {error}");
-                        }
-                    });
                 }
                 Err(error) => eprintln!("[platform] 获取应用数据目录失败: {error}"),
             }
@@ -1447,6 +1441,8 @@ pub fn run() {
             platform::get_workspace_profile_runtime,
             platform::preview_workspace_profile_switch,
             platform::switch_workspace_profile,
+            platform::finalize_workspace_profile_switch,
+            platform::rollback_workspace_profile_switch,
             platform::get_platform_module,
             platform::preview_disable_platform_module,
             platform::enable_platform_module,

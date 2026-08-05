@@ -25,3 +25,9 @@ export const previewWorkspaceProfileSwitch = (request: WorkspaceProfileSwitchCon
 export const switchWorkspaceProfile = (
   request: WorkspaceProfileSwitchContext & { expectedCurrentProfileId: string },
 ) => invoke<WorkspaceProfileSwitchResult>('switch_workspace_profile', { request });
+
+export const finalizeWorkspaceProfileSwitch = (transactionId: string) =>
+  invoke<WorkspaceProfileRuntimeSnapshot>('finalize_workspace_profile_switch', { transactionId });
+
+export const rollbackWorkspaceProfileSwitch = (transactionId: string) =>
+  invoke<WorkspaceProfileRuntimeSnapshot>('rollback_workspace_profile_switch', { transactionId });

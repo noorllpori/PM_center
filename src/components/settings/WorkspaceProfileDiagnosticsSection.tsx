@@ -67,7 +67,7 @@ export function WorkspaceProfileDiagnosticsSection() {
           <div className="min-w-0">
             <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">装配方案运行时</h4>
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              R6-2 会先显示模块、快捷栏和后台资源影响；确认后才执行事务切换。
+              Profile 统一管理模块与快捷栏；切换中断或运行时偏差会在启动时自动恢复。
             </p>
           </div>
         </div>
@@ -93,6 +93,22 @@ export function WorkspaceProfileDiagnosticsSection() {
         <div className="mt-3 flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-300">
           <CheckCircle2 className="h-4 w-4 shrink-0" />
           <span>{switchMessage}</span>
+        </div>
+      ) : null}
+
+      {snapshot?.lastRecovery ? (
+        <div className="mt-3 flex items-start gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700 dark:border-blue-900/50 dark:bg-blue-950/30 dark:text-blue-300">
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>
+            {snapshot.lastRecovery.message} · {formatDate(snapshot.lastRecovery.recoveredAt)}
+          </span>
+        </div>
+      ) : null}
+
+      {snapshot?.pendingSwitch ? (
+        <div className="mt-3 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>切换完成标记尚未落盘，重启后会继续恢复，不会重复切换模块。</span>
         </div>
       ) : null}
 
@@ -261,6 +277,7 @@ export function WorkspaceProfileDiagnosticsSection() {
             <p>迁移时间：{formatDate(snapshot.migration.createdAt)}</p>
             <p className="break-all sm:col-span-2">方案目录：{snapshot.repositoryPath}</p>
             <p className="break-all sm:col-span-2">运行时状态：{snapshot.statePath}</p>
+            <p className="break-all sm:col-span-2">切换日志：{snapshot.journalPath}</p>
           </div>
         </>
       ) : (

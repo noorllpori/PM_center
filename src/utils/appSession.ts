@@ -3,7 +3,7 @@ import type { WorkspaceTabType } from '../stores/workspaceTabStore';
 
 const STORE_FILE = 'app-session.json';
 const SESSION_KEY = 'appSession';
-const SESSION_VERSION = 3;
+const SESSION_VERSION = 4;
 
 export type PersistedWorkspaceTabType = Exclude<WorkspaceTabType, 'files'>;
 
@@ -47,8 +47,14 @@ export interface PersistedStandaloneWindow {
   title?: string;
 }
 
+export interface PersistedWorkspaceProfileReference {
+  id: string;
+  revision: number;
+}
+
 export interface PersistedAppSession {
   version: number;
+  profile: PersistedWorkspaceProfileReference | null;
   projectTabs: PersistedShellProjectTab[];
   utilityTabs: Array<'lan'>;
   activeTab: PersistedShellActiveTab;
@@ -59,6 +65,7 @@ export interface PersistedAppSession {
 function createEmptySession(): PersistedAppSession {
   return {
     version: SESSION_VERSION,
+    profile: null,
     projectTabs: [],
     utilityTabs: [],
     activeTab: { type: 'home' },
@@ -221,6 +228,25 @@ function sanitizeStandaloneWindow(window: unknown): PersistedStandaloneWindow | 
   };
 }
 
+function sanitizeWorkspaceProfileReference(
+  value: unknown,
+): PersistedWorkspaceProfileReference | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const candidate = value as Partial<PersistedWorkspaceProfileReference>;
+  if (
+    typeof candidate.id !== 'string'
+    || !/^[a-z0-9][a-z0-9.-]*$/.test(candidate.id)
+    || typeof candidate.revision !== 'number'
+    || !Number.isSafeInteger(candidate.revision)
+    || candidate.revision < 1
+  ) {
+    return null;
+  }
+  return { id: candidate.id, revision: candidate.revision };
+}
+
 const trackedStandaloneWindows = new Map<string, PersistedStandaloneWindow>();
 const trackedStandaloneWindowListeners = new Set<() => void>();
 
@@ -289,6 +315,7 @@ export async function loadPersistedAppSession(): Promise<PersistedAppSession | n
 
     return {
       version: SESSION_VERSION,
+      profile: sanitizeWorkspaceProfileReference(persisted.profile),
       projectTabs,
       utilityTabs,
       activeTab,
@@ -343,4 +370,19 @@ export function dedupeStandaloneWindows(
 
 export function createDefaultPersistedAppSession(): PersistedAppSession {
   return createEmptySession();
+}
+
+export type AppSessionProfileCompatibility = 'legacy' | 'match' | 'mismatch';
+
+export function getAppSessionProfileCompatibility(
+  session: PersistedAppSession,
+  currentProfile: PersistedWorkspaceProfileReference | null,
+): AppSessionProfileCompatibility {
+  if (!session.profile || !currentProfile) {
+    return 'legacy';
+  }
+  return session.profile.id === currentProfile.id
+    && session.profile.revision === currentProfile.revision
+    ? 'match'
+    : 'mismatch';
 }

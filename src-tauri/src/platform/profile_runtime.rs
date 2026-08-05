@@ -15,6 +15,7 @@ use std::sync::Mutex;
 use uuid::Uuid;
 
 const PROFILE_RUNTIME_SCHEMA_VERSION: u16 = 1;
+const PROFILE_SWITCH_JOURNAL_SCHEMA_VERSION: u16 = 1;
 const MIGRATED_PROFILE_ID: &str = "local.current-pm-center";
 const BLANK_PROFILE_ID: &str = "local.blank-workspace";
 const MIGRATION_SOURCE: &str = "current-pm-center";
@@ -32,6 +33,8 @@ pub enum WorkspaceProfileRuntimeErrorCode {
     ProfileSwitchStale,
     ProfileSwitchFailed,
     ProfileRollbackFailed,
+    ProfileSwitchTransactionInvalid,
+    ProfileRecoveryFailed,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -100,6 +103,62 @@ struct WorkspaceProfileRuntimeState {
     created_at: i64,
     updated_at: i64,
     migration: WorkspaceProfileMigrationRecord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_recovery: Option<WorkspaceProfileRecoveryRecord>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkspaceProfileSwitchPhase {
+    Prepared,
+    ModulesApplied,
+    ProfileCommitted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceProfilePendingSwitch {
+    pub schema_version: u16,
+    pub transaction_id: String,
+    pub from_profile_id: String,
+    pub to_profile_id: String,
+    pub to_profile_revision: u64,
+    pub phase: WorkspaceProfileSwitchPhase,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkspaceProfileRecoveryOutcome {
+    RolledBackInterruptedSwitch,
+    CompletedInterruptedSwitch,
+    ReconciledRuntimeDrift,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceProfileRecoveryRecord {
+    pub outcome: WorkspaceProfileRecoveryOutcome,
+    pub profile_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transaction_id: Option<String>,
+    pub recovered_at: i64,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkspaceProfileStartupRecoveryAction {
+    None,
+    RollBackInterruptedSwitch,
+    CompleteInterruptedSwitch,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct WorkspaceProfileStartupRecoveryPlan {
+    pub profile: WorkspaceProfileV1,
+    pub pending_switch: Option<WorkspaceProfilePendingSwitch>,
+    pub action: WorkspaceProfileStartupRecoveryAction,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -132,7 +191,12 @@ pub struct WorkspaceProfileRuntimeSnapshot {
     pub profiles: Vec<WorkspaceProfileSummary>,
     pub repository_path: String,
     pub state_path: String,
+    pub journal_path: String,
     pub migration: WorkspaceProfileMigrationRecord,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_switch: Option<WorkspaceProfilePendingSwitch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_recovery: Option<WorkspaceProfileRecoveryRecord>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -214,6 +278,7 @@ pub struct WorkspaceProfileSwitchPreview {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceProfileSwitchResult {
+    pub transaction_id: String,
     pub preview: WorkspaceProfileSwitchPreview,
     pub snapshot: WorkspaceProfileRuntimeSnapshot,
     pub switched_at: i64,
@@ -222,6 +287,7 @@ pub struct WorkspaceProfileSwitchResult {
 pub struct WorkspaceProfileRuntime {
     repository_path: PathBuf,
     state_path: PathBuf,
+    journal_path: PathBuf,
     operation_lock: Mutex<()>,
 }
 
@@ -230,6 +296,7 @@ impl WorkspaceProfileRuntime {
         Self {
             repository_path: app_data_dir.join("profiles"),
             state_path: app_data_dir.join("profile-runtime.json"),
+            journal_path: app_data_dir.join("profile-switch-journal.json"),
             operation_lock: Mutex::new(()),
         }
     }
@@ -304,6 +371,7 @@ impl WorkspaceProfileRuntime {
             created_at: now,
             updated_at: now,
             migration,
+            last_recovery: None,
         };
         write_new_json(&self.state_path, &state)?;
         self.snapshot_locked(manifests)
@@ -359,6 +427,303 @@ impl WorkspaceProfileRuntime {
             )
         })?;
         Ok(profile)
+    }
+
+    pub(crate) fn begin_switch(
+        &self,
+        target_profile_id: &str,
+        expected_current_profile_id: &str,
+        target_profile_revision: u64,
+    ) -> Result<WorkspaceProfilePendingSwitch, WorkspaceProfileRuntimeError> {
+        let _guard = self.operation_lock.lock().map_err(|_| {
+            WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileLockPoisoned,
+                "装配方案运行时锁已损坏",
+                None,
+            )
+        })?;
+        let state = self.read_state()?;
+        if state.current_profile_id != expected_current_profile_id {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileSwitchStale,
+                format!(
+                    "当前装配方案已经变化：预期 {expected_current_profile_id}，实际 {}",
+                    state.current_profile_id
+                ),
+                Some(&self.state_path),
+            ));
+        }
+        if self.journal_path.exists() {
+            let pending = self.read_pending_switch_locked()?;
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileSwitchTransactionInvalid,
+                "存在尚未完成的装配方案切换，请先完成启动恢复",
+                Some(&self.journal_path),
+            )
+            .with_details(vec![format!(
+                "transactionId={}, phase={:?}",
+                pending.transaction_id, pending.phase
+            )]));
+        }
+        if !is_valid_stable_id(target_profile_id) {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileDocumentInvalid,
+                format!("目标装配方案 ID 无效：{target_profile_id}"),
+                None,
+            ));
+        }
+        let now = Utc::now().timestamp_millis();
+        let pending = WorkspaceProfilePendingSwitch {
+            schema_version: PROFILE_SWITCH_JOURNAL_SCHEMA_VERSION,
+            transaction_id: Uuid::new_v4().to_string(),
+            from_profile_id: expected_current_profile_id.to_string(),
+            to_profile_id: target_profile_id.to_string(),
+            to_profile_revision: target_profile_revision,
+            phase: WorkspaceProfileSwitchPhase::Prepared,
+            created_at: now,
+            updated_at: now,
+        };
+        write_new_json(&self.journal_path, &pending)?;
+        Ok(pending)
+    }
+
+    pub(crate) fn mark_switch_phase(
+        &self,
+        transaction_id: &str,
+        phase: WorkspaceProfileSwitchPhase,
+    ) -> Result<(), WorkspaceProfileRuntimeError> {
+        let _guard = self.operation_lock.lock().map_err(|_| {
+            WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileLockPoisoned,
+                "装配方案运行时锁已损坏",
+                None,
+            )
+        })?;
+        let mut pending = self.read_pending_switch_locked()?;
+        if pending.transaction_id != transaction_id {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileSwitchTransactionInvalid,
+                "装配方案切换事务 ID 不匹配",
+                Some(&self.journal_path),
+            ));
+        }
+        if phase < pending.phase {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileSwitchTransactionInvalid,
+                "装配方案切换阶段不能回退",
+                Some(&self.journal_path),
+            ));
+        }
+        pending.phase = phase;
+        pending.updated_at = Utc::now().timestamp_millis();
+        replace_json(&self.journal_path, &pending)
+    }
+
+    pub(crate) fn pending_switch(
+        &self,
+    ) -> Result<Option<WorkspaceProfilePendingSwitch>, WorkspaceProfileRuntimeError> {
+        let _guard = self.operation_lock.lock().map_err(|_| {
+            WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileLockPoisoned,
+                "装配方案运行时锁已损坏",
+                None,
+            )
+        })?;
+        if !self.journal_path.exists() {
+            return Ok(None);
+        }
+        self.read_pending_switch_locked().map(Some)
+    }
+
+    pub(crate) fn startup_recovery_plan(
+        &self,
+        manifests: &[ModuleManifestV1],
+    ) -> Result<WorkspaceProfileStartupRecoveryPlan, WorkspaceProfileRuntimeError> {
+        let _guard = self.operation_lock.lock().map_err(|_| {
+            WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileLockPoisoned,
+                "装配方案运行时锁已损坏",
+                None,
+            )
+        })?;
+        let state = self.read_state()?;
+        let pending = if self.journal_path.exists() {
+            Some(self.read_pending_switch_locked()?)
+        } else {
+            None
+        };
+        let action = match pending.as_ref() {
+            None => WorkspaceProfileStartupRecoveryAction::None,
+            Some(transaction) if state.current_profile_id == transaction.from_profile_id => {
+                WorkspaceProfileStartupRecoveryAction::RollBackInterruptedSwitch
+            }
+            Some(transaction) if state.current_profile_id == transaction.to_profile_id => {
+                WorkspaceProfileStartupRecoveryAction::CompleteInterruptedSwitch
+            }
+            Some(transaction) => {
+                return Err(WorkspaceProfileRuntimeError::new(
+                    WorkspaceProfileRuntimeErrorCode::ProfileRecoveryFailed,
+                    "切换日志与最后提交的装配方案状态不一致，已停止自动恢复",
+                    Some(&self.journal_path),
+                )
+                .with_details(vec![
+                    format!("currentProfileId={}", state.current_profile_id),
+                    format!("fromProfileId={}", transaction.from_profile_id),
+                    format!("toProfileId={}", transaction.to_profile_id),
+                ]));
+            }
+        };
+        let profile_path = self.profile_path(&state.current_profile_id);
+        let profile = self.read_profile(&profile_path)?;
+        if profile.id != state.current_profile_id {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileRuntimeStateInvalid,
+                "恢复目标 Profile 文件名与文档 ID 不一致",
+                Some(&profile_path),
+            ));
+        }
+        validate_profile_with_modules(&profile, manifests).map_err(|error| {
+            WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileRecoveryFailed,
+                format!(
+                    "恢复目标 Profile 不兼容：{}（{}）",
+                    error.message, error.path
+                ),
+                Some(&profile_path),
+            )
+        })?;
+        if let Some(transaction) = pending.as_ref() {
+            if action == WorkspaceProfileStartupRecoveryAction::CompleteInterruptedSwitch
+                && transaction.to_profile_revision != profile.revision
+            {
+                return Err(WorkspaceProfileRuntimeError::new(
+                    WorkspaceProfileRuntimeErrorCode::ProfileRecoveryFailed,
+                    "切换后目标 Profile 修订已经变化，已停止自动恢复",
+                    Some(&profile_path),
+                )
+                .with_details(vec![
+                    format!("journalRevision={}", transaction.to_profile_revision),
+                    format!("profileRevision={}", profile.revision),
+                ]));
+            }
+        }
+        Ok(WorkspaceProfileStartupRecoveryPlan {
+            profile,
+            pending_switch: pending,
+            action,
+        })
+    }
+
+    pub(crate) fn complete_startup_recovery(
+        &self,
+        plan: &WorkspaceProfileStartupRecoveryPlan,
+        runtime_drift_corrected: bool,
+    ) -> Result<(), WorkspaceProfileRuntimeError> {
+        let _guard = self.operation_lock.lock().map_err(|_| {
+            WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileLockPoisoned,
+                "装配方案运行时锁已损坏",
+                None,
+            )
+        })?;
+        let recovery = match plan.action {
+            WorkspaceProfileStartupRecoveryAction::RollBackInterruptedSwitch => {
+                let transaction = plan.pending_switch.as_ref().ok_or_else(|| {
+                    WorkspaceProfileRuntimeError::new(
+                        WorkspaceProfileRuntimeErrorCode::ProfileRecoveryFailed,
+                        "缺少待回滚的装配方案切换事务",
+                        Some(&self.journal_path),
+                    )
+                })?;
+                self.remove_journal_locked(&transaction.transaction_id)?;
+                Some(WorkspaceProfileRecoveryRecord {
+                    outcome: WorkspaceProfileRecoveryOutcome::RolledBackInterruptedSwitch,
+                    profile_id: plan.profile.id.clone(),
+                    transaction_id: Some(transaction.transaction_id.clone()),
+                    recovered_at: Utc::now().timestamp_millis(),
+                    message: "检测到提交前中断的 Profile 切换，已恢复最后提交的方案".into(),
+                })
+            }
+            WorkspaceProfileStartupRecoveryAction::CompleteInterruptedSwitch => {
+                let transaction = plan.pending_switch.as_ref().ok_or_else(|| {
+                    WorkspaceProfileRuntimeError::new(
+                        WorkspaceProfileRuntimeErrorCode::ProfileRecoveryFailed,
+                        "缺少待完成的装配方案切换事务",
+                        Some(&self.journal_path),
+                    )
+                })?;
+                Some(WorkspaceProfileRecoveryRecord {
+                    outcome: WorkspaceProfileRecoveryOutcome::CompletedInterruptedSwitch,
+                    profile_id: plan.profile.id.clone(),
+                    transaction_id: Some(transaction.transaction_id.clone()),
+                    recovered_at: Utc::now().timestamp_millis(),
+                    message: "检测到已提交但未完成前端落盘的 Profile 切换，已继续完成恢复".into(),
+                })
+            }
+            WorkspaceProfileStartupRecoveryAction::None if runtime_drift_corrected => {
+                Some(WorkspaceProfileRecoveryRecord {
+                    outcome: WorkspaceProfileRecoveryOutcome::ReconciledRuntimeDrift,
+                    profile_id: plan.profile.id.clone(),
+                    transaction_id: None,
+                    recovered_at: Utc::now().timestamp_millis(),
+                    message: "模块期望状态与当前 Profile 不一致，已按当前方案收敛".into(),
+                })
+            }
+            WorkspaceProfileStartupRecoveryAction::None => None,
+        };
+        if let Some(recovery) = recovery {
+            let mut state = self.read_state()?;
+            state.last_recovery = Some(recovery);
+            state.updated_at = Utc::now().timestamp_millis();
+            replace_json(&self.state_path, &state)?;
+        }
+        Ok(())
+    }
+
+    pub fn finalize_switch(
+        &self,
+        transaction_id: &str,
+        manifests: &[ModuleManifestV1],
+    ) -> Result<WorkspaceProfileRuntimeSnapshot, WorkspaceProfileRuntimeError> {
+        let _guard = self.operation_lock.lock().map_err(|_| {
+            WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileLockPoisoned,
+                "装配方案运行时锁已损坏",
+                None,
+            )
+        })?;
+        let pending = self.read_pending_switch_locked()?;
+        if pending.transaction_id != transaction_id {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileSwitchTransactionInvalid,
+                "装配方案切换事务 ID 不匹配",
+                Some(&self.journal_path),
+            ));
+        }
+        let state = self.read_state()?;
+        if state.current_profile_id != pending.to_profile_id {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileSwitchTransactionInvalid,
+                "目标 Profile 尚未提交，不能完成切换事务",
+                Some(&self.journal_path),
+            ));
+        }
+        self.remove_journal_locked(transaction_id)?;
+        self.snapshot_locked(manifests)
+    }
+
+    pub(crate) fn abort_switch(
+        &self,
+        transaction_id: &str,
+    ) -> Result<(), WorkspaceProfileRuntimeError> {
+        let _guard = self.operation_lock.lock().map_err(|_| {
+            WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileLockPoisoned,
+                "装配方案运行时锁已损坏",
+                None,
+            )
+        })?;
+        self.remove_journal_locked(transaction_id)
     }
 
     pub fn preview_switch(
@@ -691,7 +1056,14 @@ impl WorkspaceProfileRuntime {
             profiles,
             repository_path: self.repository_path.to_string_lossy().into_owned(),
             state_path: self.state_path.to_string_lossy().into_owned(),
+            journal_path: self.journal_path.to_string_lossy().into_owned(),
             migration: state.migration,
+            pending_switch: if self.journal_path.exists() {
+                Some(self.read_pending_switch_locked()?)
+            } else {
+                None
+            },
+            last_recovery: state.last_recovery,
         })
     }
 
@@ -735,6 +1107,59 @@ impl WorkspaceProfileRuntime {
             ));
         }
         Ok(state)
+    }
+
+    fn read_pending_switch_locked(
+        &self,
+    ) -> Result<WorkspaceProfilePendingSwitch, WorkspaceProfileRuntimeError> {
+        let bytes = fs::read(&self.journal_path)
+            .map_err(|error| io_error("读取装配方案切换日志失败", &self.journal_path, error))?;
+        let pending: WorkspaceProfilePendingSwitch =
+            serde_json::from_slice(&bytes).map_err(|error| {
+                WorkspaceProfileRuntimeError::new(
+                    WorkspaceProfileRuntimeErrorCode::ProfileSwitchTransactionInvalid,
+                    format!("装配方案切换日志无法解析：{error}"),
+                    Some(&self.journal_path),
+                )
+            })?;
+        if pending.schema_version != PROFILE_SWITCH_JOURNAL_SCHEMA_VERSION {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileSwitchTransactionInvalid,
+                format!(
+                    "不支持装配方案切换日志版本 {}，当前仅支持 {}",
+                    pending.schema_version, PROFILE_SWITCH_JOURNAL_SCHEMA_VERSION
+                ),
+                Some(&self.journal_path),
+            ));
+        }
+        if pending.transaction_id.is_empty()
+            || !is_valid_stable_id(&pending.from_profile_id)
+            || !is_valid_stable_id(&pending.to_profile_id)
+            || pending.from_profile_id == pending.to_profile_id
+        {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileSwitchTransactionInvalid,
+                "装配方案切换日志字段无效",
+                Some(&self.journal_path),
+            ));
+        }
+        Ok(pending)
+    }
+
+    fn remove_journal_locked(
+        &self,
+        transaction_id: &str,
+    ) -> Result<(), WorkspaceProfileRuntimeError> {
+        let pending = self.read_pending_switch_locked()?;
+        if pending.transaction_id != transaction_id {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileSwitchTransactionInvalid,
+                "装配方案切换事务 ID 不匹配",
+                Some(&self.journal_path),
+            ));
+        }
+        fs::remove_file(&self.journal_path)
+            .map_err(|error| io_error("清理装配方案切换日志失败", &self.journal_path, error))
     }
 
     fn read_profile(
@@ -1460,6 +1885,170 @@ mod tests {
         assert!(preview.can_switch);
         assert_eq!(preview.modules_to_disable.len(), 1);
         assert_eq!(fs::read(&snapshot.state_path).unwrap(), state_before);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn interrupted_switch_before_profile_commit_rolls_back_to_committed_profile() {
+        let root = test_root("recover-before-commit");
+        let runtime = WorkspaceProfileRuntime::new(&root);
+        let manifests = vec![manifest("builtin.alpha", "1.0.0")];
+        runtime
+            .initialize_from_current_configuration(
+                &manifests,
+                &BTreeSet::from(["builtin.alpha".to_string()]),
+                &[],
+            )
+            .unwrap();
+        let transaction = runtime
+            .begin_switch(BLANK_PROFILE_ID, MIGRATED_PROFILE_ID, 1)
+            .unwrap();
+        runtime
+            .mark_switch_phase(
+                &transaction.transaction_id,
+                WorkspaceProfileSwitchPhase::ModulesApplied,
+            )
+            .unwrap();
+
+        let plan = runtime.startup_recovery_plan(&manifests).unwrap();
+        assert_eq!(
+            plan.action,
+            WorkspaceProfileStartupRecoveryAction::RollBackInterruptedSwitch
+        );
+        assert_eq!(plan.profile.id, MIGRATED_PROFILE_ID);
+        runtime.complete_startup_recovery(&plan, false).unwrap();
+
+        let snapshot = runtime.snapshot(&manifests).unwrap();
+        assert!(snapshot.pending_switch.is_none());
+        assert_eq!(
+            snapshot.last_recovery.unwrap().outcome,
+            WorkspaceProfileRecoveryOutcome::RolledBackInterruptedSwitch
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn interrupted_switch_after_profile_commit_completes_frontend_finalization() {
+        let root = test_root("recover-after-commit");
+        let runtime = WorkspaceProfileRuntime::new(&root);
+        let manifests = vec![manifest("builtin.alpha", "1.0.0")];
+        runtime
+            .initialize_from_current_configuration(
+                &manifests,
+                &BTreeSet::from(["builtin.alpha".to_string()]),
+                &[],
+            )
+            .unwrap();
+        let transaction = runtime
+            .begin_switch(BLANK_PROFILE_ID, MIGRATED_PROFILE_ID, 1)
+            .unwrap();
+        runtime
+            .mark_switch_phase(
+                &transaction.transaction_id,
+                WorkspaceProfileSwitchPhase::ModulesApplied,
+            )
+            .unwrap();
+        runtime
+            .commit_switch(BLANK_PROFILE_ID, MIGRATED_PROFILE_ID, &manifests)
+            .unwrap();
+
+        let plan = runtime.startup_recovery_plan(&manifests).unwrap();
+        assert_eq!(
+            plan.action,
+            WorkspaceProfileStartupRecoveryAction::CompleteInterruptedSwitch
+        );
+        assert_eq!(plan.profile.id, BLANK_PROFILE_ID);
+        runtime.complete_startup_recovery(&plan, false).unwrap();
+        assert!(runtime
+            .snapshot(&manifests)
+            .unwrap()
+            .pending_switch
+            .is_some());
+
+        let snapshot = runtime
+            .finalize_switch(&transaction.transaction_id, &manifests)
+            .unwrap();
+        assert!(snapshot.pending_switch.is_none());
+        assert_eq!(
+            snapshot.last_recovery.unwrap().outcome,
+            WorkspaceProfileRecoveryOutcome::CompletedInterruptedSwitch
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn runtime_drift_reconciliation_is_recorded_without_switch_journal() {
+        let root = test_root("runtime-drift");
+        let runtime = WorkspaceProfileRuntime::new(&root);
+        let manifests = vec![manifest("builtin.alpha", "1.0.0")];
+        runtime
+            .initialize_from_current_configuration(
+                &manifests,
+                &BTreeSet::from(["builtin.alpha".to_string()]),
+                &[],
+            )
+            .unwrap();
+        let plan = runtime.startup_recovery_plan(&manifests).unwrap();
+        runtime.complete_startup_recovery(&plan, true).unwrap();
+
+        let recovery = runtime.snapshot(&manifests).unwrap().last_recovery.unwrap();
+        assert_eq!(
+            recovery.outcome,
+            WorkspaceProfileRecoveryOutcome::ReconciledRuntimeDrift
+        );
+        assert_eq!(recovery.profile_id, MIGRATED_PROFILE_ID);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn corrupt_switch_journal_is_reported_without_overwrite() {
+        let root = test_root("corrupt-journal");
+        let runtime = WorkspaceProfileRuntime::new(&root);
+        runtime
+            .initialize_from_current_configuration(&[], &BTreeSet::new(), &[])
+            .unwrap();
+        fs::write(&runtime.journal_path, b"not-json").unwrap();
+
+        let error = runtime.startup_recovery_plan(&[]).unwrap_err();
+        assert!(matches!(
+            error.code,
+            WorkspaceProfileRuntimeErrorCode::ProfileSwitchTransactionInvalid
+        ));
+        assert_eq!(fs::read(&runtime.journal_path).unwrap(), b"not-json");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stale_switch_journal_never_changes_the_committed_profile() {
+        let root = test_root("stale-journal");
+        let runtime = WorkspaceProfileRuntime::new(&root);
+        runtime
+            .initialize_from_current_configuration(&[], &BTreeSet::new(), &[])
+            .unwrap();
+        let transaction = runtime
+            .begin_switch(BLANK_PROFILE_ID, MIGRATED_PROFILE_ID, 1)
+            .unwrap();
+        let mut third_profile = build_blank_profile();
+        third_profile.id = "local.third-profile".into();
+        third_profile.name = "Third".into();
+        write_new_json(&runtime.profile_path(&third_profile.id), &third_profile).unwrap();
+        let mut state = runtime.read_state().unwrap();
+        state.current_profile_id = third_profile.id.clone();
+        replace_json(&runtime.state_path, &state).unwrap();
+
+        let error = runtime.startup_recovery_plan(&[]).unwrap_err();
+        assert!(matches!(
+            error.code,
+            WorkspaceProfileRuntimeErrorCode::ProfileRecoveryFailed
+        ));
+        assert_eq!(
+            runtime.read_state().unwrap().current_profile_id,
+            third_profile.id
+        );
+        assert_eq!(
+            runtime.pending_switch().unwrap().unwrap().transaction_id,
+            transaction.transaction_id
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }

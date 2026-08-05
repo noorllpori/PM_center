@@ -11,7 +11,7 @@ pub use module_manager::{
 pub use profile_runtime::{
     InitializeWorkspaceProfileRuntimeRequest, PreviewWorkspaceProfileSwitchRequest,
     SwitchWorkspaceProfileRequest, WorkspaceProfileRuntime, WorkspaceProfileRuntimeError,
-    WorkspaceProfileRuntimeErrorCode, WorkspaceProfileRuntimeSnapshot,
+    WorkspaceProfileRuntimeErrorCode, WorkspaceProfileRuntimeSnapshot, WorkspaceProfileSwitchPhase,
     WorkspaceProfileSwitchPreview, WorkspaceProfileSwitchResult,
 };
 
@@ -148,10 +148,11 @@ pub fn list_platform_modules(runtime: State<'_, PlatformRuntime>) -> ModuleRunti
 }
 
 #[tauri::command]
-pub fn initialize_workspace_profile_runtime(
+pub async fn initialize_workspace_profile_runtime(
     request: InitializeWorkspaceProfileRuntimeRequest,
     runtime: State<'_, PlatformRuntime>,
 ) -> Result<WorkspaceProfileRuntimeSnapshot, WorkspaceProfileRuntimeError> {
+    let _guard = runtime.profile_switch_lock.lock().await;
     let overview = runtime.manager.overview();
     let manifests = overview
         .modules
@@ -169,7 +170,22 @@ pub fn initialize_workspace_profile_runtime(
         &manifests,
         &enabled_module_ids,
         &request.legacy_pinned_tools,
-    )
+    )?;
+    let recovery_plan = runtime.profiles.startup_recovery_plan(&manifests)?;
+    let target_module_ids = profile_module_ids(&recovery_plan.profile);
+    let runtime_drift_corrected = !runtime
+        .manager
+        .profile_module_set_matches(&target_module_ids)
+        .map_err(profile_switch_module_error)?;
+    runtime
+        .manager
+        .apply_profile_module_set(&target_module_ids)
+        .await
+        .map_err(profile_switch_module_error)?;
+    runtime
+        .profiles
+        .complete_startup_recovery(&recovery_plan, runtime_drift_corrected)?;
+    runtime.profiles.snapshot(&manifests)
 }
 
 #[tauri::command]
@@ -247,20 +263,51 @@ pub async fn switch_workspace_profile(
         .map(|module| module.manifest.clone())
         .collect::<Vec<_>>();
     let target = runtime.profiles.profile(&request.profile_id, &manifests)?;
-    let target_module_ids = target
-        .enabled_modules
-        .iter()
-        .map(|selection| selection.id.clone())
-        .collect::<std::collections::BTreeSet<_>>();
+    let target_module_ids = profile_module_ids(&target);
     let previous_modules = runtime
         .manager
         .capture_profile_module_state()
         .map_err(profile_switch_module_error)?;
-    runtime
+    let transaction = runtime.profiles.begin_switch(
+        &request.profile_id,
+        &request.expected_current_profile_id,
+        target.revision,
+    )?;
+    if let Err(error) = runtime
         .manager
         .apply_profile_module_set(&target_module_ids)
         .await
-        .map_err(profile_switch_module_error)?;
+    {
+        let mut mapped = profile_switch_module_error(error);
+        if let Err(abort_error) = runtime.profiles.abort_switch(&transaction.transaction_id) {
+            mapped
+                .details
+                .push(format!("journalCleanup={}", abort_error.message));
+        }
+        return Err(mapped);
+    }
+    if let Err(phase_error) = runtime.profiles.mark_switch_phase(
+        &transaction.transaction_id,
+        WorkspaceProfileSwitchPhase::ModulesApplied,
+    ) {
+        let rollback_result = runtime
+            .manager
+            .restore_profile_module_state(&previous_modules)
+            .await;
+        let _ = runtime.profiles.abort_switch(&transaction.transaction_id);
+        return match rollback_result {
+            Ok(()) => Err(phase_error.with_details(vec!["模块状态已恢复到切换前状态".into()])),
+            Err(rollback_error) => Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileRollbackFailed,
+                "切换日志更新失败，模块回滚也未完整完成",
+                None,
+            )
+            .with_details(vec![
+                format!("journal={}", phase_error.message),
+                format!("rollback={}", rollback_error.message),
+            ])),
+        };
+    }
 
     let snapshot = match runtime.profiles.commit_switch(
         &request.profile_id,
@@ -269,7 +316,7 @@ pub async fn switch_workspace_profile(
     ) {
         Ok(snapshot) => snapshot,
         Err(commit_error) => {
-            return match runtime
+            let result = match runtime
                 .manager
                 .restore_profile_module_state(&previous_modules)
                 .await
@@ -285,14 +332,142 @@ pub async fn switch_workspace_profile(
                     format!("rollback={}", rollback_error.message),
                 ])),
             };
+            let _ = runtime.profiles.abort_switch(&transaction.transaction_id);
+            return result;
         }
     };
 
+    if let Err(error) = runtime.profiles.mark_switch_phase(
+        &transaction.transaction_id,
+        WorkspaceProfileSwitchPhase::ProfileCommitted,
+    ) {
+        eprintln!(
+            "[platform] Profile 已提交，但切换日志阶段更新失败，将在下次启动恢复: {}",
+            error.message
+        );
+    }
+
     Ok(WorkspaceProfileSwitchResult {
+        transaction_id: transaction.transaction_id,
         preview,
         snapshot,
         switched_at: chrono::Utc::now().timestamp_millis(),
     })
+}
+
+#[tauri::command]
+pub async fn finalize_workspace_profile_switch(
+    transaction_id: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<WorkspaceProfileRuntimeSnapshot, WorkspaceProfileRuntimeError> {
+    let _guard = runtime.profile_switch_lock.lock().await;
+    let manifests = runtime
+        .manager
+        .overview()
+        .modules
+        .into_iter()
+        .filter(|module| !module.diagnostic)
+        .map(|module| module.manifest)
+        .collect::<Vec<_>>();
+    runtime
+        .profiles
+        .finalize_switch(&transaction_id, &manifests)
+}
+
+#[tauri::command]
+pub async fn rollback_workspace_profile_switch(
+    transaction_id: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<WorkspaceProfileRuntimeSnapshot, WorkspaceProfileRuntimeError> {
+    let _guard = runtime.profile_switch_lock.lock().await;
+    let pending = runtime.profiles.pending_switch()?.ok_or_else(|| {
+        WorkspaceProfileRuntimeError::new(
+            WorkspaceProfileRuntimeErrorCode::ProfileSwitchTransactionInvalid,
+            "没有可回滚的装配方案切换事务",
+            None,
+        )
+    })?;
+    if pending.transaction_id != transaction_id {
+        return Err(WorkspaceProfileRuntimeError::new(
+            WorkspaceProfileRuntimeErrorCode::ProfileSwitchTransactionInvalid,
+            "装配方案切换事务 ID 不匹配",
+            None,
+        ));
+    }
+    let overview = runtime.manager.overview();
+    let manifests = overview
+        .modules
+        .iter()
+        .filter(|module| !module.diagnostic)
+        .map(|module| module.manifest.clone())
+        .collect::<Vec<_>>();
+    let snapshot = runtime.profiles.snapshot(&manifests)?;
+    if snapshot.current_profile.id != pending.to_profile_id {
+        return Err(WorkspaceProfileRuntimeError::new(
+            WorkspaceProfileRuntimeErrorCode::ProfileSwitchTransactionInvalid,
+            "当前 Profile 与待回滚事务目标不一致",
+            None,
+        ));
+    }
+    let previous_profile = runtime
+        .profiles
+        .profile(&pending.from_profile_id, &manifests)?;
+    let previous_modules = runtime
+        .manager
+        .capture_profile_module_state()
+        .map_err(profile_switch_module_error)?;
+    runtime
+        .manager
+        .apply_profile_module_set(&profile_module_ids(&previous_profile))
+        .await
+        .map_err(profile_switch_module_error)?;
+    let rolled_back =
+        match runtime.profiles.commit_switch(
+            &pending.from_profile_id,
+            &pending.to_profile_id,
+            &manifests,
+        ) {
+            Ok(snapshot) => snapshot,
+            Err(commit_error) => {
+                return match runtime
+                    .manager
+                    .restore_profile_module_state(&previous_modules)
+                    .await
+                {
+                    Ok(()) => Err(commit_error
+                        .with_details(vec!["模块状态已恢复到回滚前的目标 Profile".into()])),
+                    Err(rollback_error) => Err(WorkspaceProfileRuntimeError::new(
+                        WorkspaceProfileRuntimeErrorCode::ProfileRollbackFailed,
+                        "Profile 回滚提交失败，模块恢复也未完整完成",
+                        None,
+                    )
+                    .with_details(vec![
+                        format!("commit={}", commit_error.message),
+                        format!("moduleRestore={}", rollback_error.message),
+                    ])),
+                };
+            }
+        };
+    match runtime.profiles.abort_switch(&transaction_id) {
+        Ok(()) => runtime.profiles.snapshot(&manifests),
+        Err(error) => {
+            eprintln!(
+                "[platform] Profile 已回滚，但切换日志未清理，将在下次启动恢复: {}",
+                error.message
+            );
+            Ok(rolled_back)
+        }
+    }
+}
+
+fn profile_module_ids(
+    profile: &pmc_platform::WorkspaceProfileV1,
+) -> std::collections::BTreeSet<String> {
+    profile
+        .enabled_modules
+        .iter()
+        .map(|selection| selection.id.clone())
+        .collect()
 }
 
 fn profile_switch_module_error(error: ModuleManagerError) -> WorkspaceProfileRuntimeError {

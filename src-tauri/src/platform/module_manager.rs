@@ -507,6 +507,7 @@ impl ModuleManager {
         })
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub async fn restore_desired_modules(&self) -> Vec<ModuleManagerError> {
         let desired = self
             .runtime
@@ -549,6 +550,13 @@ impl ModuleManager {
             desired_enabled,
             running,
         })
+    }
+
+    pub(crate) fn profile_module_set_matches(
+        &self,
+        target: &BTreeSet<String>,
+    ) -> Result<bool, ModuleManagerError> {
+        Ok(self.capture_profile_module_state()?.desired_enabled == *target)
     }
 
     pub(crate) async fn apply_profile_module_set(

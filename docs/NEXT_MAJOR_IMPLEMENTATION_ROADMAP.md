@@ -69,7 +69,7 @@ D0 架构记录
 | R3 | Capability 权限网关 | accepted | R1、R2 | 2026-08-03 已完成人工验收，未发现问题 |
 | R4 | 现有模块生命周期接入 | accepted | R2、R3 | 2026-08-04 已完成渲染中心最终验收 |
 | R5 | 前端 Contribution Registry | accepted | R1、R2 | 2026-08-04 已完成 R5-4 最终验收 |
-| R6 | 装配方案运行时与兼容迁移 | in-progress | R4、R5 | R6-1 已验收；R6-2 事务切换等待人工验收 |
+| R6 | 装配方案运行时与兼容迁移 | verifying | R4、R5 | R6-1 已验收；R6-2 往返通过；R6-3 Profile/Pin/模块/项目会话重启往返通过，剩余跨 Profile 旧标签与视觉验收 |
 | R7 | DIY 装配编辑器 MVP | pending | R6 | 需要实际拖拽组装验收 |
 | R8 | Profile 导入导出 | pending | R6、R7 | 需要跨机器导入验收 |
 | R9 | 统一组件运行时 | pending | R3、R6 | 按运行时类型验收 |
@@ -449,13 +449,15 @@ R5-4 已完成前端/manifest 目录一致性检查、Surface/Widget/DataSource 
 
 ## 12. R6：装配方案运行时与兼容迁移
 
-状态：`in-progress`
+状态：`verifying`
 
-实现与验收记录见 `docs/NEXT_MAJOR_R6_PROFILE_RUNTIME_MIGRATION.md` 和 `docs/NEXT_MAJOR_R6_PROFILE_SWITCHING.md`。
+实现与验收记录见 `docs/NEXT_MAJOR_R6_PROFILE_RUNTIME_MIGRATION.md`、`docs/NEXT_MAJOR_R6_PROFILE_SWITCHING.md` 和 `docs/NEXT_MAJOR_R6_PROFILE_SESSION_RECOVERY.md`。
 
 R6-1 已建立软件级 Profile 仓库、版本化当前方案状态、现有模块/Pin 的幂等迁移和设置页只读诊断，并于 2026-08-04 验收通过。
 
-R6-2 已增加普通“空白装配空间”、纯只读切换预览、模块/版本/依赖/Pin/后台资源阻塞报告、模块集合事务切换和失败回滚。当前等待人工往返切换验收；Profile 新建、复制、编辑、布局装配和版本历史仍属于后续 R6/R7。
+R6-2 已增加普通“空白装配空间”、纯只读切换预览、模块/版本/依赖/Pin/后台资源阻塞报告、模块集合事务切换和失败回滚，并已完成真实桌面往返验证。
+
+R6-3 已增加持久切换日志、启动中断恢复、当前 Profile 漂移收敛、会话 Profile ID/revision 归属和兼容恢复提示。2026-08-04 已完成完整 Profile -> 空白 Profile -> 重启 -> 完整 Profile -> 项目重开 -> 重启的真实桌面往返，0/5 个正式模块、1/6 个 Pin、Pin 顺序、v4 会话和项目文件页均正确恢复，且无残留切换日志。当前仍待跨 Profile 旧贡献标签过滤、兼容提示、深色及窄窗口人工验收；Profile 新建、复制、编辑、布局装配和版本历史仍属于 R7。
 
 ### 目标
 

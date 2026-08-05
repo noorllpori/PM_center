@@ -54,6 +54,7 @@ import {
 import {
   createDefaultPersistedAppSession,
   dedupeStandaloneWindows,
+  getAppSessionProfileCompatibility,
   getTrackedStandaloneWindows,
   loadPersistedAppSession,
   savePersistedAppSession,
@@ -282,6 +283,12 @@ export function FileManager() {
   const addRecentProject = useSettingsStore((state) => state.addRecentProject);
   const loadBuiltinToolsPreferences = useBuiltinToolsStore((state) => state.loadPreferences);
   const initializeWorkspaceProfiles = useWorkspaceProfileStore((state) => state.initialize);
+  const activeWorkspaceProfileId = useWorkspaceProfileStore(
+    (state) => state.snapshot?.currentProfile.id ?? null,
+  );
+  const activeWorkspaceProfileRevision = useWorkspaceProfileStore(
+    (state) => state.snapshot?.currentProfile.revision ?? null,
+  );
   const contributionSnapshot = useContributionRegistryStore((state) => state.snapshot);
   const showToast = useUiStore((state) => state.showToast);
   const toast = useUiStore((state) => state.toast);
@@ -360,18 +367,7 @@ export function FileManager() {
     let releaseContributionRegistry: (() => void) | null = null;
 
     const initializeSettings = async () => {
-      const contributionRegistryInitialization = initializeContributionRegistry().then((releaseRegistry) => {
-        if (!isActive) {
-          releaseRegistry();
-        } else {
-          releaseContributionRegistry = releaseRegistry;
-        }
-      });
-      await Promise.all([
-        loadSettings(),
-        loadBuiltinToolsPreferences(),
-        contributionRegistryInitialization,
-      ]);
+      await Promise.all([loadSettings(), loadBuiltinToolsPreferences()]);
       const legacyPinnedTools = useBuiltinToolsStore
         .getState()
         .pinnedToolIds.flatMap((toolId) => {
@@ -379,6 +375,12 @@ export function FileManager() {
           return contributionId ? [contributionId] : [];
         });
       await initializeWorkspaceProfiles(legacyPinnedTools);
+      const releaseRegistry = await initializeContributionRegistry();
+      if (!isActive) {
+        releaseRegistry();
+      } else {
+        releaseContributionRegistry = releaseRegistry;
+      }
       if (isActive) {
         setIsSettingsLoaded(true);
       }
@@ -476,6 +478,10 @@ export function FileManager() {
     const activeTab = shellState.tabs.find((tab) => tab.id === shellState.activeTabId);
     const persistedSession: PersistedAppSession = {
       ...createDefaultPersistedAppSession(),
+      profile: (() => {
+        const profile = useWorkspaceProfileStore.getState().snapshot?.currentProfile;
+        return profile ? { id: profile.id, revision: profile.revision ?? 1 } : null;
+      })(),
       projectTabs,
       utilityTabs,
       activeTab:
@@ -875,6 +881,21 @@ export function FileManager() {
         }
 
         const persistedSession = await loadPersistedAppSession();
+        const currentProfile = useWorkspaceProfileStore.getState().snapshot?.currentProfile;
+        if (
+          persistedSession
+          && currentProfile
+          && getAppSessionProfileCompatibility(persistedSession, {
+            id: currentProfile.id,
+            revision: currentProfile.revision ?? 1,
+          }) === 'mismatch'
+        ) {
+          showToast({
+            title: '会话已按当前装配方案恢复',
+            message: `上次会话保存于 ${persistedSession.profile?.id} r${persistedSession.profile?.revision}；当前为 ${currentProfile.id} r${currentProfile.revision}，不可用的功能页已忽略。`,
+            tone: 'info',
+          });
+        }
         const restoredFromSession = persistedSession
           ? await restorePersistedSession(persistedSession)
           : false;
@@ -906,6 +927,7 @@ export function FileManager() {
     recentProjects,
     restorePersistedSession,
     schedulePersistAppSession,
+    showToast,
   ]);
 
   useEffect(() => {
@@ -1140,7 +1162,13 @@ export function FileManager() {
 
   useEffect(() => {
     schedulePersistAppSession();
-  }, [activeTabId, schedulePersistAppSession, tabs]);
+  }, [
+    activeTabId,
+    activeWorkspaceProfileId,
+    activeWorkspaceProfileRevision,
+    schedulePersistAppSession,
+    tabs,
+  ]);
 
   useEffect(() => {
     return () => {

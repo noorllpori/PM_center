@@ -1,8 +1,10 @@
 import { create } from 'zustand';
 import {
+  finalizeWorkspaceProfileSwitch,
   getWorkspaceProfileRuntime,
   initializeWorkspaceProfileRuntime,
   previewWorkspaceProfileSwitch,
+  rollbackWorkspaceProfileSwitch,
   switchWorkspaceProfile,
 } from '../api/workspaceProfiles';
 import { PLATFORM_MODULE_RUNTIME_CHANGED_EVENT } from '../api/platformModules';
@@ -68,14 +70,18 @@ export const useWorkspaceProfileStore = create<WorkspaceProfileState>((set, get)
     initializationPromise = (async () => {
       set({ isLoading: true, error: null });
       try {
-        const snapshot = await initializeWorkspaceProfileRuntime(legacyPinnedTools);
+        let snapshot = await initializeWorkspaceProfileRuntime(legacyPinnedTools);
         const currentSummary = snapshot.profiles.find((profile) => profile.current);
         if (currentSummary?.status === 'ready') {
           await useBuiltinToolsStore
             .getState()
             .replacePinnedByContributionIds(snapshot.currentProfile.shellLayout?.pinnedTools ?? []);
+          if (snapshot.pendingSwitch) {
+            snapshot = await finalizeWorkspaceProfileSwitch(snapshot.pendingSwitch.transactionId);
+          }
         }
         set({ snapshot, isInitialized: true, error: null });
+        window.dispatchEvent(new Event(PLATFORM_MODULE_RUNTIME_CHANGED_EVENT));
       } catch (error) {
         set({ isInitialized: true, error: formatRuntimeError(error) });
       } finally {
@@ -143,12 +149,8 @@ export const useWorkspaceProfileStore = create<WorkspaceProfileState>((set, get)
           .replacePinnedByContributionIds(result.preview.pinnedToolsAfter);
       } catch (pinError) {
         try {
-          await switchWorkspaceProfile({
-            profileId: previousProfileId,
-            expectedCurrentProfileId: result.snapshot.currentProfile.id,
-            currentPinnedTools: previousPinnedTools,
-            knownToolContributions,
-          });
+          const rollbackSnapshot = await rollbackWorkspaceProfileSwitch(result.transactionId);
+          set({ snapshot: rollbackSnapshot });
         } catch (rollbackError) {
           throw new Error(
             `快捷栏写入失败，Profile 回滚也失败：${formatRuntimeError(pinError)}\n${formatRuntimeError(rollbackError)}`,
@@ -157,11 +159,19 @@ export const useWorkspaceProfileStore = create<WorkspaceProfileState>((set, get)
         throw new Error(`快捷栏写入失败，已恢复原 Profile：${formatRuntimeError(pinError)}`);
       }
 
+      let finalizedSnapshot = result.snapshot;
+      let finalizeWarning: string | null = null;
+      try {
+        finalizedSnapshot = await finalizeWorkspaceProfileSwitch(result.transactionId);
+      } catch (finalizeError) {
+        finalizeWarning = `方案已应用，切换完成标记将在下次启动时恢复：${formatRuntimeError(finalizeError)}`;
+      }
+
       set({
-        snapshot: result.snapshot,
+        snapshot: finalizedSnapshot,
         switchPreview: null,
-        switchMessage: `已切换到“${result.snapshot.currentProfile.name}”`,
-        error: null,
+        switchMessage: `已切换到“${finalizedSnapshot.currentProfile.name}”`,
+        error: finalizeWarning,
       });
       window.dispatchEvent(new Event(PLATFORM_MODULE_RUNTIME_CHANGED_EVENT));
     } catch (error) {
