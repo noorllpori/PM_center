@@ -28,6 +28,8 @@ pub const AUTOMATION_TASK_TOOL_ID: &str = "builtin.automation-runtime.task-tool"
 pub const AUTOMATION_PYTHON_SURFACE_ID: &str = "builtin.automation-runtime.python-surface";
 pub const AUTOMATION_TASK_SURFACE_ID: &str = "builtin.automation-runtime.task-surface";
 pub const AUTOMATION_SETTINGS_SECTION_ID: &str = "builtin.automation-runtime.settings-section";
+pub const AUTOMATION_PROJECT_SETTINGS_SECTION_ID: &str =
+    "builtin.automation-runtime.project-settings-section";
 pub const AUTOMATION_PLUGIN_CONTEXT_COMMANDS_ID: &str =
     "builtin.automation-runtime.plugin-context-commands";
 pub const RENDER_TOOL_ID: &str = "builtin.render-center.tool";
@@ -40,6 +42,10 @@ pub const PROJECT_CACHE_SURFACE_ID: &str = "builtin.project-resources.cache-surf
 pub const PROJECT_MDT_SURFACE_ID: &str = "builtin.project-resources.mdt-surface";
 pub const PROJECT_COLLECTION_CONTEXT_COMMANDS_ID: &str =
     "builtin.project-resources.collection-context-commands";
+pub const PROJECT_GLOBAL_EXCLUSIONS_SETTINGS_SECTION_ID: &str =
+    "builtin.project-resources.global-exclusions-settings-section";
+pub const PROJECT_RULES_SETTINGS_SECTION_ID: &str =
+    "builtin.project-resources.project-rules-settings-section";
 pub const PROJECT_MANAGER_SHELL_TAB_ID: &str = "builtin.project-manager.project-shell-tab";
 pub const PROJECT_MANAGER_HOME_SURFACE_ID: &str = "builtin.project-manager.home-surface";
 pub const PROJECT_MANAGER_WORKSPACE_SURFACE_ID: &str =
@@ -78,6 +84,8 @@ pub const PROJECT_MANAGER_SHOW_IGNORED_PROJECTS_COMMAND_ID: &str =
     "builtin.project-manager.show-ignored-projects-command";
 pub const PROJECT_MANAGER_REMOVE_RECENT_PROJECT_COMMAND_ID: &str =
     "builtin.project-manager.remove-recent-project-command";
+pub const PROJECT_MANAGER_HISTORY_SETTINGS_SECTION_ID: &str =
+    "builtin.project-manager.history-settings-section";
 pub const LAN_MAIN_TOOL_ID: &str = "builtin.lan-collaboration.main-tool";
 pub const LAN_PROJECT_TOOL_ID: &str = "builtin.lan-collaboration.project-tool";
 pub const LAN_SHELL_TAB_ID: &str = "builtin.lan-collaboration.shell-tab";
@@ -87,6 +95,8 @@ pub const LAN_PROJECT_SURFACE_ID: &str = "builtin.lan-collaboration.project-surf
 pub const SMART_CLIPBOARD_TOOL_ID: &str = "builtin.smart-clipboard.tool";
 pub const SMART_CLIPBOARD_SURFACE_ID: &str = "builtin.smart-clipboard.native-surface";
 pub use crate::local_web_console::LOCAL_WEB_CONSOLE_TOOL_ID;
+pub const LOCAL_WEB_CONSOLE_SETTINGS_SECTION_ID: &str =
+    "builtin.local-web-console.settings-section";
 pub const DIAGNOSTIC_BASE_ID: &str = "diagnostic.runtime-base";
 pub const DIAGNOSTIC_WORKER_ID: &str = "diagnostic.runtime-worker";
 pub const DIAGNOSTIC_FAILING_ID: &str = "diagnostic.runtime-failing";
@@ -214,7 +224,10 @@ pub fn automation_runtime_module() -> RegisteredModule {
                     AUTOMATION_PYTHON_SURFACE_ID.into(),
                     AUTOMATION_TASK_SURFACE_ID.into(),
                 ],
-                settings_sections: vec![AUTOMATION_SETTINGS_SECTION_ID.into()],
+                settings_sections: vec![
+                    AUTOMATION_SETTINGS_SECTION_ID.into(),
+                    AUTOMATION_PROJECT_SETTINGS_SECTION_ID.into(),
+                ],
                 context_commands: vec![AUTOMATION_PLUGIN_CONTEXT_COMMANDS_ID.into()],
                 ..ModuleContributions::default()
             },
@@ -559,6 +572,10 @@ pub fn project_resources_module(
                     PROJECT_CACHE_SURFACE_ID.into(),
                     PROJECT_MDT_SURFACE_ID.into(),
                 ],
+                settings_sections: vec![
+                    PROJECT_GLOBAL_EXCLUSIONS_SETTINGS_SECTION_ID.into(),
+                    PROJECT_RULES_SETTINGS_SECTION_ID.into(),
+                ],
                 context_commands: vec![PROJECT_COLLECTION_CONTEXT_COMMANDS_ID.into()],
                 ..ModuleContributions::default()
             },
@@ -662,6 +679,7 @@ pub fn project_manager_module() -> RegisteredModule {
                     PROJECT_MANAGER_SHOW_IGNORED_PROJECTS_COMMAND_ID.into(),
                     PROJECT_MANAGER_REMOVE_RECENT_PROJECT_COMMAND_ID.into(),
                 ],
+                settings_sections: vec![PROJECT_MANAGER_HISTORY_SETTINGS_SECTION_ID.into()],
                 ..ModuleContributions::default()
             },
             data_policy: ModuleDataPolicy::default(),
@@ -1057,6 +1075,7 @@ fn local_web_console_manifest() -> ModuleManifestV1 {
         background_services: vec!["localhost-http-console".into()],
         contributes: ModuleContributions {
             tools: vec![LOCAL_WEB_CONSOLE_TOOL_ID.into()],
+            settings_sections: vec![LOCAL_WEB_CONSOLE_SETTINGS_SECTION_ID.into()],
             ..ModuleContributions::default()
         },
         data_policy: ModuleDataPolicy::default(),
@@ -1512,6 +1531,13 @@ mod project_resource_tests {
             module.manifest.contributes.context_commands,
             vec![PROJECT_COLLECTION_CONTEXT_COMMANDS_ID.to_string()]
         );
+        assert_eq!(
+            module.manifest.contributes.settings_sections,
+            vec![
+                PROJECT_GLOBAL_EXCLUSIONS_SETTINGS_SECTION_ID.to_string(),
+                PROJECT_RULES_SETTINGS_SECTION_ID.to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -1544,6 +1570,10 @@ mod project_resource_tests {
         assert_eq!(module.manifest.contributes.widgets.len(), 4);
         assert_eq!(module.manifest.contributes.data_sources.len(), 4);
         assert_eq!(module.manifest.contributes.commands.len(), 9);
+        assert_eq!(
+            module.manifest.contributes.settings_sections,
+            vec![PROJECT_MANAGER_HISTORY_SETTINGS_SECTION_ID.to_string()]
+        );
     }
 
     #[test]
@@ -1590,6 +1620,7 @@ mod project_resource_tests {
             ("surfaces", AUTOMATION_PYTHON_SURFACE_ID),
             ("surfaces", AUTOMATION_TASK_SURFACE_ID),
             ("settingsSections", AUTOMATION_SETTINGS_SECTION_ID),
+            ("settingsSections", AUTOMATION_PROJECT_SETTINGS_SECTION_ID),
             ("contextCommands", AUTOMATION_PLUGIN_CONTEXT_COMMANDS_ID),
             ("tools", RENDER_TOOL_ID),
             ("workspaceTabs", RENDER_WORKSPACE_TAB_ID),
@@ -1599,6 +1630,11 @@ mod project_resource_tests {
             ("workspaceTabs", PROJECT_CACHE_WORKSPACE_TAB_ID),
             ("surfaces", PROJECT_CACHE_SURFACE_ID),
             ("surfaces", PROJECT_MDT_SURFACE_ID),
+            (
+                "settingsSections",
+                PROJECT_GLOBAL_EXCLUSIONS_SETTINGS_SECTION_ID,
+            ),
+            ("settingsSections", PROJECT_RULES_SETTINGS_SECTION_ID),
             ("contextCommands", PROJECT_COLLECTION_CONTEXT_COMMANDS_ID),
             ("shellTabs", PROJECT_MANAGER_SHELL_TAB_ID),
             ("surfaces", PROJECT_MANAGER_HOME_SURFACE_ID),
@@ -1629,6 +1665,10 @@ mod project_resource_tests {
             ),
             ("commands", PROJECT_MANAGER_SHOW_IGNORED_PROJECTS_COMMAND_ID),
             ("commands", PROJECT_MANAGER_REMOVE_RECENT_PROJECT_COMMAND_ID),
+            (
+                "settingsSections",
+                PROJECT_MANAGER_HISTORY_SETTINGS_SECTION_ID,
+            ),
             ("tools", LAN_MAIN_TOOL_ID),
             ("tools", LAN_PROJECT_TOOL_ID),
             ("shellTabs", LAN_SHELL_TAB_ID),
@@ -1638,6 +1678,7 @@ mod project_resource_tests {
             ("tools", SMART_CLIPBOARD_TOOL_ID),
             ("surfaces", SMART_CLIPBOARD_SURFACE_ID),
             ("tools", LOCAL_WEB_CONSOLE_TOOL_ID),
+            ("settingsSections", LOCAL_WEB_CONSOLE_SETTINGS_SECTION_ID),
             ("tools", DIAGNOSTIC_CONTRIBUTION_TOOL_ID),
             ("workspaceTabs", DIAGNOSTIC_CONTRIBUTION_WORKSPACE_TAB_ID),
             ("surfaces", DIAGNOSTIC_CONTRIBUTION_SURFACE_ID),
@@ -1669,7 +1710,10 @@ mod project_resource_tests {
         );
         assert_eq!(
             automation.manifest.contributes.settings_sections,
-            vec![AUTOMATION_SETTINGS_SECTION_ID.to_string()]
+            vec![
+                AUTOMATION_SETTINGS_SECTION_ID.to_string(),
+                AUTOMATION_PROJECT_SETTINGS_SECTION_ID.to_string(),
+            ]
         );
         assert_eq!(
             automation.manifest.contributes.context_commands,
@@ -1702,6 +1746,10 @@ mod project_resource_tests {
         assert_eq!(
             manifest.contributes.tools,
             vec![LOCAL_WEB_CONSOLE_TOOL_ID.to_string()]
+        );
+        assert_eq!(
+            manifest.contributes.settings_sections,
+            vec![LOCAL_WEB_CONSOLE_SETTINGS_SECTION_ID.to_string()]
         );
         assert!(manifest
             .capabilities

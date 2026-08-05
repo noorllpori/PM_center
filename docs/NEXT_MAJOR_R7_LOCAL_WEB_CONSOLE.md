@@ -33,7 +33,8 @@
 - 端口或权限修改后需要重启该模块；
 - 启停入口会同步更新当前 Profile 的模块选择，保证浏览器触发应用重启后服务仍能按原端口恢复；
 - 访问令牌不会在模块重启或应用重启时变化，浏览器可以使用同一会话重新连接；
-- 服务启动失败时模块进入错误状态，并在桌面设置中显示端口占用等原因。
+- 服务启动失败时模块进入错误状态，并在模块恢复/诊断入口中显示端口占用等原因。
+- 详细设置作为 `builtin.local-web-console` 的运行时 `settingsSections` 贡献挂载；模块停用后该设置区立即撤下，重新启用通过恢复内核或模块诊断完成。
 
 ## 4. 第一版网页 API
 
@@ -63,7 +64,8 @@
 - 模块生命周期：`src-tauri/src/platform/builtin_modules.rs`
 - Profile 同步：`src-tauri/src/platform/profile_runtime.rs`
 - 前端 API：`src/api/localWebConsole.ts`
-- 桌面设置：`src/components/settings/LocalWebConsoleSettingsSection.tsx`
+- 桌面设置贡献：`src/components/settings/LocalWebConsoleSettingsSection.tsx`
+- 设置贡献宿主：`src/components/settings/settingsContributionImplementationRegistry.ts`
 - 功能中心：`src/features/builtinTools.ts`
 
 ## 6. 验收
@@ -79,13 +81,12 @@
 
 桌面与浏览器验收：
 
-1. 设置 -> 网页控制台中启用模块，确认状态变为运行中；
+1. 从装配与权限/恢复入口启用模块，确认“网页控制台”设置贡献和功能中心工具同时出现；
 2. 点击“打开浏览器”，确认地址为 `127.0.0.1:31530` 且 fragment 很快从地址栏消失；
 3. 验证状态、设置页、显示/隐藏主窗口；
 4. 关闭某项网页权限，重启服务，确认对应动作变为不可用；
 5. 修改端口并重启服务，确认旧端口释放、新端口可访问；
 6. 在浏览器确认重启 PM Center，确认页面可自动重新连接；
-7. 停用模块，确认端口释放且功能中心入口撤下；
+7. 停用模块，确认端口释放，功能中心入口和详细设置贡献同时撤下；
 8. 使用无令牌的新浏览器会话直接访问地址，确认无法读取 API 数据；
 9. 在窄窗口和系统深色主题下检查布局与文字无重叠。
-

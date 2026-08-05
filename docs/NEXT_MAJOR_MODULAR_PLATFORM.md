@@ -994,6 +994,15 @@ logs/components/
 | `fileContextActions` | 文件上下文动作 |
 | `settingsPanel` | 模块/组件设置贡献 |
 
+设置贡献由宿主装配，不等于任意界面注入。标准组件使用版本化 schema 描述字段、校验、默认值、作用域和所需 Capability；只有宿主登记的内置实现可以引用受信 renderer ID。模块停用后，其设置导航与内容必须和工具、Surface 一样即时撤下。
+
+设置系统分为两层：
+
+- `core.recovery-settings` 永远可用，只负责 Profile、模块、组件、依赖诊断、恢复默认装配和退出；
+- `builtin.settings-center` 负责普通设置的范围、导航、搜索与内容宿主，完成独立恢复入口后才允许被 Profile 停用。
+
+范围选择和导航必须从当前可用 `settingsSections` 计算，不能继续维护硬编码的全局/项目列表。被选中的贡献撤下时自动回退到最近或首个可用贡献，不能留下空白页面。模块停用必须执行 `preview -> 应用内确认 -> execute`，取消为零副作用。完整迁移计划见 `NEXT_MAJOR_R7_SETTINGS_CONTRIBUTIONS.md`。
+
 旧插件仍通过 JSON 文件和 stdout `@pmc` 消息运行。新组件优先使用统一双向协议。
 
 ### 18.3 代码迁移原则

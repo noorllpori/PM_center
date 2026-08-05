@@ -32,6 +32,7 @@ export interface ContributionImplementationInventory {
   widgetRendererIds: readonly string[];
   dataSourceReaderIds: readonly string[];
   commandHandlerIds: readonly string[];
+  settingsSectionRendererIds: readonly string[];
 }
 
 export interface ContributionCatalogReport {
@@ -155,6 +156,7 @@ export function inspectContributionCatalog(
   const widgetRendererIds = new Set(inventory.widgetRendererIds);
   const dataSourceReaderIds = new Set(inventory.dataSourceReaderIds);
   const commandHandlerIds = new Set(inventory.commandHandlerIds);
+  const settingsSectionRendererIds = new Set(inventory.settingsSectionRendererIds);
 
   snapshot.conflicts.forEach((conflict) => {
     pushIssue(
@@ -230,6 +232,12 @@ export function inspectContributionCatalog(
     }
   });
 
+  Object.values(SETTINGS_SECTION_CONTRIBUTIONS).forEach((section) => {
+    if (!settingsSectionRendererIds.has(section.rendererId)) {
+      pushIssue(issues, 'SETTINGS_SECTION_RENDERER_MISSING', section.id, `设置区缺少渲染器：${section.rendererId}`);
+    }
+  });
+
   Object.values(WORKFLOW_NODE_CONTRIBUTIONS).forEach((node) => {
     const ports = new Set<string>();
     [...node.inputs.map((port) => `input:${port.name}`), ...node.outputs.map((port) => `output:${port.name}`)]
@@ -280,6 +288,11 @@ export function inspectContributionCatalog(
       pushIssue(issues, 'UNKNOWN_COMMAND_HANDLER', id, '处理器没有对应的 Command 定义', 'warning');
     }
   });
+  inventory.settingsSectionRendererIds.forEach((id) => {
+    if (!Object.values(SETTINGS_SECTION_CONTRIBUTIONS).some((section) => section.rendererId === id)) {
+      pushIssue(issues, 'UNKNOWN_SETTINGS_SECTION_RENDERER', id, '设置区渲染器没有对应的贡献定义', 'warning');
+    }
+  });
 
   const catalogDefinitionCount = CONTRIBUTION_KINDS.reduce(
     (total, kind) => total + CATALOGS[kind].length,
@@ -306,7 +319,8 @@ export function inspectContributionCatalog(
       + inventory.shellSurfaceRendererIds.length
       + inventory.widgetRendererIds.length
       + inventory.dataSourceReaderIds.length
-      + inventory.commandHandlerIds.length,
+      + inventory.commandHandlerIds.length
+      + inventory.settingsSectionRendererIds.length,
     issues,
     errorCount,
     warningCount,

@@ -6,6 +6,8 @@
 >
 > 基线版本：2.8.4
 
+> R7-3 迁移说明：本文件保留 R5-2 的历史验收记录。当前设置目录已将全局自动化和项目插件拆成两个稳定贡献，并扩展到项目资源、项目管理器和本机网页控制台；现行合同见 `NEXT_MAJOR_R7_SETTINGS_CONTRIBUTIONS.md`。
+
 ## 1. 本轮目标
 
 让已有设置区和文件右键扩展跟随模块贡献动态出现、撤下，继续验证“停用模块不仅隐藏主入口，也撤下模块拥有的次级界面和命令”。
@@ -18,7 +20,8 @@
 
 | 贡献 ID | 类型 | 所属模块 | 管理内容 |
 | --- | --- | --- | --- |
-| `builtin.automation-runtime.settings-section` | `settingsSections` | `builtin.automation-runtime` | 全局任务脚本、全局插件、项目插件设置 |
+| `builtin.automation-runtime.settings-section` | `settingsSections` | `builtin.automation-runtime` | 全局任务脚本与全局插件设置 |
+| `builtin.automation-runtime.project-settings-section` | `settingsSections` | `builtin.automation-runtime` | 项目插件设置（R7-3 从原贡献拆分） |
 | `builtin.automation-runtime.plugin-context-commands` | `contextCommands` | `builtin.automation-runtime` | 文件和目录背景中的旧插件动作及插件调试信息 |
 | `builtin.project-resources.collection-context-commands` | `contextCommands` | `builtin.project-resources` | 创建集合、加入集合、移出集合及集合维护命令 |
 

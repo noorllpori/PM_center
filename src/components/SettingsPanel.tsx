@@ -18,7 +18,6 @@ import {
   Download,
   ExternalLink,
   FolderOpen,
-  Globe2,
   ImageIcon,
   Info,
   HelpCircle,
@@ -45,8 +44,15 @@ import { useContributionRegistryStore } from '../stores/contributionRegistryStor
 import { BlenderInstallationInfo, ToolPaths, useSettingsStore } from '../stores/settingsStore';
 import {
   SETTINGS_SECTION_CONTRIBUTIONS,
+  getAvailableSettingsSectionContributions,
   isContributionAvailable,
+  type SettingsScope,
+  type SettingsSectionRendererId,
 } from '../features/contributionRegistry';
+import {
+  getSettingsNavigationIcon,
+  hasSettingsSectionImplementation,
+} from './settings/settingsContributionImplementationRegistry';
 import {
   DEFAULT_EXCLUDE_PATTERNS,
   PRESET_EXCLUDE_PATTERNS,
@@ -66,18 +72,7 @@ import type {
   PluginSettingsField,
 } from '../types/plugin';
 
-type SettingsScope = 'global' | 'project';
-type SettingsNavigationId =
-  | 'general'
-  | 'web-console'
-  | 'exclusions'
-  | 'automation'
-  | 'tools'
-  | 'history'
-  | 'platform'
-  | 'about'
-  | 'project-rules'
-  | 'project-plugins';
+type SettingsNavigationId = string;
 
 interface SettingsPanelProps {
   isOpen: boolean;
@@ -237,10 +232,6 @@ export function SettingsPanel({
   onOpenProject,
 }: SettingsPanelProps) {
   const contributionSnapshot = useContributionRegistryStore((state) => state.snapshot);
-  const automationSettingsAvailable = isContributionAvailable(
-    contributionSnapshot,
-    SETTINGS_SECTION_CONTRIBUTIONS.automationRuntime,
-  );
   const {
     autoOpenLastProject,
     launchOnStartup,
@@ -313,39 +304,62 @@ export function SettingsPanel({
   const loadPluginDirsFromStore = usePluginStore((state) => state.loadPluginDirs);
   const togglePlugin = usePluginStore((state) => state.togglePlugin);
 
-  const hasProjectScope = isInitialized && !!projectPath;
+  const globalSettingsContributions = useMemo(
+    () => getAvailableSettingsSectionContributions(contributionSnapshot, 'global')
+      .filter((definition) => hasSettingsSectionImplementation(definition.rendererId)),
+    [contributionSnapshot],
+  );
+  const projectSettingsContributions = useMemo(
+    () => getAvailableSettingsSectionContributions(contributionSnapshot, 'project')
+      .filter((definition) => hasSettingsSectionImplementation(definition.rendererId)),
+    [contributionSnapshot],
+  );
+  const availableSettingsRendererIds = useMemo(
+    () => new Set<SettingsSectionRendererId>([
+      ...globalSettingsContributions.map((definition) => definition.rendererId),
+      ...projectSettingsContributions.map((definition) => definition.rendererId),
+    ]),
+    [globalSettingsContributions, projectSettingsContributions],
+  );
+  const hasProjectContext = isInitialized && !!projectPath;
+  const hasProjectScope = hasProjectContext && projectSettingsContributions.length > 0;
   const resolvedDefaultScope = hasProjectScope && defaultScope === 'project' ? 'project' : 'global';
-  const globalNavigationItems = [
-    { id: 'general' as const, label: '常规', icon: SlidersHorizontal },
-    { id: 'web-console' as const, label: '网页控制台', icon: Globe2 },
-    { id: 'exclusions' as const, label: '排除规则', icon: FolderOpen },
-    { id: 'automation' as const, label: '脚本与插件', icon: Puzzle },
-    { id: 'tools' as const, label: '工具与 Blender', icon: Wrench },
-    { id: 'history' as const, label: '历史记录', icon: RefreshCw },
-    { id: 'platform' as const, label: '装配与权限', icon: Box },
-    { id: 'about' as const, label: '关于与退出', icon: Info },
-  ];
-  const projectNavigationItems = [
-    { id: 'project-rules' as const, label: '项目规则', icon: FolderOpen },
-    { id: 'project-plugins' as const, label: '项目插件', icon: Puzzle },
-  ];
-  const navigationItems = activeScope === 'global'
-    ? globalNavigationItems.filter((item) => item.id !== 'automation' || automationSettingsAvailable)
-    : projectNavigationItems.filter((item) => item.id !== 'project-plugins' || automationSettingsAvailable);
+  const displayedScope = activeScope === 'project' && hasProjectScope ? 'project' : 'global';
+  const navigationContributions = displayedScope === 'global'
+    ? globalSettingsContributions
+    : projectSettingsContributions;
+  const navigationItems = navigationContributions.map((definition) => ({
+    id: definition.navigationId,
+    label: definition.title,
+    icon: getSettingsNavigationIcon(definition.iconKey),
+  }));
+  const resolvedActiveNavigationId = navigationItems.some((item) => item.id === activeNavigationId)
+    ? activeNavigationId
+    : navigationItems[0]?.id ?? '';
+  const automationSettingsAvailable = isContributionAvailable(
+    contributionSnapshot,
+    SETTINGS_SECTION_CONTRIBUTIONS.automationRuntime,
+  );
+  const firstGlobalNavigationId = globalSettingsContributions[0]?.navigationId ?? '';
+  const firstProjectNavigationId = projectSettingsContributions[0]?.navigationId ?? '';
+
+  const isSettingsRendererAvailable = (rendererId: SettingsSectionRendererId) => (
+    availableSettingsRendererIds.has(rendererId)
+  );
 
   const handleScopeChange = (scope: SettingsScope) => {
     if (scope === 'project' && !hasProjectScope) {
       return;
     }
     setActiveScope(scope);
-    setActiveNavigationId(scope === 'global' ? 'general' : 'project-rules');
+    setActiveNavigationId(scope === 'global' ? firstGlobalNavigationId : firstProjectNavigationId);
     settingsScrollRef.current?.scrollTo({ top: 0 });
   };
 
   const handleNavigationChange = (navigationId: SettingsNavigationId) => {
     setActiveNavigationId(navigationId);
     const container = settingsScrollRef.current;
-    const target = document.getElementById(`settings-${activeScope}-${navigationId}`);
+    const target = document.getElementById(`settings-${displayedScope}-${navigationId}`);
     if (!container || !target) {
       return;
     }
@@ -364,7 +378,7 @@ export function SettingsPanel({
     const activationTop = container.getBoundingClientRect().top + 32;
     let visibleId = navigationItems[0].id;
     navigationItems.forEach((item) => {
-      const target = document.getElementById(`settings-${activeScope}-${item.id}`);
+      const target = document.getElementById(`settings-${displayedScope}-${item.id}`);
       if (target && target.getBoundingClientRect().top <= activationTop) {
         visibleId = item.id;
       }
@@ -379,10 +393,49 @@ export function SettingsPanel({
 
     void loadSettings();
     setActiveScope(resolvedDefaultScope);
-    setActiveNavigationId(resolvedDefaultScope === 'project' ? 'project-rules' : 'general');
+    setActiveNavigationId(
+      resolvedDefaultScope === 'project' ? firstProjectNavigationId : firstGlobalNavigationId,
+    );
     settingsScrollRef.current?.scrollTo({ top: 0 });
     setGlobalPatterns(globalExcludePatterns);
-  }, [isOpen, loadSettings, resolvedDefaultScope]);
+  }, [
+    firstGlobalNavigationId,
+    firstProjectNavigationId,
+    isOpen,
+    loadSettings,
+    resolvedDefaultScope,
+  ]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    if (activeScope === 'project' && !hasProjectScope) {
+      setActiveScope('global');
+      setActiveNavigationId(firstGlobalNavigationId);
+      settingsScrollRef.current?.scrollTo({ top: 0 });
+      return;
+    }
+
+    const activeContributions = activeScope === 'global'
+      ? globalSettingsContributions
+      : projectSettingsContributions;
+    if (activeContributions.some((definition) => definition.navigationId === activeNavigationId)) {
+      return;
+    }
+
+    setActiveNavigationId(activeContributions[0]?.navigationId ?? firstGlobalNavigationId);
+    settingsScrollRef.current?.scrollTo({ top: 0 });
+  }, [
+    activeNavigationId,
+    activeScope,
+    firstGlobalNavigationId,
+    globalSettingsContributions,
+    hasProjectScope,
+    isOpen,
+    projectSettingsContributions,
+  ]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -1808,7 +1861,8 @@ export function SettingsPanel({
 
   const renderGlobalSettings = () => (
     <div className="space-y-4">
-      <section id="settings-global-general" className="scroll-mt-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
+      {isSettingsRendererAvailable('core.settings.general-settings') ? (
+        <section id="settings-global-general" className="scroll-mt-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
         <div className="flex items-center gap-2 mb-3">
           <SlidersHorizontal className="w-4 h-4 text-blue-500" />
           <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">常规</h4>
@@ -1875,25 +1929,30 @@ export function SettingsPanel({
             </label>
           </div>
         </div>
-      </section>
+        </section>
+      ) : null}
 
-      <LocalWebConsoleSettingsSection />
+      {isSettingsRendererAvailable('builtin.local-web-console.settings') ? (
+        <LocalWebConsoleSettingsSection />
+      ) : null}
 
-      <div id="settings-global-exclusions" className="scroll-mt-4">
-        {renderExcludeRulesSection({
-          title: '全局排除规则',
-          description: '对所有项目统一生效。默认已包含 .blend1/.blend2/... 这类 Blender 备份文件规则。',
-          patterns: globalPatterns,
-          emptyText: '暂无全局排除规则',
-          onClear: () => {
-            if (confirm('确定要清空所有全局排除规则吗？')) {
-              void saveGlobalPatterns([]);
-            }
-          },
-        })}
-      </div>
+      {isSettingsRendererAvailable('builtin.project-resources.global-exclusions-settings') ? (
+        <div id="settings-global-exclusions" className="scroll-mt-4">
+          {renderExcludeRulesSection({
+            title: '全局排除规则',
+            description: '对所有项目统一生效。默认已包含 .blend1/.blend2/... 这类 Blender 备份文件规则。',
+            patterns: globalPatterns,
+            emptyText: '暂无全局排除规则',
+            onClear: () => {
+              if (confirm('确定要清空所有全局排除规则吗？')) {
+                void saveGlobalPatterns([]);
+              }
+            },
+          })}
+        </div>
+      ) : null}
 
-      {automationSettingsAvailable && (
+      {isSettingsRendererAvailable('builtin.automation-runtime.global-settings') && (
         <section id="settings-global-automation" className="scroll-mt-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
           <div className="flex items-center gap-2 mb-3">
             <FolderOpen className="w-4 h-4 text-blue-500" />
@@ -1917,7 +1976,7 @@ export function SettingsPanel({
         </section>
       )}
 
-      {automationSettingsAvailable
+      {isSettingsRendererAvailable('builtin.automation-runtime.global-settings')
         ? renderPluginSection({
             title: '全局插件',
             description: '扫描应用级插件目录，供所有项目使用。项目内同 id 插件会覆盖这里的全局插件。',
@@ -1926,7 +1985,8 @@ export function SettingsPanel({
           })
         : null}
 
-      <section className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
+      {isSettingsRendererAvailable('builtin.project-manager.history-settings') ? (
+        <section className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
         <div className="flex items-center gap-2 mb-3">
           <HelpCircle className="w-4 h-4 text-blue-500" />
           <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">主页入口说明</h4>
@@ -1937,9 +1997,11 @@ export function SettingsPanel({
             这里的全局设置只保留通用偏好和工具路径，不再承载项目根目录选择。
           </p>
         </div>
-      </section>
+        </section>
+      ) : null}
 
-      <section id="settings-global-tools" className="scroll-mt-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
+      {isSettingsRendererAvailable('core.settings.tool-settings') ? (
+        <section id="settings-global-tools" className="scroll-mt-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
         <div className="flex items-center gap-2 mb-3">
           <Wrench className="w-4 h-4 text-blue-500" />
           <div className="flex-1">
@@ -2162,9 +2224,11 @@ export function SettingsPanel({
             </div>
           </div>
         </div>
-      </section>
+        </section>
+      ) : null}
 
-      <section id="settings-global-history" className="scroll-mt-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
+      {isSettingsRendererAvailable('builtin.project-manager.history-settings') ? (
+        <section id="settings-global-history" className="scroll-mt-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
         <div className="flex items-center gap-2 mb-3">
           <Settings className="w-4 h-4 text-blue-500" />
           <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">历史与忽略列表</h4>
@@ -2249,17 +2313,22 @@ export function SettingsPanel({
             </div>
           </div>
         </div>
-      </section>
+        </section>
+      ) : null}
 
-      <div id="settings-global-platform" className="scroll-mt-4 space-y-4">
-        <WorkspaceProfileDiagnosticsSection />
+      {isSettingsRendererAvailable('core.settings.recovery-settings') ? (
+        <div id="settings-global-platform" className="scroll-mt-4 space-y-4">
+          <WorkspaceProfileDiagnosticsSection />
 
-        <ModuleDiagnosticsSection />
+          <ModuleDiagnosticsSection />
 
-        <CapabilityDiagnosticsSection />
-      </div>
+          <CapabilityDiagnosticsSection />
+        </div>
+      ) : null}
 
-      <section id="settings-global-about" className="scroll-mt-4 rounded-xl border border-red-200 dark:border-red-900/40 bg-white dark:bg-gray-900 p-4">
+      {isSettingsRendererAvailable('core.settings.about-settings') ? (
+        <>
+        <section id="settings-global-about" className="scroll-mt-4 rounded-xl border border-red-200 dark:border-red-900/40 bg-white dark:bg-gray-900 p-4">
         <div className="flex items-center gap-2 mb-3">
           <Power className="w-4 h-4 text-red-500" />
           <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">程序退出</h4>
@@ -2277,9 +2346,9 @@ export function SettingsPanel({
             结束程序
           </button>
         </div>
-      </section>
+        </section>
 
-      <section className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
+        <section className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
         <div className="mb-3 flex items-center gap-2">
           <Info className="h-4 w-4 text-blue-500" />
           <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">关于 {APP_NAME}</h4>
@@ -2295,37 +2364,43 @@ export function SettingsPanel({
             <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{APP_AUTHOR_CONTACT}</p>
           </div>
         </div>
-      </section>
+        </section>
+        </>
+      ) : null}
     </div>
   );
 
   const renderProjectSettings = () => (
     <div className="space-y-4">
-      <div id="settings-project-project-rules" className="scroll-mt-4">
-        {renderExcludeRulesSection({
-          title: '项目排除规则',
-          description: `当前项目：${projectName || '未打开项目'}。这里只追加项目专属规则；全局规则会继续一起生效。`,
-          patterns: projectPatterns,
-          emptyText: '暂无项目专属排除规则',
-          onClear: () => {
-            if (confirm('确定要清空当前项目的所有排除规则吗？')) {
-              saveProjectPatterns([]);
-            }
-          },
-        })}
-      </div>
+      {isSettingsRendererAvailable('builtin.project-resources.project-rules-settings') ? (
+        <>
+          <div id="settings-project-project-rules" className="scroll-mt-4">
+            {renderExcludeRulesSection({
+              title: '项目排除规则',
+              description: `当前项目：${projectName || '未打开项目'}。这里只追加项目专属规则；全局规则会继续一起生效。`,
+              patterns: projectPatterns,
+              emptyText: '暂无项目专属排除规则',
+              onClear: () => {
+                if (confirm('确定要清空当前项目的所有排除规则吗？')) {
+                  saveProjectPatterns([]);
+                }
+              },
+            })}
+          </div>
 
-      {projectPath && (
-        <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
-          <p className="text-sm font-medium text-gray-900 dark:text-gray-100">当前项目路径</p>
-          <p className="mt-2 text-xs text-gray-500 break-all">{projectPath}</p>
-          <p className="mt-3 text-xs text-blue-600 dark:text-blue-400">
-            项目排除规则会叠加到全局规则上，一起影响文件列表显示、搜索和刷新结果。
-          </p>
-        </div>
-      )}
+          {projectPath && (
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
+              <p className="text-sm font-medium text-gray-900 dark:text-gray-100">当前项目路径</p>
+              <p className="mt-2 text-xs text-gray-500 break-all">{projectPath}</p>
+              <p className="mt-3 text-xs text-blue-600 dark:text-blue-400">
+                项目排除规则会叠加到全局规则上，一起影响文件列表显示、搜索和刷新结果。
+              </p>
+            </div>
+          )}
+        </>
+      ) : null}
 
-      {automationSettingsAvailable ? (
+      {isSettingsRendererAvailable('builtin.automation-runtime.project-settings') ? (
         <div id="settings-project-project-plugins" className="scroll-mt-4">
           {renderPluginSection({
             title: '项目插件',
@@ -2336,7 +2411,8 @@ export function SettingsPanel({
         </div>
       ) : null}
 
-      {needsProjectRefresh && (
+      {needsProjectRefresh
+        && isSettingsRendererAvailable('builtin.project-resources.project-rules-settings') && (
         <div className="flex items-start gap-2 rounded-lg border border-yellow-200 bg-yellow-50 px-3 py-2 text-sm text-yellow-700">
           <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
           <span>排除规则已更新，关闭设置后会自动刷新当前项目。</span>
@@ -2365,36 +2441,39 @@ export function SettingsPanel({
         <div className="flex h-[68vh] min-h-[420px] max-h-[720px] min-w-0 flex-col md:flex-row">
           <aside className="hidden w-52 shrink-0 flex-col border-r border-gray-200 bg-gray-50/80 p-3 dark:border-gray-800 dark:bg-gray-950/40 md:flex">
             <p className="px-2 pb-2 text-xs font-medium text-gray-500 dark:text-gray-400">设置范围</p>
-            <div className="grid grid-cols-2 gap-1 rounded-lg bg-gray-200/70 p-1 dark:bg-gray-800">
+            <div className={`grid gap-1 rounded-lg bg-gray-200/70 p-1 dark:bg-gray-800 ${
+              hasProjectScope ? 'grid-cols-2' : 'grid-cols-1'
+            }`}>
               <button
                 type="button"
                 onClick={() => handleScopeChange('global')}
                 className={`rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${
-                  activeScope === 'global'
+                  displayedScope === 'global'
                     ? 'bg-white text-blue-600 shadow-sm dark:bg-gray-900 dark:text-blue-400'
                     : 'text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-gray-100'
                 }`}
               >
                 全局
               </button>
-              <button
-                type="button"
-                onClick={() => handleScopeChange('project')}
-                disabled={!hasProjectScope}
-                className={`rounded-md px-2 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-                  activeScope === 'project'
-                    ? 'bg-white text-blue-600 shadow-sm dark:bg-gray-900 dark:text-blue-400'
-                    : 'text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-gray-100'
-                }`}
-              >
-                项目
-              </button>
+              {hasProjectScope ? (
+                <button
+                  type="button"
+                  onClick={() => handleScopeChange('project')}
+                  className={`rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${
+                    displayedScope === 'project'
+                      ? 'bg-white text-blue-600 shadow-sm dark:bg-gray-900 dark:text-blue-400'
+                      : 'text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-gray-100'
+                  }`}
+                >
+                  项目
+                </button>
+              ) : null}
             </div>
 
             <nav className="mt-4 space-y-1" aria-label="设置分区">
               {navigationItems.map((item) => {
                 const Icon = item.icon;
-                const isActive = activeNavigationId === item.id;
+                const isActive = resolvedActiveNavigationId === item.id;
                 return (
                   <button
                     key={item.id}
@@ -2414,7 +2493,7 @@ export function SettingsPanel({
               })}
             </nav>
 
-            {activeScope === 'project' && projectName ? (
+            {displayedScope === 'project' && projectName ? (
               <div className="mt-auto border-t border-gray-200 px-2 pt-3 dark:border-gray-800">
                 <p className="text-[11px] text-gray-500 dark:text-gray-400">当前项目</p>
                 <p className="mt-1 truncate text-xs font-medium text-gray-700 dark:text-gray-200" title={projectName}>
@@ -2431,28 +2510,29 @@ export function SettingsPanel({
                   type="button"
                   onClick={() => handleScopeChange('global')}
                   className={`rounded px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                    activeScope === 'global'
+                    displayedScope === 'global'
                       ? 'bg-white text-blue-600 shadow-sm dark:bg-gray-900 dark:text-blue-400'
                       : 'text-gray-600 dark:text-gray-300'
                   }`}
                 >
                   全局
                 </button>
-                <button
-                  type="button"
-                  onClick={() => handleScopeChange('project')}
-                  disabled={!hasProjectScope}
-                  className={`rounded px-2.5 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-                    activeScope === 'project'
-                      ? 'bg-white text-blue-600 shadow-sm dark:bg-gray-900 dark:text-blue-400'
-                      : 'text-gray-600 dark:text-gray-300'
-                  }`}
-                >
-                  项目
-                </button>
+                {hasProjectScope ? (
+                  <button
+                    type="button"
+                    onClick={() => handleScopeChange('project')}
+                    className={`rounded px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                      displayedScope === 'project'
+                        ? 'bg-white text-blue-600 shadow-sm dark:bg-gray-900 dark:text-blue-400'
+                        : 'text-gray-600 dark:text-gray-300'
+                    }`}
+                  >
+                    项目
+                  </button>
+                ) : null}
               </div>
               <select
-                value={activeNavigationId}
+                value={resolvedActiveNavigationId}
                 onChange={(event) => handleNavigationChange(event.target.value as SettingsNavigationId)}
                 aria-label="设置分区"
                 className="min-w-0 flex-1 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-sm text-gray-700 outline-none focus:border-blue-400 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
@@ -2469,7 +2549,7 @@ export function SettingsPanel({
             onScroll={handleSettingsScroll}
             className="min-h-0 min-w-0 flex-1 overflow-y-auto bg-gray-50/40 p-4 dark:bg-gray-950/20 sm:p-5"
           >
-            {activeScope === 'global' ? renderGlobalSettings() : renderProjectSettings()}
+            {displayedScope === 'global' ? renderGlobalSettings() : renderProjectSettings()}
           </main>
         </div>
       </Dialog>

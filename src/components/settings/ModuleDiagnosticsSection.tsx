@@ -27,6 +27,7 @@ import type {
   PlatformModuleCommandError,
   PlatformModuleRuntimeOverview,
   PlatformModuleState,
+  PlatformModuleStopStrategy,
 } from '../../types/platformRuntime';
 import {
   CONTRIBUTION_KINDS,
@@ -89,6 +90,7 @@ export function ModuleDiagnosticsSection() {
   const [disableConfirmation, setDisableConfirmation] = useState<{
     moduleId: string;
     preview: PlatformDisablePreview;
+    strategy: PlatformModuleStopStrategy;
   } | null>(null);
 
   const load = useCallback(async () => {
@@ -128,30 +130,26 @@ export function ModuleDiagnosticsSection() {
 
   const disable = useCallback(
     async (moduleId: string, force = false) => {
-      await runAction(`${moduleId}:disable`, async () => {
-        if (force) {
-          await disablePlatformModule(moduleId, 'force');
-          return;
-        }
+      await runAction(`${moduleId}:preview-disable`, async () => {
         const preview = await previewDisablePlatformModule(moduleId);
-        if (!preview.canDisableGracefully) {
-          setDisableConfirmation({ moduleId, preview });
-          return;
-        }
-        await disablePlatformModule(moduleId, 'graceful');
+        setDisableConfirmation({
+          moduleId,
+          preview,
+          strategy: force ? 'force' : preview.canDisableGracefully ? 'graceful' : 'cascade',
+        });
       });
     },
     [runAction],
   );
 
-  const confirmCascadeDisable = useCallback(() => {
+  const confirmDisable = useCallback(() => {
     const confirmation = disableConfirmation;
     if (!confirmation) {
       return;
     }
     setDisableConfirmation(null);
     void runAction(`${confirmation.moduleId}:disable`, () =>
-      disablePlatformModule(confirmation.moduleId, 'cascade'));
+      disablePlatformModule(confirmation.moduleId, confirmation.strategy));
   }, [disableConfirmation, runAction]);
 
   const toggleInjection = useCallback(
@@ -444,12 +442,16 @@ export function ModuleDiagnosticsSection() {
       <ConfirmDialog
         isOpen={Boolean(disableConfirmation)}
         onClose={() => setDisableConfirmation(null)}
-        onConfirm={confirmCascadeDisable}
-        title="级联停用模块"
+        onConfirm={confirmDisable}
+        title={disableConfirmation?.strategy === 'force' ? '强制释放模块' : '停用模块'}
         message={disableConfirmation
-          ? `${disableConfirmation.preview.message}\n\n将按依赖关系级联停用：\n${disableConfirmation.preview.runningDependents.join('\n')}`
+          ? disableConfirmation.strategy === 'cascade'
+            ? `${disableConfirmation.preview.message}\n\n将按依赖关系级联停用：\n${disableConfirmation.preview.runningDependents.join('\n')}`
+            : disableConfirmation.strategy === 'force'
+              ? `${disableConfirmation.preview.message}\n\n强制释放可能中断仍在运行的资源，确认后才会执行。`
+              : `${disableConfirmation.preview.message}\n\n确认后将停用该模块并撤下它拥有的工具、标签和设置。`
           : ''}
-        confirmText="确认停用"
+        confirmText={disableConfirmation?.strategy === 'force' ? '确认强制释放' : '确认停用'}
         cancelText="取消"
         type="warning"
       />

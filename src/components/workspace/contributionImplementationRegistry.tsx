@@ -12,6 +12,7 @@ import { ProjectHomeSurface } from '../shell/ProjectHomeSurface';
 import { ProjectWorkspace } from '../file-manager/ProjectWorkspace';
 import { ContributionDiagnosticsSurface } from './ContributionDiagnosticsSurface';
 import { getContributedWidgetRendererIds } from './ContributedWidget';
+import { getSettingsSectionImplementationIds } from '../settings/settingsContributionImplementationRegistry';
 
 export interface ContributionSurfaceRendererProps {
   isActive: boolean;
@@ -50,5 +51,6 @@ export function getContributionImplementationInventory(): ContributionImplementa
     widgetRendererIds: getContributedWidgetRendererIds(),
     dataSourceReaderIds: getContributionDataSourceReaderIds(),
     commandHandlerIds: getContributionCommandHandlerIds(),
+    settingsSectionRendererIds: getSettingsSectionImplementationIds(),
   };
 }

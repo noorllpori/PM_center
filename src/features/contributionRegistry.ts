@@ -430,22 +430,168 @@ export const WORKFLOW_NODE_CONTRIBUTION_BY_ID = new Map<string, WorkflowNodeCont
   Object.values(WORKFLOW_NODE_CONTRIBUTIONS).map((definition) => [definition.id, definition] as const),
 );
 
+export type SettingsScope = 'global' | 'project';
+
+export type SettingsNavigationIconKey =
+  | 'about'
+  | 'automation'
+  | 'exclusions'
+  | 'history'
+  | 'platform'
+  | 'sliders'
+  | 'tools'
+  | 'web-console';
+
+export type SettingsSectionRendererId =
+  | 'builtin.automation-runtime.global-settings'
+  | 'builtin.automation-runtime.project-settings'
+  | 'builtin.local-web-console.settings'
+  | 'builtin.project-manager.history-settings'
+  | 'builtin.project-resources.global-exclusions-settings'
+  | 'builtin.project-resources.project-rules-settings'
+  | 'core.settings.about-settings'
+  | 'core.settings.general-settings'
+  | 'core.settings.recovery-settings'
+  | 'core.settings.tool-settings';
+
+export type SettingsSectionAvailability = 'always' | 'module-running';
+
 export interface SettingsSectionContributionDefinition extends ContributionDefinition {
-  scopes: readonly ('global' | 'project')[];
+  owner: string;
+  scopes: readonly SettingsScope[];
+  order: number;
+  navigationId: string;
   title: string;
+  iconKey: SettingsNavigationIconKey;
+  availability: SettingsSectionAvailability;
+  rendererId: SettingsSectionRendererId;
 }
 
 export const SETTINGS_SECTION_CONTRIBUTIONS = {
-  automationRuntime: {
-    ...contribution(
-      'builtin.automation-runtime.settings-section',
-      'settingsSections',
-      BUILTIN_MODULE_IDS.automationRuntime,
-    ),
-    scopes: ['global', 'project'],
-    title: '任务脚本与插件',
-  },
+  general: settingsSection({
+    id: 'core.settings.general-section',
+    moduleId: null,
+    owner: 'core.settings-center',
+    scope: 'global',
+    order: 100,
+    navigationId: 'general',
+    title: '常规',
+    iconKey: 'sliders',
+    rendererId: 'core.settings.general-settings',
+  }),
+  localWebConsole: settingsSection({
+    id: 'builtin.local-web-console.settings-section',
+    moduleId: BUILTIN_MODULE_IDS.localWebConsole,
+    owner: BUILTIN_MODULE_IDS.localWebConsole,
+    scope: 'global',
+    order: 200,
+    navigationId: 'web-console',
+    title: '网页控制台',
+    iconKey: 'web-console',
+    rendererId: 'builtin.local-web-console.settings',
+  }),
+  globalExclusions: settingsSection({
+    id: 'builtin.project-resources.global-exclusions-settings-section',
+    moduleId: BUILTIN_MODULE_IDS.projectResources,
+    owner: BUILTIN_MODULE_IDS.projectResources,
+    scope: 'global',
+    order: 300,
+    navigationId: 'exclusions',
+    title: '排除规则',
+    iconKey: 'exclusions',
+    rendererId: 'builtin.project-resources.global-exclusions-settings',
+  }),
+  automationRuntime: settingsSection({
+    id: 'builtin.automation-runtime.settings-section',
+    moduleId: BUILTIN_MODULE_IDS.automationRuntime,
+    owner: BUILTIN_MODULE_IDS.automationRuntime,
+    scope: 'global',
+    order: 400,
+    navigationId: 'automation',
+    title: '脚本与插件',
+    iconKey: 'automation',
+    rendererId: 'builtin.automation-runtime.global-settings',
+  }),
+  tools: settingsSection({
+    id: 'core.settings.tool-section',
+    moduleId: null,
+    owner: 'core.settings-center',
+    scope: 'global',
+    order: 500,
+    navigationId: 'tools',
+    title: '工具与 Blender',
+    iconKey: 'tools',
+    rendererId: 'core.settings.tool-settings',
+  }),
+  projectHistory: settingsSection({
+    id: 'builtin.project-manager.history-settings-section',
+    moduleId: BUILTIN_MODULE_IDS.projectManager,
+    owner: BUILTIN_MODULE_IDS.projectManager,
+    scope: 'global',
+    order: 600,
+    navigationId: 'history',
+    title: '历史记录',
+    iconKey: 'history',
+    rendererId: 'builtin.project-manager.history-settings',
+  }),
+  recovery: settingsSection({
+    id: 'core.recovery-settings.settings-section',
+    moduleId: null,
+    owner: 'core.recovery-settings',
+    scope: 'global',
+    order: 700,
+    navigationId: 'platform',
+    title: '装配与权限',
+    iconKey: 'platform',
+    rendererId: 'core.settings.recovery-settings',
+  }),
+  about: settingsSection({
+    id: 'core.settings.about-section',
+    moduleId: null,
+    owner: 'core.settings-center',
+    scope: 'global',
+    order: 800,
+    navigationId: 'about',
+    title: '关于与退出',
+    iconKey: 'about',
+    rendererId: 'core.settings.about-settings',
+  }),
+  projectRules: settingsSection({
+    id: 'builtin.project-resources.project-rules-settings-section',
+    moduleId: BUILTIN_MODULE_IDS.projectResources,
+    owner: BUILTIN_MODULE_IDS.projectResources,
+    scope: 'project',
+    order: 100,
+    navigationId: 'project-rules',
+    title: '项目规则',
+    iconKey: 'exclusions',
+    rendererId: 'builtin.project-resources.project-rules-settings',
+  }),
+  projectPlugins: settingsSection({
+    id: 'builtin.automation-runtime.project-settings-section',
+    moduleId: BUILTIN_MODULE_IDS.automationRuntime,
+    owner: BUILTIN_MODULE_IDS.automationRuntime,
+    scope: 'project',
+    order: 200,
+    navigationId: 'project-plugins',
+    title: '项目插件',
+    iconKey: 'automation',
+    rendererId: 'builtin.automation-runtime.project-settings',
+  }),
 } as const satisfies Record<string, SettingsSectionContributionDefinition>;
+
+export function getAvailableSettingsSectionContributions(
+  snapshot: ContributionRegistrySnapshot,
+  scope: SettingsScope,
+) {
+  return Object.values(SETTINGS_SECTION_CONTRIBUTIONS)
+    .filter((definition) => definition.scopes.includes(scope))
+    .filter((definition) => (
+      definition.availability === 'always'
+        || isContributionAvailable(snapshot, definition)
+    ))
+    .sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
+}
 
 export type ContextCommandTarget = 'file' | 'directoryBackground' | 'collection';
 
@@ -578,6 +724,40 @@ function contribution(
   moduleId: string | null,
 ): ContributionDefinition {
   return { id, kind, moduleId };
+}
+
+function settingsSection({
+  id,
+  moduleId,
+  owner,
+  scope,
+  order,
+  navigationId,
+  title,
+  iconKey,
+  rendererId,
+}: {
+  id: string;
+  moduleId: string | null;
+  owner: string;
+  scope: SettingsScope;
+  order: number;
+  navigationId: string;
+  title: string;
+  iconKey: SettingsNavigationIconKey;
+  rendererId: SettingsSectionRendererId;
+}): SettingsSectionContributionDefinition {
+  return {
+    ...contribution(id, 'settingsSections', moduleId),
+    owner,
+    scopes: [scope],
+    order,
+    navigationId,
+    title,
+    iconKey,
+    availability: moduleId ? 'module-running' : 'always',
+    rendererId,
+  };
 }
 
 function projectManagerCommand(
