@@ -29,7 +29,7 @@ import type {
   WorkspaceProfileRuntimeCommandError,
 } from '../../types/workspaceProfileRuntime';
 import { removeModuleOwnedLayout } from '../../features/profileLayout';
-import { Dialog } from '../Dialog';
+import { ConfirmDialog, Dialog } from '../Dialog';
 import { WorkspaceProfileLayoutEditor } from './WorkspaceProfileLayoutEditor';
 
 interface WorkspaceProfileEditorDialogProps {
@@ -79,6 +79,7 @@ export function WorkspaceProfileEditorDialog({
   const [error, setError] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [activeEditorSection, setActiveEditorSection] = useState<'modules' | 'layout'>('modules');
+  const [closeConfirmationOpen, setCloseConfirmationOpen] = useState(false);
   const originalDocumentRef = useRef('');
   const validationSequenceRef = useRef(0);
   const undoStackRef = useRef<WorkspaceProfileV1[]>([]);
@@ -121,6 +122,7 @@ export function WorkspaceProfileEditorDialog({
       setError(null);
       setSaveMessage(null);
       setActiveEditorSection('modules');
+      setCloseConfirmationOpen(false);
       undoStackRef.current = [];
       redoStackRef.current = [];
       return;
@@ -284,7 +286,16 @@ export function WorkspaceProfileEditorDialog({
   };
 
   const handleClose = () => {
-    if (dirty && !window.confirm('装配方案还有未保存修改，确定关闭吗？')) return;
+    if (isMutating || closeConfirmationOpen) return;
+    if (dirty) {
+      setCloseConfirmationOpen(true);
+      return;
+    }
+    onClose();
+  };
+
+  const confirmDiscardAndClose = () => {
+    setCloseConfirmationOpen(false);
     onClose();
   };
 
@@ -310,13 +321,14 @@ export function WorkspaceProfileEditorDialog({
   };
 
   return (
-    <Dialog
-      isOpen={isOpen}
-      onClose={handleClose}
-      title="编辑装配方案"
-      size="2xl"
-      footer={
-        <>
+    <>
+      <Dialog
+        isOpen={isOpen}
+        onClose={handleClose}
+        title="编辑装配方案"
+        size="2xl"
+        footer={
+          <>
           <button
             type="button"
             onClick={handleClose}
@@ -334,9 +346,9 @@ export function WorkspaceProfileEditorDialog({
             {isMutating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
             保存方案
           </button>
-        </>
-      }
-    >
+          </>
+        }
+      >
       {loading ? (
         <div className="flex min-h-80 items-center justify-center gap-2 text-sm text-gray-500">
           <Loader2 className="h-4 w-4 animate-spin" />
@@ -633,6 +645,17 @@ export function WorkspaceProfileEditorDialog({
           )}
         </div>
       )}
-    </Dialog>
+      </Dialog>
+      <ConfirmDialog
+        isOpen={closeConfirmationOpen}
+        onClose={() => setCloseConfirmationOpen(false)}
+        onConfirm={confirmDiscardAndClose}
+        title="关闭装配方案编辑器"
+        message="当前装配方案还有未保存修改。关闭后这些修改将丢失，是否继续？"
+        confirmText="放弃修改并关闭"
+        cancelText="继续编辑"
+        type="warning"
+      />
+    </>
   );
 }
