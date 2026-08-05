@@ -348,6 +348,9 @@ export function FileManager() {
   const hasHandledStartupProjectRef = useRef(false);
   const isRestoringSessionRef = useRef(false);
   const isSessionPersistenceReadyRef = useRef(false);
+  const suspendedProjectSessionRef = useRef<PersistedAppSession | null>(null);
+  const projectShellAvailabilityRef = useRef<boolean | null>(null);
+  const suppressSessionPersistenceRef = useRef(false);
   const unavailableWorkspaceContributionIds = useMemo(
     () => Object.values(WORKSPACE_TAB_CONTRIBUTIONS)
       .filter((definition) => !isWorkspaceTabContributionAvailable(contributionSnapshot, definition))
@@ -410,30 +413,6 @@ export function FileManager() {
         .getState()
         .closeContributionTabs([SHELL_TAB_CONTRIBUTIONS.lan.id]);
     }
-    if (!projectShellAvailable) {
-      const shellState = useShellTabStore.getState();
-      const projectTabs = shellState.tabs.filter(
-        (tab) => tab.type === 'project' && tab.projectPath,
-      );
-      shellState.closeContributionTabs([SHELL_TAB_CONTRIBUTIONS.project.id]);
-      projectTabs.forEach((tab) => {
-        const normalizedPath = normalizeProjectPath(tab.projectPath!);
-        const subscriptions = sessionSubscriptionsRef.current.get(normalizedPath);
-        subscriptions?.unsubscribeProject();
-        subscriptions?.unsubscribeWorkspace();
-        sessionSubscriptionsRef.current.delete(normalizedPath);
-        sessionsRef.current.delete(normalizedPath);
-        void invoke('release_project_resources', {
-          projectPath: tab.projectPath,
-        }).catch((error) => {
-          console.warn('Failed to release disabled project session:', tab.projectPath, error);
-        });
-      });
-      setPendingProjectOpen(null);
-      setProjectLocationCandidates([]);
-      setProjectLocationSearchError(null);
-      setHasSearchedProjectLocation(false);
-    }
     if (!pythonToolAvailable) {
       setIsPythonEnvOpen(false);
     }
@@ -446,7 +425,6 @@ export function FileManager() {
   }, [
     lanShellAvailable,
     mdtToolAvailable,
-    projectShellAvailable,
     pythonToolAvailable,
     taskToolAvailable,
     unavailableWorkspaceContributionIds,
@@ -470,11 +448,7 @@ export function FileManager() {
     ? sessionsRef.current.get(normalizeProjectPath(activeShellTab.projectPath)) ?? null
     : null;
 
-  const persistAppSession = useCallback(async () => {
-    if (!isSessionPersistenceReadyRef.current || isRestoringSessionRef.current) {
-      return;
-    }
-
+  const createPersistedAppSessionSnapshot = useCallback((): PersistedAppSession => {
     const shellState = useShellTabStore.getState();
     const projectTabs = shellState.tabs
       .filter((tab) => tab.type === 'project' && tab.projectPath)
@@ -508,7 +482,7 @@ export function FileManager() {
     });
 
     const activeTab = shellState.tabs.find((tab) => tab.id === shellState.activeTabId);
-    const persistedSession: PersistedAppSession = {
+    return {
       ...createDefaultPersistedAppSession(),
       profile: (() => {
         const profile = useWorkspaceProfileStore.getState().snapshot?.currentProfile;
@@ -525,12 +499,26 @@ export function FileManager() {
       projects,
       standaloneWindows: dedupeStandaloneWindows(getTrackedStandaloneWindows()),
     };
-
-    await savePersistedAppSession(persistedSession);
   }, []);
 
+  const persistAppSession = useCallback(async () => {
+    if (
+      !isSessionPersistenceReadyRef.current
+      || isRestoringSessionRef.current
+      || suppressSessionPersistenceRef.current
+    ) {
+      return;
+    }
+
+    await savePersistedAppSession(createPersistedAppSessionSnapshot());
+  }, [createPersistedAppSessionSnapshot]);
+
   const schedulePersistAppSession = useCallback(() => {
-    if (!isSessionPersistenceReadyRef.current || isRestoringSessionRef.current) {
+    if (
+      !isSessionPersistenceReadyRef.current
+      || isRestoringSessionRef.current
+      || suppressSessionPersistenceRef.current
+    ) {
       return;
     }
 
@@ -931,6 +919,87 @@ export function FileManager() {
 
     return restoredAnything || unresolvedProject !== null;
   }, [openProjectSession]);
+
+  useEffect(() => {
+    const previousAvailability = projectShellAvailabilityRef.current;
+    projectShellAvailabilityRef.current = projectShellAvailable;
+
+    if (!isSettingsLoaded || !hasHandledStartupProjectRef.current) {
+      return;
+    }
+
+    if (previousAvailability === projectShellAvailable) {
+      return;
+    }
+
+    if (!projectShellAvailable) {
+      if (sessionPersistTimerRef.current !== null) {
+        window.clearTimeout(sessionPersistTimerRef.current);
+        sessionPersistTimerRef.current = null;
+      }
+
+      suspendedProjectSessionRef.current = createPersistedAppSessionSnapshot();
+      suppressSessionPersistenceRef.current = true;
+
+      const shellState = useShellTabStore.getState();
+      const projectTabs = shellState.tabs.filter(
+        (tab) => tab.type === 'project' && tab.projectPath,
+      );
+      shellState.closeContributionTabs([SHELL_TAB_CONTRIBUTIONS.project.id]);
+      projectTabs.forEach((tab) => {
+        const normalizedPath = normalizeProjectPath(tab.projectPath!);
+        const subscriptions = sessionSubscriptionsRef.current.get(normalizedPath);
+        subscriptions?.unsubscribeProject();
+        subscriptions?.unsubscribeWorkspace();
+        sessionSubscriptionsRef.current.delete(normalizedPath);
+        sessionsRef.current.delete(normalizedPath);
+        void invoke('release_project_resources', {
+          projectPath: tab.projectPath,
+        }).catch((error) => {
+          console.warn('Failed to release disabled project session:', tab.projectPath, error);
+        });
+      });
+      setPendingProjectOpen(null);
+      setProjectLocationCandidates([]);
+      setProjectLocationSearchError(null);
+      setHasSearchedProjectLocation(false);
+      return;
+    }
+
+    const suspendedSession = suspendedProjectSessionRef.current;
+    if (!suspendedSession) {
+      suppressSessionPersistenceRef.current = false;
+      schedulePersistAppSession();
+      return;
+    }
+
+    let cancelled = false;
+    const restoreSuspendedProjects = async () => {
+      isRestoringSessionRef.current = true;
+      try {
+        await restorePersistedSession(suspendedSession);
+      } finally {
+        isRestoringSessionRef.current = false;
+        if (cancelled) {
+          return;
+        }
+        suspendedProjectSessionRef.current = null;
+        suppressSessionPersistenceRef.current = false;
+        schedulePersistAppSession();
+      }
+    };
+
+    void restoreSuspendedProjects();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    createPersistedAppSessionSnapshot,
+    isSettingsLoaded,
+    projectShellAvailable,
+    restorePersistedSession,
+    schedulePersistAppSession,
+  ]);
 
   useEffect(() => {
     if (!isSettingsLoaded || hasHandledStartupProjectRef.current) {
