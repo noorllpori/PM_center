@@ -159,6 +159,40 @@ export function WorkspaceProfileDiagnosticsSection() {
     }
   };
 
+  const editProfile = async (profile: {
+    id: string;
+    name: string;
+    description: string;
+    current: boolean;
+  }) => {
+    if (!profile.current) {
+      setEditorProfileId(profile.id);
+      return;
+    }
+
+    const baseName = `${profile.name} 工作副本`;
+    const existingNames = new Set(snapshot?.profiles.map((item) => item.name) ?? []);
+    let workingCopyName = baseName;
+    let suffix = 2;
+    while (existingNames.has(workingCopyName)) {
+      workingCopyName = `${baseName} ${suffix}`;
+      suffix += 1;
+    }
+
+    setPackageNotice(null);
+    try {
+      const result = await createProfile({
+        name: workingCopyName,
+        description: profile.description || '当前装配方案的可编辑工作副本。',
+        sourceProfileId: profile.id,
+      });
+      setPackageNotice(`已创建“${result.profile.name}”，保存后可通过“查看影响”应用。`);
+      setEditorProfileId(result.profile.id);
+    } catch {
+      // The store keeps the structured backend error visible in this section.
+    }
+  };
+
   const exportProfile = async (profileId: string, profileName: string) => {
     setPackageError(null);
     setPackageNotice(null);
@@ -380,17 +414,16 @@ export function WorkspaceProfileDiagnosticsSection() {
                       {packageBusy === `export:${profile.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
                       导出
                     </button>
-                    {!profile.current ? (
-                      <button
-                        type="button"
-                        onClick={() => setEditorProfileId(profile.id)}
-                        disabled={profile.status === 'invalid' || isLoading || isSwitching || isMutating}
-                        className="inline-flex h-8 items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                        编辑
-                      </button>
-                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => void editProfile(profile)}
+                      disabled={profile.status !== 'ready' || isLoading || isSwitching || isMutating || Boolean(snapshot.pendingSwitch)}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+                      title={profile.current ? '创建工作副本并进入编辑器，当前运行方案不会直接改变' : '编辑装配方案'}
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                      编辑
+                    </button>
                     <button
                       type="button"
                       onClick={() => openCreateDialog('copy', profile.id, profile.name, profile.description)}
@@ -398,7 +431,7 @@ export function WorkspaceProfileDiagnosticsSection() {
                       className="inline-flex h-8 items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
                     >
                       <Copy className="h-3.5 w-3.5" />
-                      {profile.current ? '复制编辑' : '复制'}
+                      复制
                     </button>
                     {!profile.current && (
                       profile.id.startsWith('local.profile-') || profile.id === 'local.current-pm-center'

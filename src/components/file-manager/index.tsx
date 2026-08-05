@@ -406,6 +406,14 @@ export function FileManager() {
     useShellTabStore.getState().openShellContributionTab(contributionId);
   }, [showToast]);
 
+  const openProfileHome = useCallback(() => {
+    const shellState = useShellTabStore.getState();
+    const homeTab = shellState.tabs.find((tab) => tab.type === 'home');
+    if (homeTab) {
+      shellState.activateTab(homeTab.id);
+    }
+  }, []);
+
   useEffect(() => {
     const openRecoverySettings = () => setIsRecoverySettingsOpen(true);
     window.addEventListener(OPEN_RECOVERY_SETTINGS_EVENT, openRecoverySettings);
@@ -1562,7 +1570,10 @@ export function FileManager() {
           items={profileNavigationItems}
           kind={profileNavigationKind}
           activeContributionId={activeShellTab?.contributionId}
+          homeSurfaceId={activeWorkspaceProfile?.shellLayout?.home}
+          homeActive={activeShellTab?.type === 'home'}
           onOpen={openProfileNavigation}
+          onOpenHome={openProfileHome}
         />
       ) : (
         <div className="md:hidden">
@@ -1570,7 +1581,10 @@ export function FileManager() {
             items={profileNavigationItems}
             kind="top-bar"
             activeContributionId={activeShellTab?.contributionId}
+            homeSurfaceId={activeWorkspaceProfile?.shellLayout?.home}
+            homeActive={activeShellTab?.type === 'home'}
             onOpen={openProfileNavigation}
+            onOpenHome={openProfileHome}
           />
         </div>
       )}
@@ -1581,7 +1595,10 @@ export function FileManager() {
             items={profileNavigationItems}
             kind="side-bar"
             activeContributionId={activeShellTab?.contributionId}
+            homeSurfaceId={activeWorkspaceProfile?.shellLayout?.home}
+            homeActive={activeShellTab?.type === 'home'}
             onOpen={openProfileNavigation}
+            onOpenHome={openProfileHome}
           />
         ) : null}
         <div className="min-w-0 flex-1 overflow-hidden">

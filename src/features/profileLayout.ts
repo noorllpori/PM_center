@@ -428,6 +428,7 @@ export function resolveProfileNavigation(
   registry: ContributionRegistrySnapshot,
 ): ResolvedProfileNavigationItem[] {
   if (!profile) return [];
+  const homeSurfaceId = profile.shellLayout?.home;
   const surfaceById = new Map((profile.surfaces ?? []).map((surface) => [surface.id, surface]));
   return (profile.shellLayout?.navigation ?? []).map((surfaceId) => {
     const surface = surfaceById.get(surfaceId);
@@ -445,6 +446,8 @@ export function resolveProfileNavigation(
       unavailableReason = `导航页面“${surface.title || surface.id}”没有绑定贡献`;
     } else if (!definition) {
       unavailableReason = `导航贡献未安装：${contributionId}`;
+    } else if (surfaceId === homeSurfaceId) {
+      unavailableReason = getContributionUnavailableReason(registry, definition);
     } else if (!tabContribution) {
       unavailableReason = `导航页面“${definition.title}”没有单例 Shell 标签入口`;
     } else {

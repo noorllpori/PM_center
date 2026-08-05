@@ -6,7 +6,10 @@ interface ProfileNavigationBarProps {
   items: ResolvedProfileNavigationItem[];
   kind: ShellNavigationKind;
   activeContributionId?: string;
+  homeSurfaceId?: string;
+  homeActive: boolean;
   onOpen: (shellTabContributionId: string) => void;
+  onOpenHome: () => void;
 }
 
 function NavigationIcon({ item }: { item: ResolvedProfileNavigationItem }) {
@@ -50,12 +53,29 @@ export function ProfileNavigationBar({
   items,
   kind,
   activeContributionId,
+  homeSurfaceId,
+  homeActive,
   onOpen,
+  onOpenHome,
 }: ProfileNavigationBarProps) {
   const availableItems = items.filter(
-    (item) => !item.unavailableReason && item.tabContribution,
+    (item) => !item.unavailableReason && (item.surfaceId === homeSurfaceId || item.tabContribution),
   );
   if (availableItems.length === 0) return null;
+
+  const isHomeItem = (item: ResolvedProfileNavigationItem) => item.surfaceId === homeSurfaceId;
+  const openItem = (item: ResolvedProfileNavigationItem) => {
+    if (isHomeItem(item)) {
+      onOpenHome();
+      return;
+    }
+    if (item.tabContribution) {
+      onOpen(item.tabContribution.id);
+    }
+  };
+  const isActiveItem = (item: ResolvedProfileNavigationItem) => (
+    isHomeItem(item) ? homeActive : item.contributionId === activeContributionId
+  );
 
   if (kind === 'side-bar') {
     return (
@@ -66,8 +86,8 @@ export function ProfileNavigationBar({
             <NavigationButton
               key={item.surfaceId}
               item={item}
-              active={item.contributionId === activeContributionId}
-              onOpen={() => onOpen(item.tabContribution!.id)}
+              active={isActiveItem(item)}
+              onOpen={() => openItem(item)}
             />
           ))}
         </div>
@@ -84,8 +104,8 @@ export function ProfileNavigationBar({
           key={item.surfaceId}
           item={item}
           compact={compact}
-          active={item.contributionId === activeContributionId}
-          onOpen={() => onOpen(item.tabContribution!.id)}
+          active={isActiveItem(item)}
+          onOpen={() => openItem(item)}
         />
       ))}
     </div>
