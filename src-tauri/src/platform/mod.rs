@@ -3,12 +3,17 @@ mod builtin_modules;
 mod capability_gateway;
 mod component_settings;
 mod module_manager;
+mod profile_package;
 mod profile_runtime;
 mod resource_registry;
 
 pub use module_manager::{
     DisablePreview, ModuleDiagnosticSnapshot, ModuleManager, ModuleManagerError,
     ModuleRuntimeOverview, ModuleState, StopStrategy,
+};
+pub use profile_package::{
+    ExportWorkspaceProfilePackageRequest, ImportWorkspaceProfilePackageRequest,
+    ProfilePackageExportResult, ProfilePackageImportPreview,
 };
 pub use profile_runtime::{
     CreateWorkspaceProfileRequest, InitializeWorkspaceProfileRuntimeRequest,
@@ -288,6 +293,44 @@ pub async fn save_workspace_profile(
     let _guard = runtime.profile_switch_lock.lock().await;
     let manifests = formal_module_manifests(&runtime);
     runtime.profiles.save_profile(&request, &manifests)
+}
+
+#[tauri::command]
+pub fn export_workspace_profile_package(
+    request: ExportWorkspaceProfilePackageRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<ProfilePackageExportResult, WorkspaceProfileRuntimeError> {
+    let profile = runtime.profiles.profile_document(&request.profile_id)?;
+    profile_package::export_profile_package(&profile, &request.destination_path)
+}
+
+#[tauri::command]
+pub fn inspect_workspace_profile_package(
+    package_path: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<ProfilePackageImportPreview, WorkspaceProfileRuntimeError> {
+    let manifests = formal_module_manifests(&runtime);
+    profile_package::inspect_profile_package(&package_path, &runtime.profiles, &manifests)
+}
+
+#[tauri::command]
+pub async fn import_workspace_profile_package(
+    request: ImportWorkspaceProfilePackageRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<WorkspaceProfileMutationResult, WorkspaceProfileRuntimeError> {
+    let _guard = runtime.profile_switch_lock.lock().await;
+    let manifests = formal_module_manifests(&runtime);
+    profile_package::import_profile_package(&request, &runtime.profiles, &manifests)
+}
+
+#[tauri::command]
+pub async fn delete_workspace_profile(
+    profile_id: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<WorkspaceProfileRuntimeSnapshot, WorkspaceProfileRuntimeError> {
+    let _guard = runtime.profile_switch_lock.lock().await;
+    let manifests = formal_module_manifests(&runtime);
+    runtime.profiles.delete_profile(&profile_id, &manifests)
 }
 
 #[tauri::command]

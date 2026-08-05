@@ -62,6 +62,13 @@ pub enum WorkspaceProfileRuntimeErrorCode {
     ProfileRecoveryFailed,
     ProfileEditBlocked,
     ProfileRevisionConflict,
+    ProfilePackageInvalid,
+    ProfilePackageUnsafe,
+    ProfilePackageUnsupported,
+    ProfilePackageTooLarge,
+    ProfilePackageDigestMismatch,
+    ProfilePackageNameConflict,
+    ProfileDeleteBlocked,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -683,6 +690,159 @@ impl WorkspaceProfileRuntime {
             validation,
             snapshot,
         })
+    }
+
+    pub fn import_profile_document(
+        &self,
+        source: &WorkspaceProfileV1,
+        requested_name: &str,
+        package_id: &str,
+        manifests: &[ModuleManifestV1],
+    ) -> Result<WorkspaceProfileMutationResult, WorkspaceProfileRuntimeError> {
+        let _guard = self.operation_lock.lock().map_err(|_| {
+            WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileLockPoisoned,
+                "装配方案运行时锁已损坏",
+                None,
+            )
+        })?;
+        self.ensure_edit_repository_ready_locked()?;
+        let name = validate_profile_text(requested_name, "导入方案名称", 80)?;
+        let existing = self.list_profiles_locked(manifests, "")?;
+        if existing
+            .iter()
+            .any(|profile| profile.name.eq_ignore_ascii_case(&name))
+        {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfilePackageNameConflict,
+                format!("已经存在名为“{name}”的装配方案，请使用其他名称"),
+                None,
+            ));
+        }
+
+        let profile_id = format!("local.profile-{}", Uuid::new_v4().simple());
+        let mut profile = source.clone();
+        profile.schema_version = PLATFORM_SCHEMA_VERSION;
+        profile.id = profile_id.clone();
+        profile.name = name;
+        profile.revision = 1;
+        profile.extensions.remove("migration");
+        profile.extensions.remove("template");
+        profile.extensions.remove("editorMetadata");
+        profile.extensions.insert(
+            "editorMetadata".into(),
+            json!({
+                "createdAt": Utc::now().timestamp_millis(),
+                "importedPackageId": package_id,
+            }),
+        );
+
+        let validation = build_draft_validation(&profile, manifests, &self.component_manifests);
+        if !validation.valid {
+            return Err(draft_validation_error(
+                "导入装配方案未通过依赖预检",
+                &validation,
+                None,
+            ));
+        }
+        let path = self.profile_path(&profile_id);
+        write_new_json(&path, &profile)?;
+        let snapshot = self.snapshot_locked(manifests)?;
+        Ok(WorkspaceProfileMutationResult {
+            profile,
+            validation,
+            snapshot,
+        })
+    }
+
+    pub fn delete_profile(
+        &self,
+        profile_id: &str,
+        manifests: &[ModuleManifestV1],
+    ) -> Result<WorkspaceProfileRuntimeSnapshot, WorkspaceProfileRuntimeError> {
+        let _guard = self.operation_lock.lock().map_err(|_| {
+            WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileLockPoisoned,
+                "装配方案运行时锁已损坏",
+                None,
+            )
+        })?;
+        self.ensure_edit_repository_ready_locked()?;
+        let is_user_profile = profile_id.starts_with("local.profile-");
+        let is_migration_profile = profile_id == MIGRATED_PROFILE_ID;
+        if !is_valid_stable_id(profile_id) || (!is_user_profile && !is_migration_profile) {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileDeleteBlocked,
+                "默认和空白恢复方案不能删除",
+                None,
+            ));
+        }
+        let state = self.read_state()?;
+        if state.current_profile_id == profile_id {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileDeleteBlocked,
+                "当前正在运行的装配方案不能删除，请先切换到其他方案",
+                Some(&self.profile_path(profile_id)),
+            ));
+        }
+        let path = self.profile_path(profile_id);
+        let profile = self.read_profile_document_locked(profile_id)?;
+        if profile.id != profile_id {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfilePersistenceConflict,
+                "装配方案文件名与文档 ID 不一致，拒绝删除",
+                Some(&path),
+            ));
+        }
+        let tombstone = self.repository_path.join(format!(
+            ".{}.{}.delete",
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("profile.json"),
+            Uuid::new_v4().simple()
+        ));
+        fs::rename(&path, &tombstone)
+            .map_err(|error| io_error("暂存待删除装配方案失败", &path, error))?;
+        let clears_previous_profile = state.previous_profile_id.as_deref() == Some(profile_id);
+        if clears_previous_profile {
+            let mut updated_state = state.clone();
+            updated_state.previous_profile_id = None;
+            updated_state.updated_at = Utc::now().timestamp_millis();
+            if let Err(mut state_error) = replace_json(&self.state_path, &updated_state) {
+                if let Err(rollback_error) = fs::rename(&tombstone, &path) {
+                    state_error.details.push(format!(
+                        "恢复方案文件失败：{} ({})",
+                        rollback_error,
+                        tombstone.to_string_lossy()
+                    ));
+                }
+                return Err(state_error);
+            }
+        }
+        if let Err(error) = fs::remove_file(&tombstone) {
+            let mut mapped = io_error("删除装配方案失败", &path, error);
+            let file_restored = match fs::rename(&tombstone, &path) {
+                Ok(()) => true,
+                Err(rollback_error) => {
+                    mapped.details.push(format!(
+                        "恢复方案文件失败：{} ({})",
+                        rollback_error,
+                        tombstone.to_string_lossy()
+                    ));
+                    false
+                }
+            };
+            if clears_previous_profile && file_restored {
+                if let Err(state_rollback_error) = replace_json(&self.state_path, &state) {
+                    mapped.details.push(format!(
+                        "恢复方案历史引用失败：{}",
+                        state_rollback_error.message
+                    ));
+                }
+            }
+            return Err(mapped);
+        }
+        self.snapshot_locked(manifests)
     }
 
     pub(crate) fn set_current_module_enabled(
@@ -3959,6 +4119,143 @@ mod tests {
             serde_json::to_value(runtime.profile_document(&source_id).unwrap()).unwrap(),
             serde_json::to_value(snapshot.current_profile).unwrap()
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn custom_profile_can_be_deleted_without_changing_the_current_profile() {
+        let root = test_root("delete-custom-profile");
+        let runtime = WorkspaceProfileRuntime::new(&root);
+        let snapshot = runtime
+            .initialize_from_current_configuration(&[], &BTreeSet::new(), &[])
+            .unwrap();
+        let current_profile_id = snapshot.current_profile.id.clone();
+        let current_profile_bytes = fs::read(runtime.profile_path(&current_profile_id)).unwrap();
+        let created = runtime
+            .create_profile(
+                &CreateWorkspaceProfileRequest {
+                    name: "Disposable".into(),
+                    description: "delete test".into(),
+                    source_profile_id: None,
+                },
+                &[],
+            )
+            .unwrap();
+        let deleted_profile_id = created.profile.id.clone();
+        let deleted_profile_path = runtime.profile_path(&deleted_profile_id);
+        assert!(deleted_profile_path.exists());
+
+        let after = runtime.delete_profile(&deleted_profile_id, &[]).unwrap();
+
+        assert!(!deleted_profile_path.exists());
+        assert!(!after
+            .profiles
+            .iter()
+            .any(|profile| profile.id == deleted_profile_id));
+        assert_eq!(after.current_profile.id, current_profile_id);
+        assert_eq!(
+            fs::read(runtime.profile_path(&current_profile_id)).unwrap(),
+            current_profile_bytes
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn current_custom_profile_cannot_be_deleted() {
+        let root = test_root("delete-current-profile");
+        let runtime = WorkspaceProfileRuntime::new(&root);
+        runtime
+            .initialize_from_current_configuration(&[], &BTreeSet::new(), &[])
+            .unwrap();
+        let created = runtime
+            .create_profile(
+                &CreateWorkspaceProfileRequest {
+                    name: "Current Custom".into(),
+                    description: String::new(),
+                    source_profile_id: None,
+                },
+                &[],
+            )
+            .unwrap();
+        let profile_id = created.profile.id.clone();
+        let profile_path = runtime.profile_path(&profile_id);
+        let profile_bytes = fs::read(&profile_path).unwrap();
+        let mut state = runtime.read_state().unwrap();
+        state.current_profile_id = profile_id.clone();
+        replace_json(&runtime.state_path, &state).unwrap();
+        let snapshot_before = runtime.snapshot(&[]).unwrap();
+
+        let error = runtime.delete_profile(&profile_id, &[]).unwrap_err();
+
+        assert!(matches!(
+            error.code,
+            WorkspaceProfileRuntimeErrorCode::ProfileDeleteBlocked
+        ));
+        assert_eq!(fs::read(profile_path).unwrap(), profile_bytes);
+        let snapshot_after = runtime.snapshot(&[]).unwrap();
+        assert_eq!(snapshot_after.current_profile.id, profile_id);
+        assert_eq!(
+            snapshot_after.profiles.len(),
+            snapshot_before.profiles.len()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reserved_profiles_cannot_be_deleted() {
+        let root = test_root("delete-reserved-profiles");
+        let runtime = WorkspaceProfileRuntime::new(&root);
+        let snapshot_before = runtime
+            .initialize_from_current_configuration(&[], &BTreeSet::new(), &[])
+            .unwrap();
+        let state_before = fs::read(&runtime.state_path).unwrap();
+
+        for profile_id in [DEFAULT_PROFILE_ID, BLANK_PROFILE_ID] {
+            let path = runtime.profile_path(profile_id);
+            let bytes_before = fs::read(&path).unwrap();
+            let error = runtime.delete_profile(profile_id, &[]).unwrap_err();
+            assert!(matches!(
+                error.code,
+                WorkspaceProfileRuntimeErrorCode::ProfileDeleteBlocked
+            ));
+            assert_eq!(fs::read(path).unwrap(), bytes_before);
+        }
+
+        let snapshot_after = runtime.snapshot(&[]).unwrap();
+        assert_eq!(fs::read(&runtime.state_path).unwrap(), state_before);
+        assert_eq!(
+            snapshot_after.current_profile.id,
+            snapshot_before.current_profile.id
+        );
+        assert_eq!(
+            snapshot_after.profiles.len(),
+            snapshot_before.profiles.len()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn non_current_migration_profile_can_be_deleted_and_clears_history_reference() {
+        let root = test_root("delete-migration-profile");
+        let runtime = WorkspaceProfileRuntime::new(&root);
+        runtime
+            .initialize_from_current_configuration(&[], &BTreeSet::new(), &[])
+            .unwrap();
+        let migration_path = runtime.profile_path(MIGRATED_PROFILE_ID);
+        let mut state = runtime.read_state().unwrap();
+        state.previous_profile_id = Some(MIGRATED_PROFILE_ID.into());
+        state.current_profile_id = DEFAULT_PROFILE_ID.into();
+        replace_json(&runtime.state_path, &state).unwrap();
+
+        let snapshot = runtime.delete_profile(MIGRATED_PROFILE_ID, &[]).unwrap();
+
+        assert!(!migration_path.exists());
+        assert_eq!(snapshot.current_profile.id, DEFAULT_PROFILE_ID);
+        assert!(!snapshot
+            .profiles
+            .iter()
+            .any(|profile| profile.id == MIGRATED_PROFILE_ID));
+        assert_eq!(runtime.read_state().unwrap().previous_profile_id, None);
         fs::remove_dir_all(root).unwrap();
     }
 

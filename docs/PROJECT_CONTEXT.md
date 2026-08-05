@@ -104,7 +104,7 @@ React invoke/listen
 | 脚本/任务 | `ScriptRunner.tsx`、`TaskPanel/`、`taskStore.ts` | 用户脚本、日志、取消/重试与任务面板聚合。 |
 | 设置 | `SettingsPanel.tsx`、`settings/settingsContributionImplementationRegistry.ts`、`settingsStore.ts`、`settings/LocalWebConsoleSettingsSection.tsx` | R7-3 按 `settingsSections` 贡献装配一级范围与二级页面，右侧只挂载当前设置页；模块停用后所属设置即时撤下。普通设置中心与不可停用恢复内核的边界见 `NEXT_MAJOR_R7_SETTINGS_CONTRIBUTIONS.md`。 |
 | 功能中心 | `features/builtinTools.ts`、`features/contributionRegistry.ts`、`features/contributionDataSources.ts`、`features/contributionCatalogDiagnostics.ts`、`stores/contributionRegistryStore.ts`、`components/file-manager/index.tsx` | `Alt+Q` 工具入口；R5 已让工具、Pin、Shell/工作区标签、设置区、右键命令、Widget、DataSource 和节点目录按模块状态动态出现或撤下，并提供目录一致性、实现覆盖、缺失状态和订阅释放诊断。智能剪贴板仍调用独立 Win32 窗口。 |
-| 装配方案运行时 | `platform/profile_runtime.rs`、`api/workspaceProfiles.ts`、`stores/workspaceProfileStore.ts`、`WorkspaceProfileDiagnosticsSection.tsx`、`WorkspaceProfileEditorDialog.tsx`、`WorkspaceProfileLayoutEditor.tsx`、`features/profileLayout.ts`、`features/profileHome.ts`、`components/shell/ProfileHomeSurface.tsx`、`components/shell/ProfileNavigationBar.tsx` | R6 已完成迁移、事务切换、会话归属和恢复；R7-1 与 R7-2A/B/C 已验收；R7-2D/E 已加入主页、导航、快捷栏、Widget 装配编辑、撤销/重做、窄窗口导航、贡献所有权校验和 v4 幂等迁移，等待最终人工验收。当前运行方案必须复制后编辑，保存不会自动应用。 |
+| 装配方案运行时 | `platform/profile_runtime.rs`、`platform/profile_package.rs`、`api/workspaceProfiles.ts`、`stores/workspaceProfileStore.ts`、`WorkspaceProfileDiagnosticsSection.tsx`、`WorkspaceProfileEditorDialog.tsx`、`WorkspaceProfileLayoutEditor.tsx`、`features/profileLayout.ts`、`features/profileHome.ts`、`components/shell/ProfileHomeSurface.tsx`、`components/shell/ProfileNavigationBar.tsx` | R6 已完成迁移、事务切换、会话归属和恢复；R7 装配编辑、布局所有权、窄窗口导航和项目资源恢复已验收。R8-1 增加确定性 `.pmc-profile` 导出、严格包检查、导入预览和导入为新方案；导入不会自动应用。 |
 | 说明组件 | `components/ui/HelpAssistant.tsx` | 复杂或不可逆概念旁的问号说明；支持文字、图片、视频及自动避让定位。 |
 
 状态 Store 的所有权：
@@ -246,6 +246,8 @@ React invoke/listen
 - R6-3 已完成 Profile 会话归属和中断恢复并验收；R7-0 组件目录和依赖合同、R7-1 草稿编辑器均已验收，`pmc.blendio` 作为首个 bundled 但可卸载的组件登记。实际组件下载、安装、卸载、升级和外部进程监督仍属于 R9/R10；
 - R7-2A 已把主页入口改为 Profile Home Resolver，并完成安全主页人工验收；R7-2B 已新增可停用的 `builtin.project-manager` 管理项目主页和项目 Shell，并完成停用撤下、资源释放与热恢复验收；R7-2C 已让项目主页由 4 个 Widget、4 个 DataSource 和稳定 Command 贡献组合，默认 Profile 迁移幂等补齐这些绑定；`builtin.project-resources` 继续保留数据库/Watcher 等资源层；
 - R7-3 将设置系统拆成 `core.recovery-settings` 与 `builtin.settings-center` 两层。当前先实施设置贡献目录和动态装配；恢复 Surface 落地前，普通设置入口不能被停用。业务模块关闭后必须同步撤下自己的设置 UI，取消停用确认不得产生副作用；
+- R7 已于 2026-08-05 完成装配编辑、贡献所有权、项目会话释放和恢复验收；R8 按 `.pmc-profile`、路径映射、`.pmc-workspace` 三阶段推进；
+- R8-1 的方案包只允许 `manifest.json` 和 `profile.json`，使用 BLAKE3 校验并拒绝敏感字段、聊天资料、本机绝对路径、损坏包、路径穿越和超限内容；导入只创建新方案，不自动应用或安装依赖；
 - 可选 `builtin.local-web-console` 默认停用，只允许从本机浏览器访问白名单控制面；不得把它扩展为通用 `invoke`、Shell、文件系统或未经配对的局域网远控入口；
 - 静态启动页由 `shellLayout.home` 决定，复杂启动窗口和条件行为在 R11 通过受控 `app.started` 工作流实现；恢复流程始终优先，目标不可用时回退最小安全主页；
 - 当前功能中心 Pin 只是入口偏好，不能作为模块启停。真正停用必须停止端口、watcher、调度器、原生线程、子进程和数据库资源；

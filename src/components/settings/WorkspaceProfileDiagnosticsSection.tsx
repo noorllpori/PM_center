@@ -1,9 +1,12 @@
 import { useState } from 'react';
+import { open, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import {
   AlertTriangle,
   ArrowRight,
   CheckCircle2,
   Copy,
+  Download,
+  FileArchive,
   Layers3,
   Loader2,
   PackageOpen,
@@ -11,9 +14,19 @@ import {
   Plus,
   RefreshCw,
   ShieldAlert,
+  Trash2,
+  Upload,
 } from 'lucide-react';
+import {
+  exportWorkspaceProfilePackage,
+  inspectWorkspaceProfilePackage,
+} from '../../api/workspaceProfiles';
 import { useWorkspaceProfileStore } from '../../stores/workspaceProfileStore';
-import { ConfirmDialog, InputDialog } from '../Dialog';
+import type {
+  ProfilePackageImportPreview,
+  WorkspaceProfileRuntimeCommandError,
+} from '../../types/workspaceProfileRuntime';
+import { ConfirmDialog, Dialog, InputDialog } from '../Dialog';
 import { WorkspaceProfileEditorDialog } from './WorkspaceProfileEditorDialog';
 
 const STATUS_META = {
@@ -55,6 +68,28 @@ function formatDate(timestamp: number) {
     : '-';
 }
 
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+}
+
+function packageErrorMessage(error: unknown) {
+  if (typeof error === 'string') return error;
+  if (error && typeof error === 'object') {
+    const typed = error as WorkspaceProfileRuntimeCommandError;
+    return [typed.message, ...(typed.details ?? []), typed.path]
+      .filter(Boolean)
+      .join('\n');
+  }
+  return String(error);
+}
+
+function safePackageFileName(name: string) {
+  const safe = name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').trim();
+  return `${safe || 'nexora-profile'}.pmc-profile`;
+}
+
 export function WorkspaceProfileDiagnosticsSection() {
   const snapshot = useWorkspaceProfileStore((state) => state.snapshot);
   const isLoading = useWorkspaceProfileStore((state) => state.isLoading);
@@ -67,6 +102,8 @@ export function WorkspaceProfileDiagnosticsSection() {
   const previewSwitch = useWorkspaceProfileStore((state) => state.previewSwitch);
   const switchProfile = useWorkspaceProfileStore((state) => state.switchProfile);
   const createProfile = useWorkspaceProfileStore((state) => state.createProfile);
+  const importProfilePackage = useWorkspaceProfileStore((state) => state.importProfilePackage);
+  const deleteProfile = useWorkspaceProfileStore((state) => state.deleteProfile);
   const clearSwitchPreview = useWorkspaceProfileStore((state) => state.clearSwitchPreview);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [createDialog, setCreateDialog] = useState<{
@@ -76,6 +113,12 @@ export function WorkspaceProfileDiagnosticsSection() {
   } | null>(null);
   const [newProfileName, setNewProfileName] = useState('');
   const [editorProfileId, setEditorProfileId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
+  const [importPreview, setImportPreview] = useState<ProfilePackageImportPreview | null>(null);
+  const [importName, setImportName] = useState('');
+  const [packageBusy, setPackageBusy] = useState<string | null>(null);
+  const [packageNotice, setPackageNotice] = useState<string | null>(null);
+  const [packageError, setPackageError] = useState<string | null>(null);
   const currentSummary = snapshot?.profiles.find((profile) => profile.current) ?? null;
   const currentProfile = snapshot?.currentProfile ?? null;
 
@@ -116,6 +159,79 @@ export function WorkspaceProfileDiagnosticsSection() {
     }
   };
 
+  const exportProfile = async (profileId: string, profileName: string) => {
+    setPackageError(null);
+    setPackageNotice(null);
+    setPackageBusy(`export:${profileId}`);
+    try {
+      const destinationPath = await saveDialog({
+        title: '导出 Nexora 装配方案',
+        defaultPath: safePackageFileName(profileName),
+        filters: [{ name: 'Nexora 装配方案', extensions: ['pmc-profile'] }],
+      });
+      if (!destinationPath) return;
+      const result = await exportWorkspaceProfilePackage({ profileId, destinationPath });
+      setPackageNotice(`已导出“${profileName}” · ${formatBytes(result.sizeBytes)}`);
+    } catch (exportError) {
+      setPackageError(packageErrorMessage(exportError));
+    } finally {
+      setPackageBusy(null);
+    }
+  };
+
+  const inspectImportPackage = async () => {
+    setPackageError(null);
+    setPackageNotice(null);
+    try {
+      const packagePath = await open({
+        title: '选择 Nexora 装配方案包',
+        multiple: false,
+        directory: false,
+        filters: [{ name: 'Nexora 装配方案', extensions: ['pmc-profile'] }],
+      });
+      if (!packagePath || Array.isArray(packagePath)) return;
+      setPackageBusy('inspect');
+      const preview = await inspectWorkspaceProfilePackage(packagePath);
+      setImportPreview(preview);
+      setImportName(preview.suggestedName);
+    } catch (inspectError) {
+      setPackageError(packageErrorMessage(inspectError));
+    } finally {
+      setPackageBusy(null);
+    }
+  };
+
+  const importPackage = async () => {
+    if (!importPreview?.canImport || !importName.trim()) return;
+    setPackageBusy('import');
+    setPackageError(null);
+    try {
+      const result = await importProfilePackage({
+        packagePath: importPreview.packagePath,
+        name: importName.trim(),
+      });
+      setImportPreview(null);
+      setPackageNotice(`已导入“${result.profile.name}”，当前运行方案未改变。`);
+    } catch (importError) {
+      setPackageError(packageErrorMessage(importError));
+    } finally {
+      setPackageBusy(null);
+    }
+  };
+
+  const deleteSelectedProfile = async (target: { id: string; name: string }) => {
+    setPackageNotice(null);
+    try {
+      await deleteProfile(target.id);
+      if (editorProfileId === target.id) {
+        setEditorProfileId(null);
+      }
+      setPackageNotice(`已删除装配方案“${target.name}”。`);
+    } catch {
+      // The store keeps the structured backend error visible in this section.
+    }
+  };
+
   return (
     <section className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -130,7 +246,16 @@ export function WorkspaceProfileDiagnosticsSection() {
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
+          <button
+            type="button"
+            onClick={() => void inspectImportPackage()}
+            disabled={isLoading || isSwitching || isMutating || Boolean(packageBusy) || Boolean(snapshot?.pendingSwitch)}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+          >
+            {packageBusy === 'inspect' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+            导入方案
+          </button>
           <button
             type="button"
             onClick={() => openCreateDialog('blank')}
@@ -156,6 +281,20 @@ export function WorkspaceProfileDiagnosticsSection() {
         <div className="mt-3 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <span className="whitespace-pre-wrap break-all">{error}</span>
+        </div>
+      ) : null}
+
+      {packageError ? (
+        <div className="mt-3 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span className="whitespace-pre-wrap break-all">{packageError}</span>
+        </div>
+      ) : null}
+
+      {packageNotice ? (
+        <div className="mt-3 flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-300">
+          <CheckCircle2 className="h-4 w-4 shrink-0" />
+          <span>{packageNotice}</span>
         </div>
       ) : null}
 
@@ -232,6 +371,15 @@ export function WorkspaceProfileDiagnosticsSection() {
                     ))}
                   </div>
                   <div className="flex flex-wrap items-center justify-end gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => void exportProfile(profile.id, profile.name)}
+                      disabled={profile.status !== 'ready' || isLoading || isSwitching || isMutating || Boolean(packageBusy)}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+                    >
+                      {packageBusy === `export:${profile.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                      导出
+                    </button>
                     {!profile.current ? (
                       <button
                         type="button"
@@ -252,6 +400,19 @@ export function WorkspaceProfileDiagnosticsSection() {
                       <Copy className="h-3.5 w-3.5" />
                       {profile.current ? '复制编辑' : '复制'}
                     </button>
+                    {!profile.current && (
+                      profile.id.startsWith('local.profile-') || profile.id === 'local.current-pm-center'
+                    ) ? (
+                      <button
+                        type="button"
+                        onClick={() => setDeleteTarget({ id: profile.id, name: profile.name })}
+                        disabled={isLoading || isSwitching || isMutating || Boolean(snapshot.pendingSwitch)}
+                        className="inline-flex h-8 items-center gap-1.5 rounded-md border border-red-200 bg-white px-2.5 text-xs text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900/60 dark:bg-gray-900 dark:text-red-300 dark:hover:bg-red-950/30"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        删除
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       onClick={() => void previewSwitch(profile.id)}
@@ -468,6 +629,22 @@ export function WorkspaceProfileDiagnosticsSection() {
         cancelText="取消"
         type="warning"
       />
+      <ConfirmDialog
+        isOpen={Boolean(deleteTarget)}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => {
+          if (deleteTarget) {
+            void deleteSelectedProfile(deleteTarget);
+          }
+        }}
+        title="删除装配方案"
+        message={deleteTarget
+          ? `确定删除“${deleteTarget.name}”吗？\n\n删除后无法恢复，当前运行方案和系统恢复方案不会受影响。`
+          : ''}
+        confirmText="确认删除"
+        cancelText="取消"
+        type="danger"
+      />
       <InputDialog
         isOpen={Boolean(createDialog)}
         onClose={() => setCreateDialog(null)}
@@ -486,6 +663,115 @@ export function WorkspaceProfileDiagnosticsSection() {
         profileId={editorProfileId}
         onClose={() => setEditorProfileId(null)}
       />
+      <Dialog
+        isOpen={Boolean(importPreview)}
+        onClose={() => {
+          if (packageBusy !== 'import') setImportPreview(null);
+        }}
+        title="导入装配方案"
+        size="lg"
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => setImportPreview(null)}
+              disabled={packageBusy === 'import'}
+              className="rounded-md px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-300 dark:hover:bg-gray-800"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={() => void importPackage()}
+              disabled={!importPreview?.canImport || !importName.trim() || packageBusy === 'import'}
+              className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-2 text-sm text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {packageBusy === 'import' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+              导入为新方案
+            </button>
+          </>
+        }
+      >
+        {importPreview ? (
+          <div className="space-y-4">
+            <div className="flex items-start gap-3 rounded-md border border-gray-200 p-3 dark:border-gray-700">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-indigo-100 text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300">
+                <FileArchive className="h-4 w-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">{importPreview.profileName}</p>
+                  <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${importPreview.canImport ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300' : 'bg-red-100 text-red-700 dark:bg-red-950/50 dark:text-red-300'}`}>
+                    {importPreview.canImport ? '检查通过' : '存在阻塞'}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{importPreview.description || '无方案说明'}</p>
+                <p className="mt-1 break-all font-mono text-[11px] text-gray-400">
+                  {importPreview.packageId} · Nexora {importPreview.producerVersion} · {formatBytes(importPreview.packageSizeBytes)}
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-gray-200 bg-gray-200 text-center sm:grid-cols-5 dark:border-gray-700 dark:bg-gray-700">
+              {[
+                ['模块', importPreview.moduleCount],
+                ['组件', importPreview.componentCount],
+                ['页面', importPreview.surfaceCount],
+                ['Widget', importPreview.widgetCount],
+                ['固定工具', importPreview.pinnedToolCount],
+              ].map(([label, value]) => (
+                <div key={String(label)} className="bg-white px-2 py-2 dark:bg-gray-900">
+                  <p className="text-[11px] text-gray-500">{label}</p>
+                  <p className="mt-1 text-sm font-semibold text-gray-900 dark:text-gray-100">{value}</p>
+                </div>
+              ))}
+            </div>
+
+            <label className="block">
+              <span className="mb-1.5 block text-xs font-medium text-gray-700 dark:text-gray-300">导入后的方案名称</span>
+              <input
+                value={importName}
+                onChange={(event) => setImportName(event.target.value)}
+                maxLength={80}
+                disabled={packageBusy === 'import'}
+                className="h-9 w-full rounded-md border border-gray-200 bg-white px-3 text-sm outline-none focus:border-indigo-400 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+              />
+              <span className="mt-1 block text-[11px] text-gray-500">导入只新增方案，不会切换当前运行状态，也不会安装缺失模块或组件。</span>
+            </label>
+
+            {(importPreview.missingModuleIds.length > 0 || importPreview.missingComponentIds.length > 0) ? (
+              <div className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">
+                {importPreview.missingModuleIds.length > 0 ? (
+                  <p className="break-all">缺失模块：{importPreview.missingModuleIds.join('、')}</p>
+                ) : null}
+                {importPreview.missingComponentIds.length > 0 ? (
+                  <p className="mt-1 break-all">缺失组件：{importPreview.missingComponentIds.join('、')}</p>
+                ) : null}
+              </div>
+            ) : null}
+
+            {importPreview.issues.length > 0 ? (
+              <div className="space-y-1.5">
+                {importPreview.issues.map((issue, index) => (
+                  <div
+                    key={`${issue.code}:${issue.path ?? index}`}
+                    className={`rounded-md px-3 py-2 text-xs ${issue.severity === 'error' ? 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-300' : issue.severity === 'warning' ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300' : 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-300'}`}
+                  >
+                    <p className="font-medium">{issue.code}</p>
+                    <p className="mt-0.5">{issue.message}</p>
+                    {issue.path ? <p className="mt-0.5 break-all font-mono opacity-70">{issue.path}</p> : null}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300">
+                <CheckCircle2 className="h-4 w-4" />
+                包结构、摘要、敏感数据和依赖检查均通过。
+              </div>
+            )}
+          </div>
+        ) : null}
+      </Dialog>
     </section>
   );
 }

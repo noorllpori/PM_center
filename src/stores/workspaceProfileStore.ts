@@ -1,9 +1,11 @@
 import { create } from 'zustand';
 import {
   createWorkspaceProfile,
+  deleteWorkspaceProfile,
   finalizeWorkspaceProfileSwitch,
   getWorkspaceProfileRuntime,
   initializeWorkspaceProfileRuntime,
+  importWorkspaceProfilePackage,
   previewWorkspaceProfileSwitch,
   rollbackWorkspaceProfileSwitch,
   saveWorkspaceProfile,
@@ -17,6 +19,7 @@ import {
 } from './builtinToolsStore';
 import type {
   CreateWorkspaceProfileRequest,
+  ImportWorkspaceProfilePackageRequest,
   SaveWorkspaceProfileRequest,
   WorkspaceProfileMutationResult,
   WorkspaceProfileRuntimeCommandError,
@@ -39,6 +42,10 @@ interface WorkspaceProfileState {
   switchProfile: (profileId: string) => Promise<void>;
   createProfile: (request: CreateWorkspaceProfileRequest) => Promise<WorkspaceProfileMutationResult>;
   saveProfile: (request: SaveWorkspaceProfileRequest) => Promise<WorkspaceProfileMutationResult>;
+  importProfilePackage: (
+    request: ImportWorkspaceProfilePackageRequest,
+  ) => Promise<WorkspaceProfileMutationResult>;
+  deleteProfile: (profileId: string) => Promise<WorkspaceProfileRuntimeSnapshot>;
   clearSwitchPreview: () => void;
 }
 
@@ -216,6 +223,34 @@ export const useWorkspaceProfileStore = create<WorkspaceProfileState>((set, get)
       const result = await saveWorkspaceProfile(request);
       set({ snapshot: result.snapshot, error: null });
       return result;
+    } catch (error) {
+      set({ error: formatRuntimeError(error) });
+      throw error;
+    } finally {
+      set({ isMutating: false });
+    }
+  },
+
+  importProfilePackage: async (request) => {
+    set({ isMutating: true, error: null, switchMessage: null });
+    try {
+      const result = await importWorkspaceProfilePackage(request);
+      set({ snapshot: result.snapshot, error: null });
+      return result;
+    } catch (error) {
+      set({ error: formatRuntimeError(error) });
+      throw error;
+    } finally {
+      set({ isMutating: false });
+    }
+  },
+
+  deleteProfile: async (profileId) => {
+    set({ isMutating: true, error: null, switchMessage: null });
+    try {
+      const snapshot = await deleteWorkspaceProfile(profileId);
+      set({ snapshot, error: null });
+      return snapshot;
     } catch (error) {
       set({ error: formatRuntimeError(error) });
       throw error;

@@ -74,6 +74,52 @@ export interface SaveWorkspaceProfileRequest {
   expectedRevision: number;
 }
 
+export interface ExportWorkspaceProfilePackageRequest {
+  profileId: string;
+  destinationPath: string;
+}
+
+export interface ProfilePackageExportResult {
+  packageId: string;
+  destinationPath: string;
+  payloadDigest: string;
+  sizeBytes: number;
+}
+
+export type ProfilePackageIssueSeverity = 'info' | 'warning' | 'error';
+
+export interface ProfilePackageIssue {
+  code: string;
+  severity: ProfilePackageIssueSeverity;
+  message: string;
+  path?: string | null;
+}
+
+export interface ProfilePackageImportPreview {
+  packagePath: string;
+  packageId: string;
+  producerVersion: string;
+  profileName: string;
+  description: string;
+  suggestedName: string;
+  payloadDigest: string;
+  packageSizeBytes: number;
+  moduleCount: number;
+  componentCount: number;
+  surfaceCount: number;
+  widgetCount: number;
+  pinnedToolCount: number;
+  missingModuleIds: string[];
+  missingComponentIds: string[];
+  issues: ProfilePackageIssue[];
+  canImport: boolean;
+}
+
+export interface ImportWorkspaceProfilePackageRequest {
+  packagePath: string;
+  name: string;
+}
+
 export interface WorkspaceProfileRuntimeSnapshot {
   currentProfile: WorkspaceProfileV1;
   profiles: WorkspaceProfileSummary[];

@@ -1,6 +1,10 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
   CreateWorkspaceProfileRequest,
+  ExportWorkspaceProfilePackageRequest,
+  ImportWorkspaceProfilePackageRequest,
+  ProfilePackageExportResult,
+  ProfilePackageImportPreview,
   SaveWorkspaceProfileRequest,
   WorkspaceProfileDraftValidation,
   WorkspaceProfileMutationResult,
@@ -35,6 +39,18 @@ export const createWorkspaceProfile = (request: CreateWorkspaceProfileRequest) =
 
 export const saveWorkspaceProfile = (request: SaveWorkspaceProfileRequest) =>
   invoke<WorkspaceProfileMutationResult>('save_workspace_profile', { request });
+
+export const exportWorkspaceProfilePackage = (request: ExportWorkspaceProfilePackageRequest) =>
+  invoke<ProfilePackageExportResult>('export_workspace_profile_package', { request });
+
+export const inspectWorkspaceProfilePackage = (packagePath: string) =>
+  invoke<ProfilePackageImportPreview>('inspect_workspace_profile_package', { packagePath });
+
+export const importWorkspaceProfilePackage = (request: ImportWorkspaceProfilePackageRequest) =>
+  invoke<WorkspaceProfileMutationResult>('import_workspace_profile_package', { request });
+
+export const deleteWorkspaceProfile = (profileId: string) =>
+  invoke<WorkspaceProfileRuntimeSnapshot>('delete_workspace_profile', { profileId });
 
 export const previewWorkspaceProfileSwitch = (request: WorkspaceProfileSwitchContext) =>
   invoke<WorkspaceProfileSwitchPreview>('preview_workspace_profile_switch', { request });
