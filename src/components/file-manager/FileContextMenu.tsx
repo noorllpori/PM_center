@@ -427,12 +427,10 @@ export function FileContextMenu({
 
   const handleOpen = async () => {
     try {
-      if (isVirtualEntry && onOpenFile) {
+      if (onOpenFile) {
         await onOpenFile(file);
       } else if (file.is_dir) {
         await invoke('open_path', { path: file.path });
-      } else if (onOpenFile) {
-        await onOpenFile(file);
       } else {
         await invoke('open_file', { path: file.path });
       }

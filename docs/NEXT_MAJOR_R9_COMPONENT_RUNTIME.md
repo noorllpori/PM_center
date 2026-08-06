@@ -19,7 +19,7 @@ R9 把组件从 Profile 中的静态目录项升级为可安装、可卸载、�
 - `builtin-rust` / 宿主适配器：为现有内置实现提供迁移兼容入口；
 - ShellTemplate、PageTemplate、ThemePreset 目录。
 
-`native-library`、DLL ABI、签名、`.pmc-pack` 归档安装和恶意包隔离仍属于 R10。R9 明确拒绝把 DLL 直接加载进 Nexora 进程。
+R10-1 已加入安全 `.pmc-pack` 安装，R10-2 已加入隔离 `native-library` 宿主和 ABI 握手；签名、许可证和更细粒度恶意包审计仍属于后续增强。第三方 DLL 继续禁止进入 Nexora 主进程。
 
 ## 2. 安装目录与动态目录
 

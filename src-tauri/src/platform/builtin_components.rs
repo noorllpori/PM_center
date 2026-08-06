@@ -1,7 +1,7 @@
 use pmc_platform::{
-    Capability, ComponentContributions, ComponentDistribution, ComponentManifestV1,
-    ComponentResourceLimits, ComponentRole, ComponentRuntime, ComponentUiMode, ExtensionFields,
-    FileHandlerContribution,
+    Capability, ComponentContributions, ComponentDependency, ComponentDistribution,
+    ComponentManifestV1, ComponentResourceLimits, ComponentRole, ComponentRuntime,
+    ComponentUiMode, ExtensionFields, FileHandlerContribution,
     PageTemplateContribution, PlatformTarget, PortDefinition, PortValueType,
     ShellTemplateContribution, ThemePresetContribution, ToolActionContribution,
     WorkflowNodeContribution, PLATFORM_SCHEMA_VERSION,
@@ -9,11 +9,21 @@ use pmc_platform::{
 use serde_json::json;
 
 pub const PM_BLENDIO_COMPONENT_ID: &str = "pmc.blendio";
+pub const BLENDER_WORKSPACE_COMPONENT_ID: &str = "nexora.blender.workspace";
+pub const IMAGE_FILE_HANDLER_COMPONENT_ID: &str = "nexora.file-handler.image";
+pub const VIDEO_FILE_HANDLER_COMPONENT_ID: &str = "nexora.file-handler.video";
+pub const TEXT_FILE_HANDLER_COMPONENT_ID: &str = "nexora.file-handler.text";
+pub const DIRECTORY_FILE_HANDLER_COMPONENT_ID: &str = "nexora.file-handler.directory";
 pub const PRESENTATION_TEMPLATES_COMPONENT_ID: &str = "nexora.presentation.templates";
 
 pub fn builtin_component_manifests() -> Vec<ComponentManifestV1> {
     vec![
         blendio_component_manifest(),
+        blender_workspace_component_manifest(),
+        image_file_handler_component_manifest(),
+        video_file_handler_component_manifest(),
+        text_file_handler_component_manifest(),
+        directory_file_handler_component_manifest(),
         presentation_templates_manifest(),
     ]
 }
@@ -46,16 +56,6 @@ fn blendio_component_manifest() -> ComponentManifestV1 {
         requires_components: Vec::new(),
         optional_components: Vec::new(),
         contributes: ComponentContributions {
-            file_handlers: vec![FileHandlerContribution {
-                id: "blender.open-file".into(),
-                name: "Blender 文件工作区".into(),
-                intents: vec!["open".into(), "open-internal".into(), "inspect".into(), "preview".into()],
-                extensions: vec!["blend".into()],
-                mime_types: vec!["application/x-blender".into()],
-                priority: 100,
-                workspace_target: Some("blend".into()),
-                extensions_extra: ExtensionFields::new(),
-            }],
             tool_actions: vec![ToolActionContribution {
                 id: "blender.inspect-file".into(),
                 command: "inspect".into(),
@@ -93,6 +93,190 @@ fn blendio_component_manifest() -> ComponentManifestV1 {
         },
         publisher: Some("Nexora".into()),
         extensions,
+    }
+}
+
+fn blender_workspace_component_manifest() -> ComponentManifestV1 {
+    let mut extensions = ExtensionFields::new();
+    extensions.insert("removable".into(), json!(true));
+    extensions.insert("installSource".into(), json!("installer-bundle"));
+    extensions.insert("autoInstall".into(), json!(false));
+    ComponentManifestV1 {
+        schema_version: PLATFORM_SCHEMA_VERSION,
+        id: BLENDER_WORKSPACE_COMPONENT_ID.into(),
+        name: "Nexora Blender 工作区".into(),
+        description: "提供 Blender 文件的内部工作区页面，依赖 BlenderIO 文件服务。".into(),
+        version: "1.0.0".into(),
+        api_version: "1".into(),
+        runtime: ComponentRuntime::BuiltinRust,
+        role: ComponentRole::Feature,
+        distribution: ComponentDistribution::Bundled,
+        ui_mode: ComponentUiMode::Hosted,
+        platforms: vec![PlatformTarget::Any],
+        entry: None,
+        capabilities: Vec::new(),
+        requires_components: vec![ComponentDependency {
+            id: PM_BLENDIO_COMPONENT_ID.into(),
+            version_requirement: "*".into(),
+        }],
+        optional_components: Vec::new(),
+        contributes: ComponentContributions {
+            file_handlers: vec![file_handler(
+                "nexora.blender.open-workspace",
+                "Blender 文件工作区",
+                &["open", "open-internal", "preview"],
+                &["blend"],
+                &["application/x-blender"],
+                200,
+                Some("blend"),
+                &["file"],
+            )],
+            ..ComponentContributions::default()
+        },
+        resources: ComponentResourceLimits::default(),
+        publisher: Some("Nexora".into()),
+        extensions,
+    }
+}
+
+fn image_file_handler_component_manifest() -> ComponentManifestV1 {
+    file_handler_component(
+        IMAGE_FILE_HANDLER_COMPONENT_ID,
+        "Nexora 图像预览",
+        "提供可替换的图像工作区页面。",
+        "image",
+        &["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "svg", "ico", "avif"],
+        &["image/*"],
+        &["open", "open-internal", "preview", "thumbnail"],
+    )
+}
+
+fn video_file_handler_component_manifest() -> ComponentManifestV1 {
+    file_handler_component(
+        VIDEO_FILE_HANDLER_COMPONENT_ID,
+        "Nexora 视频播放器",
+        "提供可替换的视频播放工作区页面。",
+        "video",
+        &["mp4", "m4v", "mov", "avi", "mkv", "webm", "wmv", "flv", "mpeg", "mpg", "m2ts"],
+        &["video/*"],
+        &["open", "open-internal", "preview"],
+    )
+}
+
+fn text_file_handler_component_manifest() -> ComponentManifestV1 {
+    file_handler_component(
+        TEXT_FILE_HANDLER_COMPONENT_ID,
+        "Nexora 文本编辑器",
+        "提供可替换的文本和 Markdown 工作区页面。",
+        "text",
+        &["txt", "md", "markdown", "mdx", "json", "jsonc", "js", "ts", "tsx", "jsx", "html", "htm", "css", "scss", "py", "rs", "c", "h", "cpp", "hpp", "java", "go", "php", "rb", "xml", "yml", "yaml", "toml", "ini", "conf", "log", "csv", "tsv"],
+        &["text/plain", "text/markdown", "application/json"],
+        &["open", "open-internal", "preview", "edit"],
+    )
+}
+
+fn directory_file_handler_component_manifest() -> ComponentManifestV1 {
+    file_handler_component_with_kinds(
+        DIRECTORY_FILE_HANDLER_COMPONENT_ID,
+        "Nexora 目录工作区",
+        "提供可替换的目录浏览工作区页面。",
+        "directory",
+        &[],
+        &["inode/directory"],
+        &["open", "open-internal"],
+        &["directory"],
+    )
+}
+
+fn file_handler_component(
+    id: &str,
+    name: &str,
+    description: &str,
+    target: &str,
+    extensions: &[&str],
+    mime_types: &[&str],
+    intents: &[&str],
+) -> ComponentManifestV1 {
+    file_handler_component_with_kinds(
+        id,
+        name,
+        description,
+        target,
+        extensions,
+        mime_types,
+        intents,
+        &["file"],
+    )
+}
+
+fn file_handler_component_with_kinds(
+    id: &str,
+    name: &str,
+    description: &str,
+    target: &str,
+    extensions: &[&str],
+    mime_types: &[&str],
+    intents: &[&str],
+    file_kinds: &[&str],
+) -> ComponentManifestV1 {
+    let mut extra = ExtensionFields::new();
+    extra.insert("removable".into(), json!(true));
+    extra.insert("installSource".into(), json!("installer-bundle"));
+    ComponentManifestV1 {
+        schema_version: PLATFORM_SCHEMA_VERSION,
+        id: id.into(),
+        name: name.into(),
+        description: description.into(),
+        version: "1.0.0".into(),
+        api_version: "1".into(),
+        runtime: ComponentRuntime::BuiltinRust,
+        role: ComponentRole::Feature,
+        distribution: ComponentDistribution::Bundled,
+        ui_mode: ComponentUiMode::Hosted,
+        platforms: vec![PlatformTarget::Any],
+        entry: None,
+        capabilities: Vec::new(),
+        requires_components: Vec::new(),
+        optional_components: Vec::new(),
+        contributes: ComponentContributions {
+            file_handlers: vec![file_handler(
+                &format!("{id}.open"),
+                name,
+                intents,
+                extensions,
+                mime_types,
+                100,
+                Some(target),
+                file_kinds,
+            )],
+            ..ComponentContributions::default()
+        },
+        resources: ComponentResourceLimits::default(),
+        publisher: Some("Nexora".into()),
+        extensions: extra,
+    }
+}
+
+fn file_handler(
+    id: &str,
+    name: &str,
+    intents: &[&str],
+    extensions: &[&str],
+    mime_types: &[&str],
+    priority: i32,
+    workspace_target: Option<&str>,
+    file_kinds: &[&str],
+) -> FileHandlerContribution {
+    FileHandlerContribution {
+        id: id.into(),
+        name: name.into(),
+        intents: intents.iter().map(|value| (*value).into()).collect(),
+        extensions: extensions.iter().map(|value| (*value).into()).collect(),
+        mime_types: mime_types.iter().map(|value| (*value).into()).collect(),
+        file_kinds: file_kinds.iter().map(|value| (*value).into()).collect(),
+        priority,
+        workspace_target: workspace_target.map(str::to_string),
+        extensions_extra: ExtensionFields::new(),
     }
 }
 

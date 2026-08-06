@@ -207,6 +207,7 @@ export interface FileHandlerContribution {
   intents: string[];
   extensions?: string[];
   mimeTypes?: string[];
+  fileKinds?: Array<'file' | 'directory' | string>;
   priority?: number;
   workspaceTarget?: string;
   [key: string]: unknown;

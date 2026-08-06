@@ -1,6 +1,6 @@
 # Nexora 文件意图路由与可替换文件处理器
 
-> 状态：`in-progress`（R10-0、R10-1 基础骨架已实现；R10-2 至 R10-4 仍规划中）
+> 状态：`in-progress`（R10-0 至 R10-4 已实现基础链路，正在做集成验收）
 >
 > 里程碑：R10-0 至 R10-4
 >
@@ -8,7 +8,7 @@
 >
 > 前置：R3 CapabilityGateway、R5 Contribution Registry、R9 组件运行时
 
-当前实现范围：组件清单支持 `fileHandlers` 贡献；文件双击和右键打开先经过 Tauri `route_file_intent`，`.blend` 由已安装的 `pmc.blendio` 处理器接管，缺失时普通 `open` 降级系统程序，`inspect` 等严格意图不会伪装成功。组件运行时支持 `.pmc-pack` ZIP 安全检查、暂存解压、BLAKE3 内容摘要和原子升级，`native-library` 仍在 R10-2 隔离宿主前拒绝安装/加载。签名、许可证、依赖锁和完整路由诊断页尚未纳入本轮。
+当前实现范围：组件清单支持 `fileHandlers` 贡献和 `fileKinds`（`file`/`directory`）；文件双击、右键打开和目录进入先经过 Tauri `route_file_intent`。图片、视频、文本、目录和 Blender 工作区均由可卸载的 Nexora 组件贡献，组件缺失时普通 `open` 降级系统程序，`inspect` 等严格意图不会伪装成功。`pmc.blendio` 只提供无头 BlendIO 服务，`nexora.blender.workspace` 单独提供内部 Blender 标签页且依赖 BlendIO。组件运行时支持 `.pmc-pack` ZIP 安全检查、暂存解压、BLAKE3 内容摘要、原子升级和隔离 `pmc-component-host`；`native-library` 的 ABI 握手、健康检查和 JSON 调用已接入，DLL 仍不进入 Nexora 主进程。签名、许可证、依赖锁和完整路由诊断页仍属于后续增强。
 
 ## 1. 目标
 
@@ -556,11 +556,15 @@ Profile 绑定：nexora.file-handler.blender-workspace
 - 崩溃、死循环、内存增长和宿主重启诊断；
 - DLL 不能进入 Nexora 主进程。
 
+当前完成：`pmc-component-host` 独立 Cargo binary；Windows `LoadLibraryW`、`nexora_component_abi_v1` 握手、`nexora_component_invoke_v1` JSON ABI、请求/响应大小限制、崩溃/超时错误码和发布资源自动准备。正式打包前由 `prepare:component-host` 编译并放入 Tauri resources；开发环境优先使用环境变量、应用旁路或 `target/debug` 宿主。调用导出约定为 `extern "system" fn(requestPtr, requestLen, responsePtr, responseCapacity) -> i64`，返回写入响应缓冲区的 JSON 字节数，负数表示组件错误。
+
 ### R10-3：BlenderIO 与 Blender 工作区外置
 
 - 把宿主内 BlendIO adapter 替换为独立签名 `native-process` 包；
 - 把 Blender 页面、菜单和 Surface 登记为独立文件处理器组件；
 - 完成第 11 节的无包、安装、卸载、重装和第三方替换验收。
+
+当前完成：BlendIO 服务和 Blender 工作区已拆为两个组件；工作区默认不自动安装，可从“可重新安装/安装器随附”列表显式安装。只安装 BlendIO 时解析/渲染预检仍可用，但 `.blend` 普通打开回退系统；安装工作区且 BlendIO 可用时才创建内部 Blender 标签。
 
 ### R10-4：内置查看器组件化
 
@@ -568,6 +572,8 @@ Profile 绑定：nexora.file-handler.blender-workspace
 - 允许卸载和第三方替换；
 - Profile 编辑器增加逻辑文件绑定；
 - 完成系统 fallback、会话恢复、未保存编辑和窄窗口验收。
+
+当前完成：图片、视频、文本和目录组件已登记并参与路由；目录处理器使用 `fileKinds: ["directory"]`，双击和右键均通过同一入口。卸载后保留绑定但候选变为缺失，普通打开回退系统，重装后自动恢复。
 
 ### R10-P：表现模板包
 

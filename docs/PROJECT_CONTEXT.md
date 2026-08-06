@@ -256,8 +256,8 @@ React invoke/listen
 - R8-1 的方案包只允许 `manifest.json` 和 `profile.json`，使用 BLAKE3 校验并拒绝敏感字段、聊天资料、本机绝对路径、损坏包、路径穿越和超限内容；导入只创建新方案，不自动应用或安装依赖；
 - R8-2 使用 `toolAliases` 和 `pathVariables` 表达可移植需求；导入时明确映射 Blender、FFmpeg、FFprobe、Python 和普通路径，绝对路径仅存于 `profiles/local-bindings/<profile-id>.json`，绑定失败回滚 Profile，删除方案同步清理；
 - R8-3 `.pmc-workspace` 只携带可移植 Profile、普通变量和 Surface 引用骨架，继续拒绝项目文件、聊天、缓存、凭据、绝对路径和组件二进制；
-- R9 使用应用数据目录 `components/` 管理动态组件。随附组件也可卸载和重新安装；组件执行统一经过 operationId、并行/超时/内存限制、进程树取消、日志和 Capability token。`native-library` 明确拒绝并等待 R10 隔离宿主；
-- R10 先建立文件意图路由和可诊断绑定，再实现 `.pmc-pack`、隔离 DLL 宿主、BlenderIO/Blender 工作区外置及图片/视频/文本/Markdown/目录处理器组件化。`.pmc-workspace` 在包安全完成后可选携带可分发依赖包；
+- R9 使用应用数据目录 `components/` 管理动态组件。随附组件也可卸载和重新安装；组件执行统一经过 operationId、并行/超时/内存限制、进程树取消、日志和 Capability token。R10-2 已加入隔离 `pmc-component-host` 与 Windows DLL ABI，主进程不直接加载第三方 DLL；
+- R10-0 至 R10-4 已建立文件意图路由和绑定、`.pmc-pack` 安装安全检查、隔离 DLL 宿主、BlenderIO/Blender 工作区拆分及图片/视频/文本/目录处理器组件化。`.pmc-workspace` 在包安全完成后可选携带可分发依赖包；签名、许可证和完整诊断面板仍待后续增强；
 - 可选 `builtin.local-web-console` 默认停用，只允许从本机浏览器访问白名单控制面；不得把它扩展为通用 `invoke`、Shell、文件系统或未经配对的局域网远控入口；
 - 静态启动页由 `shellLayout.home` 决定，复杂启动窗口和条件行为在 R11 通过受控 `app.started` 工作流实现；恢复流程始终优先，目标不可用时回退最小安全主页；
 - 主页不再是固定业务页面：`shellLayout.home` 指向的 Surface 直接成为主页，现有项目主页只是项目管理器贡献。顶部、侧边和紧凑是三个内置 ShellTemplate 兼容预设，后续由受控 `base.html`、PageTemplate 和 ThemePreset 重绘整体结构；完整合同见 `NEXT_MAJOR_PRESENTATION_TEMPLATE_ARCHITECTURE.md`；

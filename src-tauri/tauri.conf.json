@@ -47,7 +47,8 @@
     },
     "resources": [
       "resources/plugin-sdk/**/*",
-      "resources/plugin-python/windows-x64/**/*"
+      "resources/plugin-python/windows-x64/**/*",
+      "resources/component-host/**/*"
     ],
     "icon": [
       "icons/32x32.png",

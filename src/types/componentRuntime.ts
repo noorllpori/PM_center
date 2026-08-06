@@ -68,6 +68,8 @@ export interface ComponentRuntimeOverview {
   recentOperations: ComponentOperationSummary[];
   templates: PresentationTemplateCatalog;
   legacyPythonActionCompatible: boolean;
+  componentHostAvailable: boolean;
+  componentHostPath?: string | null;
 }
 
 export interface ComponentPackageInspection {

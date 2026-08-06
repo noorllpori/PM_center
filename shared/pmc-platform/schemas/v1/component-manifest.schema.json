@@ -236,6 +236,16 @@
           },
           "type": "array"
         },
+        "fileKinds": {
+          "default": [
+            "file"
+          ],
+          "description": "Kinds this handler can open. Older manifests default to files only.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "id": {
           "type": "string"
         },

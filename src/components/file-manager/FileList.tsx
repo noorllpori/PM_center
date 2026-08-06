@@ -1484,7 +1484,11 @@ export function FileList({
       }
 
       try {
-        const route = await routeFileIntent(file.path, "open");
+        const route = await routeFileIntent(file.path, "open", { projectPath: projectPath || undefined });
+        if (file.is_dir && route.target === "workspace" && route.workspaceTarget === "directory") {
+          await loadDirectory(file.path);
+          return;
+        }
         if (route.target === "workspace") {
           const opened = await openFileInTab(file.path);
           if (opened) {
@@ -1506,7 +1510,7 @@ export function FileList({
         });
       }
     },
-    [currentPath, openCollectionInTab, openFileInTab, projectPath, showToast],
+    [currentPath, loadDirectory, openCollectionInTab, openFileInTab, projectPath, showToast],
   );
 
   const handleOpenDirectoryTab = useCallback(
@@ -1547,12 +1551,21 @@ export function FileList({
         return;
       }
 
+      const route = await routeFileIntent(file.path, "open", { projectPath: projectPath || undefined });
       if (file.is_dir) {
-        await loadDirectory(file.path);
+        if (route.target === "workspace" && route.workspaceTarget === "directory") {
+          await loadDirectory(file.path);
+        } else if (route.target === "system" || route.fallbackToSystem || !route.accepted) {
+          await handleSystemOpenFile(file);
+        } else {
+          showToast({
+            title: "目录处理器不可用",
+            message: route.handlerName || "该目录组件未提供可打开的页面。",
+            tone: "warning",
+          });
+        }
         return;
       }
-
-      const route = await routeFileIntent(file.path, "open");
       const openTarget = (route.workspaceTarget as ReturnType<typeof getWorkspaceOpenTarget>)
         || getWorkspaceOpenTarget(file.path);
       if (route.target === "system" || route.fallbackToSystem || !route.accepted) {

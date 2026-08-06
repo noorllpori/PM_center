@@ -174,12 +174,19 @@ pub struct FileHandlerContribution {
     pub extensions: Vec<String>,
     #[serde(default)]
     pub mime_types: Vec<String>,
+    /// Kinds this handler can open. Older manifests default to files only.
+    #[serde(default = "default_file_kinds")]
+    pub file_kinds: Vec<String>,
     #[serde(default)]
     pub priority: i32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_target: Option<String>,
     #[serde(flatten)]
     pub extensions_extra: ExtensionFields,
+}
+
+fn default_file_kinds() -> Vec<String> {
+    vec!["file".into()]
 }
 
 pub type FileHandlerContributionV1 = FileHandlerContribution;

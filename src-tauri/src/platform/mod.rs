@@ -44,6 +44,7 @@ pub use component_runtime::{
     ComponentPackageInspection, InstallComponentPackageRequest, InstallComponentRequest,
 };
 pub use file_router::{FileRoutePlan, FileRouteRequest};
+pub use file_router::{FileRoutingSnapshot, SetFileAssociationBindingRequest};
 pub use component_settings::{
     ComponentSettingsRequest, ComponentSettingsSnapshot, SaveComponentSettingsRequest,
 };
@@ -59,6 +60,7 @@ use builtin_modules::{
 };
 use capability_gateway::{run_security_diagnostic, CapabilityGateway};
 use component_settings::ComponentSettingsStore;
+use file_router::FileRoutingStore;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -72,6 +74,7 @@ pub struct PlatformRuntime {
     pub components: Arc<ComponentRuntimeManager>,
     pub profiles: WorkspaceProfileRuntime,
     component_settings: ComponentSettingsStore,
+    file_routing: FileRoutingStore,
     profile_switch_lock: tokio::sync::Mutex<()>,
     controls: Arc<DiagnosticControls>,
 }
@@ -155,6 +158,7 @@ impl PlatformRuntime {
                 component_manifests,
             ),
             component_settings: ComponentSettingsStore::new(app_data_dir),
+            file_routing: FileRoutingStore::new(app_data_dir),
             profile_switch_lock: tokio::sync::Mutex::new(()),
             controls,
         })
@@ -189,7 +193,30 @@ pub fn route_file_intent(
     request: FileRouteRequest,
     runtime: State<'_, PlatformRuntime>,
 ) -> Result<FileRoutePlan, ComponentRuntimeError> {
-    file_router::route_file(&runtime.components, request)
+    file_router::route_file(&runtime.components, &runtime.file_routing, request)
+}
+
+#[tauri::command]
+pub fn get_file_routing_snapshot(
+    runtime: State<'_, PlatformRuntime>,
+) -> FileRoutingSnapshot {
+    runtime.file_routing.snapshot()
+}
+
+#[tauri::command]
+pub fn set_file_association_binding(
+    request: SetFileAssociationBindingRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<(), ComponentRuntimeError> {
+    runtime.file_routing.set(request.binding)
+}
+
+#[tauri::command]
+pub fn remove_file_association_binding(
+    binding_id: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<(), ComponentRuntimeError> {
+    runtime.file_routing.remove(&binding_id)
 }
 
 #[tauri::command]

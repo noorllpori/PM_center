@@ -49,6 +49,9 @@ pub enum ComponentRuntimeErrorCode {
     ComponentIoError,
     ComponentDependencyConflict,
     ComponentCapabilityRequired,
+    ComponentHostUnavailable,
+    ComponentHostAbiMismatch,
+    ComponentHostCrashed,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -187,6 +190,8 @@ pub struct ComponentRuntimeOverview {
     pub recent_operations: Vec<ComponentOperationSummary>,
     pub templates: PresentationTemplateCatalog,
     pub legacy_python_action_compatible: bool,
+    pub component_host_available: bool,
+    pub component_host_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -463,6 +468,7 @@ impl ComponentRuntimeManager {
             .collect::<Vec<_>>();
         available_bundled_components.sort_by(|left, right| left.name.cmp(&right.name));
 
+        let host_path = component_host_path();
         ComponentRuntimeOverview {
             root_path: self.root_path.to_string_lossy().into_owned(),
             state_path: self.state_path.to_string_lossy().into_owned(),
@@ -478,6 +484,8 @@ impl ComponentRuntimeManager {
                 .collect(),
             templates,
             legacy_python_action_compatible: true,
+            component_host_available: host_path.is_some(),
+            component_host_path: host_path.map(|path| path.to_string_lossy().into_owned()),
         }
     }
 
@@ -495,12 +503,6 @@ impl ComponentRuntimeManager {
             ));
         }
         let manifest = read_component_manifest(&source.join(COMPONENT_MANIFEST_FILE))?;
-        if matches!(manifest.runtime, ComponentRuntime::NativeLibrary) {
-            return Err(ComponentRuntimeError::new(
-                ComponentRuntimeErrorCode::ComponentRuntimeUnsupported,
-                "native-library 必须等待 R10 隔离宿主，R9 不允许直接加载 DLL",
-            ));
-        }
         let staging_root = self.root_path.join(".staging");
         fs::create_dir_all(&staging_root)
             .map_err(|error| io_error("创建组件安装暂存目录失败", error))?;
@@ -600,13 +602,6 @@ impl ComponentRuntimeManager {
                 return Err(error);
             }
         };
-        if matches!(manifest.runtime, ComponentRuntime::NativeLibrary) {
-            let _ = fs::remove_dir_all(&staging);
-            return Err(ComponentRuntimeError::new(
-                ComponentRuntimeErrorCode::ComponentRuntimeUnsupported,
-                "native-library 必须等待 R10-2 隔离宿主，当前归档包只允许安全安装，不加载 DLL",
-            ));
-        }
         if let Err(error) = validate_entry(&staging, &manifest) {
             let _ = fs::remove_dir_all(&staging);
             return Err(error);
@@ -979,16 +974,158 @@ impl ComponentRuntimeManager {
                         .await
                 }
                 ComponentRuntime::DataPack => invoke_data_pack(installed, payload),
-                ComponentRuntime::NativeLibrary => Err(ComponentRuntimeError::new(
-                    ComponentRuntimeErrorCode::ComponentRuntimeUnsupported,
-                    "native-library 由 R10 隔离宿主管理，不能在 Nexora 进程中加载",
-                )),
+                ComponentRuntime::NativeLibrary => {
+                    self.invoke_native_library(installed, control, payload).await
+                }
                 ComponentRuntime::BuiltinRust => Err(ComponentRuntimeError::new(
                     ComponentRuntimeErrorCode::ComponentRuntimeUnsupported,
                     "builtin-rust 必须声明受信任 hostAdapter",
                 )),
             },
         }
+    }
+
+    async fn invoke_native_library(
+        &self,
+        installed: &InstalledComponent,
+        control: &Arc<OperationControl>,
+        payload: Value,
+    ) -> Result<ProcessResponse, ComponentRuntimeError> {
+        let host = component_host_path().ok_or_else(|| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentHostUnavailable,
+                "未找到 pmc-component-host，native-library 不会在 Nexora 主进程中加载",
+            )
+        })?;
+        let package_root = installed.package_root.as_ref().ok_or_else(|| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentPackageInvalid,
+                "native-library 组件缺少安装目录",
+            )
+        })?;
+        let entry = resolve_entry(package_root, &installed.manifest)?;
+        let mut command = crate::process_utils::tokio_command(&host);
+        command
+            .args(["--dll", &entry.to_string_lossy(), "--component-id", &installed.manifest.id])
+            .current_dir(package_root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = command.spawn().map_err(|error| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentHostUnavailable,
+                format!("启动隔离组件宿主失败: {error}"),
+            )
+        })?;
+        let pid = child.id().ok_or_else(|| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentHostCrashed,
+                "无法获取隔离组件宿主 PID",
+            )
+        })?;
+        self.set_operation_pid(control, pid);
+        let mut stdin = child.stdin.take().ok_or_else(|| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentHostCrashed,
+                "隔离组件宿主 stdin 不可用",
+            )
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentHostCrashed,
+                "隔离组件宿主 stdout 不可用",
+            )
+        })?;
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        let ready = tokio::time::timeout(Duration::from_secs(10), reader.read_line(&mut line))
+            .await
+            .map_err(|_| {
+                crate::process_utils::terminate_pid_tree(pid);
+                ComponentRuntimeError::new(
+                    ComponentRuntimeErrorCode::ComponentHostAbiMismatch,
+                    "隔离组件宿主 ABI 握手超时",
+                )
+            })?
+            .map_err(|error| {
+                ComponentRuntimeError::new(
+                    ComponentRuntimeErrorCode::ComponentHostCrashed,
+                    format!("读取隔离组件宿主握手失败: {error}"),
+                )
+            })?;
+        let ready_value = serde_json::from_str::<Value>(line.trim()).map_err(|error| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentHostAbiMismatch,
+                format!("隔离组件宿主握手不是有效 JSON: {error}"),
+            )
+        })?;
+        if ready == 0 || ready_value.get("type").and_then(Value::as_str) != Some("host-ready") {
+            crate::process_utils::terminate_pid_tree(pid);
+            return Err(ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentHostAbiMismatch,
+                ready_value
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("隔离组件宿主未通过 ABI 握手"),
+            ));
+        }
+        let mut request = payload;
+        if let Some(object) = request.as_object_mut() {
+            object.insert("type".into(), Value::String("invoke".into()));
+        }
+        let mut bytes = serde_json::to_vec(&request).map_err(protocol_error)?;
+        bytes.push(b'\n');
+        stdin.write_all(&bytes).await.map_err(|error| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentHostCrashed,
+                format!("向隔离组件宿主发送请求失败: {error}"),
+            )
+        })?;
+        stdin.flush().await.map_err(|error| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentHostCrashed,
+                format!("刷新隔离组件宿主请求失败: {error}"),
+            )
+        })?;
+        line.clear();
+        let read = tokio::time::timeout(Duration::from_secs(30), reader.read_line(&mut line))
+            .await
+            .map_err(|_| {
+                crate::process_utils::terminate_pid_tree(pid);
+                ComponentRuntimeError::new(
+                    ComponentRuntimeErrorCode::ComponentOperationTimedOut,
+                    "隔离组件宿主响应超时",
+                )
+            })?
+            .map_err(|error| {
+                ComponentRuntimeError::new(
+                    ComponentRuntimeErrorCode::ComponentHostCrashed,
+                    format!("读取隔离组件宿主响应失败: {error}"),
+                )
+            })?;
+        let response = serde_json::from_str::<Value>(line.trim()).map_err(|error| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentHostCrashed,
+                format!("隔离组件宿主响应不是有效 JSON: {error}"),
+            )
+        })?;
+        let _ = stdin.write_all(b"{\"type\":\"shutdown\"}\n").await;
+        crate::process_utils::terminate_pid_tree(pid);
+        control.pid.store(0, Ordering::SeqCst);
+        if read == 0 || response.get("type").and_then(Value::as_str) == Some("error") {
+            return Err(ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentHostCrashed,
+                response
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("隔离组件宿主返回失败"),
+            ));
+        }
+        Ok(ProcessResponse {
+            output: response.get("result").cloned().unwrap_or(response),
+            logs: vec![format!("host pid={pid}")],
+        })
     }
 
     async fn invoke_one_shot(
@@ -1690,6 +1827,13 @@ fn load_catalog(
     let mut catalog = bundled
         .values()
         .filter(|manifest| !state.removed_bundled.contains(&manifest.id))
+        .filter(|manifest| {
+            manifest
+                .extensions
+                .get("autoInstall")
+                .and_then(Value::as_bool)
+                .unwrap_or(true)
+        })
         .map(|manifest| {
             (
                 manifest.id.clone(),
@@ -1855,12 +1999,6 @@ fn inspect_component_package(path: &Path) -> Result<ComponentPackageInspection, 
         })?,
     )
     .map_err(contract_error)?;
-    if matches!(manifest.runtime, ComponentRuntime::NativeLibrary) {
-        return Err(ComponentRuntimeError::new(
-            ComponentRuntimeErrorCode::ComponentRuntimeUnsupported,
-            "native-library 归档包暂不允许安装到当前宿主",
-        ));
-    }
     Ok(ComponentPackageInspection {
         package_path: path.to_string_lossy().into_owned(),
         valid: true,
@@ -2185,6 +2323,37 @@ fn host_adapter(manifest: &ComponentManifestV1) -> Option<&str> {
         .extensions
         .get("hostAdapter")
         .and_then(Value::as_str)
+}
+
+fn component_host_path() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = std::env::var_os("NEXORA_COMPONENT_HOST_PATH") {
+        candidates.push(PathBuf::from(path));
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(parent) = executable.parent() {
+            candidates.push(parent.join(if cfg!(target_os = "windows") {
+                "pmc-component-host.exe"
+            } else {
+                "pmc-component-host"
+            }));
+            let resource_name = if cfg!(target_os = "windows") {
+                "pmc-component-host.exe"
+            } else {
+                "pmc-component-host"
+            };
+            candidates.push(parent.join("resources").join("component-host").join(resource_name));
+            candidates.push(parent.join("_up_").join("resources").join("component-host").join(resource_name));
+            if let Some(debug_root) = parent.parent() {
+                candidates.push(debug_root.join(if cfg!(target_os = "windows") {
+                    "pmc-component-host.exe"
+                } else {
+                    "pmc-component-host"
+                }));
+            }
+        }
+    }
+    candidates.into_iter().find(|path| path.is_file())
 }
 
 fn worker_ready(line: &str) -> bool {

@@ -225,6 +225,9 @@ export function ComponentRuntimeDiagnosticsSection() {
             <span>{overview.activeOperations.length} 个活动操作</span>
             <span>{templateCount} 个表现模板</span>
             <span>{overview.legacyPythonActionCompatible ? '兼容旧 Python 动作' : '旧 Python 动作不可用'}</span>
+            <span className={overview.componentHostAvailable ? 'text-emerald-600 dark:text-emerald-300' : 'text-amber-600 dark:text-amber-300'}>
+              {overview.componentHostAvailable ? '原生隔离宿主已就绪' : '原生隔离宿主未安装'}
+            </span>
           </div>
         ) : null}
 

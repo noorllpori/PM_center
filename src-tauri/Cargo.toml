@@ -1,5 +1,6 @@
 [package]
 name = "nexora"
+default-run = "nexora"
 version = "2.8.5"
 description = "Nexora desktop workspace"
 authors = ["章知涵@Ninniku"]

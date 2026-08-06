@@ -29,7 +29,37 @@ export interface FileRoutePlan {
   diagnostics: FileRouteDiagnostic[];
 }
 
-export const routeFileIntent = (path: string, intent: FileIntent = 'open') =>
+export interface FileAssociationBinding {
+  id: string;
+  scope: 'global' | 'profile' | 'project';
+  extension?: string | null;
+  mimeType?: string | null;
+  intent: FileIntent;
+  handler: string;
+  behavior?: 'fallback' | 'strict';
+  projectPath?: string | null;
+  profileId?: string | null;
+}
+
+export interface FileRoutingSnapshot {
+  bindings: FileAssociationBinding[];
+  storagePath: string;
+}
+
+export const routeFileIntent = (
+  path: string,
+  intent: FileIntent = 'open',
+  options?: { preferredHandlerId?: string; projectPath?: string; profileId?: string },
+) =>
   invoke<FileRoutePlan>('route_file_intent', {
-    request: { path, intent },
+    request: { path, intent, ...options },
   });
+
+export const getFileRoutingSnapshot = () =>
+  invoke<FileRoutingSnapshot>('get_file_routing_snapshot');
+
+export const setFileAssociationBinding = (binding: FileAssociationBinding) =>
+  invoke<void>('set_file_association_binding', { request: { binding } });
+
+export const removeFileAssociationBinding = (bindingId: string) =>
+  invoke<void>('remove_file_association_binding', { bindingId });
