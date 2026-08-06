@@ -1,12 +1,14 @@
 # Nexora 文件意图路由与可替换文件处理器
 
-> 状态：`planned`
+> 状态：`in-progress`（R10-0、R10-1 基础骨架已实现；R10-2 至 R10-4 仍规划中）
 >
 > 里程碑：R10-0 至 R10-4
 >
 > 日期：2026-08-06
 >
 > 前置：R3 CapabilityGateway、R5 Contribution Registry、R9 组件运行时
+
+当前实现范围：组件清单支持 `fileHandlers` 贡献；文件双击和右键打开先经过 Tauri `route_file_intent`，`.blend` 由已安装的 `pmc.blendio` 处理器接管，缺失时普通 `open` 降级系统程序，`inspect` 等严格意图不会伪装成功。组件运行时支持 `.pmc-pack` ZIP 安全检查、暂存解压、BLAKE3 内容摘要和原子升级，`native-library` 仍在 R10-2 隔离宿主前拒绝安装/加载。签名、许可证、依赖锁和完整路由诊断页尚未纳入本轮。
 
 ## 1. 目标
 

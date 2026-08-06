@@ -70,6 +70,18 @@ export interface ComponentRuntimeOverview {
   legacyPythonActionCompatible: boolean;
 }
 
+export interface ComponentPackageInspection {
+  packagePath: string;
+  valid: boolean;
+  componentId?: string | null;
+  componentName?: string | null;
+  componentVersion?: string | null;
+  fileCount: number;
+  totalBytes: number;
+  packageDigest?: string | null;
+  warnings: string[];
+}
+
 export interface ComponentRuntimeCommandError {
   code?: string;
   message?: string;

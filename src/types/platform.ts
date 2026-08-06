@@ -201,6 +201,19 @@ export interface ThemePresetContribution {
   [key: string]: unknown;
 }
 
+export interface FileHandlerContribution {
+  id: string;
+  name: string;
+  intents: string[];
+  extensions?: string[];
+  mimeTypes?: string[];
+  priority?: number;
+  workspaceTarget?: string;
+  [key: string]: unknown;
+}
+
+export type FileHandlerContributionV1 = FileHandlerContribution;
+
 export type SettingsScope = 'global' | 'project';
 export type SettingsFieldType =
   | 'string'
@@ -252,6 +265,7 @@ export interface ComponentContributions {
   shellTemplates?: ShellTemplateContribution[];
   pageTemplates?: PageTemplateContribution[];
   themePresets?: ThemePresetContribution[];
+  fileHandlers?: FileHandlerContribution[];
   [key: string]: unknown;
 }
 

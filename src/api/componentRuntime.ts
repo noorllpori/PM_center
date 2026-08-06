@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { ComponentManifestV1 } from '../types/platform';
-import type { ComponentRuntimeOverview } from '../types/componentRuntime';
+import type { ComponentPackageInspection, ComponentRuntimeOverview } from '../types/componentRuntime';
 
 export const COMPONENT_OPERATION_EVENT = 'nexora:component-operation';
 
@@ -10,6 +10,14 @@ export const getComponentRuntimeOverview = () =>
 export const installComponentFromDirectory = (sourcePath: string) =>
   invoke<ComponentManifestV1>('install_component_from_directory', {
     request: { sourcePath },
+  });
+
+export const inspectComponentPackage = (packagePath: string) =>
+  invoke<ComponentPackageInspection>('inspect_component_package', { packagePath });
+
+export const installComponentFromPackage = (packagePath: string) =>
+  invoke<ComponentManifestV1>('install_component_from_package', {
+    request: { packagePath },
   });
 
 export const uninstallComponent = (componentId: string) =>

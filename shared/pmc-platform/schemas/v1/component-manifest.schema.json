@@ -50,6 +50,13 @@
           },
           "type": "array"
         },
+        "fileHandlers": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/FileHandlerContribution"
+          },
+          "type": "array"
+        },
         "pageTemplates": {
           "default": [],
           "items": {
@@ -217,6 +224,55 @@
         "contributed"
       ],
       "type": "string"
+    },
+    "FileHandlerContribution": {
+      "additionalProperties": true,
+      "description": "A file handler contributed by a component. The host owns the actual intent dispatch; components only declare matching metadata and a stable handler id.",
+      "properties": {
+        "extensions": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "intents": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "mimeTypes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "priority": {
+          "default": 0,
+          "format": "int32",
+          "type": "integer"
+        },
+        "workspaceTarget": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "type": "object"
     },
     "PageTemplateContribution": {
       "additionalProperties": true,
@@ -521,6 +577,7 @@
       ],
       "default": {
         "dataSources": [],
+        "fileHandlers": [],
         "pageTemplates": [],
         "settingsSections": [],
         "shellTemplates": [],

@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   FolderPlus,
   Loader2,
+  PackageCheck,
   PackagePlus,
   RefreshCw,
   Square,
@@ -16,11 +17,14 @@ import {
   COMPONENT_OPERATION_EVENT,
   cancelComponentOperation,
   getComponentRuntimeOverview,
+  inspectComponentPackage,
+  installComponentFromPackage,
   installComponentFromDirectory,
   reinstallBundledComponent,
   uninstallComponent,
 } from '../../api/componentRuntime';
 import type {
+  ComponentPackageInspection,
   ComponentOperationSummary,
   ComponentRuntimeCommandError,
   ComponentRuntimeOverview,
@@ -67,6 +71,7 @@ function contributionCount(component: InstalledComponentSummary) {
     contributes?.shellTemplates,
     contributes?.pageTemplates,
     contributes?.themePresets,
+    contributes?.fileHandlers,
   ].reduce<number>((total, values) => total + (Array.isArray(values) ? values.length : 0), 0);
 }
 
@@ -83,6 +88,7 @@ export function ComponentRuntimeDiagnosticsSection() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [uninstallTarget, setUninstallTarget] = useState<InstalledComponentSummary | null>(null);
+  const [packageInspection, setPackageInspection] = useState<ComponentPackageInspection | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -134,6 +140,28 @@ export function ComponentRuntimeDiagnosticsSection() {
     await runAction('install', () => installComponentFromDirectory(sourcePath), '组件已安装并同步到装配方案目录。');
   };
 
+  const installPackage = async () => {
+    const packagePath = await open({
+      title: '选择 .pmc-pack 组件包',
+      multiple: false,
+      directory: false,
+      filters: [{ name: 'Nexora 组件包', extensions: ['pmc-pack'] }],
+    });
+    if (!packagePath || Array.isArray(packagePath)) return;
+    try {
+      setError(null);
+      const inspection = await inspectComponentPackage(packagePath);
+      setPackageInspection(inspection);
+      const label = [inspection.componentName, inspection.componentVersion].filter(Boolean).join(' ');
+      if (!window.confirm(`已通过安全检查：${label || inspection.componentId || '未知组件'}\n文件 ${inspection.fileCount} 个，解压后 ${Math.ceil(inspection.totalBytes / 1024)} KiB。\n\n确认安装并替换同 ID 的旧版本吗？`)) {
+        return;
+      }
+      await runAction('install-package', () => installComponentFromPackage(packagePath), '组件包已校验并安装。');
+    } catch (nextError) {
+      setError(errorMessage(nextError));
+    }
+  };
+
   const templateCount = useMemo(() => overview
     ? overview.templates.shellTemplates.length
       + overview.templates.pageTemplates.length
@@ -151,10 +179,10 @@ export function ComponentRuntimeDiagnosticsSection() {
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">组件运行时</h4>
-                <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-500 dark:bg-gray-800 dark:text-gray-400">R9</span>
+                <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-500 dark:bg-gray-800 dark:text-gray-400">R10-1</span>
               </div>
               <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                所有组件使用同一安装目录、依赖校验、进程监督和操作日志；DLL 隔离仍保留到 R10。
+                所有组件使用同一安装目录、依赖校验、进程监督和操作日志；归档包会先做路径、大小、摘要和入口检查。
               </p>
             </div>
           </div>
@@ -167,6 +195,16 @@ export function ComponentRuntimeDiagnosticsSection() {
             >
               {pending === 'install' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FolderPlus className="h-3.5 w-3.5" />}
               从目录安装
+            </button>
+            <button
+              type="button"
+              onClick={() => void installPackage()}
+              disabled={pending !== null}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-gray-200 px-2.5 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+              title="检查并安装 .pmc-pack"
+            >
+              {pending === 'install-package' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PackageCheck className="h-3.5 w-3.5" />}
+              安装组件包
             </button>
             <button
               type="button"
@@ -200,6 +238,15 @@ export function ComponentRuntimeDiagnosticsSection() {
           <div className="mt-3 flex items-start gap-2 rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300">
             <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
             <span>{notice}</span>
+          </div>
+        ) : null}
+        {packageInspection ? (
+          <div className="mt-3 rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-800 dark:border-blue-900/50 dark:bg-blue-950/30 dark:text-blue-200">
+            最近检查：<span className="font-medium">{packageInspection.componentName || packageInspection.componentId || '组件包'}</span>
+            {' · '}{packageInspection.componentVersion || '-'}{' · '}{packageInspection.fileCount} 个文件{' · '}{Math.ceil(packageInspection.totalBytes / 1024)} KiB
+            {packageInspection.warnings.length ? (
+              <span className="mt-1 block text-amber-700 dark:text-amber-300">{packageInspection.warnings.join('；')}</span>
+            ) : null}
           </div>
         ) : null}
 

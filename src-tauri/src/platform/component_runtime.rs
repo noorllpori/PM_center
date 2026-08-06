@@ -1,14 +1,15 @@
 use base64::Engine;
 use chrono::Utc;
 use pmc_platform::{
-    parse_component_manifest, validate_component_graph, ComponentManifestV1, ComponentRuntime,
-    PageTemplateContribution, ShellTemplateContribution, ThemePresetContribution, ValidateContract,
+    parse_component_manifest, parse_package_header, validate_component_graph, ComponentManifestV1,
+    ComponentRuntime, DigestAlgorithm, PackageKind, PageTemplateContribution,
+    ShellTemplateContribution, ThemePresetContribution, ValidateContract,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -20,6 +21,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 use walkdir::WalkDir;
+use zip::ZipArchive;
 
 const COMPONENT_STATE_SCHEMA_VERSION: u16 = 1;
 const COMPONENT_MANIFEST_FILE: &str = "component.json";
@@ -191,6 +193,26 @@ pub struct ComponentRuntimeOverview {
 #[serde(rename_all = "camelCase")]
 pub struct InstallComponentRequest {
     pub source_path: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallComponentPackageRequest {
+    pub package_path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComponentPackageInspection {
+    pub package_path: String,
+    pub valid: bool,
+    pub component_id: Option<String>,
+    pub component_name: Option<String>,
+    pub component_version: Option<String>,
+    pub file_count: usize,
+    pub total_bytes: u64,
+    pub package_digest: Option<String>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -479,7 +501,6 @@ impl ComponentRuntimeManager {
                 "native-library 必须等待 R10 隔离宿主，R9 不允许直接加载 DLL",
             ));
         }
-        let target = self.packages_path.join(&manifest.id);
         let staging_root = self.root_path.join(".staging");
         fs::create_dir_all(&staging_root)
             .map_err(|error| io_error("创建组件安装暂存目录失败", error))?;
@@ -494,12 +515,22 @@ impl ComponentRuntimeManager {
             ));
         }
         validate_entry(&staging, &staged_manifest)?;
+        self.commit_staged_component(staging, staged_manifest, ComponentInstallSource::Local)
+            .await
+    }
 
+    async fn commit_staged_component(
+        &self,
+        staging: PathBuf,
+        staged_manifest: ComponentManifestV1,
+        source: ComponentInstallSource,
+    ) -> Result<ComponentManifestV1, ComponentRuntimeError> {
         let mut next_manifests = self.manifests();
         next_manifests.retain(|item| item.id != staged_manifest.id);
         next_manifests.push(staged_manifest.clone());
         validate_component_graph(&next_manifests).map_err(contract_error)?;
 
+        let target = self.packages_path.join(&staged_manifest.id);
         let backup = self.root_path.join(".backup").join(format!(
             "{}-{}",
             staged_manifest.id,
@@ -528,7 +559,7 @@ impl ComponentRuntimeManager {
                 staged_manifest.id.clone(),
                 InstalledComponent {
                     manifest: staged_manifest.clone(),
-                    source: ComponentInstallSource::Local,
+                    source,
                     package_root: Some(target),
                 },
             );
@@ -538,6 +569,50 @@ impl ComponentRuntimeManager {
             persist_state(&self.state_path, &state)?;
         }
         Ok(staged_manifest)
+    }
+
+    pub fn inspect_package(
+        &self,
+        package_path: &str,
+    ) -> Result<ComponentPackageInspection, ComponentRuntimeError> {
+        inspect_component_package(Path::new(package_path))
+    }
+
+    pub async fn install_from_package(
+        &self,
+        request: &InstallComponentPackageRequest,
+    ) -> Result<ComponentManifestV1, ComponentRuntimeError> {
+        let _guard = self.mutation_lock.lock().await;
+        let package_path = fs::canonicalize(&request.package_path)
+            .map_err(|error| io_error("组件包不可用", error))?;
+        let staging_root = self.root_path.join(".staging");
+        fs::create_dir_all(&staging_root)
+            .map_err(|error| io_error("创建组件安装暂存目录失败", error))?;
+        let staging = staging_root.join(format!("package-{}", Uuid::new_v4().simple()));
+        if let Err(error) = extract_component_package(&package_path, &staging) {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+        let manifest = match read_component_manifest(&staging.join(COMPONENT_MANIFEST_FILE)) {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&staging);
+                return Err(error);
+            }
+        };
+        if matches!(manifest.runtime, ComponentRuntime::NativeLibrary) {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentRuntimeUnsupported,
+                "native-library 必须等待 R10-2 隔离宿主，当前归档包只允许安全安装，不加载 DLL",
+            ));
+        }
+        if let Err(error) = validate_entry(&staging, &manifest) {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+        self.commit_staged_component(staging, manifest, ComponentInstallSource::Marketplace)
+            .await
     }
 
     pub async fn uninstall(
@@ -1660,6 +1735,200 @@ fn read_component_manifest(path: &Path) -> Result<ComponentManifestV1, Component
     parse_component_manifest(&input).map_err(contract_error)
 }
 
+fn inspect_component_package(path: &Path) -> Result<ComponentPackageInspection, ComponentRuntimeError> {
+    let file = fs::File::open(path).map_err(|error| io_error("打开组件归档失败", error))?;
+    let mut archive = ZipArchive::new(file).map_err(|error| {
+        ComponentRuntimeError::new(
+            ComponentRuntimeErrorCode::ComponentPackageInvalid,
+            format!("组件包不是有效 ZIP 归档: {error}"),
+        )
+    })?;
+    let mut seen = BTreeSet::new();
+    let mut file_count = 0usize;
+    let mut total_bytes = 0u64;
+    let mut digest = blake3::Hasher::new();
+    let mut manifest_bytes = None;
+    let mut package_header_bytes = None;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|error| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentPackageInvalid,
+                format!("读取组件归档条目失败: {error}"),
+            )
+        })?;
+        let name = entry.name().to_string();
+        validate_archive_entry_name(&name)?;
+        if !seen.insert(name.clone()) {
+            return Err(ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentPackageInvalid,
+                format!("组件包包含重复条目: {name}"),
+            ));
+        }
+        if entry.is_dir() {
+            continue;
+        }
+        if entry.encrypted()
+            || entry
+                .unix_mode()
+                .map(|mode| mode & 0o170000 == 0o120000)
+                .unwrap_or(false)
+        {
+            return Err(ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentPackageInvalid,
+                format!("组件包不允许加密条目或符号链接: {name}"),
+            ));
+        }
+        file_count += 1;
+        if file_count > MAX_COMPONENT_FILES {
+            return Err(ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentPackageInvalid,
+                "组件包文件数超过安全限制",
+            ));
+        }
+        let declared_size = entry.size();
+        if declared_size > 128 * 1024 * 1024 {
+            return Err(ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentPackageInvalid,
+                format!("组件包单文件超过安全限制: {name}"),
+            ));
+        }
+        let mut bytes = Vec::with_capacity(declared_size.min(8 * 1024 * 1024) as usize);
+        entry.read_to_end(&mut bytes).map_err(|error| io_error("读取组件归档内容失败", error))?;
+        if bytes.len() > 128 * 1024 * 1024 {
+            return Err(ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentPackageInvalid,
+                format!("组件包单文件实际大小超过安全限制: {name}"),
+            ));
+        }
+        total_bytes = total_bytes.saturating_add(bytes.len() as u64);
+        if total_bytes > MAX_COMPONENT_BYTES {
+            return Err(ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentPackageInvalid,
+                "组件包解压总大小超过安全限制",
+            ));
+        }
+        digest.update(name.as_bytes());
+        digest.update(&bytes);
+        if name == COMPONENT_MANIFEST_FILE {
+            manifest_bytes = Some(bytes);
+        } else if name == "manifest.json" {
+            package_header_bytes = Some(bytes);
+        }
+    }
+    let manifest_input = manifest_bytes.ok_or_else(|| {
+        ComponentRuntimeError::new(
+            ComponentRuntimeErrorCode::ComponentPackageInvalid,
+            "组件包根目录缺少 component.json",
+        )
+    })?;
+    let mut warnings = Vec::new();
+    if let Some(header_bytes) = package_header_bytes {
+        let header = parse_package_header(
+            std::str::from_utf8(&header_bytes).map_err(|error| {
+                ComponentRuntimeError::new(
+                    ComponentRuntimeErrorCode::ComponentPackageInvalid,
+                    format!("组件包 manifest.json 不是 UTF-8: {error}"),
+                )
+            })?,
+        )
+        .map_err(contract_error)?;
+        if header.kind != PackageKind::ComponentPack
+            || header.payload.path != COMPONENT_MANIFEST_FILE
+            || header.payload.digest.algorithm != DigestAlgorithm::Blake3
+            || header.payload.size_bytes != manifest_input.len() as u64
+            || header.payload.digest.value != blake3::hash(&manifest_input).to_hex().to_string()
+        {
+            return Err(ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentPackageInvalid,
+                "组件包 manifest.json 的类型、路径、大小或 BLAKE3 摘要不匹配",
+            ));
+        }
+    } else {
+        warnings.push("未提供 PMC_PACKAGE 包头，按兼容模式检查 component.json".into());
+    }
+    let manifest = parse_component_manifest(
+        std::str::from_utf8(&manifest_input).map_err(|error| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentPackageInvalid,
+                format!("component.json 不是 UTF-8: {error}"),
+            )
+        })?,
+    )
+    .map_err(contract_error)?;
+    if matches!(manifest.runtime, ComponentRuntime::NativeLibrary) {
+        return Err(ComponentRuntimeError::new(
+            ComponentRuntimeErrorCode::ComponentRuntimeUnsupported,
+            "native-library 归档包暂不允许安装到当前宿主",
+        ));
+    }
+    Ok(ComponentPackageInspection {
+        package_path: path.to_string_lossy().into_owned(),
+        valid: true,
+        component_id: Some(manifest.id),
+        component_name: Some(manifest.name),
+        component_version: Some(manifest.version),
+        file_count,
+        total_bytes,
+        package_digest: Some(digest.finalize().to_hex().to_string()),
+        warnings,
+    })
+}
+
+fn extract_component_package(path: &Path, destination: &Path) -> Result<(), ComponentRuntimeError> {
+    let _ = inspect_component_package(path)?;
+    let file = fs::File::open(path).map_err(|error| io_error("打开组件归档失败", error))?;
+    let mut archive = ZipArchive::new(file).map_err(|error| {
+        ComponentRuntimeError::new(
+            ComponentRuntimeErrorCode::ComponentPackageInvalid,
+            format!("组件包不是有效 ZIP 归档: {error}"),
+        )
+    })?;
+    fs::create_dir_all(destination).map_err(|error| io_error("创建组件解压暂存目录失败", error))?;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|error| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentPackageInvalid,
+                format!("读取组件归档条目失败: {error}"),
+            )
+        })?;
+        let name = entry.name().to_string();
+        validate_archive_entry_name(&name)?;
+        let target = destination.join(Path::new(&name));
+        if entry.is_dir() {
+            fs::create_dir_all(&target).map_err(|error| io_error("创建组件解压目录失败", error))?;
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|error| io_error("创建组件解压目录失败", error))?;
+        }
+        let mut output = fs::File::create(&target).map_err(|error| io_error("创建组件解压文件失败", error))?;
+        std::io::copy(&mut entry, &mut output).map_err(|error| io_error("解压组件文件失败", error))?;
+    }
+    Ok(())
+}
+
+fn validate_archive_entry_name(name: &str) -> Result<(), ComponentRuntimeError> {
+    let path = Path::new(name);
+    if name.is_empty()
+        || name.starts_with('/')
+        || name.starts_with('\\')
+        || name.contains('\\')
+        || name.contains(':')
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(ComponentRuntimeError::new(
+            ComponentRuntimeErrorCode::ComponentPackageInvalid,
+            format!("组件包路径不安全: {name}"),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_entry(
     root: &Path,
     manifest: &ComponentManifestV1,
@@ -2079,6 +2348,8 @@ fn io_error(message: &str, error: impl std::fmt::Display) -> ComponentRuntimeErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zip::write::SimpleFileOptions;
+    use zip::ZipWriter;
 
     #[test]
     fn relative_component_paths_reject_parent_segments() {
@@ -2095,5 +2366,44 @@ mod tests {
         let output =
             parse_protocol_output("loading\n{\"ok\":true,\"result\":{\"value\":7}}\n").unwrap();
         assert_eq!(output["value"], 7);
+    }
+
+    #[test]
+    fn archive_paths_reject_windows_and_parent_traversal() {
+        for path in ["../outside", "bin\\tool.exe", "C:/tool.exe", "/absolute"] {
+            assert!(validate_archive_entry_name(path).is_err(), "{path}");
+        }
+        assert!(validate_archive_entry_name("bin/tool.exe").is_ok());
+    }
+
+    #[test]
+    fn component_package_inspection_reads_manifest_and_digest() {
+        let path = std::env::temp_dir().join(format!("nexora-test-{}.pmc-pack", Uuid::new_v4()));
+        let file = fs::File::create(&path).unwrap();
+        let mut writer = ZipWriter::new(file);
+        let options = SimpleFileOptions::default();
+        let manifest = serde_json::json!({
+            "schemaVersion": 1,
+            "id": "test.pack",
+            "name": "测试组件包",
+            "version": "1.0.0",
+            "apiVersion": "1",
+            "runtime": "builtin-rust",
+            "platforms": ["any"]
+        });
+        writer.start_file("component.json", options).unwrap();
+        writer
+            .write_all(serde_json::to_string(&manifest).unwrap().as_bytes())
+            .unwrap();
+        writer.start_file("data/readme.txt", options).unwrap();
+        writer.write_all(b"safe").unwrap();
+        writer.finish().unwrap();
+
+        let inspection = inspect_component_package(&path).unwrap();
+        assert!(inspection.valid);
+        assert_eq!(inspection.component_id.as_deref(), Some("test.pack"));
+        assert_eq!(inspection.file_count, 2);
+        assert!(inspection.package_digest.is_some());
+        let _ = fs::remove_file(path);
     }
 }

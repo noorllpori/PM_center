@@ -2,6 +2,7 @@ mod builtin_components;
 mod builtin_modules;
 mod capability_gateway;
 mod component_runtime;
+mod file_router;
 mod component_settings;
 mod module_manager;
 mod profile_package;
@@ -40,8 +41,9 @@ pub use capability_gateway::{
 pub use component_runtime::{
     ComponentInvocationRequest, ComponentInvocationResult, ComponentRuntimeError,
     ComponentRuntimeErrorCode, ComponentRuntimeManager, ComponentRuntimeOverview,
-    InstallComponentRequest,
+    ComponentPackageInspection, InstallComponentPackageRequest, InstallComponentRequest,
 };
+pub use file_router::{FileRoutePlan, FileRouteRequest};
 pub use component_settings::{
     ComponentSettingsRequest, ComponentSettingsSnapshot, SaveComponentSettingsRequest,
 };
@@ -183,11 +185,37 @@ pub fn get_component_runtime_overview(
 }
 
 #[tauri::command]
+pub fn route_file_intent(
+    request: FileRouteRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<FileRoutePlan, ComponentRuntimeError> {
+    file_router::route_file(&runtime.components, request)
+}
+
+#[tauri::command]
+pub fn inspect_component_package(
+    package_path: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<ComponentPackageInspection, ComponentRuntimeError> {
+    runtime.components.inspect_package(&package_path)
+}
+
+#[tauri::command]
 pub async fn install_component_from_directory(
     request: InstallComponentRequest,
     runtime: State<'_, PlatformRuntime>,
 ) -> Result<pmc_platform::ComponentManifestV1, ComponentRuntimeError> {
     let manifest = runtime.components.install_from_directory(&request).await?;
+    sync_component_catalog(&runtime)?;
+    Ok(manifest)
+}
+
+#[tauri::command]
+pub async fn install_component_from_package(
+    request: InstallComponentPackageRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<pmc_platform::ComponentManifestV1, ComponentRuntimeError> {
+    let manifest = runtime.components.install_from_package(&request).await?;
     sync_component_catalog(&runtime)?;
     Ok(manifest)
 }

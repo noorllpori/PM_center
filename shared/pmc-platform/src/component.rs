@@ -161,6 +161,29 @@ pub struct ThemePresetContribution {
     pub extensions: ExtensionFields,
 }
 
+/// A file handler contributed by a component. The host owns the actual intent
+/// dispatch; components only declare matching metadata and a stable handler id.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FileHandlerContribution {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub intents: Vec<String>,
+    #[serde(default)]
+    pub extensions: Vec<String>,
+    #[serde(default)]
+    pub mime_types: Vec<String>,
+    #[serde(default)]
+    pub priority: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_target: Option<String>,
+    #[serde(flatten)]
+    pub extensions_extra: ExtensionFields,
+}
+
+pub type FileHandlerContributionV1 = FileHandlerContribution;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum SettingsScope {
@@ -251,6 +274,8 @@ pub struct ComponentContributions {
     pub page_templates: Vec<PageTemplateContribution>,
     #[serde(default)]
     pub theme_presets: Vec<ThemePresetContribution>,
+    #[serde(default)]
+    pub file_handlers: Vec<FileHandlerContribution>,
     #[serde(flatten)]
     pub extensions: ExtensionFields,
 }
@@ -482,6 +507,40 @@ impl ValidateContract for ComponentManifestV1 {
                     format!("$.contributes.toolActions[{index}].id"),
                     format!("重复贡献 ID: {}", action.id),
                 ));
+            }
+        }
+        for (index, handler) in self.contributes.file_handlers.iter().enumerate() {
+            let path = format!("$.contributes.fileHandlers[{index}]");
+            validate_stable_id(&handler.id, &format!("{path}.id"))?;
+            validate_named_contribution(&handler.name, &path)?;
+            if handler.intents.is_empty() {
+                return Err(ContractError::new(
+                    ContractErrorCode::MalformedDocument,
+                    format!("{path}.intents"),
+                    "文件处理器至少声明一个意图",
+                ));
+            }
+            for (intent_index, intent) in handler.intents.iter().enumerate() {
+                validate_local_id(intent, &format!("{path}.intents[{intent_index}]"))?;
+            }
+            for (extension_index, extension) in handler.extensions.iter().enumerate() {
+                if extension.trim().is_empty()
+                    || extension.contains('.')
+                    || extension.contains('/')
+                    || extension.contains('\\')
+                {
+                    return Err(ContractError::new(
+                        ContractErrorCode::MalformedDocument,
+                        format!("{path}.extensions[{extension_index}]"),
+                        "文件后缀只能填写不带点的名称",
+                    ));
+                }
+            }
+            if let Some(target) = &handler.workspace_target {
+                validate_local_id(target, &format!("{path}.workspaceTarget"))?;
+            }
+            if !contribution_ids.insert(handler.id.as_str()) {
+                return Err(duplicate_contribution(&path, &handler.id));
             }
         }
         for (field, values) in [

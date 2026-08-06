@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { routeFileIntent } from "../../api/fileRouter";
 import { ColumnConfig, FileInfo, Tag } from "../../types";
 import {
   useProjectStoreApi,
@@ -1483,6 +1484,13 @@ export function FileList({
       }
 
       try {
+        const route = await routeFileIntent(file.path, "open");
+        if (route.target === "workspace") {
+          const opened = await openFileInTab(file.path);
+          if (opened) {
+            return;
+          }
+        }
         await invoke("open_file", { path: file.path });
         showToast({
           title: "已打开",
@@ -1498,7 +1506,7 @@ export function FileList({
         });
       }
     },
-    [currentPath, openCollectionInTab, projectPath, showToast],
+    [currentPath, openCollectionInTab, openFileInTab, projectPath, showToast],
   );
 
   const handleOpenDirectoryTab = useCallback(
@@ -1544,9 +1552,19 @@ export function FileList({
         return;
       }
 
-      const openTarget = getWorkspaceOpenTarget(file.path);
-      if (!openTarget) {
+      const route = await routeFileIntent(file.path, "open");
+      const openTarget = (route.workspaceTarget as ReturnType<typeof getWorkspaceOpenTarget>)
+        || getWorkspaceOpenTarget(file.path);
+      if (route.target === "system" || route.fallbackToSystem || !route.accepted) {
         await handleSystemOpenFile(file);
+        return;
+      }
+      if (route.target === "component" && !route.workspaceTarget) {
+        showToast({
+          title: "没有可用的文件页面",
+          message: route.handlerName || "该组件处理器暂未提供工作区页面。",
+          tone: "warning",
+        });
         return;
       }
 

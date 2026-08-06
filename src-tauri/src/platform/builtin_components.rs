@@ -1,6 +1,7 @@
 use pmc_platform::{
     Capability, ComponentContributions, ComponentDistribution, ComponentManifestV1,
     ComponentResourceLimits, ComponentRole, ComponentRuntime, ComponentUiMode, ExtensionFields,
+    FileHandlerContribution,
     PageTemplateContribution, PlatformTarget, PortDefinition, PortValueType,
     ShellTemplateContribution, ThemePresetContribution, ToolActionContribution,
     WorkflowNodeContribution, PLATFORM_SCHEMA_VERSION,
@@ -45,6 +46,16 @@ fn blendio_component_manifest() -> ComponentManifestV1 {
         requires_components: Vec::new(),
         optional_components: Vec::new(),
         contributes: ComponentContributions {
+            file_handlers: vec![FileHandlerContribution {
+                id: "blender.open-file".into(),
+                name: "Blender 文件工作区".into(),
+                intents: vec!["open".into(), "open-internal".into(), "inspect".into(), "preview".into()],
+                extensions: vec!["blend".into()],
+                mime_types: vec!["application/x-blender".into()],
+                priority: 100,
+                workspace_target: Some("blend".into()),
+                extensions_extra: ExtensionFields::new(),
+            }],
             tool_actions: vec![ToolActionContribution {
                 id: "blender.inspect-file".into(),
                 command: "inspect".into(),
