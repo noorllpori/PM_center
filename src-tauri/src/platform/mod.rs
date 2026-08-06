@@ -196,10 +196,33 @@ pub fn get_component_runtime_overview(
 
 #[tauri::command]
 pub fn route_file_intent(
-    request: FileRouteRequest,
+    mut request: FileRouteRequest,
     runtime: State<'_, PlatformRuntime>,
 ) -> Result<FileRoutePlan, ComponentRuntimeError> {
-    file_router::route_file(&runtime.components, &runtime.file_routing, request)
+    let module_manifests = runtime
+        .manager
+        .overview()
+        .modules
+        .into_iter()
+        .map(|module| module.manifest)
+        .collect::<Vec<_>>();
+    let (profile_id, effective_component_ids) = runtime
+        .profiles
+        .current_effective_component_ids(&module_manifests)
+        .map_err(|error| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentDependencyConflict,
+                error.message,
+            )
+            .with_details(error.details)
+        })?;
+    request.profile_id = Some(profile_id);
+    file_router::route_file(
+        &runtime.components,
+        &runtime.file_routing,
+        &effective_component_ids,
+        request,
+    )
 }
 
 #[tauri::command]

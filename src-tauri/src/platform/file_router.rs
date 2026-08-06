@@ -2,7 +2,7 @@ use super::{ComponentRuntimeError, ComponentRuntimeErrorCode, ComponentRuntimeMa
 use pmc_platform::{ComponentDependency, ComponentManifestV1, FileHandlerContribution};
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -435,6 +435,7 @@ pub struct BindingLookup {
 pub fn route_file(
     manager: &ComponentRuntimeManager,
     routing: &FileRoutingStore,
+    effective_component_ids: &BTreeSet<String>,
     request: FileRouteRequest,
 ) -> Result<FileRoutePlan, ComponentRuntimeError> {
     let path = request.path.trim();
@@ -499,8 +500,13 @@ pub fn route_file(
         .iter()
         .map(|manifest| (manifest.id.clone(), manifest.clone()))
         .collect::<BTreeMap<_, _>>();
+    let effective_manifests = manifests
+        .iter()
+        .filter(|manifest| effective_component_ids.contains(&manifest.id))
+        .cloned()
+        .collect::<Vec<_>>();
     let mut candidates = build_candidates(
-        &manifests,
+        &effective_manifests,
         &installed,
         &extension,
         mime.as_deref(),
@@ -565,9 +571,12 @@ pub fn route_file(
         }
         diagnostics.push(FileRouteDiagnostic {
             code: "BOUND_HANDLER_MISSING".into(),
-            message: format!("绑定的处理器不可用: {}", binding.handler),
+            message: format!("绑定的处理器不属于当前装配或已经不可用: {}", binding.handler),
         });
-        if binding.behavior == "strict" {
+        let handler_belongs_to_current_profile = candidates
+            .iter()
+            .any(|candidate| candidate.handler_id == binding.handler);
+        if handler_belongs_to_current_profile && binding.behavior == "strict" {
             return finish_plan(
                 routing,
                 no_handler_plan(path, intent, diagnostics, candidates, binding_resolution),
@@ -1157,5 +1166,31 @@ mod tests {
             compare_candidates(&left, &right),
             std::cmp::Ordering::Greater
         );
+    }
+
+    #[test]
+    fn inactive_component_manifests_do_not_build_route_candidates() {
+        let manifests = crate::platform::builtin_components::builtin_component_manifests();
+        let active = manifests
+            .iter()
+            .find(|manifest| manifest.id == "nexora.file-handler.text")
+            .cloned()
+            .unwrap();
+        let installed = manifests
+            .into_iter()
+            .map(|manifest| (manifest.id.clone(), manifest))
+            .collect::<BTreeMap<_, _>>();
+
+        let candidates = build_candidates(
+            &[active],
+            &installed,
+            "txt",
+            Some("text/plain"),
+            false,
+            FileIntent::OpenInternal,
+        );
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].component_id, "nexora.file-handler.text");
     }
 }

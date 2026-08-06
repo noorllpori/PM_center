@@ -1485,14 +1485,17 @@ export function FileList({
         return;
       }
 
+      if (file.is_dir) {
+        await loadDirectory(file.path);
+        return;
+      }
+
       try {
         const route = await routeFileIntent(file.path, "open", { projectPath: projectPath || undefined, profileId });
-        if (file.is_dir && route.target === "workspace" && route.workspaceTarget === "directory") {
-          await loadDirectory(file.path);
-          return;
-        }
         if (route.target === "workspace") {
-          const opened = await openFileInTab(file.path);
+          const opened = await openFileInTab(file.path, {
+            workspaceTarget: route.workspaceTarget as NonNullable<ReturnType<typeof getWorkspaceOpenTarget>>,
+          });
           if (opened) {
             return;
           }
@@ -1541,13 +1544,17 @@ export function FileList({
   );
 
   const handleOpenInternally = useCallback(
-    async (file: FileInfo) => {
+    async (file: FileInfo, preferredHandlerId?: string) => {
       if (file.entry_kind === "manual_collection" || file.entry_kind === "image_sequence") {
         showToast({ title: "此项目没有独立内部处理器", message: "集合和序列使用它们自己的项目页面。", tone: "warning" });
         return;
       }
       try {
-        const route = await routeFileIntent(file.path, "open-internal", { projectPath: projectPath || undefined, profileId });
+        const route = await routeFileIntent(file.path, "open-internal", {
+          preferredHandlerId,
+          projectPath: projectPath || undefined,
+          profileId,
+        });
         if (!route.accepted || route.target !== "workspace") {
           showToast({
             title: "没有可用的 Nexora 文件页面",
@@ -1560,7 +1567,9 @@ export function FileList({
           await loadDirectory(file.path);
           return;
         }
-        const tabId = await openFileInTab(file.path);
+        const tabId = await openFileInTab(file.path, {
+          workspaceTarget: route.workspaceTarget as NonNullable<ReturnType<typeof getWorkspaceOpenTarget>>,
+        });
         if (!tabId) {
           showToast({ title: "当前处理器未提供可打开页面", message: route.handlerName || "请检查组件贡献。", tone: "warning" });
         }
@@ -1598,21 +1607,12 @@ export function FileList({
         return;
       }
 
-      const route = await routeFileIntent(file.path, "open", { projectPath: projectPath || undefined, profileId });
       if (file.is_dir) {
-        if (route.target === "workspace" && route.workspaceTarget === "directory") {
-          await loadDirectory(file.path);
-        } else if (route.target === "system" || route.fallbackToSystem || !route.accepted) {
-          await handleSystemOpenFile(file);
-        } else {
-          showToast({
-            title: "目录处理器不可用",
-            message: route.handlerName || "该目录组件未提供可打开的页面。",
-            tone: "warning",
-          });
-        }
+        await loadDirectory(file.path);
         return;
       }
+
+      const route = await routeFileIntent(file.path, "open", { projectPath: projectPath || undefined, profileId });
       const openTarget = (route.workspaceTarget as ReturnType<typeof getWorkspaceOpenTarget>)
         || getWorkspaceOpenTarget(file.path);
       if (route.target === "system" || route.fallbackToSystem || !route.accepted) {
@@ -1639,7 +1639,9 @@ export function FileList({
           return;
         }
 
-        const tabId = await openFileInTab(file.path);
+        const tabId = await openFileInTab(file.path, {
+          workspaceTarget: openTarget ?? undefined,
+        });
         if (!tabId && openTarget === 'blend') {
           showToast({
             title: "打开失败",
@@ -2739,6 +2741,7 @@ export function FileList({
           y={contextMenu.y}
           currentPath={currentPath || ""}
           projectPath={projectPath || ""}
+          profileId={profileId}
           pluginActions={fileContextPluginActions}
           pluginDebugInfo={fileContextPluginDebugInfo}
           onClose={handleCloseContextMenu}

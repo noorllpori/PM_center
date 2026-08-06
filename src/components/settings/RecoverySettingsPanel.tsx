@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { Component, useMemo, useState, type ErrorInfo, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
   Boxes,
@@ -26,6 +26,44 @@ const RECOVERY_PAGES = [
   { id: 'routing', label: '文件打开方式', icon: FileCog },
   { id: 'capabilities', label: '权限诊断', icon: ShieldCheck },
 ] as const;
+
+class RecoveryPageBoundary extends Component<
+  { page: RecoveryPage; children: ReactNode },
+  { error: Error | null }
+> {
+  state = { error: null as Error | null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error(`Recovery settings page failed: ${this.props.page}`, error, info);
+  }
+
+  componentDidUpdate(previousProps: Readonly<{ page: RecoveryPage }>) {
+    if (previousProps.page !== this.props.page && this.state.error) {
+      this.setState({ error: null });
+    }
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
+        <p className="font-medium">此设置页加载失败，恢复设置仍可继续使用。</p>
+        <p className="mt-1 break-all text-xs opacity-80">{this.state.error.message || String(this.state.error)}</p>
+        <button
+          type="button"
+          onClick={() => this.setState({ error: null })}
+          className="mt-3 rounded-md border border-current px-2.5 py-1.5 text-xs hover:bg-red-100/60 dark:hover:bg-red-900/30"
+        >
+          重试加载
+        </button>
+      </div>
+    );
+  }
+}
 
 export function RecoverySettingsPanel({
   isOpen,
@@ -132,11 +170,13 @@ export function RecoverySettingsPanel({
                 {error}
               </div>
             ) : null}
-            {activePage === 'profiles' ? <WorkspaceProfileDiagnosticsSection /> : null}
-            {activePage === 'modules' ? <ModuleDiagnosticsSection /> : null}
-            {activePage === 'components' ? <ComponentRuntimeDiagnosticsSection /> : null}
-            {activePage === 'routing' ? <FileRoutingSettingsSection /> : null}
-            {activePage === 'capabilities' ? <CapabilityDiagnosticsSection /> : null}
+            <RecoveryPageBoundary page={activePage}>
+              {activePage === 'profiles' ? <WorkspaceProfileDiagnosticsSection /> : null}
+              {activePage === 'modules' ? <ModuleDiagnosticsSection /> : null}
+              {activePage === 'components' ? <ComponentRuntimeDiagnosticsSection /> : null}
+              {activePage === 'routing' ? <FileRoutingSettingsSection /> : null}
+              {activePage === 'capabilities' ? <CapabilityDiagnosticsSection /> : null}
+            </RecoveryPageBoundary>
           </main>
         </div>
       </Dialog>

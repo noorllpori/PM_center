@@ -22,7 +22,7 @@ import {
   type FileRoutingSnapshot,
 } from '../../api/fileRouter';
 import { getComponentRuntimeOverview } from '../../api/componentRuntime';
-import { useProjectStore } from '../../stores/projectStore';
+import { useShellTabStore } from '../../stores/shellTabStore';
 import { useWorkspaceProfileStore } from '../../stores/workspaceProfileStore';
 import type { ComponentRuntimeOverview } from '../../types/componentRuntime';
 
@@ -57,8 +57,12 @@ function createBindingId() {
 }
 
 export function FileRoutingSettingsSection() {
-  const projectPath = useProjectStore((state) => state.projectPath);
-  const profile = useWorkspaceProfileStore((state) => state.snapshot?.currentProfile ?? null);
+  const projectPath = useShellTabStore((state) => {
+    const activeTab = state.tabs.find((tab) => tab.id === state.activeTabId);
+    return activeTab?.type === 'project' ? activeTab.projectPath ?? null : null;
+  });
+  const profileSnapshot = useWorkspaceProfileStore((state) => state.snapshot);
+  const profile = profileSnapshot?.currentProfile ?? null;
   const context = useMemo<FileRoutingScopeContext>(() => ({
     projectPath: projectPath || undefined,
     profileId: profile?.id,
@@ -75,14 +79,36 @@ export function FileRoutingSettingsSection() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  const handlers = useMemo(() => (runtime?.installedComponents ?? [])
-    .flatMap((component) => (component.manifest.contributes?.fileHandlers ?? []).map((item) => ({
-      ...item,
-      componentId: component.manifest.id,
-      componentName: component.manifest.name,
-    })))
-    .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN')),
-  [runtime]);
+  const handlers = useMemo(() => {
+    const effectiveComponentIds = new Set(
+      (profileSnapshot?.components ?? [])
+        .filter((component) => component.effectiveEnabled)
+        .map((component) => component.id),
+    );
+    const installedComponents = Array.isArray(runtime?.installedComponents)
+      ? runtime.installedComponents
+      : [];
+    return installedComponents
+      .filter((component) => effectiveComponentIds.has(component.manifest.id))
+      .flatMap((component) => {
+        const fileHandlers = component.manifest.contributes?.fileHandlers;
+        if (!Array.isArray(fileHandlers)) return [];
+        return fileHandlers.map((item) => ({
+          ...item,
+          componentId: component.manifest.id,
+          componentName: component.manifest.name,
+        }));
+      })
+      .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'));
+  }, [profileSnapshot?.components, runtime]);
+
+  // Settings may survive a component or application upgrade. Treat stale or
+  // incomplete snapshots as empty data instead of letting one settings page
+  // take down the recovery dialog.
+  const bindings = Array.isArray(snapshot?.bindings) ? snapshot.bindings : [];
+  const storagePaths = Array.isArray(snapshot?.storagePaths) ? snapshot.storagePaths : [];
+  const routeCandidates = Array.isArray(routePlan?.candidates) ? routePlan.candidates : [];
+  const routeDiagnostics = Array.isArray(routePlan?.diagnostics) ? routePlan.diagnostics : [];
 
   const load = useCallback(async () => {
     const [nextSnapshot, nextRuntime] = await Promise.all([
@@ -105,6 +131,12 @@ export function FileRoutingSettingsSection() {
     if (scope === 'project' && !projectPath) setScope(profile?.id ? 'profile' : 'global');
     if (scope === 'profile' && !profile?.id) setScope('global');
   }, [profile?.id, projectPath, scope]);
+
+  useEffect(() => {
+    if (handler !== 'system' && !handlers.some((item) => item.id === handler)) {
+      setHandler('system');
+    }
+  }, [handler, handlers]);
 
   const saveBinding = async () => {
     const normalizedExtension = extension.trim().replace(/^\.+/, '').toLowerCase();
@@ -181,8 +213,8 @@ export function FileRoutingSettingsSection() {
             <FileCog className="h-4 w-4" />
           </div>
           <div className="min-w-0">
-            <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">文件打开方式</h4>
-            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">组件提供内部处理器；项目、装配方案和全局设置按顺序覆盖。普通双击没有可用处理器时仍交给 Windows。</p>
+            <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">文件路由诊断与优先级</h4>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">内部打开入口由当前装配空间的组件自动注入。这里仅用于检查路由，或在多个有效组件竞争同类文件时指定优先项。</p>
           </div>
         </div>
         <div className="flex items-center gap-1.5">
@@ -229,7 +261,7 @@ export function FileRoutingSettingsSection() {
       </div>
       <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-end">
         <label className="min-w-0 flex-1">
-          <span className="mb-1 block text-[11px] font-medium text-gray-500 dark:text-gray-400">默认处理器</span>
+          <span className="mb-1 block text-[11px] font-medium text-gray-500 dark:text-gray-400">优先处理器</span>
           <select value={handler} onChange={(event) => setHandler(event.target.value)} className="h-9 w-full rounded-md border border-gray-200 bg-white px-2 text-sm text-gray-800 outline-none dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100">
             <option value="system">Windows 系统默认程序</option>
             {handlers.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.componentName}</option>)}
@@ -248,7 +280,7 @@ export function FileRoutingSettingsSection() {
       <div className="mt-4 border-t border-gray-100 pt-3 dark:border-gray-800">
         <p className="text-xs font-medium text-gray-700 dark:text-gray-300">当前生效范围</p>
         <div className="mt-2 divide-y divide-gray-100 rounded-md border border-gray-200 dark:divide-gray-800 dark:border-gray-700">
-          {snapshot?.bindings.map((binding) => {
+          {bindings.map((binding) => {
             const matchingHandler = handlers.find((item) => item.id === binding.handler);
             return (
               <div key={`${binding.scope}:${binding.id}`} className="flex items-center gap-3 px-3 py-2 text-xs">
@@ -262,9 +294,9 @@ export function FileRoutingSettingsSection() {
               </div>
             );
           })}
-          {!snapshot?.bindings.length ? <p className="px-3 py-4 text-xs text-gray-500 dark:text-gray-400">尚未设置默认处理器，将按已安装组件优先级选择，普通打开可回退系统程序。</p> : null}
+          {!bindings.length ? <p className="px-3 py-4 text-xs text-gray-500 dark:text-gray-400">尚未设置优先项，将按当前装配空间内有效组件的优先级选择；没有内部处理器时普通打开会交给 Windows。</p> : null}
         </div>
-        {snapshot?.storagePaths.map((item) => <p key={item.scope} className="mt-1 break-all text-[10px] text-gray-400">{SCOPE_LABEL[item.scope] || item.scope}：{item.path}</p>)}
+        {storagePaths.map((item) => <p key={item.scope} className="mt-1 break-all text-[10px] text-gray-400">{SCOPE_LABEL[item.scope] || item.scope}：{item.path}</p>)}
       </div>
 
       {routePlan ? (
@@ -275,15 +307,15 @@ export function FileRoutingSettingsSection() {
           </div>
           <p className="mt-1 break-all text-[11px] text-gray-400">{routePlan.path}</p>
           <div className="mt-2 divide-y divide-gray-100 rounded-md border border-gray-200 dark:divide-gray-800 dark:border-gray-700">
-            {routePlan.candidates.map((candidate) => (
+            {routeCandidates.map((candidate) => (
               <div key={`${candidate.componentId}:${candidate.handlerId}`} className="px-3 py-2 text-xs">
                 <div className="flex flex-wrap items-center gap-2"><span className={candidate.selected ? 'font-medium text-blue-700 dark:text-blue-300' : candidate.eligible ? 'text-gray-800 dark:text-gray-200' : 'text-gray-400'}>{candidate.handlerName}</span><span className="font-mono text-[10px] text-gray-400">{candidate.componentId}</span>{candidate.selected ? <span className="rounded bg-blue-50 px-1 py-0.5 text-[10px] text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">已选择</span> : null}</div>
-                {candidate.reasons.map((reason) => <p key={reason.code} className="mt-0.5 text-[11px] text-gray-400">{reason.code} · {reason.message}</p>)}
+                {(Array.isArray(candidate.reasons) ? candidate.reasons : []).map((reason) => <p key={reason.code} className="mt-0.5 text-[11px] text-gray-400">{reason.code} · {reason.message}</p>)}
               </div>
             ))}
-            {!routePlan.candidates.length ? <p className="px-3 py-3 text-xs text-gray-500">当前没有已安装组件声明文件处理器。</p> : null}
+            {!routeCandidates.length ? <p className="px-3 py-3 text-xs text-gray-500">当前装配空间没有为此文件启用处理器。</p> : null}
           </div>
-          {routePlan.diagnostics.map((diagnostic) => <p key={diagnostic.code} className="mt-1 text-[11px] text-gray-400">{diagnostic.code} · {diagnostic.message}</p>)}
+          {routeDiagnostics.map((diagnostic) => <p key={diagnostic.code} className="mt-1 text-[11px] text-gray-400">{diagnostic.code} · {diagnostic.message}</p>)}
         </div>
       ) : null}
     </section>

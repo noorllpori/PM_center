@@ -26,6 +26,7 @@ import {
 import { useClipboardStore } from '../../stores/clipboardStore';
 import { useContributionRegistryStore } from '../../stores/contributionRegistryStore';
 import { useUiStore } from '../../stores/uiStore';
+import { routeFileIntent, type FileRouteCandidate } from '../../api/fileRouter';
 import {
   CONTEXT_COMMAND_CONTRIBUTIONS,
   getContributionUnavailableReason,
@@ -44,6 +45,7 @@ interface ContextMenuProps {
   y: number;
   currentPath: string;
   projectPath: string;
+  profileId?: string;
   pluginActions?: PluginAction[];
   pluginDebugInfo?: string;
   onClose: () => void;
@@ -59,7 +61,7 @@ interface ContextMenuProps {
   onRenameCollection?: (file: FileInfo) => Promise<void> | void;
   onDeleteCollection?: (file: FileInfo) => Promise<void> | void;
   onOpenFile?: (file: FileInfo) => Promise<void> | void;
-  onOpenInternally?: (file: FileInfo) => Promise<void> | void;
+  onOpenInternally?: (file: FileInfo, preferredHandlerId?: string) => Promise<void> | void;
   onOpenWithSystem?: (file: FileInfo) => Promise<void> | void;
   onOpenDirectoryTab?: (file: FileInfo) => Promise<void> | void;
   onRunPluginAction?: (action: PluginAction) => void;
@@ -83,6 +85,10 @@ interface OpenPluginSubmenu {
   key: string;
   title: string;
   actions: PluginAction[];
+  anchorRect: DOMRect;
+}
+
+interface OpenFileHandlerSubmenu {
   anchorRect: DOMRect;
 }
 
@@ -328,12 +334,49 @@ function PluginSubmenuPanel({
   );
 }
 
+function FileHandlerSubmenuPanel({
+  handlers,
+  submenu,
+  submenuRef,
+  submenuStyle,
+  onOpen,
+}: {
+  handlers: FileRouteCandidate[];
+  submenu: OpenFileHandlerSubmenu | null;
+  submenuRef: React.RefObject<HTMLDivElement | null>;
+  submenuStyle: React.CSSProperties | null;
+  onOpen: (handlerId: string) => void;
+}) {
+  if (!submenu || !submenuStyle) {
+    return null;
+  }
+
+  return (
+    <div
+      ref={submenuRef}
+      className="bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 py-1 min-w-[220px]"
+      style={submenuStyle}
+    >
+      {handlers.map((handler) => (
+        <MenuItem
+          key={handler.handlerId}
+          onClick={() => onOpen(handler.handlerId)}
+          icon={<FileEdit className="w-4 h-4" />}
+        >
+          {handler.handlerName}
+        </MenuItem>
+      ))}
+    </div>
+  );
+}
+
 export function FileContextMenu({
   file,
   x,
   y,
   currentPath,
   projectPath,
+  profileId,
   pluginActions = [],
   pluginDebugInfo,
   onClose,
@@ -356,6 +399,7 @@ export function FileContextMenu({
 }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const submenuRef = useRef<HTMLDivElement>(null);
+  const fileHandlerSubmenuRef = useRef<HTMLDivElement>(null);
   const { items: clipboardItems, cut, copy, paste, pasteSystem, hasItem } = useClipboardStore();
   const showToast = useUiStore((state) => state.showToast);
   const contributionSnapshot = useContributionRegistryStore((state) => state.snapshot);
@@ -372,13 +416,47 @@ export function FileContextMenu({
     hasImage: false,
   });
   const [openPluginSubmenu, setOpenPluginSubmenu] = useState<OpenPluginSubmenu | null>(null);
+  const [openFileHandlerSubmenu, setOpenFileHandlerSubmenu] = useState<OpenFileHandlerSubmenu | null>(null);
+  const [internalHandlers, setInternalHandlers] = useState<FileRouteCandidate[]>([]);
   const effectivePluginActions = pluginCommandsAvailable ? pluginActions : [];
   const pluginMenuEntries = buildFileContextPluginMenuEntries(effectivePluginActions);
   const isManualCollection = file.entry_kind === 'manual_collection';
   const isImageSequence = file.entry_kind === 'image_sequence';
   const isVirtualEntry = isManualCollection || isImageSequence;
 
-  useContextMenuDismiss([menuRef, submenuRef], onClose);
+  useContextMenuDismiss([menuRef, submenuRef, fileHandlerSubmenuRef], onClose);
+
+  useEffect(() => {
+    let cancelled = false;
+    setInternalHandlers([]);
+    setOpenFileHandlerSubmenu(null);
+    if (!onOpenInternally || isVirtualEntry) {
+      return () => { cancelled = true; };
+    }
+
+    void routeFileIntent(file.path, 'open-internal', {
+      projectPath: projectPath || undefined,
+      profileId,
+    })
+      .then((plan) => {
+        if (cancelled) return;
+        setInternalHandlers(
+          (Array.isArray(plan.candidates) ? plan.candidates : [])
+            .filter((candidate) => candidate.eligible)
+            .sort((left, right) => right.priority - left.priority
+              || left.componentId.localeCompare(right.componentId)
+              || left.handlerId.localeCompare(right.handlerId)),
+        );
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          console.error('Failed to resolve component file handlers:', error);
+          setInternalHandlers([]);
+        }
+      });
+
+    return () => { cancelled = true; };
+  }, [file.path, isVirtualEntry, onOpenInternally, profileId, projectPath]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -571,9 +649,9 @@ export function FileContextMenu({
     onClose();
   };
 
-  const handleOpenInternally = async () => {
+  const handleOpenInternally = async (preferredHandlerId?: string) => {
     try {
-      await onOpenInternally?.(file);
+      await onOpenInternally?.(file, preferredHandlerId);
     } catch (error) {
       console.error('Failed to open internally:', error);
     }
@@ -699,6 +777,7 @@ export function FileContextMenu({
     entry: PluginFileContextSubmenuEntry,
     button: HTMLButtonElement,
   ) => {
+    setOpenFileHandlerSubmenu(null);
     const anchorRect = button.getBoundingClientRect();
     setOpenPluginSubmenu((current) => {
       if (current?.key === entry.key) {
@@ -716,6 +795,13 @@ export function FileContextMenu({
 
   const closePluginSubmenu = () => {
     setOpenPluginSubmenu(null);
+    setOpenFileHandlerSubmenu(null);
+  };
+
+  const handleToggleFileHandlerSubmenu = (button: HTMLButtonElement) => {
+    setOpenPluginSubmenu(null);
+    const anchorRect = button.getBoundingClientRect();
+    setOpenFileHandlerSubmenu((current) => current ? null : { anchorRect });
   };
 
   const hasSystemPasteSource = systemClipboardStatus.hasFiles || systemClipboardStatus.hasImage;
@@ -732,6 +818,12 @@ export function FileContextMenu({
     openPluginSubmenu?.anchorRect ?? null,
     buildPluginSubmenuEstimate(openPluginSubmenu?.actions.length ?? 0),
     [openPluginSubmenu?.key, openPluginSubmenu?.actions.length ?? 0],
+  );
+  const fileHandlerSubmenuStyle = useFlyoutMenuStyle(
+    fileHandlerSubmenuRef,
+    openFileHandlerSubmenu?.anchorRect ?? null,
+    buildPluginSubmenuEstimate(internalHandlers.length),
+    [internalHandlers.length],
   );
 
   if (isVirtualEntry) {
@@ -792,15 +884,28 @@ export function FileContextMenu({
           {file.is_dir ? '打开文件夹' : '打开'}
         </MenuItem>
 
-        {!file.is_dir && onOpenInternally ? (
-          <MenuItem onClick={handleOpenInternally} icon={<FileEdit className="w-4 h-4" />}>
-            使用 Nexora 打开
+        {internalHandlers.length === 1 ? (
+          <MenuItem
+            onClick={() => handleOpenInternally(internalHandlers[0].handlerId)}
+            icon={<FileEdit className="w-4 h-4" />}
+          >
+            使用 {internalHandlers[0].handlerName} 打开
           </MenuItem>
+        ) : internalHandlers.length > 1 ? (
+          <MenuSubmenuTrigger
+            onToggle={(event) => handleToggleFileHandlerSubmenu(event.currentTarget)}
+            icon={<FileEdit className="w-4 h-4" />}
+            active={openFileHandlerSubmenu !== null}
+          >
+            使用 Nexora 组件打开
+          </MenuSubmenuTrigger>
         ) : null}
 
-        <MenuItem onClick={handleOpenWithSystem} icon={<ExternalLink className="w-4 h-4" />}>
-          使用系统打开
-        </MenuItem>
+        {!file.is_dir ? (
+          <MenuItem onClick={handleOpenWithSystem} icon={<ExternalLink className="w-4 h-4" />}>
+            使用系统打开
+          </MenuItem>
+        ) : null}
 
         <MenuItem onClick={handleReveal} icon={<ExternalLink className="w-4 h-4" />}>
           在资源管理器中显示
@@ -939,6 +1044,13 @@ export function FileContextMenu({
         submenuRef={submenuRef}
         submenuStyle={submenuStyle}
         onRunPluginAction={handleRunPluginAction}
+      />
+      <FileHandlerSubmenuPanel
+        handlers={internalHandlers}
+        submenu={openFileHandlerSubmenu}
+        submenuRef={fileHandlerSubmenuRef}
+        submenuStyle={fileHandlerSubmenuStyle}
+        onOpen={(handlerId) => { void handleOpenInternally(handlerId); }}
       />
     </>
   );

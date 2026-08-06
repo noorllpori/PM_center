@@ -576,6 +576,29 @@ impl WorkspaceProfileRuntime {
         self.component_manifests_snapshot()
     }
 
+    pub fn current_effective_component_ids(
+        &self,
+        manifests: &[ModuleManifestV1],
+    ) -> Result<(String, BTreeSet<String>), WorkspaceProfileRuntimeError> {
+        let _guard = self.operation_lock.lock().map_err(|_| {
+            WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileLockPoisoned,
+                "装配方案运行时锁已损坏",
+                None,
+            )
+        })?;
+        let state = self.read_state()?;
+        let profile = self.read_profile(&self.profile_path(&state.current_profile_id))?;
+        let effective = self.validate_profile(&profile, manifests).map_err(|error| {
+            WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileSwitchBlocked,
+                format!("当前装配方案不兼容：{}（{}）", error.message, error.path),
+                Some(&self.profile_path(&state.current_profile_id)),
+            )
+        })?;
+        Ok((state.current_profile_id, effective))
+    }
+
     pub fn replace_component_manifests(
         &self,
         manifests: Vec<ComponentManifestV1>,

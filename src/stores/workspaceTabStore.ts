@@ -6,7 +6,11 @@ import { openStandaloneImageViewer } from '../components/image-viewer/openStanda
 import { openStandaloneTextEditor } from '../components/text-editor/openStandaloneTextEditor';
 import type { TextEditorTransferPayload } from '../components/text-editor/textEditorWindowTransfer';
 import { openStandaloneVideoPlayer } from '../components/video-player/openStandaloneVideoPlayer';
-import { getFileNameFromPath, getWorkspaceOpenTarget } from '../components/workspace/fileOpeners';
+import {
+  getFileNameFromPath,
+  getWorkspaceOpenTarget,
+  type WorkspaceOpenTarget,
+} from '../components/workspace/fileOpeners';
 import { openStandaloneDirectoryViewer } from '../components/file-manager/openStandaloneDirectoryViewer';
 import type { ImageSequenceInfo } from '../types';
 import {
@@ -147,6 +151,7 @@ export interface WorkspaceTabState {
     filePath: string,
     options?: {
       editorSnapshot?: TextEditorTransferPayload;
+      workspaceTarget?: WorkspaceOpenTarget;
     },
   ) => Promise<string | null>;
   openFileInStandaloneWindow: (
@@ -190,7 +195,7 @@ export function createWorkspaceTabStore(storeOptions: CreateWorkspaceTabStoreOpt
     activeTabId: FILES_TAB_ID,
 
     openFileInTab: async (filePath, options) => {
-      const target = getWorkspaceOpenTarget(filePath);
+      const target = options?.workspaceTarget ?? getWorkspaceOpenTarget(filePath);
       if (!target) {
         return null;
       }
