@@ -88,6 +88,8 @@ R9 使用受信任宿主适配器承接现有 Rust BlendIO，避免在本轮重�
 
 真正把所有缩略图和渲染预检内部调用都改为统一 operation/token，及把 BlendIO 交付为独立签名二进制，继续在 R10 收口。
 
+R9 的组件可用性守卫不定义最终双击行为。R10-0 增加 `FileIntentRouter` 后，普通 `.blend` 双击在 BlenderIO/Blender 工作区不可用时必须降级到 Windows 默认程序，并且不能先创建失效标签；渲染预检、结构化解析和缩略图仍返回依赖缺失，不允许用系统打开冒充成功。完整规则见 `NEXT_MAJOR_FILE_HANDLER_ROUTING.md`。
+
 ## 6. 表现模板目录
 
 新增可卸载的 `nexora.presentation.templates` 资料组件，登记：
@@ -116,7 +118,7 @@ R9 只提供目录、所有者、版本、适配器和诊断。第三方 `base.h
 R8-3 同轮增加 `.pmc-workspace`：
 
 - `manifest.json` + `workspace.json`；
-- 携带可移植 Profile、普通变量、按顺序排列的 Surface 贡献 ID 和活动 Surface ID；
+- 携带可移植 Profile、普通变量、按顺序排列的本地 Surface ID 和活动 Surface ID；
 - 使用 BLAKE3、条目白名单、大小限制、路径穿越检查和敏感数据扫描；
 - 导入创建新 Profile，不自动应用；本机工具/路径映射仍写在 Profile 外；
 - 映射写入失败时删除刚导入的 Profile，避免半导入。
@@ -137,6 +139,7 @@ R8-3 同轮增加 `.pmc-workspace`：
 ## 10. 未完成边界
 
 - R10：DLL 隔离宿主、签名、架构检查、`.pmc-pack` 安全安装与升级回滚；
+- R10-0/R10-4：文件意图路由、后缀绑定、系统 fallback 和内置查看器组件化；
 - R10-P：第三方 HTML/CSS 表现模板；
 - R11：工作流执行器消费组件节点；
 - R13：远程设备调度组件和渲染 Worker。

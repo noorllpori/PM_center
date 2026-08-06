@@ -688,7 +688,11 @@ fn validate_settings_sections(sections: &[ComponentSettingsSection]) -> Contract
                 ));
             }
             if let Some(default_value) = &field.default_value {
-                validate_settings_value(field, default_value, &format!("{field_path}.defaultValue"))?;
+                validate_settings_value(
+                    field,
+                    default_value,
+                    &format!("{field_path}.defaultValue"),
+                )?;
             }
         }
     }
@@ -730,7 +734,10 @@ pub fn validate_settings_value(
             ));
         }
     }
-    if matches!(field.field_type, SettingsFieldType::Integer | SettingsFieldType::Number) {
+    if matches!(
+        field.field_type,
+        SettingsFieldType::Integer | SettingsFieldType::Number
+    ) {
         let number = value.as_f64().unwrap_or_default();
         if field.minimum.is_some_and(|minimum| number < minimum)
             || field.maximum.is_some_and(|maximum| number > maximum)

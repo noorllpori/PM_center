@@ -114,7 +114,7 @@ impl ValidateContract for WorkspacePackageV1 {
         }
         let mut surfaces = BTreeSet::new();
         for (index, surface_id) in self.open_surface_ids.iter().enumerate() {
-            validate_stable_id(surface_id, &format!("$.openSurfaceIds[{index}]"))?;
+            validate_local_id(surface_id, &format!("$.openSurfaceIds[{index}]"))?;
             if !surfaces.insert(surface_id.as_str()) {
                 return Err(ContractError::new(
                     ContractErrorCode::DuplicateId,
@@ -124,7 +124,7 @@ impl ValidateContract for WorkspacePackageV1 {
             }
         }
         if let Some(active_surface_id) = &self.active_surface_id {
-            validate_stable_id(active_surface_id, "$.activeSurfaceId")?;
+            validate_local_id(active_surface_id, "$.activeSurfaceId")?;
             if !surfaces.contains(active_surface_id.as_str()) {
                 return Err(ContractError::new(
                     ContractErrorCode::InvalidReference,
@@ -193,5 +193,35 @@ mod tests {
         }"#;
         let error = parse_package_header(input).unwrap_err();
         assert_eq!(error.code, ContractErrorCode::InvalidDigest);
+    }
+
+    #[test]
+    fn workspace_accepts_local_surface_ids() {
+        let input = r#"{
+          "schemaVersion":1,
+          "profile":{
+            "schemaVersion":1,
+            "id":"local.test-profile",
+            "name":"Surface ID test",
+            "shellLayout":{
+              "home":"lan-collaboration-main",
+              "navigation":["lan-collaboration-main"]
+            },
+            "surfaces":[{
+              "id":"lan-collaboration-main",
+              "kind":"workspace-tab",
+              "layout":"contribution-defined"
+            }]
+          },
+          "openSurfaceIds":["lan-collaboration-main"],
+          "activeSurfaceId":"lan-collaboration-main"
+        }"#;
+
+        let workspace = parse_workspace_package(input).unwrap();
+        assert_eq!(workspace.open_surface_ids, ["lan-collaboration-main"]);
+        assert_eq!(
+            workspace.active_surface_id.as_deref(),
+            Some("lan-collaboration-main")
+        );
     }
 }

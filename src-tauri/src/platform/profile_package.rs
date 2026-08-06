@@ -1847,8 +1847,8 @@ mod tests {
                 profile_id: source.id.clone(),
                 destination_path: package.to_string_lossy().into_owned(),
                 variables: [("mode".into(), "review".into())].into_iter().collect(),
-                open_surface_ids: vec!["nexora.page.first".into(), "nexora.page.second".into()],
-                active_surface_id: Some("nexora.page.second".into()),
+                open_surface_ids: vec!["lan-collaboration-main".into(), "project-home".into()],
+                active_surface_id: Some("project-home".into()),
             },
         )
         .unwrap();
@@ -1857,11 +1857,8 @@ mod tests {
         let current_before = runtime.snapshot(&[]).unwrap().current_profile.id;
         let preview = inspect_workspace_package(package.to_str().unwrap(), &runtime, &[]).unwrap();
         assert!(preview.can_import);
-        assert_eq!(preview.open_surface_ids[0], "nexora.page.first");
-        assert_eq!(
-            preview.active_surface_id.as_deref(),
-            Some("nexora.page.second")
-        );
+        assert_eq!(preview.open_surface_ids[0], "lan-collaboration-main");
+        assert_eq!(preview.active_surface_id.as_deref(), Some("project-home"));
         assert_eq!(
             preview.variables.get("mode").map(String::as_str),
             Some("review")
@@ -1900,8 +1897,8 @@ mod tests {
                     .to_string_lossy()
                     .into_owned(),
                 variables: BTreeMap::new(),
-                open_surface_ids: vec!["nexora.page.first".into()],
-                active_surface_id: Some("nexora.page.missing".into()),
+                open_surface_ids: vec!["project-home".into()],
+                active_surface_id: Some("missing-page".into()),
             },
         )
         .unwrap_err();

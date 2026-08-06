@@ -119,6 +119,35 @@ builtin-rust
 
 模块与组件之间使用 `requiresComponents` / `optionalComponents`，Profile 使用可选 `enabledComponents`。这些字段为 schema v1 的向后兼容可选扩展；依赖缺失、版本不兼容和循环必须在带注册表的验证阶段拒绝。`pmc.blendio` 是首个默认随包分发但可卸载的 `native-process` 服务组件；HDA、PPT、PDF 等格式组件沿用相同合同，详细规则见 `docs/NEXT_MAJOR_COMPONENT_DEPENDENCY_MODEL.md`。
 
+### 7.1 R10 文件处理器扩展
+
+R10 在组件 `contributes` 中增加可选 `fileHandlers`，不会建立独立插件清单。处理器声明格式匹配、支持意图、Surface/命令目标、优先级和可选组件依赖；用户绑定继续保存稳定处理器 ID。
+
+```json
+{
+  "contributes": {
+    "fileHandlers": [
+      {
+        "id": "nexora.file-handler.text",
+        "name": "Nexora 文本编辑器",
+        "matches": {"extensions": ["txt", "log", "json"]},
+        "actions": [
+          {
+            "intent": "open",
+            "kind": "surface",
+            "target": "nexora.surface.text-editor",
+            "openMode": "workspace-tab"
+          }
+        ],
+        "priority": 100
+      }
+    ]
+  }
+}
+```
+
+`FileIntentRouter` 属于宿主核心，不属于文件管理器模块。项目、Profile 和全局文件绑定是运行时偏好，不复制组件实现。普通 `open` 可以降级到系统默认程序；`inspect`、`thumbnail` 和工作流等结构化意图严格失败。合同冻结与完整字段在实现前以 `docs/NEXT_MAJOR_FILE_HANDLER_ROUTING.md` 为准，并同步生成 Rust、TypeScript 和 JSON Schema，不能只增加前端类型。
+
 ## 8. Workflow Manifest v1
 
 工作流是结构化 DAG：

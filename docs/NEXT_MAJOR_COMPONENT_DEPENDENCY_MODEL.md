@@ -219,3 +219,25 @@ R7 只实现组件目录、依赖解析、草稿编辑和预检。R9 已实现 P
 - Capability 审计能区分调用模块、调用组件、命令和目标路径；
 - 替换为兼容的外部组件实现后，上层模块合同和 Profile 不变化。
 - BlenderIO、HDA、PPT、PDF 等组件使用同一注册、安装、权限和宿主界面机制。
+
+## 8. 文件处理器与格式服务的关系
+
+文件页面、右键打开命令和格式解析服务必须拆开建模，完整合同见 `NEXT_MAJOR_FILE_HANDLER_ROUTING.md`。
+
+固定关系：
+
+```text
+FileIntentRouter（平台核心）
+  -> FileHandlerContribution（可替换页面/动作）
+      -> 可选格式服务组件（解析、缩略图、元数据、受控写入）
+```
+
+- 文件管理器只发起 `open`、`open-internal`、`open-system`、`preview`、`edit`、`inspect` 等意图，不拥有后缀绑定和处理器实现；
+- 图片、视频、文本、Markdown、目录和 Blender 工作区都是可安装、卸载和替换的文件处理器组件；
+- `pmc.blendio` 继续是无头格式服务，不直接拥有 `.blend` 标签页；
+- `nexora.file-handler.blender-workspace` 提供 `.blend` 页面、右键动作和 Surface，并依赖 `pmc.blendio`；
+- 卸载 BlenderIO 后，渲染中心等必需依赖进入 blocked；普通 `.blend` 双击不创建失效标签，而是降级到 Windows 默认程序；
+- 明确的 `open-internal`、结构化 `inspect`、缩略图和工作流调用不进行系统降级；
+- 组件卸载后逻辑绑定保留，重装同一稳定 ID 的兼容版本后自动恢复；
+- Profile 只保存处理器稳定 ID，项目和本机绑定不能把绝对程序路径写入可分享包；
+- R10-0 先建立统一路由和诊断，R10-3 再完成 BlenderIO 与 Blender 工作区的真正外置包验收。

@@ -489,11 +489,11 @@ Profile 保存模板 ID、版本约束、变体和参数；实际 HTML/CSS 属�
 
 ### 9.1 `.pmc-profile`
 
-轻量装配方案文件，包含模块 ID 和版本约束、普通设置、工具栏 Pin、Shell/页面模板引用与参数、主题、工作区布局、逻辑工具需求及工作流引用，不包含模板资源、二进制组件和大型资料。
+轻量装配方案文件，包含模块 ID 和版本约束、普通设置、工具栏 Pin、Shell/页面模板引用与参数、主题、工作区布局、逻辑工具需求、文件处理器逻辑绑定及工作流引用，不包含模板资源、二进制组件和大型资料。
 
 ### 9.2 `.pmc-workspace`
 
-装配空间文件，包含一个 Profile、工作流、渲染预设、媒体分类结构、标签模板、组件依赖清单、项目模板和相对路径资源。通过 R10 包安全检查后，它也可以携带 Profile 引用的表现模板包，实现外观的自包含复现。它用于把一套工作方式交给别人，不默认包含业务项目文件。
+装配空间文件，包含一个 Profile、工作流、渲染预设、媒体分类结构、标签模板、文件处理器绑定、组件依赖清单、项目模板和相对路径资源。通过 R10 包安全检查后，它可以使用 `references-only` 轻量模式，或携带许可证允许分发的组件包与表现模板包，实现功能和外观的自包含复现。它用于把一套工作方式交给别人，不默认包含业务项目文件。
 
 ### 9.3 `.pmc-pack`
 
@@ -653,6 +653,27 @@ pmc-component-host.exe
 ```
 
 所有写入型结果由 Nexora 核心验证并提交，组件不能通过伪造 `result` 绕过路径和权限检查。
+
+### 10.7 文件意图路由与可替换查看器
+
+文件管理器、媒体资料库、聊天附件、最近文件和工作流都通过平台核心 `FileIntentRouter` 请求打开、预览、编辑或解析文件。文件管理器只贡献交互入口，不保存后缀绑定真相，也不硬编码图片、文本、视频或 Blender 页面。
+
+组件通过 `FileHandlerContribution` 声明支持的扩展名、MIME、文件类型、意图和 Surface/命令目标。绑定优先级固定为项目、Profile、软件全局、组件默认和 Windows 系统程序。
+
+普通 `open` 在内部处理器缺失、停用或依赖不满足时可以降级系统打开；`open-internal`、`inspect`、`thumbnail`、`extract-metadata` 和渲染/工作流调用不能系统降级。处理器成功接受前不得创建工作区标签，避免组件卸载后留下空白或报错标签。
+
+现有内置页面逐步迁移为：
+
+```text
+nexora.file-handler.image
+nexora.file-handler.video
+nexora.file-handler.text
+nexora.file-handler.markdown
+nexora.file-handler.directory
+nexora.file-handler.blender-workspace -> pmc.blendio
+```
+
+这些处理器可以卸载和被第三方组件替换；`pmc.blendio` 是无头解析服务，不拥有 Blender 页面。完整合同、上下文菜单、绑定数据、系统 fallback、包关系和 R10 实施顺序见 `docs/NEXT_MAJOR_FILE_HANDLER_ROUTING.md`。
 
 ## 11. 工作流模型
 
@@ -949,6 +970,12 @@ install_component_package(sourcePath)
 uninstall_component_package(componentId, retainData)
 run_component_action(request)
 cancel_component_operation(operationId)
+resolve_file_intent(request)
+execute_file_route(request)
+list_file_handlers(request?)
+get_file_association_snapshot(context)
+set_file_association_binding(request)
+get_file_route_diagnostics(routeId?)
 ```
 
 所有命令返回稳定错误码，不让前端依赖中文错误文本判断状态。
@@ -973,6 +1000,9 @@ trust/
   devices.db
   publishers.db
 logs/components/
+file-routing/
+  global-bindings.json
+  diagnostics.log
 ```
 
 项目/资料库目录按需新增：
@@ -1000,6 +1030,8 @@ logs/components/
 - 现有渲染任务继续由 `render.batch` 使用；
 - 现有局域网数据库继续由局域网模块使用；
 - 现有项目会话恢复时，已停用模块的标签不恢复，并记录一次非破坏性提示。
+- 现有图片、视频、文本、Markdown、目录和 Blender 页面先登记为 hosted FileHandler adapter，保持升级前双击行为；迁移完成后才允许卸载和第三方替换。
+- 迁移后普通文件打开失败可以降级系统程序，但渲染预检、缩略图和结构化解析保持严格依赖语义。
 
 ### 18.2 插件系统迁移
 

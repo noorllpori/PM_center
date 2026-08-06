@@ -2,7 +2,7 @@
 
 > 当前基线：`2.8.5`。本文件是 Nexora 的长期开发上下文；新增、修改或排查功能前，先确认其归属模块和下面的固定交互规则。README 保留对外简介和较长的愿望清单，本文件记录当前实际架构与已确定的产品约束。
 >
-> 下一超大版本将把现有单体功能升级为用户可 DIY 的模块装配平台。项目管理器、媒体资料管理器、局域网通信端和 Blender 渲染控制端/节点只是参考成品，不是系统写死的四种模式。完整架构见 `docs/NEXT_MAJOR_MODULAR_PLATFORM.md`，逐步开发顺序、退出门槛和确认模板见 `docs/NEXT_MAJOR_IMPLEMENTATION_ROADMAP.md`，R1 合同候选见 `docs/NEXT_MAJOR_SCHEMA_V1.md`。
+> 下一超大版本将把现有单体功能升级为用户可 DIY 的模块装配平台。项目管理器、媒体资料管理器、局域网通信端和 Blender 渲染控制端/节点只是参考成品，不是系统写死的四种模式。完整架构见 `docs/NEXT_MAJOR_MODULAR_PLATFORM.md`，逐步开发顺序、退出门槛和确认模板见 `docs/NEXT_MAJOR_IMPLEMENTATION_ROADMAP.md`，R1 合同候选见 `docs/NEXT_MAJOR_SCHEMA_V1.md`，文件打开、后缀绑定和可替换查看器见 `docs/NEXT_MAJOR_FILE_HANDLER_ROUTING.md`。
 
 ## 1. 产品定位
 
@@ -158,6 +158,11 @@ React invoke/listen
 - 项目工作区已经全局拦截原生右键；新增可用右键菜单必须显式 `preventDefault` / `stopPropagation`，并支持点击外部和 Escape 关闭。
 - 图标式或有副作用的动作应有 title/tooltip；陌生概念使用 `HelpAssistant`，不要把操作说明长期铺在主界面上。
 - 新工作区标签类型必须同步修改 `workspaceTabStore`、会话序列化/恢复、`ProjectWorkspace` 渲染分派和标签栏图标/关闭规则。
+- R10 起所有文件双击、内部打开、系统打开、预览、编辑和解析统一经过 `FileIntentRouter`；文件管理器只提供 UI，不硬编码扩展名处理器。
+- 普通双击 `open` 在内部组件缺失时可以降级 Windows 默认程序；明确内部打开、缩略图、结构化解析、渲染预检和工作流不能把系统打开当成功。
+- 处理器成功接受前不得创建标签页。卸载 BlenderIO/Blender 工作区后，`.blend` 双击必须系统打开且不留下失效 Nexora 标签。
+- 右键菜单固定区分“打开”“使用 Nexora 打开”“使用系统打开”和“设置默认打开方式”；内部候选来自当前有效组件目录。
+- 图片、视频、文本、Markdown、目录和 Blender 页面都按可替换文件处理器组件迁移；服务组件与页面组件分离。
 
 ### 7.3 智能剪贴板
 
@@ -252,6 +257,7 @@ React invoke/listen
 - R8-2 使用 `toolAliases` 和 `pathVariables` 表达可移植需求；导入时明确映射 Blender、FFmpeg、FFprobe、Python 和普通路径，绝对路径仅存于 `profiles/local-bindings/<profile-id>.json`，绑定失败回滚 Profile，删除方案同步清理；
 - R8-3 `.pmc-workspace` 只携带可移植 Profile、普通变量和 Surface 引用骨架，继续拒绝项目文件、聊天、缓存、凭据、绝对路径和组件二进制；
 - R9 使用应用数据目录 `components/` 管理动态组件。随附组件也可卸载和重新安装；组件执行统一经过 operationId、并行/超时/内存限制、进程树取消、日志和 Capability token。`native-library` 明确拒绝并等待 R10 隔离宿主；
+- R10 先建立文件意图路由和可诊断绑定，再实现 `.pmc-pack`、隔离 DLL 宿主、BlenderIO/Blender 工作区外置及图片/视频/文本/Markdown/目录处理器组件化。`.pmc-workspace` 在包安全完成后可选携带可分发依赖包；
 - 可选 `builtin.local-web-console` 默认停用，只允许从本机浏览器访问白名单控制面；不得把它扩展为通用 `invoke`、Shell、文件系统或未经配对的局域网远控入口；
 - 静态启动页由 `shellLayout.home` 决定，复杂启动窗口和条件行为在 R11 通过受控 `app.started` 工作流实现；恢复流程始终优先，目标不可用时回退最小安全主页；
 - 主页不再是固定业务页面：`shellLayout.home` 指向的 Surface 直接成为主页，现有项目主页只是项目管理器贡献。顶部、侧边和紧凑是三个内置 ShellTemplate 兼容预设，后续由受控 `base.html`、PageTemplate 和 ThemePreset 重绘整体结构；完整合同见 `NEXT_MAJOR_PRESENTATION_TEMPLATE_ARCHITECTURE.md`；

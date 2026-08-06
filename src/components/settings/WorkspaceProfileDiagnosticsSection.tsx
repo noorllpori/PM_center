@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { open, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import {
   AlertTriangle,
@@ -10,6 +10,7 @@ import {
   FolderOpen,
   Layers3,
   Loader2,
+  MoreHorizontal,
   PackageOpen,
   Pencil,
   Plus,
@@ -150,6 +151,8 @@ export function WorkspaceProfileDiagnosticsSection() {
   const [packageBusy, setPackageBusy] = useState<string | null>(null);
   const [packageNotice, setPackageNotice] = useState<string | null>(null);
   const [packageError, setPackageError] = useState<string | null>(null);
+  const [openActionsProfileId, setOpenActionsProfileId] = useState<string | null>(null);
+  const [previewingProfileId, setPreviewingProfileId] = useState<string | null>(null);
   const currentSummary = snapshot?.profiles.find((profile) => profile.current) ?? null;
   const currentProfile = snapshot?.currentProfile ?? null;
   const toolCandidates = (tool: string) => {
@@ -216,6 +219,34 @@ export function WorkspaceProfileDiagnosticsSection() {
   ) => {
     setCreateDialog({ kind, sourceProfileId, sourceDescription });
     setNewProfileName(kind === 'copy' ? `${sourceName || '装配方案'} 副本` : '新装配方案');
+  };
+
+  useEffect(() => {
+    if (!openActionsProfileId) return;
+    const closeMenu = (event: MouseEvent) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest('[data-profile-actions-menu]')) return;
+      setOpenActionsProfileId(null);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpenActionsProfileId(null);
+    };
+    document.addEventListener('mousedown', closeMenu);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('mousedown', closeMenu);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [openActionsProfileId]);
+
+  const openSwitchPreview = async (profileId: string) => {
+    setOpenActionsProfileId(null);
+    setPreviewingProfileId(profileId);
+    try {
+      await previewSwitch(profileId);
+    } finally {
+      setPreviewingProfileId(null);
+    }
   };
 
   const createAndEditProfile = async () => {
@@ -550,67 +581,96 @@ export function WorkspaceProfileDiagnosticsSection() {
                       <p key={issue} className="mt-1 text-xs text-amber-700 dark:text-amber-300">{issue}</p>
                     ))}
                   </div>
-                  <div className="flex flex-wrap items-center justify-end gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => void exportWorkspace(profile.id, profile.name)}
-                      disabled={profile.status !== 'ready' || isLoading || isSwitching || isMutating || Boolean(packageBusy)}
-                      className="inline-flex h-8 items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
-                      title="导出 Profile、变量声明和页面骨架"
-                    >
-                      {packageBusy === `workspace:${profile.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileArchive className="h-3.5 w-3.5" />}
-                      空间
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void exportProfile(profile.id, profile.name)}
-                      disabled={profile.status !== 'ready' || isLoading || isSwitching || isMutating || Boolean(packageBusy)}
-                      className="inline-flex h-8 items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
-                    >
-                      {packageBusy === `export:${profile.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-                      导出
-                    </button>
+                  <div className="flex shrink-0 items-center justify-end gap-1.5">
                     <button
                       type="button"
                       onClick={() => editProfile(profile)}
                       disabled={profile.status !== 'ready' || isLoading || isSwitching || isMutating || Boolean(snapshot.pendingSwitch)}
-                      className="inline-flex h-8 items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800 dark:hover:text-gray-100"
                       title={profile.current ? '编辑当前装配方案，保存后立即应用' : '编辑装配方案'}
+                      aria-label={`编辑 ${profile.name}`}
                     >
                       <Pencil className="h-3.5 w-3.5" />
-                      编辑
                     </button>
                     <button
                       type="button"
-                      onClick={() => openCreateDialog('copy', profile.id, profile.name, profile.description)}
-                      disabled={profile.status !== 'ready' || isLoading || isSwitching || isMutating || Boolean(snapshot.pendingSwitch)}
-                      className="inline-flex h-8 items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
-                    >
-                      <Copy className="h-3.5 w-3.5" />
-                      复制
-                    </button>
-                    {!profile.current && (
-                      profile.id.startsWith('local.profile-') || profile.id === 'local.current-pm-center'
-                    ) ? (
-                      <button
-                        type="button"
-                        onClick={() => setDeleteTarget({ id: profile.id, name: profile.name })}
-                        disabled={isLoading || isSwitching || isMutating || Boolean(snapshot.pendingSwitch)}
-                        className="inline-flex h-8 items-center gap-1.5 rounded-md border border-red-200 bg-white px-2.5 text-xs text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900/60 dark:bg-gray-900 dark:text-red-300 dark:hover:bg-red-950/30"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                        删除
-                      </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      onClick={() => void previewSwitch(profile.id)}
+                      onClick={() => void openSwitchPreview(profile.id)}
                       disabled={profile.status !== 'ready' || isLoading || isSwitching || isMutating}
-                      className="inline-flex h-8 items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+                      className="inline-flex h-8 items-center gap-1.5 rounded-md bg-indigo-600 px-2.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      {isLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowRight className="h-3.5 w-3.5" />}
+                      {previewingProfileId === profile.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowRight className="h-3.5 w-3.5" />}
                       查看影响
                     </button>
+                    <div className="relative" data-profile-actions-menu>
+                      <button
+                        type="button"
+                        onClick={() => setOpenActionsProfileId((current) => current === profile.id ? null : profile.id)}
+                        disabled={profile.status !== 'ready' || isLoading || isSwitching || isMutating || Boolean(packageBusy)}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800 dark:hover:text-gray-100"
+                        title="更多方案操作"
+                        aria-label={`${profile.name} 的更多操作`}
+                        aria-expanded={openActionsProfileId === profile.id}
+                      >
+                        {packageBusy?.endsWith(`:${profile.id}`) ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <MoreHorizontal className="h-4 w-4" />}
+                      </button>
+                      {openActionsProfileId === profile.id ? (
+                        <div className="absolute right-0 top-full z-40 mt-1.5 w-48 overflow-hidden rounded-md border border-gray-200 bg-white py-1 shadow-xl dark:border-gray-700 dark:bg-gray-900">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setOpenActionsProfileId(null);
+                              void exportWorkspace(profile.id, profile.name);
+                            }}
+                            className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                          >
+                            <FileArchive className="h-3.5 w-3.5 text-gray-400" />
+                            导出装配空间
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setOpenActionsProfileId(null);
+                              void exportProfile(profile.id, profile.name);
+                            }}
+                            className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                          >
+                            <Download className="h-3.5 w-3.5 text-gray-400" />
+                            导出装配方案
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setOpenActionsProfileId(null);
+                              openCreateDialog('copy', profile.id, profile.name, profile.description);
+                            }}
+                            disabled={Boolean(snapshot.pendingSwitch)}
+                            className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-gray-200 dark:hover:bg-gray-800"
+                          >
+                            <Copy className="h-3.5 w-3.5 text-gray-400" />
+                            复制为新方案
+                          </button>
+                          {!profile.current && (
+                            profile.id.startsWith('local.profile-') || profile.id === 'local.current-pm-center'
+                          ) ? (
+                            <>
+                              <div className="my-1 border-t border-gray-100 dark:border-gray-800" />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setOpenActionsProfileId(null);
+                                  setDeleteTarget({ id: profile.id, name: profile.name });
+                                }}
+                                disabled={Boolean(snapshot.pendingSwitch)}
+                                className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-red-300 dark:hover:bg-red-950/30"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                                删除方案
+                              </button>
+                            </>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
                 </div>
               );
@@ -692,104 +752,6 @@ export function WorkspaceProfileDiagnosticsSection() {
             </div>
           </div>
 
-          {switchPreview ? (
-            <div className="mt-3 rounded-md border border-indigo-200 bg-indigo-50/40 p-3 dark:border-indigo-900/60 dark:bg-indigo-950/15">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                    切换预览 · {switchPreview.targetProfileName}
-                  </p>
-                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    {switchPreview.noChanges ? '当前状态已经与目标一致。' : '预览不会修改模块、页面或快捷栏。'}
-                  </p>
-                </div>
-                <span className={`rounded px-2 py-1 text-xs font-medium ${
-                  switchPreview.canSwitch
-                    ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300'
-                    : 'bg-red-100 text-red-700 dark:bg-red-950/50 dark:text-red-300'
-                }`}>
-                  {switchPreview.canSwitch ? '可以切换' : '存在阻塞'}
-                </span>
-              </div>
-
-              <div className="mt-3 grid grid-cols-3 gap-2 text-center">
-                <div className="rounded-md bg-white px-2 py-2 dark:bg-gray-900">
-                  <p className="text-[11px] text-gray-500">启用模块</p>
-                  <p className="mt-1 text-sm font-semibold text-emerald-600">{switchPreview.modulesToEnable.length}</p>
-                </div>
-                <div className="rounded-md bg-white px-2 py-2 dark:bg-gray-900">
-                  <p className="text-[11px] text-gray-500">停止模块</p>
-                  <p className="mt-1 text-sm font-semibold text-amber-600">{switchPreview.modulesToDisable.length}</p>
-                </div>
-                <div className="rounded-md bg-white px-2 py-2 dark:bg-gray-900">
-                  <p className="text-[11px] text-gray-500">释放资源</p>
-                  <p className="mt-1 text-sm font-semibold text-gray-800 dark:text-gray-100">{switchPreview.resourcesToRelease}</p>
-                </div>
-              </div>
-
-              {switchPreview.modulesToEnable.length > 0 ? (
-                <p className="mt-3 text-xs text-gray-600 dark:text-gray-300">
-                  启用：{switchPreview.modulesToEnable.map((module) => module.name).join('、')}
-                </p>
-              ) : null}
-              {switchPreview.modulesToDisable.length > 0 ? (
-                <p className="mt-2 text-xs text-gray-600 dark:text-gray-300">
-                  停止：{switchPreview.modulesToDisable.map((module) => module.name).join('、')}
-                </p>
-              ) : null}
-              {(switchPreview.pinnedToolsAdded.length > 0 || switchPreview.pinnedToolsRemoved.length > 0) ? (
-                <p className="mt-2 break-all text-xs text-gray-600 dark:text-gray-300">
-                  快捷栏：+{switchPreview.pinnedToolsAdded.length} / -{switchPreview.pinnedToolsRemoved.length}
-                </p>
-              ) : null}
-              {switchPreview.contributionsToClose.length > 0 ? (
-                <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
-                  将撤下 {switchPreview.contributionsToClose.length} 个页面或表面贡献。
-                </p>
-              ) : null}
-
-              {switchPreview.issues.length > 0 ? (
-                <div className="mt-3 space-y-1.5">
-                  {switchPreview.issues.map((issue) => (
-                    <div
-                      key={`${issue.code}:${issue.moduleId ?? issue.contributionId ?? issue.message}`}
-                      className={`flex items-start gap-2 rounded-md px-2.5 py-2 text-xs ${
-                        issue.severity === 'error'
-                          ? 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-300'
-                          : issue.severity === 'warning'
-                            ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300'
-                            : 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-300'
-                      }`}
-                    >
-                      <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                      <span>{issue.message}</span>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-
-              <div className="mt-3 flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={clearSwitchPreview}
-                  disabled={isSwitching}
-                  className="rounded-md px-3 py-1.5 text-xs text-gray-600 hover:bg-white disabled:opacity-50 dark:text-gray-300 dark:hover:bg-gray-900"
-                >
-                  收起
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirmOpen(true)}
-                  disabled={!switchPreview.canSwitch || switchPreview.noChanges || isSwitching}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-xs text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {isSwitching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                  应用此方案
-                </button>
-              </div>
-            </div>
-          ) : null}
-
           <div className="mt-3 grid gap-x-4 gap-y-2 text-xs text-gray-500 sm:grid-cols-2 dark:text-gray-400">
             <p>迁移来源：{snapshot.migration.source} · {snapshot.migration.sourceVersion}</p>
             <p>迁移时间：{formatDate(snapshot.migration.createdAt)}</p>
@@ -803,6 +765,125 @@ export function WorkspaceProfileDiagnosticsSection() {
           {isLoading ? '正在建立当前配置的装配方案快照...' : '装配方案运行时尚未返回数据。'}
         </div>
       )}
+
+      <Dialog
+        isOpen={Boolean(switchPreview)}
+        onClose={() => {
+          if (!isSwitching) {
+            setConfirmOpen(false);
+            clearSwitchPreview();
+          }
+        }}
+        title={switchPreview ? `方案影响 · ${switchPreview.targetProfileName}` : '方案影响'}
+        size="lg"
+        contentClassName="min-h-0 overflow-auto p-5"
+        footer={switchPreview ? (
+          <>
+            <button
+              type="button"
+              onClick={clearSwitchPreview}
+              disabled={isSwitching}
+              className="rounded-md px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-300 dark:hover:bg-gray-800"
+            >
+              关闭
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirmOpen(true)}
+              disabled={!switchPreview.canSwitch || switchPreview.noChanges || isSwitching}
+              className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-2 text-sm text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isSwitching ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              应用此方案
+            </button>
+          </>
+        ) : null}
+      >
+        {switchPreview ? (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                  {switchPreview.noChanges ? '当前状态已经与目标一致。' : '以下内容只用于预览，尚未修改当前运行状态。'}
+                </p>
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  页面、模块和快捷栏只会在确认应用后发生变化。
+                </p>
+              </div>
+              <span className={`rounded px-2 py-1 text-xs font-medium ${
+                switchPreview.canSwitch
+                  ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300'
+                  : 'bg-red-100 text-red-700 dark:bg-red-950/50 dark:text-red-300'
+              }`}>
+                {switchPreview.canSwitch ? '可以切换' : '存在阻塞'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-3 gap-px overflow-hidden rounded-md border border-gray-200 bg-gray-200 text-center dark:border-gray-700 dark:bg-gray-700">
+              {[
+                ['启用模块', switchPreview.modulesToEnable.length, 'text-emerald-600'],
+                ['停止模块', switchPreview.modulesToDisable.length, 'text-amber-600'],
+                ['释放资源', switchPreview.resourcesToRelease, 'text-gray-900 dark:text-gray-100'],
+              ].map(([label, value, valueClass]) => (
+                <div key={String(label)} className="bg-white px-2 py-3 dark:bg-gray-900">
+                  <p className="text-[11px] text-gray-500">{label}</p>
+                  <p className={`mt-1 text-base font-semibold ${valueClass}`}>{value}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="space-y-2 text-xs text-gray-600 dark:text-gray-300">
+              {switchPreview.modulesToEnable.length > 0 ? (
+                <p><span className="font-medium text-gray-800 dark:text-gray-100">启用：</span>{switchPreview.modulesToEnable.map((module) => module.name).join('、')}</p>
+              ) : null}
+              {switchPreview.modulesToDisable.length > 0 ? (
+                <p><span className="font-medium text-gray-800 dark:text-gray-100">停止：</span>{switchPreview.modulesToDisable.map((module) => module.name).join('、')}</p>
+              ) : null}
+              {(switchPreview.pinnedToolsAdded.length > 0 || switchPreview.pinnedToolsRemoved.length > 0) ? (
+                <p><span className="font-medium text-gray-800 dark:text-gray-100">快捷栏：</span>增加 {switchPreview.pinnedToolsAdded.length} 项，移除 {switchPreview.pinnedToolsRemoved.length} 项</p>
+              ) : null}
+              {switchPreview.contributionsToClose.length > 0 ? (
+                <p className="text-amber-700 dark:text-amber-300">将撤下 {switchPreview.contributionsToClose.length} 个页面或表面贡献。</p>
+              ) : null}
+              {switchPreview.modulesToEnable.length === 0
+                && switchPreview.modulesToDisable.length === 0
+                && switchPreview.pinnedToolsAdded.length === 0
+                && switchPreview.pinnedToolsRemoved.length === 0
+                && switchPreview.contributionsToClose.length === 0 ? (
+                  <p className="text-gray-500 dark:text-gray-400">模块、页面和快捷栏没有需要调整的内容。</p>
+                ) : null}
+            </div>
+
+            {switchPreview.issues.length > 0 ? (
+              <div className="space-y-1.5 border-t border-gray-200 pt-4 dark:border-gray-700">
+                <p className="text-xs font-semibold text-gray-900 dark:text-gray-100">检查结果</p>
+                {switchPreview.issues.map((issue) => (
+                  <div
+                    key={`${issue.code}:${issue.moduleId ?? issue.contributionId ?? issue.message}`}
+                    className={`flex items-start gap-2 rounded-md px-2.5 py-2 text-xs ${
+                      issue.severity === 'error'
+                        ? 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-300'
+                        : issue.severity === 'warning'
+                          ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300'
+                          : 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-300'
+                    }`}
+                  >
+                    <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    <span>{issue.message}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {error ? (
+              <div className="flex items-start gap-2 rounded-md bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span className="whitespace-pre-wrap break-all">{error}</span>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </Dialog>
 
       <ConfirmDialog
         isOpen={confirmOpen}
