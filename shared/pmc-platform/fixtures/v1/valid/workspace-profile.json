@@ -115,6 +115,20 @@
       "enabled": true
     }
   ],
+  "automationBindings": [
+    {
+      "id": "analyze-project-files",
+      "componentId": "media.file-analyzer",
+      "command": "analyze-now",
+      "trigger": {
+        "kind": "event",
+        "event": "file.changed"
+      },
+      "projectContext": "event-project",
+      "enabled": true,
+      "input": {}
+    }
+  ],
   "variables": {
     "blenderRequirement": "blender@5.x",
     "ffmpegRequirement": "ffmpeg@system-or-configured"

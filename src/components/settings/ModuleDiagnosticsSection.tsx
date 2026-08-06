@@ -409,7 +409,7 @@ export function ModuleDiagnosticsSection() {
                 <div className="mt-2 rounded-md bg-fuchsia-50 px-3 py-2 text-xs text-fuchsia-800 dark:bg-fuchsia-950/30 dark:text-fuchsia-200">
                   {running
                     ? '已挂载 6 项隔离贡献，可在功能中心（Alt+Q）打开“贡献隔离样本”。'
-                    : '启用后会动态挂载工具、工作区、Surface、Widget、DataSource 和 WorkflowNode。'}
+                    : '启用后会动态挂载工具、工作区、Surface、Widget、DataSource；旧 WorkflowNode 仅兼容解析。'}
                 </div>
               )}
               </div>

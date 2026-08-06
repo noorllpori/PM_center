@@ -44,7 +44,7 @@ Profile 的 `shellLayout.home` 指向主页 Surface。默认迁移 Profile 继�
 
 ## 5. 启动行为
 
-静态默认入口由 `shellLayout.home` 决定。R11 完成后，Profile 可通过 `workflowBindings` 将 `app.started` 绑定到启动工作流，受控打开 Shell Surface、工作区贡献、工具弹窗或独立窗口。
+静态默认入口由 `shellLayout.home` 决定。R11 完成后，Profile 可通过 `automationBindings` 将 `app.started` 绑定到脚本组件命令，受控执行清单声明且经过 Capability Gateway 的启动动作。旧 `workflowBindings` 不执行。
 
 优先级固定为：
 

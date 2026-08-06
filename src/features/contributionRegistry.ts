@@ -15,6 +15,7 @@ export const BUILTIN_MODULE_IDS = {
   projectManager: 'builtin.project-manager',
   projectResources: 'builtin.project-resources',
   renderCenter: 'builtin.render-center',
+  scriptAutomation: 'builtin.script-automation',
   sessionRuntime: 'builtin.session-runtime',
   settingsCenter: 'builtin.settings-center',
   smartClipboard: 'builtin.smart-clipboard',
@@ -76,6 +77,11 @@ export const TOOL_CONTRIBUTIONS = {
     'tools',
     BUILTIN_MODULE_IDS.localWebConsole,
   ),
+  scriptAutomation: contribution(
+    'builtin.script-automation.studio-tool',
+    'tools',
+    BUILTIN_MODULE_IDS.scriptAutomation,
+  ),
   diagnosticSample: contribution(
     'diagnostic.contribution-sample.tool',
     'tools',
@@ -125,6 +131,15 @@ export const SURFACE_CONTRIBUTIONS = {
       BUILTIN_MODULE_IDS.automationRuntime,
     ),
     title: '任务中心',
+    host: 'dialog',
+  },
+  scriptAutomationStudio: {
+    ...contribution(
+      'builtin.script-automation.studio-surface',
+      'surfaces',
+      BUILTIN_MODULE_IDS.scriptAutomation,
+    ),
+    title: '脚本开发者工作台',
     host: 'dialog',
   },
   renderCenter: {

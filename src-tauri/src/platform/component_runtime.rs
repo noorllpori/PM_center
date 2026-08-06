@@ -21,8 +21,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use sysinfo::{Pid, System};
-use tauri::{AppHandle, Emitter};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tauri::{AppHandle, Emitter, Manager};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 use walkdir::WalkDir;
@@ -364,6 +364,7 @@ struct OperationControl {
     summary: Mutex<ComponentOperationSummary>,
     cancelled: AtomicBool,
     pid: AtomicU32,
+    cancellation_path: PathBuf,
 }
 
 #[derive(Clone)]
@@ -479,6 +480,56 @@ impl ComponentRuntimeManager {
             .expect("component catalog mutex poisoned")
             .get(component_id)
             .map(|component| component.manifest.clone())
+    }
+
+    pub fn install_source(&self, component_id: &str) -> Option<ComponentInstallSource> {
+        self.catalog
+            .lock()
+            .expect("component catalog mutex poisoned")
+            .get(component_id)
+            .map(|component| component.source)
+    }
+
+    pub fn package_root(&self, component_id: &str) -> Option<PathBuf> {
+        self.catalog
+            .lock()
+            .expect("component catalog mutex poisoned")
+            .get(component_id)
+            .and_then(|component| component.package_root.clone())
+    }
+
+    pub fn content_digest(&self, component_id: &str) -> Option<String> {
+        let catalog = self
+            .catalog
+            .lock()
+            .expect("component catalog mutex poisoned");
+        let component = catalog.get(component_id)?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(serde_json::to_string(&component.manifest).ok()?.as_bytes());
+        if let Some(root) = &component.package_root {
+            let mut files = WalkDir::new(root)
+                .follow_links(false)
+                .into_iter()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().is_file())
+                .map(|entry| entry.path().to_path_buf())
+                .collect::<Vec<_>>();
+            files.sort();
+            for path in files {
+                let relative = path.strip_prefix(root).ok()?;
+                hasher.update(relative.to_string_lossy().replace('\\', "/").as_bytes());
+                let mut file = fs::File::open(path).ok()?;
+                let mut buffer = [0u8; 64 * 1024];
+                loop {
+                    let read = file.read(&mut buffer).ok()?;
+                    if read == 0 {
+                        break;
+                    }
+                    hasher.update(&buffer[..read]);
+                }
+            }
+        }
+        Some(hasher.finalize().to_hex().to_string())
     }
 
     pub fn ensure_installed(&self, component_id: &str) -> Result<(), ComponentRuntimeError> {
@@ -1268,6 +1319,15 @@ impl ComponentRuntimeManager {
             .unwrap_or(300_000)
             .min(installed.manifest.resources.timeout_ms.unwrap_or(u64::MAX));
         let started_at = Utc::now().timestamp_millis();
+        let cancellation_root = self.root_path.join(".cancellation");
+        fs::create_dir_all(&cancellation_root).map_err(|error| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentIoError,
+                format!("创建组件取消目录失败: {error}"),
+            )
+        })?;
+        let cancellation_path = cancellation_root.join(safe_name(&operation_id));
+        let _ = fs::remove_file(&cancellation_path);
         let control = Arc::new(OperationControl {
             summary: Mutex::new(ComponentOperationSummary {
                 operation_id: operation_id.clone(),
@@ -1285,6 +1345,7 @@ impl ComponentRuntimeManager {
             }),
             cancelled: AtomicBool::new(false),
             pid: AtomicU32::new(0),
+            cancellation_path: cancellation_path.clone(),
         });
         {
             let mut operations = self
@@ -1308,6 +1369,7 @@ impl ComponentRuntimeManager {
             "componentVersion": installed.manifest.version,
             "command": request.command,
             "input": request.input,
+            "cancellationFile": cancellation_path,
         });
         let mut future = Box::pin(self.invoke_installed(&installed, &control, payload));
         let deadline = tokio::time::sleep(Duration::from_millis(timeout_ms));
@@ -1394,6 +1456,7 @@ impl ComponentRuntimeManager {
             .lock()
             .expect("component operation mutex poisoned")
             .remove(&operation_id);
+        let _ = fs::remove_file(&control.cancellation_path);
         let mut history = self
             .history
             .lock()
@@ -1438,9 +1501,17 @@ impl ComponentRuntimeManager {
                 )
             })?;
         control.cancelled.store(true, Ordering::SeqCst);
+        let _ = fs::write(&control.cancellation_path, b"cancelled\n");
         let pid = control.pid.load(Ordering::SeqCst);
         if pid != 0 {
-            crate::process_utils::terminate_pid_tree(pid);
+            let control = control.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(250));
+                let current_pid = control.pid.load(Ordering::SeqCst);
+                if control.cancelled.load(Ordering::SeqCst) && current_pid != 0 {
+                    crate::process_utils::terminate_pid_tree(current_pid);
+                }
+            });
         }
         self.update_operation(
             &control,
@@ -1746,6 +1817,8 @@ impl ComponentRuntimeManager {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        let mut env = env;
+        extend_script_sdk_pythonpath(&self.app_handle, &mut env);
         for (key, value) in env {
             command.env(key, value);
         }
@@ -1772,21 +1845,51 @@ impl ComponentRuntimeManager {
                 )
             })?;
         }
-        let output = child.wait_with_output().await.map_err(|error| {
+        let stdout = child.stdout.take().ok_or_else(|| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentProtocolError,
+                "组件进程 stdout 不可用",
+            )
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentProtocolError,
+                "组件进程 stderr 不可用",
+            )
+        })?;
+        let stdout_task = tokio::spawn(capture_component_stream(
+            stdout,
+            None,
+            Some(self.app_handle.clone()),
+            payload
+                .get("operationId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            installed.manifest.id.clone(),
+        ));
+        let stderr_task = tokio::spawn(capture_component_stream(
+            stderr,
+            Some("stderr: ".into()),
+            None,
+            String::new(),
+            installed.manifest.id.clone(),
+        ));
+        let status = child.wait().await.map_err(|error| {
             ComponentRuntimeError::new(
                 ComponentRuntimeErrorCode::ComponentProcessFailed,
                 format!("等待组件进程失败: {error}"),
             )
         })?;
         control.pid.store(0, Ordering::SeqCst);
-        let stdout = truncate_log(String::from_utf8_lossy(&output.stdout).into_owned());
-        let stderr = truncate_log(String::from_utf8_lossy(&output.stderr).into_owned());
+        let stdout = stdout_task.await.unwrap_or_default();
+        let stderr = stderr_task.await.unwrap_or_default();
         let mut logs = stdout.lines().map(str::to_string).collect::<Vec<_>>();
-        logs.extend(stderr.lines().map(|line| format!("stderr: {line}")));
-        if !output.status.success() {
+        logs.extend(stderr.lines().map(str::to_string));
+        if !status.success() {
             return Err(ComponentRuntimeError::new(
                 ComponentRuntimeErrorCode::ComponentProcessFailed,
-                format!("组件进程退出码 {}", output.status.code().unwrap_or(-1)),
+                format!("组件进程退出码 {}", status.code().unwrap_or(-1)),
             )
             .with_details(logs));
         }
@@ -1876,7 +1979,9 @@ impl ComponentRuntimeManager {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        for (key, value) in runtime.env_vars {
+        let mut env = runtime.env_vars;
+        extend_script_sdk_pythonpath(&self.app_handle, &mut env);
+        for (key, value) in env {
             command.env(key, value);
         }
         let mut child = command.spawn().map_err(|error| {
@@ -1945,6 +2050,7 @@ impl ComponentRuntimeManager {
                 },
             );
         tokio::spawn(worker_loop(
+            self.app_handle.clone(),
             component_id.clone(),
             pid,
             child,
@@ -1971,7 +2077,7 @@ impl ComponentRuntimeManager {
             .remove(component_id);
     }
 
-    fn active_operation_count(&self, component_id: &str) -> usize {
+    pub fn active_operation_count(&self, component_id: &str) -> usize {
         self.operations
             .lock()
             .expect("component operation mutex poisoned")
@@ -1985,6 +2091,13 @@ impl ComponentRuntimeManager {
                     == component_id
             })
             .count()
+    }
+
+    pub fn is_operation_active(&self, operation_id: &str) -> bool {
+        self.operations
+            .lock()
+            .expect("component operation mutex poisoned")
+            .contains_key(operation_id)
     }
 
     fn set_operation_pid(&self, control: &Arc<OperationControl>, pid: u32) {
@@ -2039,6 +2152,7 @@ impl ComponentRuntimeManager {
 }
 
 async fn worker_loop(
+    app_handle: AppHandle,
     component_id: String,
     pid: u32,
     mut child: tokio::process::Child,
@@ -2074,7 +2188,14 @@ async fn worker_loop(
                 {
                     state.status = "busy".into();
                 }
-                let result = invoke_worker_message(&mut stdin, &mut stdout, request).await;
+                let result = invoke_worker_message(
+                    &app_handle,
+                    &component_id,
+                    &mut stdin,
+                    &mut stdout,
+                    request,
+                )
+                .await;
                 if let Some(state) = worker_states
                     .lock()
                     .expect("component worker state mutex poisoned")
@@ -2096,6 +2217,8 @@ async fn worker_loop(
 }
 
 async fn invoke_worker_message(
+    app_handle: &AppHandle,
+    component_id: &str,
     stdin: &mut tokio::process::ChildStdin,
     stdout: &mut BufReader<tokio::process::ChildStdout>,
     request: Value,
@@ -2159,6 +2282,17 @@ async fn invoke_worker_message(
             .and_then(Value::as_str)
             .unwrap_or_default();
         if matches!(message_type, "progress" | "heartbeat" | "log") {
+            let _ = app_handle.emit(
+                "nexora:component-operation-progress",
+                json!({
+                    "operationId": operation_id,
+                    "componentId": component_id,
+                    "type": message_type,
+                    "progress": value.get("progress").cloned().unwrap_or(Value::Null),
+                    "message": value.get("message").cloned().unwrap_or(Value::Null),
+                    "payload": value,
+                }),
+            );
             continue;
         }
         if value.get("ok").and_then(Value::as_bool) == Some(false)
@@ -2342,6 +2476,30 @@ fn read_component_manifest(path: &Path) -> Result<ComponentManifestV1, Component
     let input =
         fs::read_to_string(path).map_err(|error| io_error("读取 component.json 失败", error))?;
     parse_component_manifest(&input).map_err(contract_error)
+}
+
+fn extend_script_sdk_pythonpath(app_handle: &AppHandle, env: &mut HashMap<String, String>) {
+    let mut candidates = Vec::new();
+    if let Ok(resource_dir) = app_handle.path().resource_dir() {
+        candidates.push(resource_dir.join("script-sdk"));
+        candidates.push(resource_dir.join("resources").join("script-sdk"));
+    }
+    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/script-sdk"));
+    let Some(sdk_root) = candidates.into_iter().find(|path| path.is_dir()) else {
+        return;
+    };
+    let separator = if cfg!(windows) { ";" } else { ":" };
+    let sdk = sdk_root.to_string_lossy();
+    let existing = env.get("PYTHONPATH").cloned().unwrap_or_default();
+    env.insert(
+        "PYTHONPATH".into(),
+        if existing.trim().is_empty() {
+            sdk.into_owned()
+        } else {
+            format!("{sdk}{separator}{existing}")
+        },
+    );
+    env.insert("NEXORA_SCRIPT_SDK_VERSION".into(), "1".into());
 }
 
 fn read_component_manifest_from_package(
@@ -3392,12 +3550,60 @@ fn parse_protocol_output(stdout: &str) -> Result<Value, ComponentRuntimeError> {
     }
 }
 
-fn truncate_log(mut value: String) -> String {
-    if value.len() > MAX_CAPTURED_LOG_BYTES {
-        value.truncate(MAX_CAPTURED_LOG_BYTES);
-        value.push_str("\n[输出已截断]");
+async fn capture_component_stream<R>(
+    stream: R,
+    prefix: Option<String>,
+    app_handle: Option<AppHandle>,
+    operation_id: String,
+    component_id: String,
+) -> String
+where
+    R: AsyncRead + Unpin,
+{
+    let mut reader = BufReader::new(stream);
+    let mut captured = String::new();
+    let mut truncated = false;
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line).await {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        let rendered = match &prefix {
+            Some(prefix) => format!("{prefix}{}", line.trim_end_matches(['\r', '\n'])),
+            None => line.trim_end_matches(['\r', '\n']).to_string(),
+        };
+        if let Some(app_handle) = &app_handle {
+            if let Ok(value) = serde_json::from_str::<Value>(rendered.trim()) {
+                if matches!(
+                    value.get("type").and_then(Value::as_str),
+                    Some("progress" | "log" | "heartbeat")
+                ) {
+                    let _ = app_handle.emit(
+                        "nexora:component-operation-progress",
+                        json!({
+                            "operationId": operation_id,
+                            "componentId": component_id,
+                            "type": value.get("type").cloned().unwrap_or(Value::Null),
+                            "progress": value.get("progress").cloned().unwrap_or(Value::Null),
+                            "message": value.get("message").cloned().unwrap_or(Value::Null),
+                            "payload": value,
+                        }),
+                    );
+                }
+            }
+        }
+        if captured.len().saturating_add(rendered.len() + 1) <= MAX_CAPTURED_LOG_BYTES {
+            captured.push_str(&rendered);
+            captured.push('\n');
+        } else {
+            truncated = true;
+        }
     }
-    value
+    if truncated {
+        captured.push_str("[日志已截断]\n");
+    }
+    captured
 }
 
 fn cleanup_old_logs(logs_path: &Path) {

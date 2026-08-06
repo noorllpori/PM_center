@@ -274,9 +274,9 @@ render.result-review
 
 首个正式组件为 `pmc.blendio`：它默认随安装包分发但允许卸载、重装和升级；渲染中心依赖它完成 `.blend` 场景预检，项目资源模块可选使用它生成预览和结构化详情。“Blender 文件解析器”由宿主 UI 调用该无头服务组件。HDA、PPT、PDF 等格式读取器使用相同机制，详细边界见 `docs/NEXT_MAJOR_COMPONENT_DEPENDENCY_MODEL.md`。
 
-### 6.5 Workflow 工作流层
+### 6.5 Script Automation 脚本自动化层
 
-工作流把模块和组件连接成可复用流程。第一版使用结构化 DAG，不急于开发复杂可视化编辑器。节点统一具有版本化输入输出、幂等键、超时/取消/重试、日志、权限、本地或远程执行位置以及中间产物提交规则。
+R11 使用可安装 Python 脚本组件组合业务逻辑，不建设节点 DAG 或节点画布。组件通过 `automationCommands`、`automationEvents` 和 `scriptSurfaces` 声明能力，Profile 通过 `automationBindings` 决定手动、事件和 cron 触发。旧 Workflow 字段只保留兼容解析，不能作为可执行功能目录。
 
 ## 7. 模块清单与生命周期
 
@@ -440,7 +440,7 @@ Profile 分为迁移生成方案、用户创建方案、外部导入方案、可
 5. **入口与命令**：将模块命令放到工具栏、功能中心、右键菜单、快捷键或页面按钮。
 6. **数据源**：绑定项目目录、媒体资料库、局域网全局数据库、渲染队列或组件数据。
 7. **布局参数**：决定面板比例、响应式网格、默认展开状态和窄窗口策略。
-8. **工作流**：把触发器、组件节点、条件、重试、确认和结果提交连接起来。
+8. **脚本自动化**：把组件命令与手动、应用事件或 cron 触发绑定起来。
 
 外部工具和位置必须使用 `toolAliases` / `pathVariables` 声明逻辑需求。本机 Blender、FFmpeg、FFprobe、Python、文件和目录映射保存在 Profile 外部，导出包不得携带绝对路径。
 
@@ -457,9 +457,9 @@ Nexora 宿主本身不等于项目管理器。最小 Shell 始终保留窗口与
 启动目标分为两层：
 
 1. `shellLayout.home` 静态决定默认主页；
-2. `workflowBindings` 绑定受控 `app.started` 事件，在 R11 执行器完成后实现条件判断、打开 Shell/工作区页面、工具弹窗或独立窗口。
+2. `automationBindings` 绑定受控 `app.started` 事件，通过 R11 脚本组件执行受权限约束的启动动作。
 
-启动优先级固定为：完成崩溃与 Profile 切换恢复，应用用户的会话恢复策略，执行当前 Profile 的启动工作流，最后回退到默认或最小安全主页。脚本不得直接创建任意窗口或绕过模块状态，只能调用 `shell.open-surface`、`shell.open-tool`、`project.open`、`workspace.open-contribution`、`window.open-surface` 等受 Capability 和贡献目录约束的宿主命令。
+启动优先级固定为：完成崩溃与 Profile 切换恢复，应用用户的会话恢复策略，触发当前 Profile 的 `app.started` 自动化，最后回退到默认或最小安全主页。脚本不得直接创建任意窗口或绕过模块状态，只能使用清单声明且受 Capability 和贡献目录约束的宿主能力。
 
 ### 8.4 装配编辑器
 
@@ -675,46 +675,11 @@ nexora.file-handler.blender-workspace -> pmc.blendio
 
 这些处理器可以卸载和被第三方组件替换；`pmc.blendio` 是无头解析服务，不拥有 Blender 页面。完整合同、上下文菜单、绑定数据、系统 fallback、包关系和 R10 实施顺序见 `docs/NEXT_MAJOR_FILE_HANDLER_ROUTING.md`。
 
-## 11. 工作流模型
+## 11. 脚本自动化模型
 
-### 11.1 Workflow Manifest
+R11 的可执行单位是一个组件自动化命令，不是节点图。每次运行拥有 `runId`、`operationId`、不可变 Manifest/包摘要、Profile revision、项目和输入快照。`pure` 与 `idempotent` 命令可以按清单重试；`non-idempotent` 结果未知时进入 `attention`。运行、尝试、日志、权限、事件去重和 cron tick 写入 `automation_runtime.db`，统一在任务中心观察。
 
-```json
-{
-  "schemaVersion": 1,
-  "id": "render.prepare-and-dispatch",
-  "name": "装配并发送渲染任务",
-  "version": "1.0.0",
-  "trigger": {"kind": "manual"},
-  "nodes": [
-    {"id":"inspect","nodeType":"render.inspect-scene"},
-    {"id":"manifest","nodeType":"asset.build-manifest"},
-    {"id":"select-node","nodeType":"farm.select-node"},
-    {"id":"sync","nodeType":"asset.sync"},
-    {"id":"render","nodeType":"render.remote-worker","execution":"require-remote"},
-    {"id":"collect","nodeType":"render.result-collector"}
-  ],
-  "edges": [
-    {"from":{"node":"inspect","port":"scene"},"to":{"node":"manifest","port":"scene"}},
-    {"from":{"node":"manifest","port":"manifest"},"to":{"node":"select-node","port":"manifest"}},
-    {"from":{"node":"select-node","port":"node"},"to":{"node":"sync","port":"node"}},
-    {"from":{"node":"sync","port":"package"},"to":{"node":"render","port":"package"}},
-    {"from":{"node":"render","port":"results"},"to":{"node":"collect","port":"results"}}
-  ]
-}
-```
-
-### 11.2 统一执行规则
-
-- 每次运行有全局唯一 `operationId`；
-- 每个节点有 `claimToken` 或等价幂等令牌；
-- 节点重试不能重复覆盖已经提交的结果；
-- 中间文件先写 staging，验证后原子提交；
-- 取消信号传播到子组件和远程节点；
-- 应用异常退出后可从持久化状态恢复；
-- 运行日志、进度和性能统一进入任务中心；
-- 网络断开时区分“等待恢复”“失败”“已取消”；
-- 工作流配置变化不自动重跑已有成功结果。
+`WorkflowManifest`、`workflowNodes` 和 `workflowBindings` 继续作为 schema v1 兼容合同解析，但冻结且不执行。完整实现见 `docs/NEXT_MAJOR_R11_SCRIPT_AUTOMATION.md`。
 
 ## 12. 图像与媒体资料库设计
 
@@ -947,6 +912,7 @@ interface WorkspaceProfile {
   dataSources: ProfileDataSource[];
   commandBindings: ProfileCommandBinding[];
   workflowBindings: ProfileWorkflowBinding[];
+  automationBindings: ProfileAutomationBinding[];
   variables: Record<string, string>;
 }
 ```
@@ -1113,12 +1079,13 @@ file-routing/
 - 建立 `.pmc-pack` 安装、校验、签名和回滚；
 - 实现隔离 DLL 组件宿主。
 
-### 阶段 5：工作流与装配空间
+### 阶段 5：脚本自动化与装配空间
 
-- 实现 Workflow Manifest 和 DAG 执行器；
+- 冻结旧 Workflow Manifest 为兼容合同，不建设 DAG 执行器；
+- 实现脚本组件命令、Profile 绑定、事件和 cron 调度；
 - 将任务中心作为统一执行观察面；
 - 实现 `.pmc-workspace` 导入导出；
-- 提供可选的渲染装配和媒体归档示例工作流，用户可修改或删除。
+- 提供可选的渲染检查和媒体归档示例脚本组件，用户可修改或删除。
 
 ### 阶段 6：Blender 渲染农场
 

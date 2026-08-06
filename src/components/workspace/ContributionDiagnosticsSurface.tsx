@@ -183,7 +183,7 @@ export function ContributionDiagnosticsSurface({
                 </div>
               </div>
               <p className="mt-3 border-t border-gray-100 pt-3 text-xs text-gray-500 dark:border-gray-800 dark:text-gray-400">
-                当前只验证节点目录与端口合同；执行器在 R11 接入。
+                旧 WorkflowNode 仅保留目录与端口合同兼容校验；R11 不执行节点图。
               </p>
             </div>
           </section>

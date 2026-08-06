@@ -5,6 +5,10 @@ use super::module_manager::{
     RegisteredModule,
 };
 use super::resource_registry::ResourceKind;
+use super::script_automation::{
+    all_script_capabilities, ScriptAutomationRuntime, SCRIPT_AUTOMATION_SURFACE_ID,
+    SCRIPT_AUTOMATION_TOOL_ID,
+};
 use pmc_platform::{
     Capability, ComponentDependency, ExtensionFields, ModuleContributions, ModuleDataPolicy,
     ModuleDependency, ModuleManifestV1, ModuleScope,
@@ -23,6 +27,7 @@ pub const SETTINGS_CENTER_MODULE_ID: &str = "builtin.settings-center";
 pub const SESSION_RUNTIME_MODULE_ID: &str = "builtin.session-runtime";
 pub const DESKTOP_INTEGRATION_MODULE_ID: &str = "builtin.desktop-integration";
 pub const EXTERNAL_TOOLS_MODULE_ID: &str = "builtin.external-tools";
+pub use super::script_automation::SCRIPT_AUTOMATION_MODULE_ID;
 pub use crate::automation_runtime::AUTOMATION_RUNTIME_MODULE_ID;
 pub use crate::local_web_console::LOCAL_WEB_CONSOLE_MODULE_ID;
 pub use crate::project_resources::PROJECT_RESOURCES_MODULE_ID;
@@ -390,6 +395,103 @@ pub fn automation_runtime_component() -> CapabilityComponentRegistration {
         version: "1.0.0".into(),
         module_id: AUTOMATION_RUNTIME_MODULE_ID.into(),
         capabilities: automation_runtime_capabilities(),
+    }
+}
+
+struct ScriptAutomationLifecycle {
+    runtime: Arc<ScriptAutomationRuntime>,
+}
+
+impl ModuleLifecycle for ScriptAutomationLifecycle {
+    fn start<'a>(&'a self, context: ModuleContext) -> LifecycleFuture<'a, ()> {
+        Box::pin(async move {
+            self.runtime.start()?;
+            let runtime = self.runtime.clone();
+            let mut details = BTreeMap::new();
+            details.insert("database".into(), "automation_runtime.db (WAL)".into());
+            details.insert("triggers".into(), "手动、事件、五段式 cron".into());
+            details.insert(
+                "security".into(),
+                "受信任 Python + Capability Gateway".into(),
+            );
+            context.resources.register(
+                context.module_id,
+                ResourceKind::TokioTask,
+                "脚本自动化调度器与事件订阅",
+                details,
+                Box::new(move || Box::pin(async move { runtime.stop().await })),
+            );
+            Ok(())
+        })
+    }
+
+    fn stop<'a>(&'a self, _context: ModuleContext) -> LifecycleFuture<'a, ()> {
+        Box::pin(self.runtime.stop())
+    }
+
+    fn health<'a>(&'a self, _context: ModuleContext) -> LifecycleFuture<'a, ModuleHealth> {
+        Box::pin(async move {
+            if self.runtime.is_running() {
+                Ok(ModuleHealth::healthy(self.runtime.health_message()))
+            } else {
+                Ok(ModuleHealth {
+                    level: ModuleHealthLevel::Unhealthy,
+                    message: "脚本自动化运行时未启动".into(),
+                    checked_at: Some(chrono::Utc::now().timestamp_millis()),
+                })
+            }
+        })
+    }
+
+    fn start_timeout(&self) -> Duration {
+        Duration::from_secs(5)
+    }
+
+    fn stop_timeout(&self) -> Duration {
+        Duration::from_secs(15)
+    }
+}
+
+pub fn script_automation_module(runtime: Arc<ScriptAutomationRuntime>) -> RegisteredModule {
+    let mut extensions = ExtensionFields::new();
+    extensions.insert("defaultEnabled".into(), Value::Bool(true));
+    RegisteredModule {
+        manifest: ModuleManifestV1 {
+            schema_version: 1,
+            id: SCRIPT_AUTOMATION_MODULE_ID.into(),
+            name: "脚本自动化".into(),
+            description: "运行可安装 Python 脚本组件、事件触发和定时自动化。".into(),
+            version: "1.0.0".into(),
+            api_version: "1".into(),
+            scope: ModuleScope::Global,
+            builtin: true,
+            requires_modules: vec![ModuleDependency {
+                id: AUTOMATION_RUNTIME_MODULE_ID.into(),
+                version_requirement: "^1.0".into(),
+            }],
+            optional_modules: vec![ModuleDependency {
+                id: PROJECT_RESOURCES_MODULE_ID.into(),
+                version_requirement: "^1.0".into(),
+            }],
+            requires_components: Vec::new(),
+            optional_components: Vec::new(),
+            conflicts: Vec::new(),
+            capabilities: all_script_capabilities(),
+            background_services: vec![
+                "automation-scheduler".into(),
+                "automation-event-forwarder".into(),
+                "automation-run-recovery".into(),
+            ],
+            contributes: ModuleContributions {
+                tools: vec![SCRIPT_AUTOMATION_TOOL_ID.into()],
+                surfaces: vec![SCRIPT_AUTOMATION_SURFACE_ID.into()],
+                ..ModuleContributions::default()
+            },
+            data_policy: ModuleDataPolicy::default(),
+            extensions,
+        },
+        lifecycle: Arc::new(ScriptAutomationLifecycle { runtime }),
+        diagnostic: false,
     }
 }
 

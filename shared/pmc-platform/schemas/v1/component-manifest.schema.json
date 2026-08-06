@@ -3,6 +3,143 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": true,
   "definitions": {
+    "AutomationCapabilityOperation": {
+      "enum": [
+        "read",
+        "write",
+        "delete",
+        "execute",
+        "connect",
+        "notify"
+      ],
+      "type": "string"
+    },
+    "AutomationCommandContribution": {
+      "additionalProperties": true,
+      "properties": {
+        "capabilityOperation": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AutomationCapabilityOperation"
+            }
+          ],
+          "default": "execute"
+        },
+        "command": {
+          "type": "string"
+        },
+        "contextRequirement": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AutomationContextRequirement"
+            }
+          ],
+          "default": "either"
+        },
+        "description": {
+          "default": "",
+          "type": "string"
+        },
+        "executionSemantics": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AutomationExecutionSemantics"
+            }
+          ],
+          "default": "non-idempotent"
+        },
+        "id": {
+          "type": "string"
+        },
+        "inputSchema": {
+          "default": null
+        },
+        "maxAttempts": {
+          "default": 0,
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "maxParallelism": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "outputSchema": {
+          "default": null
+        },
+        "requiredCapability": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Capability"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timeoutMs": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "command",
+        "id",
+        "name"
+      ],
+      "type": "object"
+    },
+    "AutomationContextRequirement": {
+      "enum": [
+        "global",
+        "project-required",
+        "either"
+      ],
+      "type": "string"
+    },
+    "AutomationEventContribution": {
+      "additionalProperties": true,
+      "properties": {
+        "description": {
+          "default": "",
+          "type": "string"
+        },
+        "event": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "event",
+        "id",
+        "name"
+      ],
+      "type": "object"
+    },
+    "AutomationExecutionSemantics": {
+      "enum": [
+        "pure",
+        "idempotent",
+        "non-idempotent"
+      ],
+      "type": "string"
+    },
     "Capability": {
       "enum": [
         "app.profile.read",
@@ -43,6 +180,20 @@
     "ComponentContributions": {
       "additionalProperties": true,
       "properties": {
+        "automationCommands": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/AutomationCommandContribution"
+          },
+          "type": "array"
+        },
+        "automationEvents": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/AutomationEventContribution"
+          },
+          "type": "array"
+        },
         "dataSources": {
           "default": [],
           "items": {
@@ -61,6 +212,13 @@
           "default": [],
           "items": {
             "$ref": "#/definitions/PageTemplateContribution"
+          },
+          "type": "array"
+        },
+        "scriptSurfaces": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ScriptSurfaceContribution"
           },
           "type": "array"
         },
@@ -101,6 +259,7 @@
         },
         "workflowNodes": {
           "default": [],
+          "description": "Frozen compatibility catalog. R11 no longer executes node graphs.",
           "items": {
             "$ref": "#/definitions/WorkflowNodeContribution"
           },
@@ -359,6 +518,49 @@
       ],
       "type": "string"
     },
+    "ScriptSurfaceContribution": {
+      "additionalProperties": true,
+      "properties": {
+        "allowedCommands": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "entry": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "placements": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ScriptSurfacePlacement"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "entry",
+        "id",
+        "name"
+      ],
+      "type": "object"
+    },
+    "ScriptSurfacePlacement": {
+      "enum": [
+        "shell",
+        "workspace",
+        "dialog",
+        "widget"
+      ],
+      "type": "string"
+    },
     "SettingsField": {
       "additionalProperties": true,
       "properties": {
@@ -586,9 +788,12 @@
         }
       ],
       "default": {
+        "automationCommands": [],
+        "automationEvents": [],
         "dataSources": [],
         "fileHandlers": [],
         "pageTemplates": [],
+        "scriptSurfaces": [],
         "settingsSections": [],
         "shellTemplates": [],
         "themePresets": [],

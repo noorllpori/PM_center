@@ -10,6 +10,9 @@ import { openStandaloneDirectoryViewer } from './openStandaloneDirectoryViewer';
 import { openStandaloneImageViewer } from '../image-viewer/openStandaloneImageViewer';
 import { LauncherButton } from '../Launcher';
 import { BlenderFileParserDialog } from '../tools/BlenderFileParserDialog';
+import { ScriptDeveloperWorkbench } from '../automation/ScriptDeveloperWorkbench';
+import { ScriptSurfaceFrame } from '../automation/ScriptSurfaceFrame';
+import type { ScriptSurfaceTool } from '../BuiltinToolsCenter';
 import { openStandaloneTextEditor } from '../text-editor/openStandaloneTextEditor';
 import { openStandaloneVideoPlayer } from '../video-player/openStandaloneVideoPlayer';
 import { Toolbar, TOOLBAR_SEARCH_FOCUS_EVENT } from './Toolbar';
@@ -81,6 +84,7 @@ import {
   type ProjectLocationCandidate,
   type ProjectLocationReport,
 } from '../../api/projects';
+import { emitAutomationEvent } from '../../api/scriptAutomation';
 
 interface ProjectSession {
   projectStore: ProjectStoreApi;
@@ -332,6 +336,8 @@ export function FileManager() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isRecoverySettingsOpen, setIsRecoverySettingsOpen] = useState(false);
   const [isBlenderFileParserOpen, setIsBlenderFileParserOpen] = useState(false);
+  const [isScriptDeveloperWorkbenchOpen, setIsScriptDeveloperWorkbenchOpen] = useState(false);
+  const [activeScriptSurface, setActiveScriptSurface] = useState<ScriptSurfaceTool | null>(null);
   const [blenderParserInitialFilePath, setBlenderParserInitialFilePath] = useState<string | null>(null);
   const [isSettingsLoaded, setIsSettingsLoaded] = useState(false);
   const [pluginConfirmDialog, setPluginConfirmDialog] = useState<PluginConfirmDialogState>({
@@ -387,6 +393,10 @@ export function FileManager() {
     contributionSnapshot,
     TOOL_CONTRIBUTIONS.blenderFileParser,
   );
+  const scriptAutomationToolAvailable = isContributionAvailable(
+    contributionSnapshot,
+    TOOL_CONTRIBUTIONS.scriptAutomation,
+  );
 
   const openProfileNavigation = useCallback((contributionId: string) => {
     const definition = SHELL_TAB_CONTRIBUTION_BY_ID.get(contributionId);
@@ -423,7 +433,11 @@ export function FileManager() {
   useEffect(() => {
     if (!settingsToolAvailable) setIsSettingsOpen(false);
     if (!blenderParserToolAvailable) setIsBlenderFileParserOpen(false);
-  }, [blenderParserToolAvailable, settingsToolAvailable]);
+    if (!scriptAutomationToolAvailable) {
+      setIsScriptDeveloperWorkbenchOpen(false);
+      setActiveScriptSurface(null);
+    }
+  }, [blenderParserToolAvailable, scriptAutomationToolAvailable, settingsToolAvailable]);
 
   useEffect(() => {
     let isActive = true;
@@ -637,6 +651,13 @@ export function FileManager() {
       return existingRelease;
     }
 
+    void emitAutomationEvent(
+      'project.closed',
+      { projectPath, closedAt: Date.now() },
+      projectPath,
+      `project.closed:${normalizedPath}:${Date.now()}`,
+    ).catch(() => {});
+
     const release = invoke('release_project_resources', { projectPath })
       .catch((error) => {
         // Closing UI state must not depend on best-effort native cleanup.
@@ -779,6 +800,8 @@ export function FileManager() {
       throw new Error(`项目管理器不可用：${unavailableReason}`);
     }
 
+    const normalizedPath = normalizeProjectPath(path);
+    const wasAlreadyOpen = sessionsRef.current.has(normalizedPath);
     const session = await ensureProjectSession(path);
     const unavailableAfterOpen = getShellTabContributionUnavailableReason(
       useContributionRegistryStore.getState().snapshot,
@@ -792,6 +815,14 @@ export function FileManager() {
     openProjectTab(path, projectName);
     if (!options?.skipRecentTracking) {
       await addRecentProject(path, projectName);
+    }
+    if (!wasAlreadyOpen) {
+      void emitAutomationEvent(
+        'project.opened',
+        { projectPath: path, projectName, openedAt: Date.now() },
+        path,
+        `project.opened:${normalizedPath}:${Date.now()}`,
+      ).catch(() => {});
     }
     return session;
   }, [addRecentProject, ensureProjectSession, openProjectTab, releaseProjectSession]);
@@ -1465,6 +1496,7 @@ export function FileManager() {
         setBlenderParserInitialFilePath(selectedBlendFiles.length === 1 ? selectedBlendFiles[0] : null);
         setIsBlenderFileParserOpen(true);
       },
+      'script-developer-studio': () => setIsScriptDeveloperWorkbenchOpen(true),
     };
 
     const target = tool.openTarget;
@@ -1552,6 +1584,7 @@ export function FileManager() {
             hasActiveProject={Boolean(activeProjectSession)}
             activeProjectName={activeProjectSession?.projectStore.getState().projectName || activeShellTab?.title}
             onOpenTool={openBuiltinTool}
+            onOpenScriptSurface={setActiveScriptSurface}
           />
         </div>
       </div>
@@ -1672,6 +1705,28 @@ export function FileManager() {
           ? (filePath) => activeProjectSession.workspaceTabStore.getState().openFileInTab(filePath)
           : undefined}
       />
+
+      <ScriptDeveloperWorkbench
+        isOpen={isScriptDeveloperWorkbenchOpen && scriptAutomationToolAvailable}
+        onClose={() => setIsScriptDeveloperWorkbenchOpen(false)}
+        projectPath={activeProjectSession?.projectStore.getState().projectPath}
+      />
+
+      <Dialog
+        isOpen={Boolean(activeScriptSurface) && scriptAutomationToolAvailable}
+        onClose={() => setActiveScriptSurface(null)}
+        title={activeScriptSurface?.title ?? '组件页面'}
+        size="2xl"
+        contentClassName="h-[680px] min-h-0 overflow-hidden p-0"
+      >
+        {activeScriptSurface ? (
+          <ScriptSurfaceFrame
+            componentId={activeScriptSurface.componentId}
+            surfaceId={activeScriptSurface.surfaceId}
+            projectPath={activeProjectSession?.projectStore.getState().projectPath}
+          />
+        ) : null}
+      </Dialog>
 
       <ProjectLocationDialog
         report={pendingProjectOpen?.report ?? null}

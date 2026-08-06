@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
-import { GripVertical, Pin, PinOff, Search, Wrench } from 'lucide-react';
+import { FileCode2, GripVertical, Pin, PinOff, Search, Wrench } from 'lucide-react';
 import { Dialog } from './Dialog';
 import { HelpAssistant } from './ui/HelpAssistant';
 import {
@@ -20,6 +20,16 @@ interface BuiltinToolsCenterProps {
   hasActiveProject: boolean;
   activeProjectName?: string | null;
   onOpenTool: OpenBuiltinTool;
+  scriptSurfaces?: ScriptSurfaceTool[];
+  onOpenScriptSurface?: (surface: ScriptSurfaceTool) => void;
+}
+
+export interface ScriptSurfaceTool {
+  componentId: string;
+  surfaceId: string;
+  title: string;
+  description: string;
+  requiresProject: boolean;
 }
 
 export function BuiltinToolsCenter({
@@ -28,6 +38,8 @@ export function BuiltinToolsCenter({
   hasActiveProject,
   activeProjectName,
   onOpenTool,
+  scriptSurfaces = [],
+  onOpenScriptSurface,
 }: BuiltinToolsCenterProps) {
   const pinnedToolIds = useBuiltinToolsStore((state) => state.pinnedToolIds);
   const loadPreferences = useBuiltinToolsStore((state) => state.loadPreferences);
@@ -67,6 +79,16 @@ export function BuiltinToolsCenter({
       return searchable.includes(normalizedQuery);
     });
   }, [contributionSnapshot, query]);
+  const filteredScriptSurfaces = useMemo(() => {
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+    if (!normalizedQuery) return scriptSurfaces;
+    return scriptSurfaces.filter((surface) => [
+      surface.title,
+      surface.description,
+      surface.componentId,
+      surface.surfaceId,
+    ].join(' ').toLocaleLowerCase().includes(normalizedQuery));
+  }, [query, scriptSurfaces]);
 
   const groupedTools = useMemo(() => BUILTIN_TOOL_CATEGORY_ORDER.flatMap((category) => {
     const tools = filteredTools.filter((tool) => tool.category === category);
@@ -283,7 +305,41 @@ export function BuiltinToolsCenter({
             </section>
           ))}
 
-          {filteredTools.length === 0 ? (
+          {filteredScriptSurfaces.length ? (
+            <section>
+              <h3 className="mb-2 text-xs font-semibold uppercase text-gray-500 dark:text-gray-400">
+                组件页面
+              </h3>
+              <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
+                {filteredScriptSurfaces.map((surface) => {
+                  const unavailable = surface.requiresProject && !hasActiveProject;
+                  return (
+                    <button
+                      key={`${surface.componentId}:${surface.surfaceId}`}
+                      type="button"
+                      disabled={unavailable}
+                      onClick={() => {
+                        if (unavailable) return;
+                        onOpenScriptSurface?.(surface);
+                        onClose();
+                      }}
+                      className="flex min-w-0 items-center gap-3 rounded-md border border-gray-200 bg-white p-2 text-left transition-colors hover:bg-gray-50 disabled:cursor-not-allowed dark:border-gray-700 dark:bg-gray-900 dark:hover:bg-gray-800/70"
+                    >
+                      <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md ${unavailable ? 'bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-600' : 'bg-violet-100 text-violet-700 dark:bg-violet-950/50 dark:text-violet-300'}`}>
+                        <FileCode2 className="h-5 w-5" />
+                      </span>
+                      <span className="min-w-0">
+                        <span className={`block truncate text-sm font-medium ${unavailable ? 'text-gray-400 dark:text-gray-600' : 'text-gray-900 dark:text-gray-100'}`}>{surface.title}</span>
+                        <span className="mt-0.5 block truncate text-xs text-gray-500 dark:text-gray-400">{unavailable ? '需要先打开项目' : surface.description}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          ) : null}
+
+          {filteredTools.length === 0 && filteredScriptSurfaces.length === 0 ? (
             <div className="flex min-h-40 flex-col items-center justify-center text-center text-gray-500">
               <Wrench className="mb-2 h-8 w-8 opacity-40" />
               <p className="text-sm">没有匹配的内置功能</p>

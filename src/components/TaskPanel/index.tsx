@@ -25,7 +25,9 @@ import {
   Code,
   RefreshCw,
   Clapperboard,
+  Workflow,
 } from 'lucide-react';
+import { AutomationRunsPanel } from '../automation/AutomationRunsPanel';
 
 interface TaskPanelProps {
   isOpen: boolean;
@@ -156,6 +158,7 @@ export function TaskPanel({ isOpen, onClose }: TaskPanelProps) {
   const [showNewTask, setShowNewTask] = useState(false);
   const [filter, setFilter] = useState<TaskStatus | 'all'>('all');
   const [showLog, setShowLog] = useState(true);
+  const [centerView, setCenterView] = useState<'tasks' | 'automation'>('tasks');
 
   useEffect(() => {
     if (projectFilter === ALL_PROJECTS_VALUE) {
@@ -240,8 +243,24 @@ export function TaskPanel({ isOpen, onClose }: TaskPanelProps) {
                 </div>
               )}
             </div>
-            <TaskStats stats={stats} />
-            {scopedRenderJobs.length > 0 && (
+            <div className="flex rounded-md bg-gray-100 p-1 dark:bg-gray-800">
+              <button
+                type="button"
+                onClick={() => setCenterView('tasks')}
+                className={`rounded px-2.5 py-1 text-xs ${centerView === 'tasks' ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-white' : 'text-gray-500'}`}
+              >
+                后台任务
+              </button>
+              <button
+                type="button"
+                onClick={() => setCenterView('automation')}
+                className={`inline-flex items-center gap-1 rounded px-2.5 py-1 text-xs ${centerView === 'automation' ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-white' : 'text-gray-500'}`}
+              >
+                <Workflow className="h-3.5 w-3.5" />自动化运行
+              </button>
+            </div>
+            {centerView === 'tasks' ? <TaskStats stats={stats} /> : null}
+            {centerView === 'tasks' && scopedRenderJobs.length > 0 && (
               <div className="flex h-8 items-center gap-2 rounded border border-orange-200 bg-orange-50 px-2.5 text-xs text-orange-700 dark:border-orange-900/50 dark:bg-orange-950/20 dark:text-orange-300">
                 <Clapperboard className="h-3.5 w-3.5" />
                 <span>渲染 {activeRenderJobs.length} 活动 / {scopedRenderJobs.length} 总计</span>
@@ -252,7 +271,7 @@ export function TaskPanel({ isOpen, onClose }: TaskPanelProps) {
           
           <div className="flex items-center gap-2">
             {/* 新建任务 */}
-            <button
+            {centerView === 'tasks' ? <button
               onClick={() => setShowNewTask(true)}
               disabled={!projectPath}
               className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white text-sm rounded-lg transition-colors"
@@ -260,10 +279,10 @@ export function TaskPanel({ isOpen, onClose }: TaskPanelProps) {
             >
               <Plus className="w-4 h-4" />
               新建任务
-            </button>
+            </button> : null}
             
             {/* 清理已完成 */}
-            {stats.completed > 0 && (
+            {centerView === 'tasks' && stats.completed > 0 && (
               <button
                 onClick={handleClearCompleted}
                 className="p-1.5 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg"
@@ -284,6 +303,10 @@ export function TaskPanel({ isOpen, onClose }: TaskPanelProps) {
 
         {/* 主体 */}
         <div className="flex-1 flex overflow-hidden">
+          {centerView === 'automation' ? (
+            <AutomationRunsPanel projectPath={projectPath} />
+          ) : (
+          <>
           {/* 左侧任务列表 */}
           <div className="w-[400px] border-r border-gray-200 dark:border-gray-700 flex flex-col">
             <div className="p-3 border-b border-gray-200 dark:border-gray-700 space-y-2">
@@ -472,6 +495,8 @@ export function TaskPanel({ isOpen, onClose }: TaskPanelProps) {
               </div>
             )}
           </div>
+          </>
+          )}
         </div>
       </div>
 

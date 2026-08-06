@@ -297,6 +297,48 @@ pub struct ProfileWorkflowBinding {
     pub extensions: ExtensionFields,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum AutomationTriggerBinding {
+    Manual,
+    Event { event: String },
+    Schedule { cron: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum AutomationProjectContext {
+    #[default]
+    ActiveProject,
+    EventProject,
+    EachOpenProject,
+    ProfileVariable,
+    None,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileAutomationBinding {
+    pub id: String,
+    pub component_id: String,
+    pub command: String,
+    pub trigger: AutomationTriggerBinding,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub project_context: AutomationProjectContext,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_variable: Option<String>,
+    #[serde(default)]
+    pub input: Value,
+    #[serde(flatten)]
+    pub extensions: ExtensionFields,
+}
+
 const fn default_true() -> bool {
     true
 }
@@ -333,6 +375,8 @@ pub struct WorkspaceProfileV1 {
     pub command_bindings: Vec<ProfileCommandBinding>,
     #[serde(default)]
     pub workflow_bindings: Vec<ProfileWorkflowBinding>,
+    #[serde(default)]
+    pub automation_bindings: Vec<ProfileAutomationBinding>,
     #[serde(default)]
     pub variables: BTreeMap<String, String>,
     #[serde(flatten)]
@@ -537,8 +581,76 @@ impl ValidateContract for WorkspaceProfileV1 {
                 return duplicate(format!("{path}.id"), &binding.id);
             }
         }
+        let mut automation_binding_ids = BTreeSet::new();
+        for (index, binding) in self.automation_bindings.iter().enumerate() {
+            let path = format!("$.automationBindings[{index}]");
+            validate_local_id(&binding.id, &format!("{path}.id"))?;
+            validate_stable_id(&binding.component_id, &format!("{path}.componentId"))?;
+            validate_local_id(&binding.command, &format!("{path}.command"))?;
+            if !automation_binding_ids.insert(binding.id.as_str()) {
+                return duplicate(format!("{path}.id"), &binding.id);
+            }
+            match &binding.trigger {
+                AutomationTriggerBinding::Manual => {}
+                AutomationTriggerBinding::Event { event } => {
+                    validate_stable_id(event, &format!("{path}.trigger.event"))?;
+                }
+                AutomationTriggerBinding::Schedule { cron } => {
+                    let fields = cron.split_whitespace().collect::<Vec<_>>();
+                    let valid = fields.len() == 5
+                        && validate_cron_field(fields[0], 0, 59)
+                        && validate_cron_field(fields[1], 0, 23)
+                        && validate_cron_field(fields[2], 1, 31)
+                        && validate_cron_field(fields[3], 1, 12)
+                        && validate_cron_field(fields[4], 0, 6);
+                    if !valid {
+                        return Err(ContractError::new(
+                            ContractErrorCode::MalformedDocument,
+                            format!("{path}.trigger.cron"),
+                            "定时规则必须是有效的五段式 cron（分 时 日 月 周）",
+                        ));
+                    }
+                }
+            }
+            if matches!(
+                binding.project_context,
+                AutomationProjectContext::ProfileVariable
+            ) {
+                let variable = binding.project_variable.as_deref().unwrap_or_default();
+                validate_local_id(variable, &format!("{path}.projectVariable"))?;
+            } else if binding.project_variable.is_some() {
+                return Err(ContractError::new(
+                    ContractErrorCode::InvalidRuntimeConfiguration,
+                    format!("{path}.projectVariable"),
+                    "仅 profile-variable 项目上下文可以声明 projectVariable",
+                ));
+            }
+        }
         Ok(())
     }
+}
+
+fn validate_cron_field(field: &str, minimum: u32, maximum: u32) -> bool {
+    !field.is_empty()
+        && field.split(',').all(|part| {
+            if part == "*" {
+                return true;
+            }
+            if let Some(step) = part.strip_prefix("*/") {
+                return step.parse::<u32>().is_ok_and(|value| value > 0);
+            }
+            if let Some((start, end)) = part.split_once('-') {
+                return start
+                    .parse::<u32>()
+                    .ok()
+                    .zip(end.parse::<u32>().ok())
+                    .is_some_and(|(start, end)| {
+                        start >= minimum && end <= maximum && start <= end
+                    });
+            }
+            part.parse::<u32>()
+                .is_ok_and(|value| value >= minimum && value <= maximum)
+        })
 }
 
 fn validate_presentation_binding(
@@ -763,6 +875,74 @@ pub fn validate_profile_with_catalogs(
             ));
         }
     }
+    for (index, binding) in profile.automation_bindings.iter().enumerate() {
+        let path = format!("$.automationBindings[{index}]");
+        if !effective.contains(&binding.component_id) {
+            return Err(ContractError::new(
+                ContractErrorCode::InvalidReference,
+                format!("{path}.componentId"),
+                format!("自动化绑定引用了未启用组件: {}", binding.component_id),
+            ));
+        }
+        let component = components
+            .get(binding.component_id.as_str())
+            .ok_or_else(|| {
+                ContractError::new(
+                    ContractErrorCode::MissingDependency,
+                    format!("{path}.componentId"),
+                    format!("自动化绑定组件不存在: {}", binding.component_id),
+                )
+            })?;
+        let command = component
+            .contributes
+            .automation_commands
+            .iter()
+            .find(|command| command.command == binding.command);
+        let Some(command) = command else {
+            return Err(ContractError::new(
+                ContractErrorCode::InvalidReference,
+                format!("{path}.command"),
+                format!("组件未声明自动化命令: {}", binding.command),
+            ));
+        };
+        if let AutomationTriggerBinding::Event { event } = &binding.trigger {
+            if !component
+                .contributes
+                .automation_events
+                .iter()
+                .any(|candidate| candidate.event == *event)
+            {
+                return Err(ContractError::new(
+                    ContractErrorCode::InvalidReference,
+                    format!("{path}.trigger.event"),
+                    format!("组件未声明接收自动化事件: {event}"),
+                ));
+            }
+        }
+        if matches!(
+            command.context_requirement,
+            crate::AutomationContextRequirement::ProjectRequired
+        ) && matches!(binding.project_context, AutomationProjectContext::None)
+        {
+            return Err(ContractError::new(
+                ContractErrorCode::InvalidRuntimeConfiguration,
+                format!("{path}.projectContext"),
+                "项目必需命令必须配置项目上下文",
+            ));
+        }
+        if matches!(binding.trigger, AutomationTriggerBinding::Schedule { .. })
+            && matches!(
+                binding.project_context,
+                AutomationProjectContext::ActiveProject | AutomationProjectContext::EventProject
+            )
+        {
+            return Err(ContractError::new(
+                ContractErrorCode::InvalidRuntimeConfiguration,
+                format!("{path}.projectContext"),
+                "定时绑定只能使用每个已打开项目、Profile 变量或无项目上下文",
+            ));
+        }
+    }
     Ok(effective)
 }
 
@@ -964,5 +1144,20 @@ mod tests {
 
         let error = validate_profile_with_catalogs(&profile, &[module], &[]).unwrap_err();
         assert_eq!(error.code, ContractErrorCode::MissingDependency);
+    }
+
+    #[test]
+    fn rejects_invalid_five_field_cron_ranges() {
+        let error = parse_workspace_profile(
+            r#"{
+              "schemaVersion":1,"id":"test.profile","name":"Test",
+              "automationBindings":[{
+                "id":"bad-cron","componentId":"test.script","command":"run",
+                "trigger":{"kind":"schedule","cron":"61 25 * * *"}
+              }]
+            }"#,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ContractErrorCode::MalformedDocument);
     }
 }

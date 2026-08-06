@@ -1,0 +1,25 @@
+<main>
+  <h1>Nexora 脚本组件</h1>
+  <p id="status">页面运行在隔离沙箱中。</p>
+  <button id="run" type="button">运行脚本</button>
+</main>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { margin: 0; padding: 24px; background: Canvas; color: CanvasText; }
+  h1 { margin: 0 0 8px; font-size: 20px; }
+  p { color: GrayText; }
+  button { padding: 8px 12px; border: 1px solid GrayText; border-radius: 6px; background: ButtonFace; color: ButtonText; }
+</style>
+<script>
+  document.getElementById('run').addEventListener('click', async () => {
+    const status = document.getElementById('status');
+    status.textContent = '正在启动...';
+    try {
+      const result = await window.nexora.invoke('run', { source: 'surface' });
+      status.textContent = `已进入任务中心：${result.id}`;
+    } catch (error) {
+      status.textContent = error.message;
+    }
+  });
+</script>
+

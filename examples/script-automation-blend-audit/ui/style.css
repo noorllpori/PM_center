@@ -1,0 +1,52 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: Canvas;
+  color: CanvasText;
+}
+
+main {
+  max-width: 620px;
+  padding: 24px;
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-size: 20px;
+}
+
+p,
+label {
+  color: GrayText;
+  font-size: 13px;
+}
+
+label,
+input {
+  display: block;
+}
+
+input {
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px 10px;
+}
+
+button {
+  margin-top: 12px;
+  padding: 8px 12px;
+}
+
+pre {
+  min-height: 72px;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid GrayText;
+  font-size: 12px;
+  white-space: pre-wrap;
+}

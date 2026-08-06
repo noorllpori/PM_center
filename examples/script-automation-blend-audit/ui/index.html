@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Blender 检查示例</title>
+    <link rel="stylesheet" href="style.css">
+  </head>
+  <body>
+    <main>
+      <h1>Blender 文件检查</h1>
+      <p>输入当前项目内的相对 .blend 路径。运行会进入任务中心。</p>
+      <label>
+        文件路径
+        <input id="path" value="scene.blend" autocomplete="off">
+      </label>
+      <button id="run" type="button">开始检查</button>
+      <pre id="status">等待输入</pre>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

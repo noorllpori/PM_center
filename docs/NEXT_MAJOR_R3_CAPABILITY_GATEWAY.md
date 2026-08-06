@@ -133,6 +133,6 @@ cargo test --manifest-path src-tauri/Cargo.toml platform:: --lib
 
 - R3 只开放隔离诊断 adapter；真实领域命令在 R4 迁移。
 - Profile 正式授权守卫要等 R6 Profile Runtime，当前使用模块运行状态作为临时守卫。
-- 第一版 token 仅限本机当前进程，不支持远程委托；远程执行 token 属于 R11/R13。
+- 第一版 token 仅限本机当前进程，不支持远程委托；远程执行 token 属于 R13。
 - R4 文件 adapter 必须直接使用网关解析后的路径或安全文件句柄，不能在业务层重新拼接未经校验的路径。
 - 现有旧插件仍能调用其原静态命令，必须在 R4 的“任务、Python 和旧插件”迁移项中封堵。

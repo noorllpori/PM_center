@@ -169,6 +169,46 @@ export interface WorkflowNodeContribution {
   [key: string]: unknown;
 }
 
+export type AutomationContextRequirement = 'global' | 'project-required' | 'either';
+export type AutomationExecutionSemantics = 'pure' | 'idempotent' | 'non-idempotent';
+export type AutomationCapabilityOperation = 'read' | 'write' | 'delete' | 'execute' | 'connect' | 'notify';
+
+export interface AutomationCommandContribution {
+  id: string;
+  command: string;
+  name: string;
+  description?: string;
+  contextRequirement?: AutomationContextRequirement;
+  executionSemantics?: AutomationExecutionSemantics;
+  requiredCapability?: Capability;
+  capabilityOperation?: AutomationCapabilityOperation;
+  inputSchema?: JsonValue;
+  outputSchema?: JsonValue;
+  maxAttempts?: number;
+  maxParallelism?: number;
+  timeoutMs?: number;
+  [key: string]: unknown;
+}
+
+export interface AutomationEventContribution {
+  id: string;
+  event: string;
+  name: string;
+  description?: string;
+  [key: string]: unknown;
+}
+
+export type ScriptSurfacePlacement = 'shell' | 'workspace' | 'dialog' | 'widget';
+
+export interface ScriptSurfaceContribution {
+  id: string;
+  name: string;
+  entry: string;
+  placements: ScriptSurfacePlacement[];
+  allowedCommands?: string[];
+  [key: string]: unknown;
+}
+
 export interface ToolActionContribution {
   id: string;
   command: string;
@@ -273,6 +313,9 @@ export interface ComponentSettingsSection {
 
 export interface ComponentContributions {
   workflowNodes?: WorkflowNodeContribution[];
+  automationCommands?: AutomationCommandContribution[];
+  automationEvents?: AutomationEventContribution[];
+  scriptSurfaces?: ScriptSurfaceContribution[];
   toolActions?: ToolActionContribution[];
   widgets?: string[];
   dataSources?: string[];
@@ -459,6 +502,30 @@ export interface ProfileWorkflowBinding {
   [key: string]: unknown;
 }
 
+export type AutomationTriggerBinding =
+  | { kind: 'manual' }
+  | { kind: 'event'; event: string }
+  | { kind: 'schedule'; cron: string };
+
+export type AutomationProjectContext =
+  | 'active-project'
+  | 'event-project'
+  | 'each-open-project'
+  | 'profile-variable'
+  | 'none';
+
+export interface ProfileAutomationBinding {
+  id: string;
+  componentId: string;
+  command: string;
+  trigger: AutomationTriggerBinding;
+  enabled?: boolean;
+  projectContext?: AutomationProjectContext;
+  projectVariable?: string;
+  input?: JsonValue;
+  [key: string]: unknown;
+}
+
 export interface WorkspaceProfileV1 {
   schemaVersion: typeof PLATFORM_SCHEMA_VERSION;
   id: string;
@@ -476,6 +543,7 @@ export interface WorkspaceProfileV1 {
   dataSources?: ProfileDataSource[];
   commandBindings?: ProfileCommandBinding[];
   workflowBindings?: ProfileWorkflowBinding[];
+  automationBindings?: ProfileAutomationBinding[];
   variables?: Record<string, string>;
   [key: string]: unknown;
 }

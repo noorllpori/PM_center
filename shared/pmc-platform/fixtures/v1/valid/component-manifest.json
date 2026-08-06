@@ -15,6 +15,39 @@
   "requiresComponents": [],
   "optionalComponents": [],
   "contributes": {
+    "automationCommands": [
+      {
+        "id": "media.analyze-files",
+        "command": "analyze-now",
+        "name": "分析媒体文件",
+        "description": "扫描并汇总媒体文件。",
+        "contextRequirement": "project-required",
+        "executionSemantics": "idempotent",
+        "requiredCapability": "project.files.read",
+        "capabilityOperation": "read",
+        "maxAttempts": 2,
+        "maxParallelism": 2,
+        "timeoutMs": 600000,
+        "inputSchema": { "type": "object" },
+        "outputSchema": { "type": "object" }
+      }
+    ],
+    "automationEvents": [
+      {
+        "id": "media.project-file-changed",
+        "event": "file.changed",
+        "name": "项目文件变化"
+      }
+    ],
+    "scriptSurfaces": [
+      {
+        "id": "media.analysis-surface",
+        "name": "媒体分析",
+        "entry": "ui/index.html",
+        "placements": ["workspace"],
+        "allowedCommands": ["analyze-now"]
+      }
+    ],
     "workflowNodes": [
       {
         "id": "media.find-files",

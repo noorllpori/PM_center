@@ -10,7 +10,7 @@
 
 完成 R5 最后一轮加固，使前端贡献目录、模块 manifest、Surface/Widget/DataSource 实现和运行时订阅之间可以自检，并确保缺失实现时显示可解释错误，而不是空白页面。
 
-本轮不执行 WorkflowNode，不引入 Profile 布局，也不加载任意第三方 React 代码。工作流执行仍属于 R11。
+本轮不执行 WorkflowNode，不引入 Profile 布局，也不加载任意第三方 React 代码。后续 R11 决策已冻结 WorkflowNode 执行，改用脚本组件自动化。
 
 ## 2. 统一 Surface 目录
 

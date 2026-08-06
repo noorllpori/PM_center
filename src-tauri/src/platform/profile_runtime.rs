@@ -25,6 +25,7 @@ const BLANK_PROFILE_ID: &str = "local.blank-workspace";
 const DEFAULT_PROFILE_ID: &str = "local.default-pm-center";
 const MIGRATION_SOURCE: &str = "current-pm-center";
 const PROJECT_MANAGER_MODULE_ID: &str = "builtin.project-manager";
+const SCRIPT_AUTOMATION_MODULE_ID: &str = "builtin.script-automation";
 const PROJECT_HOME_PROFILE_SURFACE_ID: &str = "pm-center-project-home";
 const PROJECT_HOME_CONTRIBUTION_ID: &str = "builtin.project-manager.home-surface";
 const PROJECT_DIRECTORY_WIDGET_ID: &str = "builtin.project-manager.project-directory-widget";
@@ -44,6 +45,7 @@ const LEGACY_HOME_COMPOSITION_MIGRATION_VERSION: u16 = 3;
 const SHELL_HOME_MIGRATION_VERSION: u16 = 4;
 const SETTINGS_OWNERSHIP_MIGRATION_VERSION: u16 = 1;
 const BRAND_MIGRATION_VERSION: u16 = 1;
+const SCRIPT_AUTOMATION_MIGRATION_VERSION: u16 = 1;
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -434,6 +436,7 @@ impl WorkspaceProfileRuntime {
             .map_err(|error| io_error("创建装配方案目录失败", &self.repository_path, error))?;
         self.ensure_blank_profile(manifests)?;
         self.ensure_default_profile(manifests)?;
+        self.ensure_script_automation_default_migration(manifests)?;
         self.ensure_brand_migration(manifests)?;
         self.ensure_settings_ownership_migration(manifests)?;
         self.ensure_migrated_profile_home(manifests)?;
@@ -589,13 +592,15 @@ impl WorkspaceProfileRuntime {
         })?;
         let state = self.read_state()?;
         let profile = self.read_profile(&self.profile_path(&state.current_profile_id))?;
-        let effective = self.validate_profile(&profile, manifests).map_err(|error| {
-            WorkspaceProfileRuntimeError::new(
-                WorkspaceProfileRuntimeErrorCode::ProfileSwitchBlocked,
-                format!("当前装配方案不兼容：{}（{}）", error.message, error.path),
-                Some(&self.profile_path(&state.current_profile_id)),
-            )
-        })?;
+        let effective = self
+            .validate_profile(&profile, manifests)
+            .map_err(|error| {
+                WorkspaceProfileRuntimeError::new(
+                    WorkspaceProfileRuntimeErrorCode::ProfileSwitchBlocked,
+                    format!("当前装配方案不兼容：{}（{}）", error.message, error.path),
+                    Some(&self.profile_path(&state.current_profile_id)),
+                )
+            })?;
         Ok((state.current_profile_id, effective))
     }
 
@@ -1705,6 +1710,109 @@ impl WorkspaceProfileRuntime {
         write_new_json(&path, &profile)
     }
 
+    fn ensure_script_automation_default_migration(
+        &self,
+        manifests: &[ModuleManifestV1],
+    ) -> Result<(), WorkspaceProfileRuntimeError> {
+        if self.journal_path.exists() {
+            return Ok(());
+        }
+        let manifests_by_id = manifests
+            .iter()
+            .map(|manifest| (manifest.id.as_str(), manifest))
+            .collect::<BTreeMap<_, _>>();
+        if !manifests_by_id.contains_key(SCRIPT_AUTOMATION_MODULE_ID) {
+            return Ok(());
+        }
+
+        let path = self.profile_path(DEFAULT_PROFILE_ID);
+        if !path.exists() {
+            return Ok(());
+        }
+        let mut profile = self.read_profile(&path)?;
+        if profile.id != DEFAULT_PROFILE_ID {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfilePersistenceConflict,
+                format!(
+                    "默认装配方案文件 ID 与预期不一致：{} != {DEFAULT_PROFILE_ID}",
+                    profile.id
+                ),
+                Some(&path),
+            ));
+        }
+        let migrated = profile
+            .extensions
+            .get("scriptAutomationMigration")
+            .and_then(|value| value.get("version"))
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|version| version >= u64::from(SCRIPT_AUTOMATION_MIGRATION_VERSION));
+        if migrated {
+            return Ok(());
+        }
+
+        let mut required_ids = BTreeSet::from([SCRIPT_AUTOMATION_MODULE_ID.to_string()]);
+        loop {
+            let dependencies = required_ids
+                .iter()
+                .filter_map(|id| manifests_by_id.get(id.as_str()))
+                .flat_map(|manifest| {
+                    manifest
+                        .requires_modules
+                        .iter()
+                        .map(|dependency| dependency.id.clone())
+                })
+                .collect::<Vec<_>>();
+            let previous_len = required_ids.len();
+            required_ids.extend(dependencies);
+            if required_ids.len() == previous_len {
+                break;
+            }
+        }
+
+        let selected_ids = profile
+            .enabled_modules
+            .iter()
+            .map(|selection| selection.id.as_str())
+            .collect::<BTreeSet<_>>();
+        let additions = required_ids
+            .iter()
+            .filter(|id| !selected_ids.contains(id.as_str()))
+            .filter_map(|id| manifests_by_id.get(id.as_str()).copied())
+            .map(|manifest| ProfileModuleSelection {
+                id: manifest.id.clone(),
+                version_requirement: format!("^{}", manifest.version),
+                extensions: ExtensionFields::new(),
+            })
+            .collect::<Vec<_>>();
+        profile.enabled_modules.extend(additions);
+        profile
+            .enabled_modules
+            .sort_by(|left, right| left.id.cmp(&right.id));
+        profile
+            .enabled_modules
+            .dedup_by(|left, right| left.id == right.id);
+        profile.extensions.insert(
+            "scriptAutomationMigration".into(),
+            json!({
+                "version": SCRIPT_AUTOMATION_MIGRATION_VERSION,
+                "migratedAt": Utc::now().timestamp_millis(),
+            }),
+        );
+        profile.revision = profile.revision.saturating_add(1);
+        self.validate_profile(&profile, manifests)
+            .map_err(|error| {
+                WorkspaceProfileRuntimeError::new(
+                    WorkspaceProfileRuntimeErrorCode::ProfileDocumentInvalid,
+                    format!(
+                        "默认装配方案脚本自动化迁移失败：{}（{}）",
+                        error.message, error.path
+                    ),
+                    Some(&path),
+                )
+            })?;
+        replace_json(&path, &profile)
+    }
+
     fn ensure_migrated_profile_home(
         &self,
         manifests: &[ModuleManifestV1],
@@ -2399,6 +2507,7 @@ fn build_migrated_profile(
         data_sources: project_home_data_sources(),
         command_bindings: project_home_command_bindings(),
         workflow_bindings: Vec::new(),
+        automation_bindings: Vec::new(),
         variables: BTreeMap::new(),
         extensions,
     }
@@ -2620,6 +2729,7 @@ fn build_blank_profile() -> WorkspaceProfileV1 {
         data_sources: Vec::new(),
         command_bindings: Vec::new(),
         workflow_bindings: Vec::new(),
+        automation_bindings: Vec::new(),
         variables: BTreeMap::new(),
         extensions,
     }
@@ -2724,6 +2834,7 @@ fn build_default_profile(manifests: &[ModuleManifestV1]) -> WorkspaceProfileV1 {
             Vec::new()
         },
         workflow_bindings: Vec::new(),
+        automation_bindings: Vec::new(),
         variables: BTreeMap::new(),
         extensions,
     }
@@ -4271,6 +4382,78 @@ mod tests {
 
         assert_eq!(fs::read(&custom_path).unwrap(), original);
         assert!(runtime.profile_path(DEFAULT_PROFILE_ID).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn script_automation_migration_updates_only_the_reserved_default_profile_once() {
+        let root = test_root("script-automation-default-migration");
+        let profiles = root.join("profiles");
+        fs::create_dir_all(&profiles).unwrap();
+
+        let automation_runtime = manifest("builtin.automation-runtime", "1.0.0");
+        let mut legacy_default = build_default_profile(&[automation_runtime.clone()]);
+        legacy_default.revision = 6;
+        fs::write(
+            profiles.join(format!("{DEFAULT_PROFILE_ID}.json")),
+            serde_json::to_vec_pretty(&legacy_default).unwrap(),
+        )
+        .unwrap();
+
+        let mut custom = build_blank_profile();
+        custom.id = "local.custom-before-r11".into();
+        custom.name = "R11 前自定义装配".into();
+        let custom_path = profiles.join("local.custom-before-r11.json");
+        let custom_bytes = serde_json::to_vec_pretty(&custom).unwrap();
+        fs::write(&custom_path, &custom_bytes).unwrap();
+
+        let mut script_automation = manifest(SCRIPT_AUTOMATION_MODULE_ID, "1.0.0");
+        script_automation.requires_modules.push(ModuleDependency {
+            id: automation_runtime.id.clone(),
+            version_requirement: "^1.0".into(),
+        });
+        script_automation
+            .extensions
+            .insert("defaultEnabled".into(), json!(true));
+        let manifests = vec![automation_runtime, script_automation];
+        let runtime = WorkspaceProfileRuntime::new(&root);
+
+        runtime
+            .initialize_from_current_configuration(&manifests, &BTreeSet::new(), &[])
+            .unwrap();
+        let migrated = runtime.profile(DEFAULT_PROFILE_ID, &manifests).unwrap();
+        assert_eq!(migrated.revision, 7);
+        assert!(migrated
+            .enabled_modules
+            .iter()
+            .any(|selection| selection.id == SCRIPT_AUTOMATION_MODULE_ID));
+        assert_eq!(
+            migrated.extensions["scriptAutomationMigration"]["version"],
+            json!(SCRIPT_AUTOMATION_MIGRATION_VERSION)
+        );
+        assert_eq!(fs::read(&custom_path).unwrap(), custom_bytes);
+
+        runtime
+            .initialize_from_current_configuration(&manifests, &BTreeSet::new(), &[])
+            .unwrap();
+        let second = runtime.profile(DEFAULT_PROFILE_ID, &manifests).unwrap();
+        assert_eq!(second.revision, migrated.revision);
+
+        let mut user_disabled = second;
+        user_disabled
+            .enabled_modules
+            .retain(|selection| selection.id != SCRIPT_AUTOMATION_MODULE_ID);
+        user_disabled.revision = user_disabled.revision.saturating_add(1);
+        replace_json(&runtime.profile_path(DEFAULT_PROFILE_ID), &user_disabled).unwrap();
+        runtime
+            .initialize_from_current_configuration(&manifests, &BTreeSet::new(), &[])
+            .unwrap();
+        let after_user_disable = runtime.profile(DEFAULT_PROFILE_ID, &manifests).unwrap();
+        assert!(!after_user_disable
+            .enabled_modules
+            .iter()
+            .any(|selection| selection.id == SCRIPT_AUTOMATION_MODULE_ID));
+
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -1528,6 +1528,17 @@ pub async fn create_render_batch(
     }
     tx.commit().map_err(|error| error.to_string())?;
     emit_queue(&app_handle, &project_path);
+    let _ = app_handle.emit(
+        "pm-center:render-batch-created",
+        json!({
+            "id": batch_id,
+            "batchId": batch_id,
+            "projectPath": project_path,
+            "name": request.name,
+            "jobIds": job_ids,
+            "createdAt": created,
+        }),
+    );
     Ok(RenderBatchResult { batch_id, job_ids })
 }
 
@@ -2331,7 +2342,20 @@ fn kick_scheduler(app: tauri::AppHandle, project_path: String) {
             if !is_running() {
                 break;
             }
-            let _ = advance_batch_queue(&project_path);
+            if let Ok(events) = advance_batch_queue(&project_path) {
+                for event in events {
+                    let _ = app.emit(
+                        "pm-center:render-batch-completed",
+                        json!({
+                            "id": event.batch_id,
+                            "batchId": event.batch_id,
+                            "projectPath": project_path,
+                            "name": event.name,
+                            "status": event.status,
+                        }),
+                    );
+                }
+            }
             let running_total = RUNTIME.lock().unwrap().running.len();
             if running_total >= concurrency {
                 break;
@@ -2428,8 +2452,39 @@ fn kick_scheduler(app: tauri::AppHandle, project_path: String) {
     });
 }
 
-fn advance_batch_queue(project_path: &str) -> Result<(), String> {
+struct RenderBatchTerminalEvent {
+    batch_id: String,
+    name: String,
+    status: String,
+}
+
+fn advance_batch_queue(project_path: &str) -> Result<Vec<RenderBatchTerminalEvent>, String> {
     let conn = open_db(project_path)?;
+    let terminal_events = {
+        let mut statement = conn
+            .prepare(
+                "SELECT id,name,CASE
+                   WHEN EXISTS (SELECT 1 FROM render_jobs WHERE render_jobs.batch_id=render_batches.id AND render_jobs.archived=0 AND render_jobs.status='failed') THEN 'failed'
+                   WHEN EXISTS (SELECT 1 FROM render_jobs WHERE render_jobs.batch_id=render_batches.id AND render_jobs.archived=0 AND render_jobs.status='cancelled') THEN 'cancelled'
+                   ELSE 'completed' END
+                 FROM render_batches
+                 WHERE project_path=?1 AND status='running'
+                   AND NOT EXISTS (SELECT 1 FROM render_jobs WHERE render_jobs.batch_id=render_batches.id AND render_jobs.archived=0 AND render_jobs.status IN ('pending','starting','running','pausing','paused','attention'))",
+            )
+            .map_err(|error| error.to_string())?;
+        let events = statement
+            .query_map(params![project_path], |row| {
+                Ok(RenderBatchTerminalEvent {
+                    batch_id: row.get(0)?,
+                    name: row.get(1)?,
+                    status: row.get(2)?,
+                })
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        events
+    };
     conn.execute(
         "UPDATE render_batches SET status=CASE WHEN EXISTS (SELECT 1 FROM render_jobs WHERE render_jobs.batch_id=render_batches.id AND render_jobs.archived=0 AND render_jobs.status='failed') THEN 'failed' WHEN EXISTS (SELECT 1 FROM render_jobs WHERE render_jobs.batch_id=render_batches.id AND render_jobs.archived=0 AND render_jobs.status='cancelled') THEN 'cancelled' ELSE 'completed' END,updated_at=?2 WHERE project_path=?1 AND status='running' AND NOT EXISTS (SELECT 1 FROM render_jobs WHERE render_jobs.batch_id=render_batches.id AND render_jobs.archived=0 AND render_jobs.status IN ('pending','starting','running','pausing','paused','attention'))",
         params![project_path, now()],
@@ -2443,7 +2498,7 @@ fn advance_batch_queue(project_path: &str) -> Result<(), String> {
         )
         .map_err(|error| error.to_string())?;
     if running_batches > 0 {
-        return Ok(());
+        return Ok(terminal_events);
     }
     let next_batch = conn
         .query_row(
@@ -2454,7 +2509,7 @@ fn advance_batch_queue(project_path: &str) -> Result<(), String> {
         .optional()
         .map_err(|error| error.to_string())?;
     let Some(batch_id) = next_batch else {
-        return Ok(());
+        return Ok(terminal_events);
     };
     conn.execute(
         "UPDATE render_batches SET status='running',updated_at=?2 WHERE id=?1",
@@ -2480,9 +2535,11 @@ fn advance_batch_queue(project_path: &str) -> Result<(), String> {
         )
         .map_err(|error| error.to_string())?;
         drop(conn);
-        return advance_batch_queue(project_path);
+        let mut events = terminal_events;
+        events.extend(advance_batch_queue(project_path)?);
+        return Ok(events);
     }
-    Ok(())
+    Ok(terminal_events)
 }
 
 fn kick_all_schedulers(app: tauri::AppHandle) {

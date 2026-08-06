@@ -8,6 +8,7 @@ use tauri::{
 
 mod automation_runtime;
 mod cache_manager;
+pub mod component_packager;
 mod db;
 mod file_details;
 mod fs;
@@ -1279,6 +1280,7 @@ async fn launch_program(path: String) -> Result<(), String> {
 
 async fn shutdown_application(app: tauri::AppHandle) {
     if let Some(runtime) = app.try_state::<platform::PlatformRuntime>() {
+        let _ = runtime.script_automation.stop().await;
         runtime.components.shutdown().await;
         let manager = runtime.manager.clone();
         for error in manager.shutdown_all().await {
@@ -1291,6 +1293,7 @@ async fn shutdown_application(app: tauri::AppHandle) {
 
 async fn restart_application(app: tauri::AppHandle) {
     if let Some(runtime) = app.try_state::<platform::PlatformRuntime>() {
+        let _ = runtime.script_automation.stop().await;
         runtime.components.shutdown().await;
         let manager = runtime.manager.clone();
         for error in manager.shutdown_all().await {
@@ -1486,6 +1489,28 @@ pub fn run() {
             platform::remove_file_association_binding,
             platform::get_file_route_trace,
             platform::cancel_component_operation,
+            platform::validate_script_component,
+            platform::trust_script_development_directory,
+            platform::untrust_script_development_directory,
+            platform::reload_script_component,
+            platform::create_script_component_template,
+            platform::generate_script_signing_key,
+            platform::package_script_component,
+            platform::list_script_development_files,
+            platform::read_script_development_file,
+            platform::save_script_development_file,
+            platform::get_script_surface_document,
+            platform::get_automation_runtime_snapshot,
+            platform::list_automation_runs,
+            platform::get_automation_run,
+            platform::start_automation_run,
+            platform::cancel_automation_run,
+            platform::retry_automation_run,
+            platform::resolve_automation_attention,
+            platform::emit_automation_event,
+            platform::list_automation_bindings,
+            platform::save_automation_binding,
+            platform::remove_automation_binding,
             platform::get_platform_module,
             platform::preview_disable_platform_module,
             platform::enable_platform_module,

@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useLauncherStore } from '../stores/launcherStore';
 import { Rocket, Plus, X, Edit2, Trash2, Save, FolderOpen, Play } from 'lucide-react';
-import { BuiltinToolsCenter } from './BuiltinToolsCenter';
+import { BuiltinToolsCenter, type ScriptSurfaceTool } from './BuiltinToolsCenter';
+import { useAutomationStore } from '../stores/automationStore';
 import {
   BUILTIN_TOOLS_ICON,
   OPEN_BUILTIN_TOOLS_CENTER_EVENT,
@@ -364,6 +365,7 @@ interface LauncherButtonProps {
   hasActiveProject: boolean;
   activeProjectName?: string | null;
   onOpenTool: OpenBuiltinTool;
+  onOpenScriptSurface?: (surface: ScriptSurfaceTool) => void;
 }
 
 // 内置功能中心入口。上面的 LauncherPanel 保留为旧软件启动器兼容实现。
@@ -371,9 +373,30 @@ export function LauncherButton({
   hasActiveProject,
   activeProjectName,
   onOpenTool,
+  onOpenScriptSurface,
 }: LauncherButtonProps) {
   const [isOpen, setIsOpen] = useState(false);
   const ToolIcon = BUILTIN_TOOLS_ICON;
+  const automationSnapshot = useAutomationStore((state) => state.snapshot);
+  const initializeAutomation = useAutomationStore((state) => state.initialize);
+  const scriptSurfaces = useMemo(() => (
+    automationSnapshot?.running
+      ? automationSnapshot.availableComponents.flatMap((component) => component.surfaces.map((surface) => ({
+        componentId: component.componentId,
+        surfaceId: surface.id,
+        title: surface.name,
+        description: `${component.componentName} · 隔离组件页面`,
+        requiresProject: (surface.allowedCommands ?? []).some((commandName) => component.commands.some((command) => (
+          (command.command === commandName || command.id === commandName)
+          && command.contextRequirement === 'project-required'
+        ))),
+      })))
+      : []
+  ), [automationSnapshot]);
+
+  useEffect(() => {
+    if (isOpen) void initializeAutomation();
+  }, [initializeAutomation, isOpen]);
 
   // 全局快捷键 Alt+Q
   useEffect(() => {
@@ -411,6 +434,8 @@ export function LauncherButton({
         hasActiveProject={hasActiveProject}
         activeProjectName={activeProjectName}
         onOpenTool={onOpenTool}
+        scriptSurfaces={scriptSurfaces}
+        onOpenScriptSurface={onOpenScriptSurface}
       />
     </>
   );

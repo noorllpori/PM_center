@@ -11,7 +11,7 @@
 
 R1 只冻结“模块、装配方案、组件、工作流和包如何表达”，不启用模块开关，不改变当前页面，不迁移用户数据，也不启动新的后台服务。
 
-这份合同是后续 Module Manager、Capability Gateway、Contribution Registry、装配编辑器和节点执行器的共同输入。后续实现不得再创建一套平行配置格式。
+这份合同是后续 Module Manager、Capability Gateway、Contribution Registry、装配编辑器和脚本自动化运行时的共同输入。后续实现不得再创建一套平行配置格式。
 
 ## 2. 已实现合同
 
@@ -96,7 +96,7 @@ Profile 可以声明：
 
 `toolAliases` 只保存逻辑别名和稳定工具 ID，不保存本机绝对路径；`pathVariables` 只声明需要映射的文件或目录。导入产生的绝对路径进入应用数据目录的 Profile 本机绑定文件，并在 R9 由 ComponentGateway 解析。可分享 Profile 中继续拒绝 Windows、UNC、Unix 和 `file://` 绝对路径。
 
-`shellLayout.home` 是静态默认主页，只能引用当前 Profile 中声明的 Surface。没有配置、引用失效或所属模块不可用时，宿主回退到不可撤下的最小安全主页。复杂启动行为不增加平行的脚本字段，而是通过 `workflowBindings` 将受控 `app.started` 事件绑定到 Workflow；真正执行进入 R11。
+`shellLayout.home` 是静态默认主页，只能引用当前 Profile 中声明的 Surface。没有配置、引用失效或所属模块不可用时，宿主回退到不可撤下的最小安全主页。复杂启动行为通过 `automationBindings` 将受控 `app.started` 事件绑定到脚本组件命令；旧 `workflowBindings` 只兼容读取，不执行。
 
 启动工作流只能调用注册过的宿主命令和贡献目标，并继续接受模块状态、项目状态与 Capability 检查。崩溃恢复、未完成 Profile 切换和用户会话恢复优先于启动工作流，防止脚本覆盖恢复状态或重复打开窗口。以上均使用现有 v1 字段语义，不需要新增 schema 字段。
 
@@ -115,7 +115,7 @@ builtin-rust
 
 除 `builtin-rust` 外均必须声明使用 `/` 的包内相对入口；绝对路径、反斜杠和 `..` 会被拒绝。`builtin-rust` 是迁移期兼容标记，仅用于让已编译进宿主的旧实现经过统一合同，不进入正式可安装组件目录，不能伪造外部入口，也不代表组件等级或额外权限。所有正式组件包必须可安装和卸载。
 
-组件统一使用同一安装、卸载、升级、权限和依赖模型，不划分“内核组件”和“普通组件”。可选 `role`、`distribution`、`uiMode` 只描述组件用途、分发来源和 UI 承载方式。组件可贡献工具动作、Widget、DataSource、ShellTemplate、PageTemplate、ThemePreset 和带类型输入/输出端口的工作流节点；R9 已实现最大内存、最大并行、超时、取消和日志监督，DLL 隔离与签名包继续由 R10 实现。
+组件统一使用同一安装、卸载、升级、权限和依赖模型，不划分“内核组件”和“普通组件”。可选 `role`、`distribution`、`uiMode` 只描述组件用途、分发来源和 UI 承载方式。组件可贡献工具动作、Widget、DataSource、ShellTemplate、PageTemplate、ThemePreset、自动化命令、事件和隔离页面；旧工作流节点只兼容解析。R9 已实现最大内存、最大并行、超时、取消和日志监督，DLL 隔离与签名包由 R10 实现。
 
 模块与组件之间使用 `requiresComponents` / `optionalComponents`，Profile 使用可选 `enabledComponents`。这些字段为 schema v1 的向后兼容可选扩展；依赖缺失、版本不兼容和循环必须在带注册表的验证阶段拒绝。`pmc.blendio` 是首个默认随包分发但可卸载的 `native-process` 服务组件；HDA、PPT、PDF 等格式组件沿用相同合同，详细规则见 `docs/NEXT_MAJOR_COMPONENT_DEPENDENCY_MODEL.md`。
 
@@ -150,7 +150,7 @@ R10 在组件 `contributes` 中增加可选 `fileHandlers`，不会建立独立�
 
 ## 8. Workflow Manifest v1
 
-工作流是结构化 DAG：
+该合同已冻结为兼容解析用途，R11 不建设执行器或节点画布。历史文档和旧包仍可包含结构化 DAG：
 
 - 触发器为手动、事件或定时；
 - 节点引用稳定的节点类型贡献；
@@ -160,7 +160,7 @@ R10 在组件 `contributes` 中增加可选 `fileHandlers`，不会建立独立�
 
 校验会拒绝节点环、重复连线、一个输入多条连线、缺失必需端口和不兼容端口类型。`integer -> number`、`file/directory -> path` 是首版仅有的安全隐式兼容。
 
-claimToken、staging、持久化恢复和远程租约属于 R11 执行状态，不写入静态 Workflow Manifest。
+该 Manifest 不进入有效功能目录，也不会产生运行。可执行自动化改用组件 `automationCommands` 和 Profile `automationBindings`；其持久化恢复见 `docs/NEXT_MAJOR_R11_SCRIPT_AUTOMATION.md`。
 
 ## 9. 包格式
 
@@ -207,6 +207,6 @@ R1 冻结前需要确认以下产品合同：
 2. Profile 的模块列表使用 `{ id, versionRequirement }`，不退回纯字符串；
 3. 四种 `.pmc-*` 格式统一使用带 `manifest.json` 的归档容器；
 4. `.pmc-profile` 不含二进制，`.pmc-workspace` 默认不含业务文件，只有 `.pmc-pack`/`.pmc-renderpack` 在后续安全检查后允许携带受控资源或二进制；
-5. 工作流 schema 现在保留 `schedule` 和远端执行位置，但直到 R11/R13 才真正开放运行。
+5. 工作流 schema 的 `schedule` 和远端执行位置仅为旧包兼容字段，不开放执行；R11 使用 `automationBindings`，远端执行属于 R13 的独立可信任务协议。
 
 确认后本合同从 `verifying` 转为 `accepted`，R2 才可以基于它实现 Module Manager 与 ResourceRegistry。

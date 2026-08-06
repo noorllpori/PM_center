@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "id": "nexora.example.blend-audit",
+  "name": "Blender 文件检查自动化示例",
+  "description": "演示依赖 BlenderIO、项目上下文、自动化事件和隔离页面的 Python 组件。",
+  "version": "0.1.0",
+  "apiVersion": "1",
+  "runtime": "python-action",
+  "role": "feature",
+  "distribution": "local",
+  "uiMode": "contributed",
+  "platforms": ["windows-x64"],
+  "entry": "main.py",
+  "capabilities": ["project.files.read"],
+  "requiresComponents": [
+    {
+      "id": "pmc.blendio",
+      "versionRequirement": "^1.0"
+    }
+  ],
+  "optionalComponents": [],
+  "contributes": {
+    "automationCommands": [
+      {
+        "id": "nexora.example.blend-audit.inspect",
+        "command": "inspect",
+        "name": "检查 Blender 文件",
+        "description": "验证项目内 .blend 路径并输出可供后续 BlenderIO 命令使用的结构化请求。",
+        "contextRequirement": "project-required",
+        "executionSemantics": "idempotent",
+        "requiredCapability": "project.files.read",
+        "capabilityOperation": "read",
+        "maxAttempts": 2,
+        "maxParallelism": 1,
+        "timeoutMs": 120000,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "blendPath": {"type": "string"}
+          },
+          "required": ["blendPath"]
+        },
+        "outputSchema": {
+          "type": "object"
+        }
+      }
+    ],
+    "automationEvents": [
+      {
+        "id": "nexora.example.blend-audit.file-changed",
+        "event": "file.changed",
+        "name": "Blender 文件变化"
+      },
+      {
+        "id": "nexora.example.blend-audit.render-batch-created",
+        "event": "render.batch-created",
+        "name": "渲染批次已创建"
+      },
+      {
+        "id": "nexora.example.blend-audit.render-batch-completed",
+        "event": "render.batch-completed",
+        "name": "渲染批次已结束"
+      }
+    ],
+    "scriptSurfaces": [
+      {
+        "id": "nexora.example.blend-audit.surface",
+        "name": "Blender 检查示例",
+        "entry": "ui/index.html",
+        "placements": ["workspace", "dialog"],
+        "allowedCommands": ["inspect"]
+      }
+    ]
+  },
+  "resources": {
+    "maxMemoryMb": 256,
+    "maxParallelism": 1,
+    "timeoutMs": 120000
+  },
+  "publisher": "Nexora Examples"
+}

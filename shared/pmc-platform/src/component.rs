@@ -113,6 +113,101 @@ pub struct WorkflowNodeContribution {
     pub extensions: ExtensionFields,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum AutomationContextRequirement {
+    Global,
+    ProjectRequired,
+    #[default]
+    Either,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum AutomationExecutionSemantics {
+    Pure,
+    Idempotent,
+    #[default]
+    NonIdempotent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum AutomationCapabilityOperation {
+    Read,
+    Write,
+    Delete,
+    #[default]
+    Execute,
+    Connect,
+    Notify,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationCommandContribution {
+    pub id: String,
+    pub command: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub context_requirement: AutomationContextRequirement,
+    #[serde(default)]
+    pub execution_semantics: AutomationExecutionSemantics,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_capability: Option<Capability>,
+    #[serde(default)]
+    pub capability_operation: AutomationCapabilityOperation,
+    #[serde(default)]
+    pub input_schema: Value,
+    #[serde(default)]
+    pub output_schema: Value,
+    #[serde(default)]
+    pub max_attempts: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_parallelism: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    #[serde(flatten)]
+    pub extensions: ExtensionFields,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationEventContribution {
+    pub id: String,
+    pub event: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(flatten)]
+    pub extensions: ExtensionFields,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum ScriptSurfacePlacement {
+    Shell,
+    Workspace,
+    Dialog,
+    Widget,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ScriptSurfaceContribution {
+    pub id: String,
+    pub name: String,
+    pub entry: String,
+    #[serde(default)]
+    pub placements: Vec<ScriptSurfacePlacement>,
+    #[serde(default)]
+    pub allowed_commands: Vec<String>,
+    #[serde(flatten)]
+    pub extensions: ExtensionFields,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolActionContribution {
@@ -265,8 +360,15 @@ pub struct ComponentSettingsSection {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ComponentContributions {
+    /// Frozen compatibility catalog. R11 no longer executes node graphs.
     #[serde(default)]
     pub workflow_nodes: Vec<WorkflowNodeContribution>,
+    #[serde(default)]
+    pub automation_commands: Vec<AutomationCommandContribution>,
+    #[serde(default)]
+    pub automation_events: Vec<AutomationEventContribution>,
+    #[serde(default)]
+    pub script_surfaces: Vec<ScriptSurfaceContribution>,
     #[serde(default)]
     pub tool_actions: Vec<ToolActionContribution>,
     #[serde(default)]
@@ -498,6 +600,109 @@ impl ValidateContract for ComponentManifestV1 {
                 &node.outputs,
                 &format!("$.contributes.workflowNodes[{index}].outputs"),
             )?;
+        }
+        let mut automation_command_ids = BTreeSet::new();
+        let mut automation_runtime_commands = BTreeSet::new();
+        for (index, command) in self.contributes.automation_commands.iter().enumerate() {
+            let path = format!("$.contributes.automationCommands[{index}]");
+            validate_stable_id(&command.id, &format!("{path}.id"))?;
+            validate_local_id(&command.command, &format!("{path}.command"))?;
+            validate_named_contribution(&command.name, &path)?;
+            if !automation_command_ids.insert(command.id.as_str()) {
+                return Err(duplicate_contribution(&path, &command.id));
+            }
+            if !automation_runtime_commands.insert(command.command.as_str()) {
+                return Err(ContractError::new(
+                    ContractErrorCode::DuplicateId,
+                    format!("{path}.command"),
+                    format!("重复自动化运行命令: {}", command.command),
+                ));
+            }
+            if !contribution_ids.insert(command.id.as_str()) {
+                return Err(duplicate_contribution(&path, &command.id));
+            }
+            if command.max_attempts > 100 {
+                return Err(ContractError::new(
+                    ContractErrorCode::InvalidRuntimeConfiguration,
+                    format!("{path}.maxAttempts"),
+                    "自动化命令最大尝试次数不能超过 100",
+                ));
+            }
+            if command.max_parallelism == Some(0) {
+                return Err(ContractError::new(
+                    ContractErrorCode::InvalidRuntimeConfiguration,
+                    format!("{path}.maxParallelism"),
+                    "自动化命令并发上限必须大于 0",
+                ));
+            }
+            if command.timeout_ms == Some(0) {
+                return Err(ContractError::new(
+                    ContractErrorCode::InvalidRuntimeConfiguration,
+                    format!("{path}.timeoutMs"),
+                    "自动化命令超时必须大于 0",
+                ));
+            }
+            if let Some(capability) = command.required_capability {
+                if !self.capabilities.contains(&capability) {
+                    return Err(ContractError::new(
+                        ContractErrorCode::InvalidReference,
+                        format!("{path}.requiredCapability"),
+                        format!(
+                            "自动化命令引用了组件未声明的 Capability: {}",
+                            capability.as_str()
+                        ),
+                    ));
+                }
+            } else if !self.capabilities.is_empty() {
+                return Err(ContractError::new(
+                    ContractErrorCode::InvalidRuntimeConfiguration,
+                    format!("{path}.requiredCapability"),
+                    "带权限组件的自动化命令必须声明 requiredCapability",
+                ));
+            }
+        }
+        for (index, event) in self.contributes.automation_events.iter().enumerate() {
+            let path = format!("$.contributes.automationEvents[{index}]");
+            validate_stable_id(&event.id, &format!("{path}.id"))?;
+            validate_stable_id(&event.event, &format!("{path}.event"))?;
+            validate_named_contribution(&event.name, &path)?;
+            if !contribution_ids.insert(event.id.as_str()) {
+                return Err(duplicate_contribution(&path, &event.id));
+            }
+        }
+        for (index, surface) in self.contributes.script_surfaces.iter().enumerate() {
+            let path = format!("$.contributes.scriptSurfaces[{index}]");
+            validate_stable_id(&surface.id, &format!("{path}.id"))?;
+            validate_named_contribution(&surface.name, &path)?;
+            validate_relative_path(&surface.entry, &format!("{path}.entry"))?;
+            if surface.placements.is_empty() {
+                return Err(ContractError::new(
+                    ContractErrorCode::MalformedDocument,
+                    format!("{path}.placements"),
+                    "脚本页面至少声明一个宿主位置",
+                ));
+            }
+            let mut allowed_commands = BTreeSet::new();
+            for (command_index, command) in surface.allowed_commands.iter().enumerate() {
+                validate_local_id(command, &format!("{path}.allowedCommands[{command_index}]"))?;
+                if !automation_runtime_commands.contains(command.as_str()) {
+                    return Err(ContractError::new(
+                        ContractErrorCode::InvalidReference,
+                        format!("{path}.allowedCommands[{command_index}]"),
+                        format!("脚本页面引用了未声明的自动化命令: {command}"),
+                    ));
+                }
+                if !allowed_commands.insert(command.as_str()) {
+                    return Err(ContractError::new(
+                        ContractErrorCode::DuplicateId,
+                        format!("{path}.allowedCommands[{command_index}]"),
+                        format!("重复页面命令: {command}"),
+                    ));
+                }
+            }
+            if !contribution_ids.insert(surface.id.as_str()) {
+                return Err(duplicate_contribution(&path, &surface.id));
+            }
         }
         for (index, action) in self.contributes.tool_actions.iter().enumerate() {
             validate_stable_id(

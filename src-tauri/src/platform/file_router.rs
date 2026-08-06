@@ -571,7 +571,10 @@ pub fn route_file(
         }
         diagnostics.push(FileRouteDiagnostic {
             code: "BOUND_HANDLER_MISSING".into(),
-            message: format!("绑定的处理器不属于当前装配或已经不可用: {}", binding.handler),
+            message: format!(
+                "绑定的处理器不属于当前装配或已经不可用: {}",
+                binding.handler
+            ),
         });
         let handler_belongs_to_current_profile = candidates
             .iter()

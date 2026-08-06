@@ -9,6 +9,7 @@ mod presentation_templates;
 mod profile_package;
 mod profile_runtime;
 mod resource_registry;
+mod script_automation;
 
 pub use module_manager::{
     DisablePreview, ModuleDiagnosticSnapshot, ModuleManager, ModuleManagerError,
@@ -33,6 +34,13 @@ pub use builtin_modules::{
     AUTOMATION_RUNTIME_MODULE_ID, LOCAL_WEB_CONSOLE_MODULE_ID, PROJECT_RESOURCES_MODULE_ID,
     RENDER_CENTER_MODULE_ID, SMART_CLIPBOARD_MODULE_ID,
 };
+pub use script_automation::{
+    AutomationEventRequest, AutomationRun, AutomationRunFilter, AutomationRuntimeSnapshot,
+    CreateScriptComponentTemplateRequest, RemoveAutomationBindingRequest,
+    ResolveAutomationAttentionRequest, SaveAutomationBindingRequest,
+    SaveScriptDevelopmentFileRequest, ScriptComponentValidation, ScriptDevelopmentDocument,
+    ScriptDevelopmentFile, ScriptSurfaceDocument, StartAutomationRunRequest,
+};
 
 pub use capability_gateway::{
     CapabilityDecisionRequest, CapabilityGatewayError, CapabilityGatewayOverview,
@@ -55,14 +63,16 @@ pub use file_router::{
 };
 pub use presentation_templates::{PresentationTemplatePreview, PresentationTemplatePreviewRequest};
 
+use crate::component_packager::{ComponentPackRequest, ComponentPackResult, SigningKeyResult};
 use builtin_components::builtin_component_manifests;
 use builtin_modules::{
     automation_runtime_component, automation_runtime_module, desktop_integration_module,
     diagnostic_components, diagnostic_modules, external_tools_module, lan_collaboration_component,
     lan_collaboration_module, local_web_console_component, local_web_console_module,
     project_manager_module, project_resources_component, project_resources_module,
-    render_center_component, render_center_module, session_runtime_module, settings_center_module,
-    smart_clipboard_component, smart_clipboard_module, DiagnosticControls, DIAGNOSTIC_BASE_ID,
+    render_center_component, render_center_module, script_automation_module,
+    session_runtime_module, settings_center_module, smart_clipboard_component,
+    smart_clipboard_module, DiagnosticControls, DIAGNOSTIC_BASE_ID,
 };
 use capability_gateway::{run_security_diagnostic, CapabilityGateway};
 use component_settings::ComponentSettingsStore;
@@ -78,7 +88,8 @@ pub struct PlatformRuntime {
     pub manager: Arc<ModuleManager>,
     pub gateway: Arc<CapabilityGateway>,
     pub components: Arc<ComponentRuntimeManager>,
-    pub profiles: WorkspaceProfileRuntime,
+    pub profiles: Arc<WorkspaceProfileRuntime>,
+    pub script_automation: Arc<script_automation::ScriptAutomationRuntime>,
     component_settings: ComponentSettingsStore,
     file_routing: FileRoutingStore,
     profile_switch_lock: tokio::sync::Mutex<()>,
@@ -94,6 +105,30 @@ impl PlatformRuntime {
         crate::project_resources::initialize_lifecycle_control();
         crate::automation_runtime::initialize_lifecycle_control();
         crate::render_center::initialize_lifecycle_control();
+        let components = ComponentRuntimeManager::new(
+            app_data_dir,
+            app_handle.clone(),
+            builtin_component_manifests(),
+        )
+        .map_err(|error| {
+            ModuleManagerError::new(
+                module_manager::ModuleErrorCode::ModulePersistenceError,
+                None,
+                error.to_string(),
+            )
+        })?;
+        let script_automation = script_automation::ScriptAutomationRuntime::new(
+            app_data_dir,
+            app_handle.clone(),
+            components.clone(),
+        )
+        .map_err(|error| {
+            ModuleManagerError::new(
+                module_manager::ModuleErrorCode::ModulePersistenceError,
+                None,
+                error,
+            )
+        })?;
         let controls = Arc::new(DiagnosticControls::default());
         let mut modules = diagnostic_modules(controls.clone());
         modules.push(settings_center_module());
@@ -112,6 +147,7 @@ impl PlatformRuntime {
         modules.push(project_resources_module(project_databases));
         modules.push(project_manager_module());
         modules.push(automation_runtime_module());
+        modules.push(script_automation_module(script_automation.clone()));
         modules.push(render_center_module());
         let manager = ModuleManager::new(app_data_dir.join("module-runtime.json"), modules)?;
         let project_resources_desired = manager
@@ -144,25 +180,19 @@ impl PlatformRuntime {
                 error.to_string(),
             )
         })?;
-        let components =
-            ComponentRuntimeManager::new(app_data_dir, app_handle, builtin_component_manifests())
-                .map_err(|error| {
-                ModuleManagerError::new(
-                    module_manager::ModuleErrorCode::ModulePersistenceError,
-                    None,
-                    error.to_string(),
-                )
-            })?;
         let component_manifests = components.manifests();
         gateway.sync_component_manifests(&component_manifests);
+        let profiles = Arc::new(WorkspaceProfileRuntime::new_with_components(
+            app_data_dir,
+            component_manifests,
+        ));
+        script_automation.attach_host(manager.clone(), profiles.clone(), gateway.clone());
         Ok(Self {
             manager,
             gateway,
             components,
-            profiles: WorkspaceProfileRuntime::new_with_components(
-                app_data_dir,
-                component_manifests,
-            ),
+            profiles,
+            script_automation,
             component_settings: ComponentSettingsStore::new(app_data_dir),
             file_routing: FileRoutingStore::new(app_data_dir),
             profile_switch_lock: tokio::sync::Mutex::new(()),
@@ -291,6 +321,22 @@ pub async fn install_component_from_directory(
     request: InstallComponentRequest,
     runtime: State<'_, PlatformRuntime>,
 ) -> Result<pmc_platform::ComponentManifestV1, ComponentRuntimeError> {
+    let validation = runtime
+        .script_automation
+        .validate_development_component(&request.source_path);
+    if validation.manifest.as_ref().is_some_and(|manifest| {
+        !manifest.contributes.automation_commands.is_empty()
+            || !manifest.contributes.script_surfaces.is_empty()
+    }) && !runtime
+        .script_automation
+        .is_trusted_directory(&request.source_path)
+    {
+        return Err(ComponentRuntimeError::new(
+            ComponentRuntimeErrorCode::ComponentPackageUntrusted,
+            "脚本组件目录尚未在开发模式中显式信任",
+        )
+        .with_details(validation.warnings));
+    }
     let manifest = runtime.components.install_from_directory(&request).await?;
     sync_component_catalog(&runtime)?;
     Ok(manifest)
@@ -311,6 +357,16 @@ pub async fn uninstall_component(
     component_id: String,
     runtime: State<'_, PlatformRuntime>,
 ) -> Result<pmc_platform::ComponentManifestV1, ComponentRuntimeError> {
+    runtime
+        .script_automation
+        .prepare_component_uninstall(&component_id)
+        .await
+        .map_err(|error| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentDependencyConflict,
+                error,
+            )
+        })?;
     let manifest = runtime.components.manifest(&component_id).ok_or_else(|| {
         ComponentRuntimeError::new(
             ComponentRuntimeErrorCode::ComponentNotInstalled,
@@ -426,6 +482,275 @@ pub fn cancel_component_operation(
 }
 
 #[tauri::command]
+pub fn validate_script_component(
+    path: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> ScriptComponentValidation {
+    runtime
+        .script_automation
+        .validate_development_component(&path)
+}
+
+#[tauri::command]
+pub fn trust_script_development_directory(
+    path: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<Vec<String>, String> {
+    runtime.script_automation.trust_development_directory(&path)
+}
+
+#[tauri::command]
+pub fn untrust_script_development_directory(
+    path: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<Vec<String>, String> {
+    runtime
+        .script_automation
+        .untrust_development_directory(&path)
+}
+
+#[tauri::command]
+pub async fn reload_script_component(
+    component_id: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<pmc_platform::ComponentManifestV1, ComponentRuntimeError> {
+    let source = runtime
+        .script_automation
+        .trusted_directories()
+        .into_iter()
+        .find(|path| {
+            runtime
+                .script_automation
+                .validate_development_component(path)
+                .manifest
+                .is_some_and(|manifest| manifest.id == component_id)
+        })
+        .ok_or_else(|| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentPackageUntrusted,
+                "没有找到该组件对应的受信任开发目录",
+            )
+        })?;
+    let manifest = runtime
+        .components
+        .install_from_directory(&InstallComponentRequest {
+            source_path: source,
+        })
+        .await?;
+    sync_component_catalog(&runtime)?;
+    Ok(manifest)
+}
+
+#[tauri::command]
+pub fn create_script_component_template(
+    request: CreateScriptComponentTemplateRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<String, String> {
+    runtime.script_automation.create_template(request)
+}
+
+#[tauri::command]
+pub fn generate_script_signing_key(path: String) -> Result<SigningKeyResult, String> {
+    crate::component_packager::generate_signing_key(std::path::Path::new(&path))
+}
+
+#[tauri::command]
+pub fn package_script_component(
+    request: ComponentPackRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<ComponentPackResult, String> {
+    if !runtime
+        .script_automation
+        .is_trusted_directory(&request.source_path)
+    {
+        return Err("只有已信任的脚本开发目录可以生成可执行组件包".into());
+    }
+    let validation = runtime
+        .script_automation
+        .validate_development_component(&request.source_path);
+    if !validation.valid {
+        return Err(format!("组件合同无效：{}", validation.errors.join("；")));
+    }
+    crate::component_packager::pack_component(request)
+}
+
+#[tauri::command]
+pub fn list_script_development_files(
+    path: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<Vec<ScriptDevelopmentFile>, String> {
+    runtime.script_automation.list_development_files(&path)
+}
+
+#[tauri::command]
+pub fn read_script_development_file(
+    path: String,
+    relative_path: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<ScriptDevelopmentDocument, String> {
+    runtime
+        .script_automation
+        .read_development_file(&path, &relative_path)
+}
+
+#[tauri::command]
+pub fn save_script_development_file(
+    request: SaveScriptDevelopmentFileRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<ScriptDevelopmentDocument, String> {
+    runtime.script_automation.save_development_file(request)
+}
+
+#[tauri::command]
+pub fn get_script_surface_document(
+    component_id: String,
+    surface_id: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<ScriptSurfaceDocument, String> {
+    runtime
+        .script_automation
+        .script_surface_document(&component_id, &surface_id)
+}
+
+#[tauri::command]
+pub fn get_automation_runtime_snapshot(
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<AutomationRuntimeSnapshot, String> {
+    runtime.script_automation.snapshot()
+}
+
+#[tauri::command]
+pub fn list_automation_runs(
+    filter: Option<AutomationRunFilter>,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<Vec<AutomationRun>, String> {
+    runtime
+        .script_automation
+        .list_runs(filter.unwrap_or_default())
+}
+
+#[tauri::command]
+pub fn get_automation_run(
+    run_id: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<AutomationRun, String> {
+    runtime.script_automation.get_run(&run_id)
+}
+
+#[tauri::command]
+pub fn start_automation_run(
+    request: StartAutomationRunRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<AutomationRun, String> {
+    runtime.script_automation.start_run(request)
+}
+
+#[tauri::command]
+pub fn cancel_automation_run(
+    run_id: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<AutomationRun, String> {
+    runtime.script_automation.cancel_run(&run_id)
+}
+
+#[tauri::command]
+pub fn retry_automation_run(
+    run_id: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<AutomationRun, String> {
+    runtime.script_automation.retry_run(&run_id)
+}
+
+#[tauri::command]
+pub fn resolve_automation_attention(
+    request: ResolveAutomationAttentionRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<AutomationRun, String> {
+    runtime.script_automation.resolve_attention(request)
+}
+
+#[tauri::command]
+pub fn emit_automation_event(
+    request: AutomationEventRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<usize, String> {
+    runtime.script_automation.emit_event(request)
+}
+
+#[tauri::command]
+pub fn list_automation_bindings(
+    profile_id: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<Vec<pmc_platform::ProfileAutomationBinding>, WorkspaceProfileRuntimeError> {
+    Ok(runtime
+        .profiles
+        .profile_document(&profile_id)?
+        .automation_bindings)
+}
+
+#[tauri::command]
+pub async fn save_automation_binding(
+    request: SaveAutomationBindingRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<WorkspaceProfileMutationResult, WorkspaceProfileRuntimeError> {
+    let _guard = runtime.profile_switch_lock.lock().await;
+    let manifests = formal_module_manifests(&runtime);
+    let mut profile = runtime.profiles.profile_document(&request.profile_id)?;
+    if let Some(existing) = profile
+        .automation_bindings
+        .iter_mut()
+        .find(|binding| binding.id == request.binding.id)
+    {
+        *existing = request.binding;
+    } else {
+        profile.automation_bindings.push(request.binding);
+    }
+    let save_request = SaveWorkspaceProfileRequest {
+        profile,
+        expected_revision: request.expected_revision,
+    };
+    let current_id = runtime.profiles.snapshot(&manifests)?.current_profile.id;
+    if current_id == request.profile_id {
+        let prepared = runtime
+            .profiles
+            .prepare_current_profile_update(&save_request, &manifests)?;
+        runtime
+            .profiles
+            .commit_current_profile_update(prepared, &manifests)
+    } else {
+        runtime.profiles.save_profile(&save_request, &manifests)
+    }
+}
+
+#[tauri::command]
+pub async fn remove_automation_binding(
+    request: RemoveAutomationBindingRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<WorkspaceProfileMutationResult, WorkspaceProfileRuntimeError> {
+    let _guard = runtime.profile_switch_lock.lock().await;
+    let manifests = formal_module_manifests(&runtime);
+    let mut profile = runtime.profiles.profile_document(&request.profile_id)?;
+    profile
+        .automation_bindings
+        .retain(|binding| binding.id != request.binding_id);
+    let save_request = SaveWorkspaceProfileRequest {
+        profile,
+        expected_revision: request.expected_revision,
+    };
+    let current_id = runtime.profiles.snapshot(&manifests)?.current_profile.id;
+    if current_id == request.profile_id {
+        let prepared = runtime
+            .profiles
+            .prepare_current_profile_update(&save_request, &manifests)?;
+        runtime
+            .profiles
+            .commit_current_profile_update(prepared, &manifests)
+    } else {
+        runtime.profiles.save_profile(&save_request, &manifests)
+    }
+}
+
+#[tauri::command]
 pub fn get_component_settings(
     request: ComponentSettingsRequest,
     runtime: State<'_, PlatformRuntime>,
@@ -526,7 +851,11 @@ pub async fn initialize_workspace_profile_runtime(
     runtime
         .profiles
         .complete_startup_recovery(&recovery_plan, runtime_drift_corrected)?;
-    runtime.profiles.snapshot(&manifests)
+    let snapshot = runtime.profiles.snapshot(&manifests)?;
+    if let Err(error) = runtime.script_automation.emit_app_started_once() {
+        eprintln!("[script-automation] app.started dispatch failed: {error}");
+    }
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -764,6 +1093,17 @@ pub async fn switch_workspace_profile(
                 .collect(),
         ));
     }
+    let _automation_trigger_guard = runtime
+        .script_automation
+        .prepare_profile_switch()
+        .await
+        .map_err(|message| {
+            WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileSwitchBlocked,
+                message,
+                None,
+            )
+        })?;
 
     let manifests = overview
         .modules

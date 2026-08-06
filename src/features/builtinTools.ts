@@ -12,6 +12,7 @@ import {
   Network,
   NotebookTabs,
   Settings,
+  Workflow,
   Terminal,
 } from 'lucide-react';
 import {
@@ -35,6 +36,7 @@ export type BuiltinToolId =
   | 'blender-file-parser'
   | 'smart-clipboard'
   | 'local-web-console'
+  | 'script-automation'
   | 'contribution-diagnostics';
 
 export type BuiltinToolCategory = 'project' | 'workflow' | 'system' | 'communication';
@@ -43,7 +45,8 @@ export type BuiltinToolDialogId =
   | 'python-environments'
   | 'task-center'
   | 'settings'
-  | 'blender-file-parser';
+  | 'blender-file-parser'
+  | 'script-developer-studio';
 
 export type BuiltinToolOpenTarget =
   | { type: 'workspaceTab'; contributionId: string }
@@ -182,6 +185,23 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     pinnable: true,
     keywords: ['task', '任务', '进度', '日志'],
     openTarget: { type: 'dialog', dialogId: 'task-center' },
+  },
+  {
+    id: 'script-automation',
+    contribution: TOOL_CONTRIBUTIONS.scriptAutomation,
+    title: '脚本自动化',
+    description: '开发、调试和组合可安装的 Python 脚本组件。',
+    help: [
+      '正式自动化属于组件目录或 .pmc-pack；单个 .py 只用于开发期调试，不作为装配功能直接分发。',
+      '支持手动、应用事件和五段式 cron 触发。绑定保存在当前装配方案中，停用模块不会删除绑定或运行历史。',
+      'Python 属于受信任代码，仍拥有当前 Windows 用户权限；隔离页面不能访问宿主 DOM、Tauri API 或本机 URL。',
+    ],
+    category: 'workflow',
+    icon: Workflow,
+    requiresProject: false,
+    pinnable: true,
+    keywords: ['automation', 'python', 'script', 'cron', '自动化', '脚本', '开发者'],
+    openTarget: { type: 'dialog', dialogId: 'script-developer-studio' },
   },
   {
     id: 'settings',
