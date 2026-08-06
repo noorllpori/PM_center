@@ -143,9 +143,9 @@
 
 | 能力 | 当前代码 | 可复用内容 | 当前限制 |
 | --- | --- | --- | --- |
-| 前端贡献注册 | `src/features/contributionRegistry.ts`、`src/features/contributionDataSources.ts`、`src/features/contributionCatalogDiagnostics.ts`、`src/stores/contributionRegistryStore.ts` | 稳定贡献 ID、模块所有权、运行状态、冲突检测、Widget/DataSource/WorkflowNode 目录、Surface 配对、实现覆盖和订阅释放诊断 | R6-2 已让 Profile 驱动模块集合和 Pin，但尚未接管完整 Shell/页面布局；R9 前不加载任意第三方 React 代码 |
+| 前端贡献注册 | `src/features/contributionRegistry.ts`、`src/features/contributionDataSources.ts`、`src/features/contributionCatalogDiagnostics.ts`、`src/stores/contributionRegistryStore.ts` | 稳定贡献 ID、模块所有权、运行状态、冲突检测、Widget/DataSource/WorkflowNode 目录、Surface 配对、实现覆盖和订阅释放诊断 | R9 继续禁止任意第三方 React 代码；受控 HTML/CSS 表现层进入 R10-P |
 | 功能 Pin 偏好 | `src/stores/builtinToolsStore.ts` | 全局持久化、排序、停用时隐藏并保留配置、Profile 切换严格替换 | 仍使用既有内置工具实现映射；第三方工具渲染器留待 R9 |
-| 功能打开器 | `src/features/builtinTools.ts`、`src/components/file-manager/index.tsx` | 声明式 `openTarget` 集中打开标签页、弹窗、事件或命令 | 打开方式类型仍由主应用控制，R9 前不加载任意第三方 React 代码 |
+| 功能打开器 | `src/features/builtinTools.ts`、`src/components/file-manager/index.tsx` | 声明式 `openTarget` 集中打开标签页、弹窗、事件或命令 | 打开方式仍由主应用控制；R9 组件工具动作通过受控命令贡献，不直接注入 React |
 | 项目工作区标签 | `src/stores/workspaceTabStore.ts`、`ContributedWorkspaceSurface.tsx`、`ContributedWidget.tsx` | 贡献式单例标签、通用 contribution 标签、动态撤下、会话恢复和 Widget 数据源连接 | Profile 尚未接管页面布局，Widget 网格和第三方组件渲染器仍待后续里程碑 |
 | 外层 Shell 标签 | `src/stores/shellTabStore.ts` | home、project 与贡献式 LAN 主页面 | 尚未按 Profile 生成不同 Shell 布局 |
 | 项目状态 | `projectStore` 和 `ProjectSessionProvider` | 项目打开、激活、会话恢复 | 项目能力默认与主应用绑定 |
@@ -155,9 +155,9 @@
 
 | 能力 | 当前代码 | 可复用内容 | 当前限制 |
 | --- | --- | --- | --- |
-| 应用编排 | `src-tauri/src/lib.rs`、`src-tauri/src/platform/` | Tauri Builder、Module Manager、ResourceRegistry、CapabilityGateway 和退出清理 | Tauri 命令仍静态注册，R9 前组件宿主类型仍有限 |
+| 应用编排 | `src-tauri/src/lib.rs`、`src-tauri/src/platform/` | Tauri Builder、Module Manager、ResourceRegistry、CapabilityGateway、ComponentRuntime 和退出清理 | R9 已支持 Python action/worker、原生进程、资料包和宿主适配器；DLL 宿主仍待 R10 |
 | 项目资源释放 | `release_project_resources`、`builtin.project-resources` | 关闭 watcher、数据库和 TreeCache 句柄，模块停用时统一释放 | 项目级 UI 贡献仍在 R5 继续拆分 |
-| Python 插件 | `src-tauri/src/plugin/mod.rs`、`automation_runtime.rs` | manifest、依赖、动作、内置 Python、模块状态守卫和进程登记 | 旧插件协议仍是兼容层，R9 再迁入统一组件宿主 |
+| Python 插件 | `src-tauri/src/plugin/mod.rs`、`automation_runtime.rs`、`platform/component_runtime.rs` | manifest、依赖、动作、内置 Python、模块状态守卫和进程登记 | R9 组件宿主兼容 `python-action` 并新增常驻 `python-worker`；旧插件入口继续作为兼容层 |
 | 插件 SDK | `src-tauri/resources/plugin-sdk/pmc_plugin` | 请求读取、progress、toast、confirm、refresh 和 result | 只支持一次性 Python CLI 动作 |
 | Python 环境 | `python`、`python_env`、`automation_runtime.rs` | Nexora 内置 Python、系统/venv/Blender Python、pip 和进程生命周期 | 缺少组件级隔离、锁定依赖和长期 Worker 管理 |
 | 任务执行 | `task/mod.rs`、`automation_runtime.rs` | 子进程、stdout/stderr、进度、取消和模块停用收敛 | 尚未抽象成通用组件宿主协议 |

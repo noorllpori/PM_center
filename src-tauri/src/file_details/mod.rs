@@ -117,6 +117,7 @@ pub async fn get_file_details(
     _view: Option<String>,
     tool_paths: Option<ToolPathsInput>,
     force_refresh: Option<bool>,
+    platform_runtime: tauri::State<'_, crate::platform::PlatformRuntime>,
 ) -> Result<FileDetailsResponse, String> {
     let force_refresh = force_refresh.unwrap_or(false);
     let path_buf = PathBuf::from(&path);
@@ -158,7 +159,22 @@ pub async fn get_file_details(
         "image" => parse_image_details(&path_buf).await,
         "audio" => parse_audio_details(&path_buf).await,
         "video" => parse_video_details(&path_buf, ffprobe_path).await,
-        "blender" => parse_blender_details(&path_buf, blender_path).await,
+        "blender" => {
+            if platform_runtime
+                .components
+                .ensure_installed("pmc.blendio")
+                .is_err()
+            {
+                warning_outcome(
+                    "blender",
+                    "component",
+                    "BlenderIO 组件未安装。请在恢复设置 > 组件运行时中重新安装后再解析。"
+                        .to_string(),
+                )
+            } else {
+                parse_blender_details(&path_buf, blender_path).await
+            }
+        }
         "folder" => basic_outcome("folder"),
         _ => basic_outcome("basic"),
     };
@@ -192,7 +208,12 @@ pub async fn get_file_details(
 #[tauri::command]
 pub async fn get_blender_external_data(
     path: String,
+    platform_runtime: tauri::State<'_, crate::platform::PlatformRuntime>,
 ) -> Result<blendio::ExternalDataSummary, String> {
+    platform_runtime
+        .components
+        .ensure_installed("pmc.blendio")
+        .map_err(|error| error.message)?;
     let path_buf = PathBuf::from(path);
     tokio::task::spawn_blocking(move || {
         let file = blendio::BlendFile::open(&path_buf).map_err(|error| error.to_string())?;
@@ -204,7 +225,14 @@ pub async fn get_blender_external_data(
 }
 
 #[tauri::command]
-pub async fn get_blender_preview_png(path: String) -> Result<Option<Vec<u8>>, String> {
+pub async fn get_blender_preview_png(
+    path: String,
+    platform_runtime: tauri::State<'_, crate::platform::PlatformRuntime>,
+) -> Result<Option<Vec<u8>>, String> {
+    platform_runtime
+        .components
+        .ensure_installed("pmc.blendio")
+        .map_err(|error| error.message)?;
     let path_buf = PathBuf::from(path);
     tokio::task::spawn_blocking(move || {
         let preview =
@@ -231,7 +259,12 @@ pub async fn update_blender_scene_render(
     scene_selector: blendio::SceneSelector,
     edit: blendio::SceneRenderEdit,
     options: Option<blendio::WriteOptions>,
+    platform_runtime: tauri::State<'_, crate::platform::PlatformRuntime>,
 ) -> Result<blendio::WriteReport, String> {
+    platform_runtime
+        .components
+        .ensure_installed("pmc.blendio")
+        .map_err(|error| error.message)?;
     let path_buf = PathBuf::from(path);
     tokio::task::spawn_blocking(move || {
         let _guard = BLENDER_WRITE_LOCK

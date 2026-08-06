@@ -1,6 +1,6 @@
 use super::module_manager::{ModuleManager, ModuleState};
 use chrono::Utc;
-use pmc_platform::{Capability, CapabilityRisk};
+use pmc_platform::{Capability, CapabilityRisk, ComponentManifestV1};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -343,7 +343,7 @@ struct ActiveCapabilityToken {
 
 pub struct CapabilityGateway {
     manager: Arc<ModuleManager>,
-    components: BTreeMap<String, CapabilityComponentRegistration>,
+    components: Mutex<BTreeMap<String, CapabilityComponentRegistration>>,
     connection: Mutex<Connection>,
     database_path: PathBuf,
     pending: Mutex<HashMap<String, PendingCapabilityRequest>>,
@@ -422,7 +422,7 @@ impl CapabilityGateway {
             .collect();
         Ok(Arc::new(Self {
             manager,
-            components,
+            components: Mutex::new(components),
             connection: Mutex::new(connection),
             database_path,
             pending: Mutex::new(HashMap::new()),
@@ -454,6 +454,26 @@ impl CapabilityGateway {
             recent_audit: self.list_audit(AUDIT_LIMIT)?,
             diagnostic_scenarios: self.diagnostic_scenarios(),
         })
+    }
+
+    pub fn sync_component_manifests(&self, manifests: &[ComponentManifestV1]) {
+        let mut components = self
+            .components
+            .lock()
+            .expect("capability component catalog mutex poisoned");
+        components.retain(|_, registration| registration.module_id != "*");
+        for manifest in manifests {
+            components.insert(
+                manifest.id.clone(),
+                CapabilityComponentRegistration {
+                    id: manifest.id.clone(),
+                    name: manifest.name.clone(),
+                    version: manifest.version.clone(),
+                    module_id: "*".into(),
+                    capabilities: manifest.capabilities.clone(),
+                },
+            );
+        }
     }
 
     pub fn request_token(
@@ -918,13 +938,17 @@ impl CapabilityGateway {
                         "组件主体必须提供 componentId",
                     )
                 })?;
-                let component = self.components.get(component_id).ok_or_else(|| {
+                let components = self
+                    .components
+                    .lock()
+                    .expect("capability component catalog mutex poisoned");
+                let component = components.get(component_id).ok_or_else(|| {
                     CapabilityGatewayError::new(
                         CapabilityErrorCode::CapabilityComponentNotFound,
                         format!("组件 {component_id} 未注册"),
                     )
                 })?;
-                if component.module_id != request.module_id {
+                if component.module_id != "*" && component.module_id != request.module_id {
                     return Err(CapabilityGatewayError::new(
                         CapabilityErrorCode::CapabilityComponentModuleMismatch,
                         format!("组件 {component_id} 不属于模块 {}", request.module_id),
@@ -1179,7 +1203,11 @@ impl CapabilityGateway {
             let Some(component_id) = component_id else {
                 return false;
             };
-            let Some(component) = self.components.get(component_id) else {
+            let components = self
+                .components
+                .lock()
+                .expect("capability component catalog mutex poisoned");
+            let Some(component) = components.get(component_id) else {
                 return false;
             };
             return component.version == component_version.unwrap_or_default();

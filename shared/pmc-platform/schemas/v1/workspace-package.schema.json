@@ -1,0 +1,756 @@
+{
+  "$id": "https://pm-center.local/schema/v1/workspace-package.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": true,
+  "definitions": {
+    "CommandPlacement": {
+      "enum": [
+        "toolbar",
+        "feature-center",
+        "context-menu",
+        "shortcut",
+        "surface-action"
+      ],
+      "type": "string"
+    },
+    "DataSourceScope": {
+      "enum": [
+        "global",
+        "project",
+        "profile",
+        "surface"
+      ],
+      "type": "string"
+    },
+    "GridPlacement": {
+      "properties": {
+        "column": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "height": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "minHeight": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "minWidth": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "row": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "width": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "column",
+        "height",
+        "row",
+        "width"
+      ],
+      "type": "object"
+    },
+    "ProfileCommandBinding": {
+      "additionalProperties": true,
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "order": {
+          "default": 0,
+          "format": "int32",
+          "type": "integer"
+        },
+        "placement": {
+          "$ref": "#/definitions/CommandPlacement"
+        },
+        "settings": {
+          "additionalProperties": true,
+          "default": {},
+          "type": "object"
+        },
+        "shortcut": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "surface": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "command",
+        "id",
+        "placement"
+      ],
+      "type": "object"
+    },
+    "ProfileComponentSelection": {
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "versionRequirement": {
+          "default": "*",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "ProfileDataSource": {
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/definitions/DataSourceScope"
+        },
+        "settings": {
+          "additionalProperties": true,
+          "default": {},
+          "type": "object"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "scope",
+        "source"
+      ],
+      "type": "object"
+    },
+    "ProfileModuleSelection": {
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "versionRequirement": {
+          "default": "*",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "ProfilePathVariable": {
+      "additionalProperties": true,
+      "properties": {
+        "description": {
+          "default": "",
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/ProfilePathVariableKind"
+        },
+        "required": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "ProfilePathVariableKind": {
+      "enum": [
+        "file",
+        "directory"
+      ],
+      "type": "string"
+    },
+    "ProfilePresentationBinding": {
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "settings": {
+          "additionalProperties": true,
+          "default": {},
+          "type": "object"
+        },
+        "variant": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "versionRequirement": {
+          "default": "*",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "ProfileShellLayout": {
+      "additionalProperties": true,
+      "properties": {
+        "home": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "navigation": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "navigationKind": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ShellNavigationKind"
+            }
+          ],
+          "default": "top-bar"
+        },
+        "pinnedTools": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "shellTemplate": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProfilePresentationBinding"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "themePreset": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProfilePresentationBinding"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ProfileSurface": {
+      "additionalProperties": true,
+      "properties": {
+        "contribution": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/SurfaceKind"
+        },
+        "layout": {
+          "$ref": "#/definitions/SurfaceLayoutKind"
+        },
+        "settings": {
+          "additionalProperties": true,
+          "default": {},
+          "type": "object"
+        },
+        "template": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProfilePresentationBinding"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "themePreset": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProfilePresentationBinding"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "widgets": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ProfileWidget"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "layout"
+      ],
+      "type": "object"
+    },
+    "ProfileToolAlias": {
+      "additionalProperties": true,
+      "properties": {
+        "description": {
+          "default": "",
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "required": {
+          "default": true,
+          "type": "boolean"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "versionRequirement": {
+          "default": "*",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "tool"
+      ],
+      "type": "object"
+    },
+    "ProfileWidget": {
+      "additionalProperties": true,
+      "properties": {
+        "dataSource": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "grid": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/GridPlacement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "order": {
+          "default": 0,
+          "format": "int32",
+          "type": "integer"
+        },
+        "region": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "settings": {
+          "additionalProperties": true,
+          "default": {},
+          "type": "object"
+        },
+        "visibleWhen": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/VisibilityRule"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "widget": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "widget"
+      ],
+      "type": "object"
+    },
+    "ProfileWorkflowBinding": {
+      "additionalProperties": true,
+      "properties": {
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "settings": {
+          "additionalProperties": true,
+          "default": {},
+          "type": "object"
+        },
+        "trigger": {
+          "type": "string"
+        },
+        "workflow": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "trigger",
+        "workflow"
+      ],
+      "type": "object"
+    },
+    "ShellNavigationKind": {
+      "enum": [
+        "top-bar",
+        "side-bar",
+        "minimal"
+      ],
+      "type": "string"
+    },
+    "SurfaceKind": {
+      "enum": [
+        "dashboard",
+        "shell-page",
+        "workspace-tab",
+        "independent-window",
+        "detail-panel",
+        "sidebar"
+      ],
+      "type": "string"
+    },
+    "SurfaceLayoutKind": {
+      "enum": [
+        "responsive-grid",
+        "stack",
+        "split",
+        "list-detail",
+        "contribution-defined"
+      ],
+      "type": "string"
+    },
+    "VisibilityRule": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "module-enabled"
+              ],
+              "type": "string"
+            },
+            "moduleId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "moduleId"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "variable-equals"
+              ],
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "not"
+              ],
+              "type": "string"
+            },
+            "rule": {
+              "$ref": "#/definitions/VisibilityRule"
+            }
+          },
+          "required": [
+            "kind",
+            "rule"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "all"
+              ],
+              "type": "string"
+            },
+            "rules": {
+              "items": {
+                "$ref": "#/definitions/VisibilityRule"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "rules"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "any"
+              ],
+              "type": "string"
+            },
+            "rules": {
+              "items": {
+                "$ref": "#/definitions/VisibilityRule"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "rules"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "WorkspaceProfileV1": {
+      "additionalProperties": true,
+      "properties": {
+        "commandBindings": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ProfileCommandBinding"
+          },
+          "type": "array"
+        },
+        "componentSettings": {
+          "additionalProperties": true,
+          "default": {},
+          "type": "object"
+        },
+        "dataSources": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ProfileDataSource"
+          },
+          "type": "array"
+        },
+        "description": {
+          "default": "",
+          "type": "string"
+        },
+        "enabledComponents": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ProfileComponentSelection"
+          },
+          "type": "array"
+        },
+        "enabledModules": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ProfileModuleSelection"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "moduleSettings": {
+          "additionalProperties": true,
+          "default": {},
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        },
+        "pathVariables": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ProfilePathVariable"
+          },
+          "type": "array"
+        },
+        "revision": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "schemaVersion": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "shellLayout": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ProfileShellLayout"
+            }
+          ],
+          "default": {
+            "navigation": [],
+            "navigationKind": "top-bar",
+            "pinnedTools": []
+          }
+        },
+        "surfaces": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ProfileSurface"
+          },
+          "type": "array"
+        },
+        "toolAliases": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ProfileToolAlias"
+          },
+          "type": "array"
+        },
+        "variables": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "workflowBindings": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ProfileWorkflowBinding"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "schemaVersion"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "activeSurfaceId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "openSurfaceIds": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "profile": {
+      "$ref": "#/definitions/WorkspaceProfileV1"
+    },
+    "schemaVersion": {
+      "const": 1,
+      "format": "uint16",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "variables": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {},
+      "type": "object"
+    }
+  },
+  "required": [
+    "profile",
+    "schemaVersion"
+  ],
+  "title": "WorkspacePackageV1",
+  "type": "object"
+}

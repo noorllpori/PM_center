@@ -50,10 +50,31 @@
           },
           "type": "array"
         },
+        "pageTemplates": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/PageTemplateContribution"
+          },
+          "type": "array"
+        },
         "settingsSections": {
           "default": [],
           "items": {
             "$ref": "#/definitions/ComponentSettingsSection"
+          },
+          "type": "array"
+        },
+        "shellTemplates": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ShellTemplateContribution"
+          },
+          "type": "array"
+        },
+        "themePresets": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ThemePresetContribution"
           },
           "type": "array"
         },
@@ -196,6 +217,33 @@
         "contributed"
       ],
       "type": "string"
+    },
+    "PageTemplateContribution": {
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "regions": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "version"
+      ],
+      "type": "object"
     },
     "PlatformTarget": {
       "enum": [
@@ -341,6 +389,64 @@
       ],
       "type": "string"
     },
+    "ShellTemplateContribution": {
+      "additionalProperties": true,
+      "properties": {
+        "adapter": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "variants": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "ThemePresetContribution": {
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "tokens": {
+          "additionalProperties": true,
+          "default": {},
+          "type": "object"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
     "ToolActionContribution": {
       "additionalProperties": true,
       "properties": {
@@ -415,7 +521,10 @@
       ],
       "default": {
         "dataSources": [],
+        "pageTemplates": [],
         "settingsSections": [],
+        "shellTemplates": [],
+        "themePresets": [],
         "toolActions": [],
         "widgets": [],
         "workflowNodes": []

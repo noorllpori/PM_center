@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
   Boxes,
+  Blocks,
   LogOut,
   RefreshCcw,
   ShieldCheck,
@@ -10,14 +11,16 @@ import {
 import { ConfirmDialog, Dialog } from '../Dialog';
 import { useWorkspaceProfileStore } from '../../stores/workspaceProfileStore';
 import { CapabilityDiagnosticsSection } from './CapabilityDiagnosticsSection';
+import { ComponentRuntimeDiagnosticsSection } from './ComponentRuntimeDiagnosticsSection';
 import { ModuleDiagnosticsSection } from './ModuleDiagnosticsSection';
 import { WorkspaceProfileDiagnosticsSection } from './WorkspaceProfileDiagnosticsSection';
 
-type RecoveryPage = 'profiles' | 'modules' | 'capabilities';
+type RecoveryPage = 'profiles' | 'modules' | 'components' | 'capabilities';
 
 const RECOVERY_PAGES = [
   { id: 'profiles', label: '装配方案', icon: SlidersHorizontal },
   { id: 'modules', label: '模块与组件', icon: Boxes },
+  { id: 'components', label: '组件运行时', icon: Blocks },
   { id: 'capabilities', label: '权限诊断', icon: ShieldCheck },
 ] as const;
 
@@ -74,7 +77,7 @@ export function RecoverySettingsPanel({
         contentClassName="min-h-0 overflow-hidden p-0"
       >
         <div className="flex h-[72vh] min-h-[500px] max-h-[780px] min-w-0 flex-col md:flex-row">
-          <aside className="flex shrink-0 flex-row gap-1 overflow-x-auto border-b border-gray-200 bg-gray-50/80 p-3 dark:border-gray-800 dark:bg-gray-950/40 md:w-52 md:flex-col md:border-b-0 md:border-r">
+          <aside className="flex shrink-0 flex-row items-center gap-1 overflow-x-auto border-b border-gray-200 bg-gray-50/80 p-3 dark:border-gray-800 dark:bg-gray-950/40 md:w-52 md:flex-col md:items-stretch md:border-b-0 md:border-r">
             <div className="hidden px-2 pb-2 md:block">
               <p className="text-xs font-medium text-gray-500 dark:text-gray-400">不可停用的恢复内核</p>
               <p className="mt-1 text-[11px] leading-5 text-gray-400">普通设置中心关闭或装配错误时仍可使用。</p>
@@ -87,7 +90,7 @@ export function RecoverySettingsPanel({
                   key={page.id}
                   type="button"
                   onClick={() => setActivePage(page.id)}
-                  className={`flex shrink-0 items-center gap-2 rounded-md px-2.5 py-2 text-sm transition-colors ${
+                  className={`flex h-10 shrink-0 items-center gap-2 rounded-md px-2.5 text-sm transition-colors md:h-auto md:py-2 ${
                     active
                       ? 'bg-blue-50 font-medium text-blue-700 dark:bg-blue-950/50 dark:text-blue-300'
                       : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800'
@@ -99,7 +102,7 @@ export function RecoverySettingsPanel({
               );
             })}
 
-            <div className="ml-auto flex gap-1 md:ml-0 md:mt-auto md:flex-col md:border-t md:border-gray-200 md:pt-3 dark:md:border-gray-800">
+            <div className="ml-auto flex shrink-0 items-center gap-1 md:ml-0 md:mt-auto md:flex-col md:items-stretch md:border-t md:border-gray-200 md:pt-3 dark:md:border-gray-800">
               <button
                 type="button"
                 onClick={() => void prepareDefaultRestore()}
@@ -128,6 +131,7 @@ export function RecoverySettingsPanel({
             ) : null}
             {activePage === 'profiles' ? <WorkspaceProfileDiagnosticsSection /> : null}
             {activePage === 'modules' ? <ModuleDiagnosticsSection /> : null}
+            {activePage === 'components' ? <ComponentRuntimeDiagnosticsSection /> : null}
             {activePage === 'capabilities' ? <CapabilityDiagnosticsSection /> : null}
           </main>
         </div>

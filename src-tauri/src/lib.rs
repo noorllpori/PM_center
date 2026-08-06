@@ -1279,6 +1279,7 @@ async fn launch_program(path: String) -> Result<(), String> {
 
 async fn shutdown_application(app: tauri::AppHandle) {
     if let Some(runtime) = app.try_state::<platform::PlatformRuntime>() {
+        runtime.components.shutdown().await;
         let manager = runtime.manager.clone();
         for error in manager.shutdown_all().await {
             eprintln!("[platform] 退出清理警告: {error}");
@@ -1290,6 +1291,7 @@ async fn shutdown_application(app: tauri::AppHandle) {
 
 async fn restart_application(app: tauri::AppHandle) {
     if let Some(runtime) = app.try_state::<platform::PlatformRuntime>() {
+        runtime.components.shutdown().await;
         let manager = runtime.manager.clone();
         for error in manager.shutdown_all().await {
             eprintln!("[platform] 重启清理警告: {error}");
@@ -1459,6 +1461,9 @@ pub fn run() {
             platform::export_workspace_profile_package,
             platform::inspect_workspace_profile_package,
             platform::import_workspace_profile_package,
+            platform::export_workspace_package,
+            platform::inspect_workspace_package,
+            platform::import_workspace_package,
             platform::delete_workspace_profile,
             platform::preview_workspace_profile_switch,
             platform::switch_workspace_profile,
@@ -1466,6 +1471,12 @@ pub fn run() {
             platform::rollback_workspace_profile_switch,
             platform::get_component_settings,
             platform::save_component_settings,
+            platform::get_component_runtime_overview,
+            platform::install_component_from_directory,
+            platform::uninstall_component,
+            platform::reinstall_bundled_component,
+            platform::invoke_component_command,
+            platform::cancel_component_operation,
             platform::get_platform_module,
             platform::preview_disable_platform_module,
             platform::enable_platform_module,

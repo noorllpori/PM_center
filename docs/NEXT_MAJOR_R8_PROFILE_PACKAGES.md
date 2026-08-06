@@ -1,6 +1,6 @@
 # R8 Profile 与装配空间包
 
-> 状态：`verifying`（R8-2）
+> 状态：`accepted`
 >
 > 日期：2026-08-05
 >
@@ -48,6 +48,15 @@
 - 第一版不携带项目源文件、聊天记录、缓存、密钥或用户私人资料。
 - 支持跨机器检查、升级预览和失败时全量回滚，不允许半导入状态。
 
+#### R8-3 实现记录
+
+- `.pmc-workspace` 只允许根目录 `manifest.json` 和 `workspace.json`，继续使用 `PackageHeaderV1`、BLAKE3 和确定性 JSON。
+- `WorkspacePackageV1` 携带可移植 Profile、普通字符串变量、按顺序排列的 `openSurfaceIds` 和必须属于该列表的 `activeSurfaceId`。
+- 导出界面的“空间”操作使用 Profile Surface 顺序形成第一版页面骨架；不读取当前项目文件、动态项目标签或业务数据。
+- 导入复用 R8-2 本机工具和路径映射；Profile 创建后绑定写入失败会回滚 Profile。
+- 导入结果返回变量和页面引用供后续 Shell/会话装配使用，但不会自动切换当前 Profile 或打开页面。
+- 组件二进制、模板 HTML/CSS 和项目内容仍不得进入第一版装配空间；自包含资源等待 R10 包安全。
+
 ### R8-P：界面表现模板引用
 
 - Profile 可以保存 `shellTemplate`、Surface `template` 和 `themePreset` 的稳定 ID、版本约束、变体与普通设置。
@@ -71,6 +80,13 @@ R8-2 扩展：
 - `ProfilePackageImportPreview.toolAliases/pathVariables`：导入前展示需要映射的内容。
 - `ImportWorkspaceProfilePackageRequest.toolMappings/pathMappings`：提交用户明确选择的本机绑定。
 - `ProfileLocalBindingInput.mode`：`automatic` 或 `path`。
+
+R8-3 扩展：
+
+- `WorkspacePackageV1`：可移植 Profile、普通变量和页面骨架合同。
+- `export_workspace_package(request)`：导出 `.pmc-workspace`。
+- `inspect_workspace_package(packagePath)`：只读检查装配空间。
+- `import_workspace_package(request)`：原子导入 Profile 和本机映射，并返回页面骨架。
 
 导入提交使用 Profile 运行时与切换流程共享的锁。检查失败、名称冲突或依赖缺失时，现有方案目录和当前运行状态保持不变。
 
@@ -97,4 +113,4 @@ R8-2 扩展：
 7. 导出一个启用了渲染中心和自动化运行时的方案，再导入该包，确认出现 Blender、Python 以及可选 FFmpeg 映射；未完成必需映射时不能导入。
 8. 选择设置中已有 Blender/Python，或使用系统自动检测后导入，确认当前运行方案没有切换；重新导出该方案时包内不包含本机绝对路径。
 
-R8-2 验收后进入 R8-3 装配空间骨架；组件消费本机别名绑定属于 R9 ComponentGateway 的前置输入，不在 R8 内直接启动工具。
+R8-3 已于 2026-08-06 完成人工验收，R8 完成；组件消费本机别名绑定由 R9 ComponentGateway 和统一组件运行时负责。

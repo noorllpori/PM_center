@@ -19,7 +19,11 @@ import {
   Upload,
 } from 'lucide-react';
 import {
+  exportWorkspacePackage,
   exportWorkspaceProfilePackage,
+  getWorkspaceProfileDocument,
+  importWorkspacePackage,
+  inspectWorkspacePackage,
   inspectWorkspaceProfilePackage,
 } from '../../api/workspaceProfiles';
 import { useWorkspaceProfileStore } from '../../stores/workspaceProfileStore';
@@ -27,6 +31,7 @@ import { usePythonEnvStore } from '../../stores/pythonEnvStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import type {
   ProfilePackageImportPreview,
+  WorkspacePackageImportPreview,
   WorkspaceProfileRuntimeCommandError,
 } from '../../types/workspaceProfileRuntime';
 import { ConfirmDialog, Dialog, InputDialog } from '../Dialog';
@@ -103,6 +108,11 @@ function safePackageFileName(name: string) {
   return `${safe || 'nexora-profile'}.pmc-profile`;
 }
 
+function safeWorkspaceFileName(name: string) {
+  const safe = name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').trim();
+  return `${safe || 'nexora-workspace'}.pmc-workspace`;
+}
+
 export function WorkspaceProfileDiagnosticsSection() {
   const snapshot = useWorkspaceProfileStore((state) => state.snapshot);
   const isLoading = useWorkspaceProfileStore((state) => state.isLoading);
@@ -132,6 +142,7 @@ export function WorkspaceProfileDiagnosticsSection() {
   const [editorProfileId, setEditorProfileId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
   const [importPreview, setImportPreview] = useState<ProfilePackageImportPreview | null>(null);
+  const [importPackageKind, setImportPackageKind] = useState<'profile' | 'workspace'>('profile');
   const [importName, setImportName] = useState('');
   const [importToolMappings, setImportToolMappings] = useState<Record<string, string>>({});
   const [importPathMappings, setImportPathMappings] = useState<Record<string, string>>({});
@@ -250,6 +261,39 @@ export function WorkspaceProfileDiagnosticsSection() {
     }
   };
 
+  const exportWorkspace = async (profileId: string, profileName: string) => {
+    setPackageError(null);
+    setPackageNotice(null);
+    setPackageBusy(`workspace:${profileId}`);
+    try {
+      const destinationPath = await saveDialog({
+        title: '导出 Nexora 装配空间',
+        defaultPath: safeWorkspaceFileName(profileName),
+        filters: [{ name: 'Nexora 装配空间', extensions: ['pmc-workspace'] }],
+      });
+      if (!destinationPath) return;
+      const profile = await getWorkspaceProfileDocument(profileId);
+      const openSurfaceIds = (profile.surfaces ?? []).map((surface) => surface.id);
+      const homeSurfaceId = profile.shellLayout?.home;
+      const activeSurfaceId = homeSurfaceId
+        && openSurfaceIds.includes(homeSurfaceId)
+        ? homeSurfaceId
+        : null;
+      const result = await exportWorkspacePackage({
+        profileId,
+        destinationPath,
+        variables: {},
+        openSurfaceIds,
+        activeSurfaceId,
+      });
+      setPackageNotice(`已导出装配空间“${profileName}” · ${formatBytes(result.sizeBytes)}`);
+    } catch (exportError) {
+      setPackageError(packageErrorMessage(exportError));
+    } finally {
+      setPackageBusy(null);
+    }
+  };
+
   const inspectImportPackage = async () => {
     setPackageError(null);
     setPackageNotice(null);
@@ -263,6 +307,35 @@ export function WorkspaceProfileDiagnosticsSection() {
       if (!packagePath || Array.isArray(packagePath)) return;
       setPackageBusy('inspect');
       const preview = await inspectWorkspaceProfilePackage(packagePath);
+      setImportPackageKind('profile');
+      setImportPreview(preview);
+      setImportName(preview.suggestedName);
+      setImportToolMappings(Object.fromEntries(
+        preview.toolAliases.map((alias) => [alias.id, preferredToolPath(alias.tool)]),
+      ));
+      setImportPathMappings({});
+      setImportBindingPresetId('');
+    } catch (inspectError) {
+      setPackageError(packageErrorMessage(inspectError));
+    } finally {
+      setPackageBusy(null);
+    }
+  };
+
+  const inspectImportWorkspace = async () => {
+    setPackageError(null);
+    setPackageNotice(null);
+    try {
+      const packagePath = await open({
+        title: '选择 Nexora 装配空间',
+        multiple: false,
+        directory: false,
+        filters: [{ name: 'Nexora 装配空间', extensions: ['pmc-workspace'] }],
+      });
+      if (!packagePath || Array.isArray(packagePath)) return;
+      setPackageBusy('inspect-workspace');
+      const preview = await inspectWorkspacePackage(packagePath);
+      setImportPackageKind('workspace');
       setImportPreview(preview);
       setImportName(preview.suggestedName);
       setImportToolMappings(Object.fromEntries(
@@ -282,7 +355,7 @@ export function WorkspaceProfileDiagnosticsSection() {
     setPackageBusy('import');
     setPackageError(null);
     try {
-      const result = await importProfilePackage({
+      const request = {
         packagePath: importPreview.packagePath,
         name: importName.trim(),
         toolMappings: importPreview.toolAliases.flatMap((alias) => {
@@ -298,12 +371,18 @@ export function WorkspaceProfileDiagnosticsSection() {
           const path = importPathMappings[variable.id];
           return path ? [{ id: variable.id, mode: 'path' as const, path }] : [];
         }),
-      });
+      };
+      const importedName = importPackageKind === 'workspace'
+        ? (await importWorkspacePackage(request)).mutation.profile.name
+        : (await importProfilePackage(request)).profile.name;
+      if (importPackageKind === 'workspace') {
+        await refresh();
+      }
       setImportPreview(null);
       setImportToolMappings({});
       setImportPathMappings({});
       setImportBindingPresetId('');
-      setPackageNotice(`已导入“${result.profile.name}”，当前运行方案未改变。`);
+      setPackageNotice(`已导入“${importedName}”，当前运行方案未改变。`);
     } catch (importError) {
       setPackageError(packageErrorMessage(importError));
     } finally {
@@ -339,6 +418,15 @@ export function WorkspaceProfileDiagnosticsSection() {
           </div>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-1.5">
+          <button
+            type="button"
+            onClick={() => void inspectImportWorkspace()}
+            disabled={isLoading || isSwitching || isMutating || Boolean(packageBusy) || Boolean(snapshot?.pendingSwitch)}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+          >
+            {packageBusy === 'inspect-workspace' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileArchive className="h-3.5 w-3.5" />}
+            导入空间
+          </button>
           <button
             type="button"
             onClick={() => void inspectImportPackage()}
@@ -463,6 +551,16 @@ export function WorkspaceProfileDiagnosticsSection() {
                     ))}
                   </div>
                   <div className="flex flex-wrap items-center justify-end gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => void exportWorkspace(profile.id, profile.name)}
+                      disabled={profile.status !== 'ready' || isLoading || isSwitching || isMutating || Boolean(packageBusy)}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+                      title="导出 Profile、变量声明和页面骨架"
+                    >
+                      {packageBusy === `workspace:${profile.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileArchive className="h-3.5 w-3.5" />}
+                      空间
+                    </button>
                     <button
                       type="button"
                       onClick={() => void exportProfile(profile.id, profile.name)}
@@ -764,7 +862,7 @@ export function WorkspaceProfileDiagnosticsSection() {
             setImportBindingPresetId('');
           }
         }}
-        title="导入装配方案"
+        title={importPackageKind === 'workspace' ? '导入装配空间' : '导入装配方案'}
         size="lg"
         footer={
           <>
@@ -810,6 +908,11 @@ export function WorkspaceProfileDiagnosticsSection() {
                 <p className="mt-1 break-all font-mono text-[11px] text-gray-400">
                   {importPreview.packageId} · Nexora {importPreview.producerVersion} · {formatBytes(importPreview.packageSizeBytes)}
                 </p>
+                {importPackageKind === 'workspace' ? (
+                  <p className="mt-1 text-[11px] text-indigo-600 dark:text-indigo-300">
+                    包含 {(importPreview as WorkspacePackageImportPreview).openSurfaceIds.length} 个打开页面引用、{Object.keys((importPreview as WorkspacePackageImportPreview).variables).length} 个普通变量。
+                  </p>
+                ) : null}
               </div>
             </div>
 

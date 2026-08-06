@@ -387,7 +387,7 @@ pub struct WorkspaceProfileRuntime {
     repository_path: PathBuf,
     state_path: PathBuf,
     journal_path: PathBuf,
-    component_manifests: Vec<ComponentManifestV1>,
+    component_manifests: Mutex<Vec<ComponentManifestV1>>,
     operation_lock: Mutex<()>,
 }
 
@@ -404,7 +404,7 @@ impl WorkspaceProfileRuntime {
             repository_path: app_data_dir.join("profiles"),
             state_path: app_data_dir.join("profile-runtime.json"),
             journal_path: app_data_dir.join("profile-switch-journal.json"),
-            component_manifests,
+            component_manifests: Mutex::new(component_manifests),
             operation_lock: Mutex::new(()),
         }
     }
@@ -414,7 +414,7 @@ impl WorkspaceProfileRuntime {
         profile: &WorkspaceProfileV1,
         manifests: &[ModuleManifestV1],
     ) -> ContractResult<BTreeSet<String>> {
-        validate_profile_with_catalogs(profile, manifests, &self.component_manifests)
+        validate_profile_with_catalogs(profile, manifests, &self.component_manifests_snapshot())
     }
 
     pub fn initialize_from_current_configuration(
@@ -567,10 +567,34 @@ impl WorkspaceProfileRuntime {
     }
 
     pub fn component_manifest(&self, component_id: &str) -> Option<ComponentManifestV1> {
-        self.component_manifests
-            .iter()
+        self.component_manifests_snapshot()
+            .into_iter()
             .find(|manifest| manifest.id == component_id)
-            .cloned()
+    }
+
+    pub fn component_manifests(&self) -> Vec<ComponentManifestV1> {
+        self.component_manifests_snapshot()
+    }
+
+    pub fn replace_component_manifests(
+        &self,
+        manifests: Vec<ComponentManifestV1>,
+    ) -> Result<(), WorkspaceProfileRuntimeError> {
+        *self.component_manifests.lock().map_err(|_| {
+            WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileLockPoisoned,
+                "组件目录锁已损坏",
+                None,
+            )
+        })? = manifests;
+        Ok(())
+    }
+
+    fn component_manifests_snapshot(&self) -> Vec<ComponentManifestV1> {
+        self.component_manifests
+            .lock()
+            .expect("workspace profile component catalog mutex poisoned")
+            .clone()
     }
 
     pub fn validate_draft(
@@ -578,7 +602,7 @@ impl WorkspaceProfileRuntime {
         profile: &WorkspaceProfileV1,
         manifests: &[ModuleManifestV1],
     ) -> WorkspaceProfileDraftValidation {
-        build_draft_validation(profile, manifests, &self.component_manifests)
+        build_draft_validation(profile, manifests, &self.component_manifests_snapshot())
     }
 
     pub fn create_profile(
@@ -616,7 +640,8 @@ impl WorkspaceProfileRuntime {
                 "sourceProfileId": request.source_profile_id,
             }),
         );
-        let validation = build_draft_validation(&profile, manifests, &self.component_manifests);
+        let validation =
+            build_draft_validation(&profile, manifests, &self.component_manifests_snapshot());
         if !validation.valid {
             return Err(draft_validation_error(
                 "新建装配方案未通过依赖预检",
@@ -682,7 +707,8 @@ impl WorkspaceProfileRuntime {
             validate_profile_text_optional(&profile.description, "装配方案说明", 500)?;
         profile.schema_version = PLATFORM_SCHEMA_VERSION;
         profile.revision = existing.revision.saturating_add(1);
-        let validation = build_draft_validation(&profile, manifests, &self.component_manifests);
+        let validation =
+            build_draft_validation(&profile, manifests, &self.component_manifests_snapshot());
         if !validation.valid {
             return Err(draft_validation_error(
                 "装配方案草稿未通过依赖预检",
@@ -748,7 +774,8 @@ impl WorkspaceProfileRuntime {
             validate_profile_text_optional(&profile.description, "装配方案说明", 500)?;
         profile.schema_version = PLATFORM_SCHEMA_VERSION;
         profile.revision = existing.revision.saturating_add(1);
-        let validation = build_draft_validation(&profile, manifests, &self.component_manifests);
+        let validation =
+            build_draft_validation(&profile, manifests, &self.component_manifests_snapshot());
         if !validation.valid {
             return Err(draft_validation_error(
                 "当前装配方案草稿未通过依赖预检",
@@ -850,7 +877,8 @@ impl WorkspaceProfileRuntime {
             }),
         );
 
-        let validation = build_draft_validation(&profile, manifests, &self.component_manifests);
+        let validation =
+            build_draft_validation(&profile, manifests, &self.component_manifests_snapshot());
         if !validation.valid {
             return Err(draft_validation_error(
                 "导入装配方案未通过依赖预检",
@@ -1437,7 +1465,8 @@ impl WorkspaceProfileRuntime {
             .filter(|module| !module.diagnostic && module.desired_enabled)
             .map(|module| module.manifest.id.clone())
             .collect::<BTreeSet<_>>();
-        let mut issues = compatibility_issues(&target, &manifests, &self.component_manifests);
+        let mut issues =
+            compatibility_issues(&target, &manifests, &self.component_manifests_snapshot());
 
         for module in modules.iter().filter(|module| !module.diagnostic) {
             if matches!(
@@ -1937,7 +1966,7 @@ impl WorkspaceProfileRuntime {
         let components = component_summaries(
             &current_profile,
             manifests,
-            &self.component_manifests,
+            &self.component_manifests_snapshot(),
             &effective_components,
         );
         Ok(WorkspaceProfileRuntimeSnapshot {

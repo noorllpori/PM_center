@@ -5,9 +5,10 @@ use super::{
 };
 use chrono::Utc;
 use pmc_platform::{
-    parse_package_header, parse_workspace_profile, ContentDigest, DigestAlgorithm, ExtensionFields,
-    ModuleManifestV1, PackageHeaderV1, PackageKind, PackagePayloadDescriptor, ProfilePathVariable,
-    ProfilePathVariableKind, ProfileToolAlias, WorkspaceProfileV1, PACKAGE_FORMAT_VERSION,
+    parse_package_header, parse_workspace_package, parse_workspace_profile, ContentDigest,
+    DigestAlgorithm, ExtensionFields, ModuleManifestV1, PackageHeaderV1, PackageKind,
+    PackagePayloadDescriptor, ProfilePathVariable, ProfilePathVariableKind, ProfileToolAlias,
+    ValidateContract, WorkspacePackageV1, WorkspaceProfileV1, PACKAGE_FORMAT_VERSION,
     PACKAGE_MAGIC, PLATFORM_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
@@ -22,6 +23,7 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 const MANIFEST_PATH: &str = "manifest.json";
 const PROFILE_PAYLOAD_PATH: &str = "profile.json";
+const WORKSPACE_PAYLOAD_PATH: &str = "workspace.json";
 const MAX_ARCHIVE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_ENTRY_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_TOTAL_UNCOMPRESSED_BYTES: u64 = 4 * 1024 * 1024;
@@ -41,6 +43,67 @@ pub struct ProfilePackageExportResult {
     pub destination_path: String,
     pub payload_digest: String,
     pub size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportWorkspacePackageRequest {
+    pub profile_id: String,
+    pub destination_path: String,
+    #[serde(default)]
+    pub variables: BTreeMap<String, String>,
+    #[serde(default)]
+    pub open_surface_ids: Vec<String>,
+    #[serde(default)]
+    pub active_surface_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportWorkspacePackageRequest {
+    pub package_path: String,
+    pub name: String,
+    #[serde(default)]
+    pub tool_mappings: Vec<ProfileLocalBindingInput>,
+    #[serde(default)]
+    pub path_mappings: Vec<ProfileLocalBindingInput>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspacePackageImportPreview {
+    pub package_path: String,
+    pub package_id: String,
+    pub producer_version: String,
+    pub profile_name: String,
+    pub description: String,
+    pub suggested_name: String,
+    pub payload_digest: String,
+    pub package_size_bytes: u64,
+    pub module_count: usize,
+    pub component_count: usize,
+    pub surface_count: usize,
+    pub widget_count: usize,
+    pub pinned_tool_count: usize,
+    pub open_surface_ids: Vec<String>,
+    pub active_surface_id: Option<String>,
+    pub variables: BTreeMap<String, String>,
+    pub tool_aliases: Vec<ProfileToolAlias>,
+    pub path_variables: Vec<ProfilePathVariable>,
+    pub reusable_binding_presets: Vec<ProfileLocalBindingPreset>,
+    pub missing_module_ids: Vec<String>,
+    pub missing_component_ids: Vec<String>,
+    pub issues: Vec<ProfilePackageIssue>,
+    pub can_import: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspacePackageImportResult {
+    pub mutation: WorkspaceProfileMutationResult,
+    pub variables: BTreeMap<String, String>,
+    pub open_surface_ids: Vec<String>,
+    pub active_surface_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -125,6 +188,19 @@ pub struct ProfileLocalBindingPreset {
 struct InspectedProfilePackage {
     preview: ProfilePackageImportPreview,
     profile: WorkspaceProfileV1,
+}
+
+struct InspectedWorkspacePackage {
+    preview: WorkspacePackageImportPreview,
+    workspace: WorkspacePackageV1,
+}
+
+struct InspectedPackagePayload {
+    path: PathBuf,
+    package_size_bytes: u64,
+    header: PackageHeaderV1,
+    payload_bytes: Vec<u8>,
+    payload_digest: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -252,6 +328,454 @@ pub fn export_profile_package(
         payload_digest,
         size_bytes,
     })
+}
+
+pub fn export_workspace_package(
+    profile: &WorkspaceProfileV1,
+    request: &ExportWorkspacePackageRequest,
+) -> Result<ProfilePackageExportResult, WorkspaceProfileRuntimeError> {
+    let destination = PathBuf::from(&request.destination_path);
+    let parent = destination.parent().ok_or_else(|| {
+        package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfileIoError,
+            "导出路径缺少父目录",
+            Some(&destination),
+        )
+    })?;
+    fs::create_dir_all(parent)
+        .map_err(|error| package_io_error("创建导出目录失败", parent, error))?;
+    let workspace = WorkspacePackageV1 {
+        schema_version: PLATFORM_SCHEMA_VERSION,
+        profile: portable_profile(profile),
+        variables: request.variables.clone(),
+        open_surface_ids: request.open_surface_ids.clone(),
+        active_surface_id: request.active_surface_id.clone(),
+        extensions: ExtensionFields::new(),
+    };
+    workspace.validate_contract().map_err(|error| {
+        package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
+            format!("装配空间合同无效：{}（{}）", error.message, error.path),
+            None,
+        )
+    })?;
+    let value = serde_json::to_value(&workspace).map_err(|error| {
+        package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
+            format!("序列化装配空间失败：{error}"),
+            None,
+        )
+    })?;
+    let safety_issues = collect_safety_issues(&value);
+    if !safety_issues.is_empty() {
+        return Err(package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageUnsafe,
+            "装配空间包含敏感字段或本机绝对路径，拒绝导出",
+            None,
+        )
+        .with_details(
+            safety_issues
+                .into_iter()
+                .map(|issue| format!("{}: {}", issue.path.unwrap_or_default(), issue.message))
+                .collect(),
+        ));
+    }
+    let payload_bytes = canonical_json_bytes(&workspace)?;
+    let payload_digest = blake3::hash(&payload_bytes).to_hex().to_string();
+    let package_id = format!("workspace.p{}", &payload_digest[..24]);
+    let header = PackageHeaderV1 {
+        magic: PACKAGE_MAGIC.into(),
+        schema_version: PLATFORM_SCHEMA_VERSION,
+        format_version: PACKAGE_FORMAT_VERSION,
+        kind: PackageKind::Workspace,
+        package_id: package_id.clone(),
+        created_at: 0,
+        producer_version: env!("CARGO_PKG_VERSION").into(),
+        payload: PackagePayloadDescriptor {
+            path: WORKSPACE_PAYLOAD_PATH.into(),
+            digest: ContentDigest {
+                algorithm: DigestAlgorithm::Blake3,
+                value: payload_digest.clone(),
+            },
+            size_bytes: payload_bytes.len() as u64,
+            extensions: ExtensionFields::new(),
+        },
+        extensions: ExtensionFields::new(),
+    };
+    write_package_archive(
+        &destination,
+        WORKSPACE_PAYLOAD_PATH,
+        &canonical_json_bytes(&header)?,
+        &payload_bytes,
+    )?;
+    let size_bytes = fs::metadata(&destination)
+        .map_err(|error| package_io_error("读取导出装配空间大小失败", &destination, error))?
+        .len();
+    Ok(ProfilePackageExportResult {
+        package_id,
+        destination_path: destination.to_string_lossy().into_owned(),
+        payload_digest,
+        size_bytes,
+    })
+}
+
+pub fn inspect_workspace_package(
+    package_path: &str,
+    runtime: &WorkspaceProfileRuntime,
+    manifests: &[ModuleManifestV1],
+) -> Result<WorkspacePackageImportPreview, WorkspaceProfileRuntimeError> {
+    inspect_workspace_package_internal(package_path, runtime, manifests).map(|value| value.preview)
+}
+
+pub fn import_workspace_package(
+    request: &ImportWorkspacePackageRequest,
+    runtime: &WorkspaceProfileRuntime,
+    manifests: &[ModuleManifestV1],
+) -> Result<WorkspacePackageImportResult, WorkspaceProfileRuntimeError> {
+    let inspected = inspect_workspace_package_internal(&request.package_path, runtime, manifests)?;
+    if !inspected.preview.can_import {
+        return Err(package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
+            "装配空间存在阻塞问题，未导入任何内容",
+            Some(Path::new(&request.package_path)),
+        ));
+    }
+    let profile_request = ImportWorkspaceProfilePackageRequest {
+        package_path: request.package_path.clone(),
+        name: request.name.clone(),
+        tool_mappings: request.tool_mappings.clone(),
+        path_mappings: request.path_mappings.clone(),
+    };
+    let bindings = validate_local_bindings(&inspected.workspace.profile, &profile_request)?;
+    let imported = runtime.import_profile_document(
+        &inspected.workspace.profile,
+        &request.name,
+        &inspected.preview.package_id,
+        manifests,
+    )?;
+    let stored = StoredProfileLocalBindings {
+        schema_version: 1,
+        profile_id: imported.profile.id.clone(),
+        package_id: inspected.preview.package_id,
+        created_at: Utc::now().timestamp_millis(),
+        tool_mappings: bindings.0,
+        path_mappings: bindings.1,
+    };
+    if let Err(mut binding_error) = write_local_bindings(runtime, &stored) {
+        if let Err(rollback_error) = runtime.delete_profile(&imported.profile.id, manifests) {
+            binding_error.details.push(format!(
+                "本机映射写入失败后，装配空间导入回滚也失败：{}",
+                rollback_error.message
+            ));
+        }
+        return Err(binding_error);
+    }
+    Ok(WorkspacePackageImportResult {
+        mutation: imported,
+        variables: inspected.workspace.variables,
+        open_surface_ids: inspected.workspace.open_surface_ids,
+        active_surface_id: inspected.workspace.active_surface_id,
+    })
+}
+
+fn inspect_workspace_package_internal(
+    package_path: &str,
+    runtime: &WorkspaceProfileRuntime,
+    manifests: &[ModuleManifestV1],
+) -> Result<InspectedWorkspacePackage, WorkspaceProfileRuntimeError> {
+    let inspected =
+        inspect_package_payload(package_path, PackageKind::Workspace, WORKSPACE_PAYLOAD_PATH)?;
+    let workspace_text = std::str::from_utf8(&inspected.payload_bytes).map_err(|error| {
+        package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
+            format!("装配空间内容不是 UTF-8：{error}"),
+            Some(&inspected.path),
+        )
+    })?;
+    let workspace_value: Value = serde_json::from_str(workspace_text).map_err(|error| {
+        package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
+            format!("装配空间 JSON 无法解析：{error}"),
+            Some(&inspected.path),
+        )
+    })?;
+    reject_unsafe_json(&workspace_value, &inspected.path)?;
+    let workspace = parse_workspace_package(workspace_text).map_err(|error| {
+        package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageUnsupported,
+            format!("装配空间合同不受支持：{}（{}）", error.message, error.path),
+            Some(&inspected.path),
+        )
+    })?;
+    let profile = &workspace.profile;
+    let validation = runtime.validate_draft(profile, manifests);
+    let installed_modules = manifests
+        .iter()
+        .map(|manifest| manifest.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let missing_module_ids = profile
+        .enabled_modules
+        .iter()
+        .filter(|selection| !installed_modules.contains(selection.id.as_str()))
+        .map(|selection| selection.id.clone())
+        .collect::<Vec<_>>();
+    let missing_component_ids = profile
+        .enabled_components
+        .iter()
+        .filter(|selection| runtime.component_manifest(&selection.id).is_none())
+        .map(|selection| selection.id.clone())
+        .collect::<Vec<_>>();
+    let snapshot = runtime.snapshot(manifests)?;
+    let suggested_name = unique_profile_name(
+        &profile.name,
+        snapshot
+            .profiles
+            .iter()
+            .map(|profile| profile.name.as_str()),
+    );
+    let issues = validation_issues(&validation);
+    let can_import = validation.valid
+        && !issues
+            .iter()
+            .any(|issue| issue.severity == ProfilePackageIssueSeverity::Error);
+    let reusable_binding_presets = collect_reusable_binding_presets(profile, runtime, &snapshot);
+    let widget_count = profile
+        .surfaces
+        .iter()
+        .map(|surface| surface.widgets.len())
+        .sum();
+    let preview = WorkspacePackageImportPreview {
+        package_path: inspected.path.to_string_lossy().into_owned(),
+        package_id: inspected.header.package_id,
+        producer_version: inspected.header.producer_version,
+        profile_name: profile.name.clone(),
+        description: profile.description.clone(),
+        suggested_name,
+        payload_digest: inspected.payload_digest,
+        package_size_bytes: inspected.package_size_bytes,
+        module_count: profile.enabled_modules.len(),
+        component_count: profile.enabled_components.len(),
+        surface_count: profile.surfaces.len(),
+        widget_count,
+        pinned_tool_count: profile.shell_layout.pinned_tools.len(),
+        open_surface_ids: workspace.open_surface_ids.clone(),
+        active_surface_id: workspace.active_surface_id.clone(),
+        variables: workspace.variables.clone(),
+        tool_aliases: profile.tool_aliases.clone(),
+        path_variables: profile.path_variables.clone(),
+        reusable_binding_presets,
+        missing_module_ids,
+        missing_component_ids,
+        issues,
+        can_import,
+    };
+    Ok(InspectedWorkspacePackage { preview, workspace })
+}
+
+fn inspect_package_payload(
+    package_path: &str,
+    expected_kind: PackageKind,
+    expected_payload_path: &str,
+) -> Result<InspectedPackagePayload, WorkspaceProfileRuntimeError> {
+    let path = PathBuf::from(package_path);
+    let metadata =
+        fs::metadata(&path).map_err(|error| package_io_error("读取装配空间失败", &path, error))?;
+    if !metadata.is_file() {
+        return Err(package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
+            "选择的路径不是装配空间文件",
+            Some(&path),
+        ));
+    }
+    if metadata.len() > MAX_ARCHIVE_BYTES {
+        return Err(package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageTooLarge,
+            format!("装配空间超过 {} MiB 限制", MAX_ARCHIVE_BYTES / 1024 / 1024),
+            Some(&path),
+        ));
+    }
+    let file =
+        File::open(&path).map_err(|error| package_io_error("打开装配空间失败", &path, error))?;
+    let mut archive = ZipArchive::new(file)
+        .map_err(|error| package_zip_error("装配空间不是有效 ZIP 容器", &path, error))?;
+    if archive.len() > MAX_ARCHIVE_ENTRIES {
+        return Err(package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageTooLarge,
+            format!("装配空间条目超过 {MAX_ARCHIVE_ENTRIES} 个限制"),
+            Some(&path),
+        ));
+    }
+    let mut entries = BTreeMap::<String, Vec<u8>>::new();
+    let mut total_uncompressed = 0u64;
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|error| package_zip_error("读取装配空间条目失败", &path, error))?;
+        let name = entry.name().to_string();
+        if invalid_archive_path(&name)
+            || entry.is_dir()
+            || !matches!(name.as_str(), MANIFEST_PATH) && name != expected_payload_path
+        {
+            return Err(package_error(
+                WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
+                format!("装配空间包含未声明或不安全条目：{name}"),
+                Some(&path),
+            ));
+        }
+        if entries.contains_key(&name) || entry.size() > MAX_ENTRY_BYTES {
+            return Err(package_error(
+                WorkspaceProfileRuntimeErrorCode::ProfilePackageTooLarge,
+                format!("装配空间条目重复或过大：{name}"),
+                Some(&path),
+            ));
+        }
+        total_uncompressed = total_uncompressed.saturating_add(entry.size());
+        if total_uncompressed > MAX_TOTAL_UNCOMPRESSED_BYTES {
+            return Err(package_error(
+                WorkspaceProfileRuntimeErrorCode::ProfilePackageTooLarge,
+                "装配空间解压后内容超过安全限制",
+                Some(&path),
+            ));
+        }
+        let mut bytes = Vec::with_capacity(entry.size() as usize);
+        entry
+            .by_ref()
+            .take(MAX_ENTRY_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| {
+                package_error(
+                    WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
+                    format!("解压装配空间条目失败：{error}"),
+                    Some(&path),
+                )
+            })?;
+        if bytes.len() as u64 > MAX_ENTRY_BYTES {
+            return Err(package_error(
+                WorkspaceProfileRuntimeErrorCode::ProfilePackageTooLarge,
+                format!("装配空间条目解压后过大：{name}"),
+                Some(&path),
+            ));
+        }
+        entries.insert(name, bytes);
+    }
+    let manifest_bytes = entries.remove(MANIFEST_PATH).ok_or_else(|| {
+        package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
+            "装配空间缺少 manifest.json",
+            Some(&path),
+        )
+    })?;
+    let payload_bytes = entries.remove(expected_payload_path).ok_or_else(|| {
+        package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
+            format!("装配空间缺少 {expected_payload_path}"),
+            Some(&path),
+        )
+    })?;
+    let manifest_text = std::str::from_utf8(&manifest_bytes).map_err(|error| {
+        package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
+            format!("装配空间清单不是 UTF-8：{error}"),
+            Some(&path),
+        )
+    })?;
+    let manifest_value: Value = serde_json::from_str(manifest_text).map_err(|error| {
+        package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
+            format!("装配空间清单 JSON 无法解析：{error}"),
+            Some(&path),
+        )
+    })?;
+    reject_unsafe_json(&manifest_value, &path)?;
+    let header = parse_package_header(manifest_text).map_err(|error| {
+        package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageUnsupported,
+            format!("装配空间清单不受支持：{}（{}）", error.message, error.path),
+            Some(&path),
+        )
+    })?;
+    if header.kind != expected_kind || header.payload.path != expected_payload_path {
+        return Err(package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageUnsupported,
+            "选择的包类型或 payload.path 与装配空间不匹配",
+            Some(&path),
+        ));
+    }
+    if header.payload.size_bytes != payload_bytes.len() as u64
+        || header.payload.digest.algorithm != DigestAlgorithm::Blake3
+    {
+        return Err(package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageDigestMismatch,
+            "装配空间内容大小或摘要算法与清单不一致",
+            Some(&path),
+        ));
+    }
+    let payload_digest = blake3::hash(&payload_bytes).to_hex().to_string();
+    if payload_digest != header.payload.digest.value {
+        return Err(package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageDigestMismatch,
+            "装配空间内容摘要校验失败",
+            Some(&path),
+        ));
+    }
+    Ok(InspectedPackagePayload {
+        path,
+        package_size_bytes: metadata.len(),
+        header,
+        payload_bytes,
+        payload_digest,
+    })
+}
+
+fn write_package_archive(
+    destination: &Path,
+    payload_path: &str,
+    manifest_bytes: &[u8],
+    payload_bytes: &[u8],
+) -> Result<(), WorkspaceProfileRuntimeError> {
+    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+    let temporary = parent.join(format!(
+        ".{}.{}.tmp",
+        destination
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("workspace.pmc-workspace"),
+        Uuid::new_v4().simple()
+    ));
+    let result = (|| {
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| package_io_error("创建装配空间临时文件失败", &temporary, error))?;
+        let mut archive = ZipWriter::new(file);
+        let options = SimpleFileOptions::default()
+            .compression_method(CompressionMethod::Stored)
+            .last_modified_time(zip::DateTime::default())
+            .unix_permissions(0o644);
+        archive
+            .start_file(MANIFEST_PATH, options)
+            .map_err(|error| package_zip_error("写入装配空间清单失败", &temporary, error))?;
+        archive
+            .write_all(manifest_bytes)
+            .map_err(|error| package_io_error("写入装配空间清单失败", &temporary, error))?;
+        archive
+            .start_file(payload_path, options)
+            .map_err(|error| package_zip_error("写入装配空间内容失败", &temporary, error))?;
+        archive
+            .write_all(payload_bytes)
+            .map_err(|error| package_io_error("写入装配空间内容失败", &temporary, error))?;
+        let file = archive
+            .finish()
+            .map_err(|error| package_zip_error("完成装配空间失败", &temporary, error))?;
+        file.sync_all()
+            .map_err(|error| package_io_error("同步装配空间失败", &temporary, error))?;
+        replace_export_file(&temporary, destination)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
 }
 
 pub fn inspect_profile_package(
@@ -542,8 +1066,7 @@ fn inspect_profile_package_internal(
         .iter()
         .map(|surface| surface.widgets.len())
         .sum();
-    let reusable_binding_presets =
-        collect_reusable_binding_presets(&profile, runtime, &snapshot);
+    let reusable_binding_presets = collect_reusable_binding_presets(&profile, runtime, &snapshot);
     let preview = ProfilePackageImportPreview {
         package_path: path.to_string_lossy().into_owned(),
         package_id: header.package_id,
@@ -1309,6 +1832,83 @@ mod tests {
         assert_ne!(imported.profile.id, source.id);
         assert_eq!(imported.profile.revision, 1);
         assert_eq!(imported.snapshot.current_profile.id, before);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workspace_package_round_trips_surface_order_and_variables() {
+        let root = temp_root("workspace-round-trip");
+        fs::create_dir_all(&root).unwrap();
+        let package = root.join("portable.pmc-workspace");
+        let source = profile("Portable workspace");
+        export_workspace_package(
+            &source,
+            &ExportWorkspacePackageRequest {
+                profile_id: source.id.clone(),
+                destination_path: package.to_string_lossy().into_owned(),
+                variables: [("mode".into(), "review".into())].into_iter().collect(),
+                open_surface_ids: vec!["nexora.page.first".into(), "nexora.page.second".into()],
+                active_surface_id: Some("nexora.page.second".into()),
+            },
+        )
+        .unwrap();
+
+        let runtime = initialized_runtime(&root.join("runtime"));
+        let current_before = runtime.snapshot(&[]).unwrap().current_profile.id;
+        let preview = inspect_workspace_package(package.to_str().unwrap(), &runtime, &[]).unwrap();
+        assert!(preview.can_import);
+        assert_eq!(preview.open_surface_ids[0], "nexora.page.first");
+        assert_eq!(
+            preview.active_surface_id.as_deref(),
+            Some("nexora.page.second")
+        );
+        assert_eq!(
+            preview.variables.get("mode").map(String::as_str),
+            Some("review")
+        );
+
+        let imported = import_workspace_package(
+            &ImportWorkspacePackageRequest {
+                package_path: package.to_string_lossy().into_owned(),
+                name: preview.suggested_name,
+                tool_mappings: Vec::new(),
+                path_mappings: Vec::new(),
+            },
+            &runtime,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(imported.open_surface_ids, preview.open_surface_ids);
+        assert_eq!(
+            runtime.snapshot(&[]).unwrap().current_profile.id,
+            current_before
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workspace_export_rejects_active_surface_outside_open_list() {
+        let root = temp_root("workspace-active");
+        fs::create_dir_all(&root).unwrap();
+        let source = profile("Invalid workspace");
+        let error = export_workspace_package(
+            &source,
+            &ExportWorkspacePackageRequest {
+                profile_id: source.id.clone(),
+                destination_path: root
+                    .join("invalid.pmc-workspace")
+                    .to_string_lossy()
+                    .into_owned(),
+                variables: BTreeMap::new(),
+                open_surface_ids: vec!["nexora.page.first".into()],
+                active_surface_id: Some("nexora.page.missing".into()),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error.code,
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid
+        ));
         let _ = fs::remove_dir_all(root);
     }
 

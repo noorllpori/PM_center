@@ -176,6 +176,31 @@ export interface ToolActionContribution {
   [key: string]: unknown;
 }
 
+export interface ShellTemplateContribution {
+  id: string;
+  name: string;
+  version: string;
+  variants?: string[];
+  adapter?: string;
+  [key: string]: unknown;
+}
+
+export interface PageTemplateContribution {
+  id: string;
+  name: string;
+  version: string;
+  regions?: string[];
+  [key: string]: unknown;
+}
+
+export interface ThemePresetContribution {
+  id: string;
+  name: string;
+  version: string;
+  tokens?: JsonObject;
+  [key: string]: unknown;
+}
+
 export type SettingsScope = 'global' | 'project';
 export type SettingsFieldType =
   | 'string'
@@ -224,6 +249,9 @@ export interface ComponentContributions {
   widgets?: string[];
   dataSources?: string[];
   settingsSections?: ComponentSettingsSection[];
+  shellTemplates?: ShellTemplateContribution[];
+  pageTemplates?: PageTemplateContribution[];
+  themePresets?: ThemePresetContribution[];
   [key: string]: unknown;
 }
 

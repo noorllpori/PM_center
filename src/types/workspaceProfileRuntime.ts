@@ -81,6 +81,14 @@ export interface ExportWorkspaceProfilePackageRequest {
   destinationPath: string;
 }
 
+export interface ExportWorkspacePackageRequest {
+  profileId: string;
+  destinationPath: string;
+  variables?: Record<string, string>;
+  openSurfaceIds?: string[];
+  activeSurfaceId?: string | null;
+}
+
 export interface ProfilePackageExportResult {
   packageId: string;
   destinationPath: string;
@@ -120,6 +128,12 @@ export interface ProfilePackageImportPreview {
   canImport: boolean;
 }
 
+export interface WorkspacePackageImportPreview extends ProfilePackageImportPreview {
+  openSurfaceIds: string[];
+  activeSurfaceId?: string | null;
+  variables: Record<string, string>;
+}
+
 export type ProfileLocalBindingMode = 'automatic' | 'path';
 
 export interface ProfileLocalBindingInput {
@@ -140,6 +154,15 @@ export interface ImportWorkspaceProfilePackageRequest {
   name: string;
   toolMappings?: ProfileLocalBindingInput[];
   pathMappings?: ProfileLocalBindingInput[];
+}
+
+export interface ImportWorkspacePackageRequest extends ImportWorkspaceProfilePackageRequest {}
+
+export interface WorkspacePackageImportResult {
+  mutation: WorkspaceProfileMutationResult;
+  variables: Record<string, string>;
+  openSurfaceIds: string[];
+  activeSurfaceId?: string | null;
 }
 
 export interface WorkspaceProfileRuntimeSnapshot {

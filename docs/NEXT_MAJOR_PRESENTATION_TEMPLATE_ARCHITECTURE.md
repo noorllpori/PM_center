@@ -272,6 +272,8 @@ PageTemplate 在 `template.json` 中声明命名区域、允许的内容种类�
 
 ### R9-P：模板目录和内置适配器
 
+状态：`verifying`（2026-08-06 已实现合同、动态目录和内置适配器登记）。
+
 - 增加 ShellTemplate、PageTemplate、ThemePreset 贡献目录；
 - 把顶部、侧边和紧凑登记为三个内置模板；
 - 现有运行时先通过适配器继续渲染旧 React Shell；
@@ -321,4 +323,4 @@ R12 四个参考装配必须至少使用两种明显不同的 ShellTemplate 和�
 
 ## 12. 当前立即落地边界
 
-本轮只把模板绑定加入 Profile 公共合同，并把当前编辑器中的三种导航模式明确为内置 Shell 模板。真正读取第三方 `base.html`、安装模板包和替换整个 Shell 必须按 R9-P/R10-P 实施，不能在缺少净化、恢复和包安全机制时直接开放。
+R8 已把模板绑定加入 Profile 公共合同；R9-P 已增加 ShellTemplate、PageTemplate、ThemePreset 贡献目录，并把三种导航登记为可卸载资料组件的内置适配器。真正读取第三方 `base.html`、安装签名模板包和替换整个 Shell 必须按 R10-P 实施，不能在缺少净化、恢复和包安全机制时直接开放。

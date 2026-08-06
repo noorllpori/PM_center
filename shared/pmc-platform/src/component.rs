@@ -123,6 +123,44 @@ pub struct ToolActionContribution {
     pub extensions: ExtensionFields,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ShellTemplateContribution {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    #[serde(default)]
+    pub variants: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter: Option<String>,
+    #[serde(flatten)]
+    pub extensions: ExtensionFields,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PageTemplateContribution {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    #[serde(default)]
+    pub regions: Vec<String>,
+    #[serde(flatten)]
+    pub extensions: ExtensionFields,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ThemePresetContribution {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    #[serde(default)]
+    pub tokens: BTreeMap<String, Value>,
+    #[serde(flatten)]
+    pub extensions: ExtensionFields,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum SettingsScope {
@@ -207,6 +245,12 @@ pub struct ComponentContributions {
     pub data_sources: Vec<String>,
     #[serde(default)]
     pub settings_sections: Vec<ComponentSettingsSection>,
+    #[serde(default)]
+    pub shell_templates: Vec<ShellTemplateContribution>,
+    #[serde(default)]
+    pub page_templates: Vec<PageTemplateContribution>,
+    #[serde(default)]
+    pub theme_presets: Vec<ThemePresetContribution>,
     #[serde(flatten)]
     pub extensions: ExtensionFields,
 }
@@ -455,6 +499,58 @@ impl ValidateContract for ComponentManifestV1 {
                 }
             }
         }
+        for (index, template) in self.contributes.shell_templates.iter().enumerate() {
+            let path = format!("$.contributes.shellTemplates[{index}]");
+            validate_stable_id(&template.id, &format!("{path}.id"))?;
+            validate_version(&template.version, &format!("{path}.version"))?;
+            validate_named_contribution(&template.name, &path)?;
+            if !contribution_ids.insert(template.id.as_str()) {
+                return Err(duplicate_contribution(&path, &template.id));
+            }
+            let mut variants = BTreeSet::new();
+            for (variant_index, variant) in template.variants.iter().enumerate() {
+                validate_local_id(variant, &format!("{path}.variants[{variant_index}]"))?;
+                if !variants.insert(variant.as_str()) {
+                    return Err(ContractError::new(
+                        ContractErrorCode::DuplicateId,
+                        format!("{path}.variants[{variant_index}]"),
+                        format!("重复模板变体: {variant}"),
+                    ));
+                }
+            }
+            if let Some(adapter) = &template.adapter {
+                validate_local_id(adapter, &format!("{path}.adapter"))?;
+            }
+        }
+        for (index, template) in self.contributes.page_templates.iter().enumerate() {
+            let path = format!("$.contributes.pageTemplates[{index}]");
+            validate_stable_id(&template.id, &format!("{path}.id"))?;
+            validate_version(&template.version, &format!("{path}.version"))?;
+            validate_named_contribution(&template.name, &path)?;
+            if !contribution_ids.insert(template.id.as_str()) {
+                return Err(duplicate_contribution(&path, &template.id));
+            }
+            let mut regions = BTreeSet::new();
+            for (region_index, region) in template.regions.iter().enumerate() {
+                validate_local_id(region, &format!("{path}.regions[{region_index}]"))?;
+                if !regions.insert(region.as_str()) {
+                    return Err(ContractError::new(
+                        ContractErrorCode::DuplicateId,
+                        format!("{path}.regions[{region_index}]"),
+                        format!("重复页面区域: {region}"),
+                    ));
+                }
+            }
+        }
+        for (index, preset) in self.contributes.theme_presets.iter().enumerate() {
+            let path = format!("$.contributes.themePresets[{index}]");
+            validate_stable_id(&preset.id, &format!("{path}.id"))?;
+            validate_version(&preset.version, &format!("{path}.version"))?;
+            validate_named_contribution(&preset.name, &path)?;
+            if !contribution_ids.insert(preset.id.as_str()) {
+                return Err(duplicate_contribution(&path, &preset.id));
+            }
+        }
         validate_settings_sections(&self.contributes.settings_sections)?;
 
         if self.resources.max_parallelism == Some(0)
@@ -469,6 +565,25 @@ impl ValidateContract for ComponentManifestV1 {
         }
         Ok(())
     }
+}
+
+fn validate_named_contribution(name: &str, path: &str) -> ContractResult<()> {
+    if name.trim().is_empty() {
+        return Err(ContractError::new(
+            ContractErrorCode::MalformedDocument,
+            format!("{path}.name"),
+            "贡献名称不能为空",
+        ));
+    }
+    Ok(())
+}
+
+fn duplicate_contribution(path: &str, id: &str) -> ContractError {
+    ContractError::new(
+        ContractErrorCode::DuplicateId,
+        format!("{path}.id"),
+        format!("重复贡献 ID: {id}"),
+    )
 }
 
 fn validate_settings_sections(sections: &[ComponentSettingsSection]) -> ContractResult<()> {

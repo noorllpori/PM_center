@@ -104,7 +104,8 @@ React invoke/listen
 | 脚本/任务 | `ScriptRunner.tsx`、`TaskPanel/`、`taskStore.ts` | 用户脚本、日志、取消/重试与任务面板聚合。 |
 | 设置 | `SettingsPanel.tsx`、`settings/settingsContributionImplementationRegistry.ts`、`settingsStore.ts`、`settings/LocalWebConsoleSettingsSection.tsx` | R7-3 按 `settingsSections` 贡献装配一级范围与二级页面，右侧只挂载当前设置页；模块停用后所属设置即时撤下。普通设置中心与不可停用恢复内核的边界见 `NEXT_MAJOR_R7_SETTINGS_CONTRIBUTIONS.md`。 |
 | 功能中心 | `features/builtinTools.ts`、`features/contributionRegistry.ts`、`features/contributionDataSources.ts`、`features/contributionCatalogDiagnostics.ts`、`stores/contributionRegistryStore.ts`、`components/file-manager/index.tsx` | `Alt+Q` 工具入口；R5 已让工具、Pin、Shell/工作区标签、设置区、右键命令、Widget、DataSource 和节点目录按模块状态动态出现或撤下，并提供目录一致性、实现覆盖、缺失状态和订阅释放诊断。智能剪贴板仍调用独立 Win32 窗口。 |
-| 装配方案运行时 | `platform/profile_runtime.rs`、`platform/profile_package.rs`、`api/workspaceProfiles.ts`、`stores/workspaceProfileStore.ts`、`WorkspaceProfileDiagnosticsSection.tsx`、`WorkspaceProfileEditorDialog.tsx`、`WorkspaceProfileLayoutEditor.tsx`、`features/profileLayout.ts`、`features/profileHome.ts`、`components/shell/ProfileHomeSurface.tsx`、`components/shell/ProfileNavigationBar.tsx` | R6 已完成迁移、事务切换、会话归属和恢复；R7 装配编辑、布局所有权、窄窗口导航和项目资源恢复已验收。R8-1 已完成确定性 `.pmc-profile`；R8-2 增加工具别名、路径变量、导入映射和 `profiles/local-bindings/` 本机绑定；R8-P 已增加 Shell/Page/Theme 模板引用，第三方 HTML 渲染器仍待 R9-P/R10-P。 |
+| 装配方案运行时 | `platform/profile_runtime.rs`、`platform/profile_package.rs`、`api/workspaceProfiles.ts`、`stores/workspaceProfileStore.ts`、`WorkspaceProfileDiagnosticsSection.tsx`、`WorkspaceProfileEditorDialog.tsx`、`WorkspaceProfileLayoutEditor.tsx`、`features/profileLayout.ts`、`features/profileHome.ts`、`components/shell/ProfileHomeSurface.tsx`、`components/shell/ProfileNavigationBar.tsx` | R6/R7 已验收。R8-1/R8-2 已完成 `.pmc-profile`、工具/路径映射和本机绑定；R8-3 已增加 `.pmc-workspace` 的 Profile、普通变量与页面骨架；第三方 HTML 渲染器仍待 R10-P。 |
+| 组件运行时 | `platform/component_runtime.rs`、`platform/builtin_components.rs`、`api/componentRuntime.ts`、`types/componentRuntime.ts`、`ComponentRuntimeDiagnosticsSection.tsx` | R9 已接入动态组件目录、本地目录安装、随附组件卸载/重装、Python action/worker、原生进程、资料包、统一取消/超时/内存/日志监督、Capability token 和表现模板目录，当前等待人工验收；DLL 与签名包留到 R10。 |
 | 说明组件 | `components/ui/HelpAssistant.tsx` | 复杂或不可逆概念旁的问号说明；支持文字、图片、视频及自动避让定位。 |
 
 状态 Store 的所有权：
@@ -243,12 +244,14 @@ React invoke/listen
 - 下一超大版本的主线是“统一宿主运行时 + Capability + Module + Component + Workflow + Profile”，不维护四套长期分叉代码；这里的宿主运行时不是组件分类，所有正式组件统一支持安装、卸载和升级；
 - Profile 是用户可新建、修改、导出和分享的装配方案；项目管理器、媒体管理器、通信端和 Blender 渲染器只是验证系统能力的参考组合，不得写死为固定枚举；
 - R6-2 已提供“当前 Nexora 装配方案”和普通“空白装配空间”的切换预览。预览只读，实际切换按目标模块集合执行并在失败时恢复旧集合；快捷栏 Pin 由 Profile 中稳定 Tool 贡献 ID 驱动；
-- R6-3 已完成 Profile 会话归属和中断恢复并验收；R7-0 组件目录和依赖合同、R7-1 草稿编辑器均已验收，`pmc.blendio` 作为首个 bundled 但可卸载的组件登记。实际组件下载、安装、卸载、升级和外部进程监督仍属于 R9/R10；
+- R6-3 已完成 Profile 会话归属和中断恢复并验收；R7 组件目录和草稿编辑器已验收。R9 已实现本地目录安装、随附组件卸载/重装和外部进程监督；组件商城下载、签名归档升级与 DLL 隔离仍属于 R10；
 - R7-2A 已把主页入口改为 Profile Home Resolver，并完成安全主页人工验收；R7-2B 已新增可停用的 `builtin.project-manager` 管理项目主页和项目 Shell，并完成停用撤下、资源释放与热恢复验收；R7-2C 已让项目主页由 4 个 Widget、4 个 DataSource 和稳定 Command 贡献组合，默认 Profile 迁移幂等补齐这些绑定；`builtin.project-resources` 继续保留数据库/Watcher 等资源层；
 - R7-3 将设置系统拆成 `core.recovery-settings` 与 `builtin.settings-center` 两层。当前先实施设置贡献目录和动态装配；恢复 Surface 落地前，普通设置入口不能被停用。业务模块关闭后必须同步撤下自己的设置 UI，取消停用确认不得产生副作用；
-- R7 已于 2026-08-05 完成装配编辑、贡献所有权、项目会话释放和恢复验收；R8 按 `.pmc-profile`、路径映射、`.pmc-workspace` 三阶段推进；
+- R7 已于 2026-08-05 完成验收；R8-1/R8-2 已验收，R8-3 `.pmc-workspace` 已实现待验收；R9 统一组件运行时已实现待验收；
 - R8-1 的方案包只允许 `manifest.json` 和 `profile.json`，使用 BLAKE3 校验并拒绝敏感字段、聊天资料、本机绝对路径、损坏包、路径穿越和超限内容；导入只创建新方案，不自动应用或安装依赖；
 - R8-2 使用 `toolAliases` 和 `pathVariables` 表达可移植需求；导入时明确映射 Blender、FFmpeg、FFprobe、Python 和普通路径，绝对路径仅存于 `profiles/local-bindings/<profile-id>.json`，绑定失败回滚 Profile，删除方案同步清理；
+- R8-3 `.pmc-workspace` 只携带可移植 Profile、普通变量和 Surface 引用骨架，继续拒绝项目文件、聊天、缓存、凭据、绝对路径和组件二进制；
+- R9 使用应用数据目录 `components/` 管理动态组件。随附组件也可卸载和重新安装；组件执行统一经过 operationId、并行/超时/内存限制、进程树取消、日志和 Capability token。`native-library` 明确拒绝并等待 R10 隔离宿主；
 - 可选 `builtin.local-web-console` 默认停用，只允许从本机浏览器访问白名单控制面；不得把它扩展为通用 `invoke`、Shell、文件系统或未经配对的局域网远控入口；
 - 静态启动页由 `shellLayout.home` 决定，复杂启动窗口和条件行为在 R11 通过受控 `app.started` 工作流实现；恢复流程始终优先，目标不可用时回退最小安全主页；
 - 主页不再是固定业务页面：`shellLayout.home` 指向的 Surface 直接成为主页，现有项目主页只是项目管理器贡献。顶部、侧边和紧凑是三个内置 ShellTemplate 兼容预设，后续由受控 `base.html`、PageTemplate 和 ThemePreset 重绘整体结构；完整合同见 `NEXT_MAJOR_PRESENTATION_TEMPLATE_ARCHITECTURE.md`；

@@ -97,6 +97,10 @@ pub fn schema_documents() -> Vec<(&'static str, RootSchema)> {
             schema_for!(WorkspaceProfileV1),
         ),
         (
+            "workspace-package.schema.json",
+            schema_for!(WorkspacePackageV1),
+        ),
+        (
             "workflow-manifest.schema.json",
             schema_for!(WorkflowManifestV1),
         ),

@@ -1,10 +1,14 @@
-use crate::ids::{validate_digest, validate_relative_path, validate_stable_id, validate_version};
+use crate::ids::{
+    validate_digest, validate_local_id, validate_relative_path, validate_stable_id,
+    validate_version,
+};
 use crate::{
     parse_contract, ContractError, ContractErrorCode, ContractResult, ExtensionFields,
-    ValidateContract,
+    ValidateContract, WorkspaceProfileV1,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const PACKAGE_MAGIC: &str = "PMC_PACKAGE";
 pub const PACKAGE_FORMAT_VERSION: u16 = 1;
@@ -67,6 +71,70 @@ pub struct PackageHeaderV1 {
     pub payload: PackagePayloadDescriptor,
     #[serde(flatten)]
     pub extensions: ExtensionFields,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspacePackageV1 {
+    pub schema_version: u16,
+    pub profile: WorkspaceProfileV1,
+    #[serde(default)]
+    pub variables: BTreeMap<String, String>,
+    #[serde(default)]
+    pub open_surface_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_surface_id: Option<String>,
+    #[serde(flatten)]
+    pub extensions: ExtensionFields,
+}
+
+pub fn parse_workspace_package(input: &str) -> ContractResult<WorkspacePackageV1> {
+    parse_contract(input)
+}
+
+impl ValidateContract for WorkspacePackageV1 {
+    fn validate_contract(&self) -> ContractResult<()> {
+        if self.schema_version != crate::PLATFORM_SCHEMA_VERSION {
+            return Err(ContractError::new(
+                ContractErrorCode::UnsupportedSchemaVersion,
+                "$.schemaVersion",
+                format!("不支持 schemaVersion {}", self.schema_version),
+            ));
+        }
+        self.profile.validate_contract()?;
+        for (key, value) in &self.variables {
+            validate_local_id(key, &format!("$.variables.{key}"))?;
+            if value.len() > 16 * 1024 {
+                return Err(ContractError::new(
+                    ContractErrorCode::MalformedDocument,
+                    format!("$.variables.{key}"),
+                    "装配空间变量超过 16 KiB 限制",
+                ));
+            }
+        }
+        let mut surfaces = BTreeSet::new();
+        for (index, surface_id) in self.open_surface_ids.iter().enumerate() {
+            validate_stable_id(surface_id, &format!("$.openSurfaceIds[{index}]"))?;
+            if !surfaces.insert(surface_id.as_str()) {
+                return Err(ContractError::new(
+                    ContractErrorCode::DuplicateId,
+                    format!("$.openSurfaceIds[{index}]"),
+                    format!("重复打开页面: {surface_id}"),
+                ));
+            }
+        }
+        if let Some(active_surface_id) = &self.active_surface_id {
+            validate_stable_id(active_surface_id, "$.activeSurfaceId")?;
+            if !surfaces.contains(active_surface_id.as_str()) {
+                return Err(ContractError::new(
+                    ContractErrorCode::InvalidReference,
+                    "$.activeSurfaceId",
+                    "活动页面必须出现在 openSurfaceIds 中",
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 pub fn parse_package_header(input: &str) -> ContractResult<PackageHeaderV1> {

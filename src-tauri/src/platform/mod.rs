@@ -1,6 +1,7 @@
 mod builtin_components;
 mod builtin_modules;
 mod capability_gateway;
+mod component_runtime;
 mod component_settings;
 mod module_manager;
 mod profile_package;
@@ -12,8 +13,10 @@ pub use module_manager::{
     ModuleRuntimeOverview, ModuleState, StopStrategy,
 };
 pub use profile_package::{
-    ExportWorkspaceProfilePackageRequest, ImportWorkspaceProfilePackageRequest,
-    ProfilePackageExportResult, ProfilePackageImportPreview,
+    ExportWorkspacePackageRequest, ExportWorkspaceProfilePackageRequest,
+    ImportWorkspacePackageRequest, ImportWorkspaceProfilePackageRequest,
+    ProfilePackageExportResult, ProfilePackageImportPreview, WorkspacePackageImportPreview,
+    WorkspacePackageImportResult,
 };
 pub use profile_runtime::{
     CreateWorkspaceProfileRequest, InitializeWorkspaceProfileRuntimeRequest,
@@ -33,6 +36,11 @@ pub use capability_gateway::{
     CapabilityDecisionRequest, CapabilityGatewayError, CapabilityGatewayOverview,
     CapabilityOperationResult, CapabilitySecurityDiagnosticResult, CapabilityTokenRequest,
     CapabilityTokenResponse,
+};
+pub use component_runtime::{
+    ComponentInvocationRequest, ComponentInvocationResult, ComponentRuntimeError,
+    ComponentRuntimeErrorCode, ComponentRuntimeManager, ComponentRuntimeOverview,
+    InstallComponentRequest,
 };
 pub use component_settings::{
     ComponentSettingsRequest, ComponentSettingsSnapshot, SaveComponentSettingsRequest,
@@ -59,6 +67,7 @@ use uuid::Uuid;
 pub struct PlatformRuntime {
     pub manager: Arc<ModuleManager>,
     pub gateway: Arc<CapabilityGateway>,
+    pub components: Arc<ComponentRuntimeManager>,
     pub profiles: WorkspaceProfileRuntime,
     component_settings: ComponentSettingsStore,
     profile_switch_lock: tokio::sync::Mutex<()>,
@@ -87,7 +96,7 @@ impl PlatformRuntime {
         ));
         modules.push(local_web_console_module(
             app_data_dir.to_path_buf(),
-            app_handle,
+            app_handle.clone(),
         ));
         modules.push(project_resources_module(project_databases));
         modules.push(project_manager_module());
@@ -104,17 +113,17 @@ impl PlatformRuntime {
         crate::automation_runtime::set_initial_desired_enabled(automation_runtime_desired);
         let render_center_desired = manager.snapshot(RENDER_CENTER_MODULE_ID)?.desired_enabled;
         crate::render_center::set_initial_desired_enabled(render_center_desired);
-        let mut components = diagnostic_components();
-        components.push(smart_clipboard_component());
-        components.push(lan_collaboration_component());
-        components.push(local_web_console_component());
-        components.push(project_resources_component());
-        components.push(automation_runtime_component());
-        components.push(render_center_component());
+        let mut capability_components = diagnostic_components();
+        capability_components.push(smart_clipboard_component());
+        capability_components.push(lan_collaboration_component());
+        capability_components.push(local_web_console_component());
+        capability_components.push(project_resources_component());
+        capability_components.push(automation_runtime_component());
+        capability_components.push(render_center_component());
         let gateway = CapabilityGateway::new(
             app_data_dir.join("capability-gateway.db"),
             manager.clone(),
-            components,
+            capability_components,
             app_data_dir.join("capability-diagnostics"),
         )
         .map_err(|error| {
@@ -124,10 +133,21 @@ impl PlatformRuntime {
                 error.to_string(),
             )
         })?;
-        let component_manifests = builtin_component_manifests();
+        let components =
+            ComponentRuntimeManager::new(app_data_dir, app_handle, builtin_component_manifests())
+                .map_err(|error| {
+                ModuleManagerError::new(
+                    module_manager::ModuleErrorCode::ModulePersistenceError,
+                    None,
+                    error.to_string(),
+                )
+            })?;
+        let component_manifests = components.manifests();
+        gateway.sync_component_manifests(&component_manifests);
         Ok(Self {
             manager,
             gateway,
+            components,
             profiles: WorkspaceProfileRuntime::new_with_components(
                 app_data_dir,
                 component_manifests,
@@ -137,6 +157,115 @@ impl PlatformRuntime {
             controls,
         })
     }
+}
+
+fn sync_component_catalog(runtime: &PlatformRuntime) -> Result<(), ComponentRuntimeError> {
+    let manifests = runtime.components.manifests();
+    runtime
+        .profiles
+        .replace_component_manifests(manifests.clone())
+        .map_err(|error| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentDependencyConflict,
+                error.message,
+            )
+            .with_details(error.details)
+        })?;
+    runtime.gateway.sync_component_manifests(&manifests);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_component_runtime_overview(
+    runtime: State<'_, PlatformRuntime>,
+) -> ComponentRuntimeOverview {
+    runtime.components.overview()
+}
+
+#[tauri::command]
+pub async fn install_component_from_directory(
+    request: InstallComponentRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<pmc_platform::ComponentManifestV1, ComponentRuntimeError> {
+    let manifest = runtime.components.install_from_directory(&request).await?;
+    sync_component_catalog(&runtime)?;
+    Ok(manifest)
+}
+
+#[tauri::command]
+pub async fn uninstall_component(
+    component_id: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<pmc_platform::ComponentManifestV1, ComponentRuntimeError> {
+    let manifest = runtime.components.uninstall(&component_id).await?;
+    sync_component_catalog(&runtime)?;
+    Ok(manifest)
+}
+
+#[tauri::command]
+pub async fn reinstall_bundled_component(
+    component_id: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<pmc_platform::ComponentManifestV1, ComponentRuntimeError> {
+    let manifest = runtime.components.reinstall_bundled(&component_id).await?;
+    sync_component_catalog(&runtime)?;
+    Ok(manifest)
+}
+
+#[tauri::command]
+pub async fn invoke_component_command(
+    request: ComponentInvocationRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<ComponentInvocationResult, ComponentRuntimeError> {
+    let manifest = runtime
+        .components
+        .manifest(&request.component_id)
+        .ok_or_else(|| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentNotInstalled,
+                format!("组件 {} 未安装", request.component_id),
+            )
+        })?;
+    if !manifest.capabilities.is_empty() {
+        let capability_request = request.capability_request.as_ref().ok_or_else(|| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentCapabilityRequired,
+                "该组件命令需要先通过 CapabilityGateway 获取一次性令牌",
+            )
+        })?;
+        if capability_request.module_id != request.module_id
+            || capability_request.component_id.as_deref() != Some(request.component_id.as_str())
+        {
+            return Err(ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentCapabilityRequired,
+                "组件调用与能力令牌的模块或组件主体不一致",
+            ));
+        }
+        let token = request.capability_token.as_deref().ok_or_else(|| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentCapabilityRequired,
+                "组件命令缺少一次性能力令牌",
+            )
+        })?;
+        runtime
+            .gateway
+            .consume_token(token, capability_request)
+            .map_err(|error| {
+                ComponentRuntimeError::new(
+                    ComponentRuntimeErrorCode::ComponentCapabilityRequired,
+                    error.message,
+                )
+            })?;
+    }
+    runtime.components.invoke(request).await
+}
+
+#[tauri::command]
+pub fn cancel_component_operation(
+    operation_id: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<(), ComponentRuntimeError> {
+    runtime.components.cancel(&operation_id)
 }
 
 #[tauri::command]
@@ -362,6 +491,34 @@ pub async fn import_workspace_profile_package(
     let _guard = runtime.profile_switch_lock.lock().await;
     let manifests = formal_module_manifests(&runtime);
     profile_package::import_profile_package(&request, &runtime.profiles, &manifests)
+}
+
+#[tauri::command]
+pub fn export_workspace_package(
+    request: ExportWorkspacePackageRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<ProfilePackageExportResult, WorkspaceProfileRuntimeError> {
+    let profile = runtime.profiles.profile_document(&request.profile_id)?;
+    profile_package::export_workspace_package(&profile, &request)
+}
+
+#[tauri::command]
+pub fn inspect_workspace_package(
+    package_path: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<WorkspacePackageImportPreview, WorkspaceProfileRuntimeError> {
+    let manifests = formal_module_manifests(&runtime);
+    profile_package::inspect_workspace_package(&package_path, &runtime.profiles, &manifests)
+}
+
+#[tauri::command]
+pub async fn import_workspace_package(
+    request: ImportWorkspacePackageRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<WorkspacePackageImportResult, WorkspaceProfileRuntimeError> {
+    let _guard = runtime.profile_switch_lock.lock().await;
+    let manifests = formal_module_manifests(&runtime);
+    profile_package::import_workspace_package(&request, &runtime.profiles, &manifests)
 }
 
 #[tauri::command]
