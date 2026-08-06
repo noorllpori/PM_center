@@ -3553,6 +3553,37 @@ pub fn all_script_capabilities() -> Vec<Capability> {
 mod tests {
     use super::*;
 
+    fn temporary_database() -> PathBuf {
+        std::env::temp_dir().join(format!("nexora-automation-{}.db", Uuid::new_v4()))
+    }
+
+    fn insert_test_run(
+        connection: &Connection,
+        id: &str,
+        status: &str,
+        semantics: &str,
+        permission_request: Option<&str>,
+    ) {
+        connection
+            .execute(
+                "INSERT INTO automation_runs(
+                    id,component_id,component_name,component_version,command,command_name,
+                    profile_id,profile_revision,project_path,trigger_kind,trigger_id,status,
+                    semantics,attempt,max_attempts,operation_id,content_digest,input_json,
+                    output_json,logs_json,error,permission_request_json,manifest_json,
+                    capability_scope_json,created_at,started_at,finished_at,updated_at,
+                    progress,progress_message
+                 ) VALUES(
+                    ?1,'test.automation','Automation test','1.0.0','probe','Probe',
+                    'test.profile',1,NULL,'manual',NULL,?2,
+                    ?3,1,2,'operation-1','digest','{}',
+                    NULL,'[]',NULL,?4,'{}','{}',0,0,NULL,0,0.5,'working'
+                 )",
+                params![id, status, semantics, permission_request],
+            )
+            .unwrap();
+    }
+
     #[test]
     fn five_field_cron_supports_steps_ranges_and_lists() {
         let now = chrono::Local::now();
@@ -3581,6 +3612,56 @@ mod tests {
         .is_ok());
         assert!(validate_json_schema_value(&json!({"flags":[]}), &schema, "输入").is_err());
         assert!(validate_json_schema_value(&json!({"path":1}), &schema, "输入").is_err());
+    }
+
+    #[test]
+    fn event_names_and_binding_contexts_are_explicit_and_deterministic() {
+        for event in [
+            "app.started",
+            "project.opened",
+            "project.closed",
+            "file.changed",
+            "lan.file-received",
+            "render.batch-created",
+            "render.batch-completed",
+            "render.job-completed",
+            "task.completed",
+            "task.failed",
+        ] {
+            assert!(validate_event_name(event).is_ok(), "{event}");
+        }
+        assert!(validate_event_name("shell.command").is_err());
+
+        let mut profile: WorkspaceProfileV1 = serde_json::from_value(json!({
+            "schemaVersion": 1,
+            "id": "test.profile",
+            "name": "Automation test profile",
+            "variables": {"fixtureProject": "E:/fixtures/project"}
+        }))
+        .unwrap();
+        let binding: ProfileAutomationBinding = serde_json::from_value(json!({
+            "id": "test.binding",
+            "componentId": "test.automation",
+            "command": "probe",
+            "trigger": {"kind": "event", "event": "file.changed"},
+            "projectContext": "profile-variable",
+            "projectVariable": "fixtureProject"
+        }))
+        .unwrap();
+        assert_eq!(
+            resolve_binding_project(&profile, &binding, Some("E:/ignored")),
+            Some("E:/fixtures/project".into())
+        );
+        profile.variables.clear();
+        assert_eq!(resolve_binding_project(&profile, &binding, None), None);
+
+        let merged = merge_binding_input(json!({"mode": "quick"}), &json!({"path": "a.blend"}));
+        assert_eq!(merged["mode"], "quick");
+        assert_eq!(merged["event"]["path"], "a.blend");
+        assert_eq!(
+            merge_binding_input(json!("plain-input"), &json!({"sequence": 4})),
+            json!({"input": "plain-input", "event": {"sequence": 4}})
+        );
     }
 
     #[test]
@@ -3640,8 +3721,27 @@ mod tests {
     }
 
     #[test]
+    fn script_surface_rejects_remote_and_parent_script_resources() {
+        let root = std::env::temp_dir().join(format!("nexora-script-surface-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        assert!(prepare_script_surface_source(
+            &root,
+            r#"<script src="https://example.invalid/app.js"></script>"#,
+            "nonce-1"
+        )
+        .is_err());
+        assert!(prepare_script_surface_source(
+            &root,
+            r#"<script src="../outside.js"></script>"#,
+            "nonce-1"
+        )
+        .is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn database_migration_is_idempotent_and_recovers_runs() {
-        let path = std::env::temp_dir().join(format!("nexora-automation-{}.db", Uuid::new_v4()));
+        let path = temporary_database();
         let connection = Connection::open(&path).unwrap();
         migrate_database(&connection).unwrap();
         migrate_database(&connection).unwrap();
@@ -3688,6 +3788,115 @@ mod tests {
             .unwrap();
         assert_eq!(attempt_table, 1);
         assert_eq!(attention_table, 1);
+        drop(connection);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn recovery_requeues_safe_runs_and_keeps_non_idempotent_results_for_review() {
+        let path = temporary_database();
+        let connection = Connection::open(&path).unwrap();
+        migrate_database(&connection).unwrap();
+        insert_test_run(
+            &connection,
+            "waiting",
+            "waiting-permission",
+            "idempotent",
+            Some("{\"requestId\":\"old\"}"),
+        );
+        insert_test_run(&connection, "pure", "running", "pure", None);
+        insert_test_run(&connection, "idempotent", "cancelling", "idempotent", None);
+        insert_test_run(&connection, "unsafe", "running", "non-idempotent", None);
+        connection.execute(
+            "INSERT INTO automation_run_attempts(run_id,attempt,operation_id,status,logs_json,error,started_at,finished_at)
+             VALUES('unsafe',1,'operation-1','running','[]',NULL,0,NULL)",
+            [],
+        ).unwrap();
+
+        recover_interrupted_runs(&connection).unwrap();
+        for id in ["waiting", "pure", "idempotent"] {
+            let status: String = connection
+                .query_row(
+                    "SELECT status FROM automation_runs WHERE id=?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(status, "queued", "{id}");
+        }
+        let permission: Option<String> = connection
+            .query_row(
+                "SELECT permission_request_json FROM automation_runs WHERE id='waiting'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(permission.is_none());
+        let unsafe_status: String = connection
+            .query_row(
+                "SELECT status FROM automation_runs WHERE id='unsafe'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(unsafe_status, "attention");
+        let attempt_status: String = connection
+            .query_row(
+                "SELECT status FROM automation_run_attempts WHERE run_id='unsafe'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(attempt_status, "interrupted");
+        let open_attention: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM automation_attention WHERE run_id='unsafe' AND status='open'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(open_attention, 1);
+
+        recover_interrupted_runs(&connection).unwrap();
+        let attention_after_second_recovery: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM automation_attention WHERE run_id='unsafe' AND status='open'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(attention_after_second_recovery, 1);
+        drop(connection);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn event_and_schedule_deduplication_preserve_distinct_project_contexts() {
+        let path = temporary_database();
+        let connection = Connection::open(&path).unwrap();
+        migrate_database(&connection).unwrap();
+        let first = connection.execute(
+            "INSERT OR IGNORE INTO automation_events(event_id,event_name,dedupe_key,payload_json,occurred_at)
+             VALUES('event-1','file.changed','source:17','{}',0)",
+            [],
+        ).unwrap();
+        let duplicate = connection.execute(
+            "INSERT OR IGNORE INTO automation_events(event_id,event_name,dedupe_key,payload_json,occurred_at)
+             VALUES('event-2','file.changed','source:17','{}',1)",
+            [],
+        ).unwrap();
+        assert_eq!((first, duplicate), (1, 0));
+
+        let tick = |context: &str| {
+            connection.execute(
+            "INSERT OR IGNORE INTO automation_schedule_ticks(profile_id,binding_id,minute_key,context_key,triggered_at)
+             VALUES('test.profile','test.binding','2026-08-07T12:30',?1,0)",
+            [context],
+        ).unwrap()
+        };
+        assert_eq!(tick("E:/fixtures/one"), 1);
+        assert_eq!(tick("E:/fixtures/one"), 0);
+        assert_eq!(tick("E:/fixtures/two"), 1);
         drop(connection);
         let _ = fs::remove_file(path);
     }

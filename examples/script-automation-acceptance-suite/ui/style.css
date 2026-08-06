@@ -1,0 +1,8 @@
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+body { margin: 0; padding: 20px; background: Canvas; color: CanvasText; }
+main { max-width: 560px; }
+h1 { margin: 0 0 8px; font-size: 18px; }
+p { color: GrayText; font-size: 13px; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+button { border: 1px solid color-mix(in srgb, CanvasText 20%, transparent); border-radius: 4px; background: ButtonFace; color: ButtonText; padding: 7px 10px; cursor: pointer; }
+pre { min-height: 70px; overflow: auto; border: 1px solid color-mix(in srgb, CanvasText 15%, transparent); padding: 10px; font-size: 12px; white-space: pre-wrap; }

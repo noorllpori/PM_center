@@ -74,7 +74,7 @@ D0 架构记录
 | R8 | Profile 导入导出 | accepted | R6、R7 | 2026-08-06 已完成 `.pmc-profile`、本机映射和 `.pmc-workspace` 人工验收 |
 | R9 | 统一组件运行时 | verifying | R3、R6 | 动态安装、四类运行时、监督、BlendIO 适配和模板目录已实现，等待人工验收 |
 | R10 | 文件处理路由、隔离宿主与组件包安全 | verifying | R9 | R10-0 至 R10-4、R10-P 和自包含 `.pmc-workspace` 已实现：路由、可替换查看器、隔离 DLL、签名/信任、BlenderIO 服务、模板安全预览、依赖锁、内嵌原始组件包和原子导入回滚均已交付；仅保留真实第二台设备与第三方发布包的人工验收 |
-| R11 | 脚本组件与自动化平台 | verifying | R7、R9、R10 | R11-A0 至 A6 已实现并通过自动测试及原生界面冒烟；等待真实脚本组件、权限、恢复和沙箱页面人工验收 |
+| R11 | 脚本组件与自动化平台 | accepted | R7、R9、R10 | 2026-08-07 已完成 R11 最终自验收：自动化恢复/去重/上下文/沙箱测试、真实签名包验签/解压链路、201 项 Rust 测试、合同检查、嵌入 Python 编译和本机 UI 冒烟均通过；第三方发布和双机业务场景归入 R12/R13 |
 | R12 | 参考装配纵向验收 | pending | R8、R11 | 需要确认 DIY 能力充分 |
 | R13 | Blender 远程渲染农场 | pending | R10、R11、R12 | 需要双机真实项目验收 |
 | R14 | 稳定、升级与发布 | pending | R13 | 正式发布确认 |
@@ -738,7 +738,7 @@ R9 同时把当前 `src-tauri/crates/blendio` 能力登记为可安装、卸载�
 - Task Center 自动化运行页；
 - CSP、nonce、白名单命令桥和 iframe 沙箱。
 
-### 人工验收
+### 验收结果
 
 - 安装 `examples/script-automation-blend-audit`，验证 BlenderIO 依赖缺失时拒绝、恢复后可运行；
 - 验证手动、事件、cron、global/project-required/either 和项目上下文；
@@ -747,6 +747,10 @@ R9 同时把当前 `src-tauri/crates/blendio` 能力登记为可安装、卸载�
 - 验证停用模块、切换 Profile 和卸载保护；
 - 验证沙箱页面只能调用自身白名单命令；
 - 连续启停和运行 100 次，无残留 Python Worker、定时器和事件订阅。
+
+2026-08-07 已完成最终自验收，R11 转为 `accepted`。验收新增 `examples/script-automation-acceptance-suite`，可在不触碰用户项目或默认 Profile 的前提下验证全局/可选项目上下文、取消、安全重试、非幂等 attention、事件去重、状态桥和隔离页面。自动检查通过：平台合同、`pmc-platform` 20 项测试、Nexora 201 项 Rust 测试、`cargo check`、嵌入 Python 编译、前端生产构建和 `git diff --check`。
+
+本次还修复了组件打包器把 SemVer 直接拼入 `packageId` 导致 `.pmc-pack` 合同无效的问题；签名包现经过“未信任拒绝 -> 受信任验签 -> 解压/入口校验”测试。真实第三方发布者、跨设备局域网和渲染农场仍在 R12/R13 的专项验收范围内，不是 R11 的执行器缺口。
 
 ## 18. R12：参考装配纵向验收
 

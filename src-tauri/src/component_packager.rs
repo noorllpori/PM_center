@@ -2,7 +2,7 @@ use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey};
 use pmc_platform::{
     parse_component_manifest, ContentDigest, DigestAlgorithm, ExtensionFields, PackageHeaderV1,
-    PackageKind, PackagePayloadDescriptor, PACKAGE_FORMAT_VERSION, PACKAGE_MAGIC,
+    PackageKind, PackagePayloadDescriptor, ValidateContract, PACKAGE_FORMAT_VERSION, PACKAGE_MAGIC,
     PLATFORM_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
@@ -148,7 +148,7 @@ pub fn pack_component(request: ComponentPackRequest) -> Result<ComponentPackResu
         schema_version: PLATFORM_SCHEMA_VERSION,
         format_version: PACKAGE_FORMAT_VERSION,
         kind: PackageKind::ComponentPack,
-        package_id: format!("pack.{}-{}", component.id, component.version),
+        package_id: component_package_id(&component.id, &component.version),
         created_at: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|error| format!("读取系统时间失败：{error}"))?
@@ -165,6 +165,9 @@ pub fn pack_component(request: ComponentPackRequest) -> Result<ComponentPackResu
         },
         extensions,
     };
+    header
+        .validate_contract()
+        .map_err(|error| format!("组件包头合同无效：{} ({})", error.message, error.path))?;
     let signature = key.sign(&signature_material(&header, &content_digest)?);
     header.extensions.insert(
         "signature".into(),
@@ -183,6 +186,25 @@ pub fn pack_component(request: ComponentPackRequest) -> Result<ComponentPackResu
         content_digest,
         file_count: files.len(),
     })
+}
+
+fn component_package_id(component_id: &str, component_version: &str) -> String {
+    // `packageId` is a stable identifier, not a filename. A SemVer contains dots
+    // and can contain build metadata, so it must occupy its own letter-prefixed
+    // segment instead of being appended to the component's final namespace part.
+    let version = component_version
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    format!("pack.{component_id}.v{version}")
 }
 
 fn read_signing_key(path: &Path) -> Result<SigningKey, String> {
@@ -353,6 +375,7 @@ fn write_new_json(path: &Path, value: &Value) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pmc_platform::parse_package_header;
 
     #[test]
     fn signing_key_round_trip() {
@@ -362,5 +385,36 @@ mod tests {
         assert!(!result.public_key.is_empty());
         assert!(read_signing_key(&path).is_ok());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn package_id_keeps_semver_in_a_valid_letter_prefixed_segment() {
+        for version in ["1.0.0", "1.0.0-beta.4", "1.0.0+BUILD.7"] {
+            let id = component_package_id("nexora.example.component", version);
+            assert!(
+                parse_package_header(
+                    &serde_json::json!({
+                        "magic": "PMC_PACKAGE",
+                        "schemaVersion": 1,
+                        "formatVersion": 1,
+                        "kind": "component-pack",
+                        "packageId": id,
+                        "createdAt": 0,
+                        "producerVersion": "1.0.0",
+                        "payload": {
+                            "path": "component.json",
+                            "digest": {
+                                "algorithm": "blake3",
+                                "value": "0000000000000000000000000000000000000000000000000000000000000000"
+                            },
+                            "sizeBytes": 0
+                        }
+                    })
+                    .to_string()
+                )
+                .is_ok(),
+                "{version} -> {id}"
+            );
+        }
     }
 }

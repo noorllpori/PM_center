@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="style.css">
+  </head>
+  <body>
+    <main>
+      <h1>自动化验收</h1>
+      <p id="status">等待命令</p>
+      <div class="actions">
+        <button data-command="global-probe">全局探针</button>
+        <button data-command="either-probe">可选项目探针</button>
+        <button data-command="long-probe">启动可取消探针</button>
+      </div>
+      <pre id="output"></pre>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

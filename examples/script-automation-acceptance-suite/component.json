@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 1,
+  "id": "nexora.example.automation-acceptance",
+  "name": "脚本自动化验收组件",
+  "description": "用于验证 Nexora R11 自动化的上下文、取消、重试、事件、状态和隔离页面链路。仅供开发与验收，不会自动安装。",
+  "version": "0.1.0",
+  "apiVersion": "1",
+  "runtime": "python-action",
+  "role": "feature",
+  "distribution": "local",
+  "uiMode": "contributed",
+  "platforms": ["windows-x64"],
+  "entry": "main.py",
+  "capabilities": [],
+  "requiresComponents": [],
+  "optionalComponents": [],
+  "contributes": {
+    "automationCommands": [
+      {
+        "id": "nexora.example.automation-acceptance.global-probe",
+        "command": "global-probe",
+        "name": "全局上下文探针",
+        "description": "验证 global 命令会丢弃项目上下文，并可写入组件全局状态。",
+        "contextRequirement": "global",
+        "executionSemantics": "pure",
+        "maxAttempts": 2,
+        "maxParallelism": 1,
+        "timeoutMs": 30000,
+        "inputSchema": {"type": "object"},
+        "outputSchema": {"type": "object"}
+      },
+      {
+        "id": "nexora.example.automation-acceptance.either-probe",
+        "command": "either-probe",
+        "name": "可选项目上下文探针",
+        "description": "验证 either 命令能在全局和项目上下文下运行。",
+        "contextRequirement": "either",
+        "executionSemantics": "idempotent",
+        "maxAttempts": 2,
+        "maxParallelism": 1,
+        "timeoutMs": 30000,
+        "inputSchema": {"type": "object"},
+        "outputSchema": {"type": "object"}
+      },
+      {
+        "id": "nexora.example.automation-acceptance.long-probe",
+        "command": "long-probe",
+        "name": "可取消长运行探针",
+        "description": "循环检查取消标记，用于确认取消会清理 Python 进程。",
+        "contextRequirement": "global",
+        "executionSemantics": "idempotent",
+        "maxAttempts": 1,
+        "maxParallelism": 1,
+        "timeoutMs": 90000,
+        "inputSchema": {
+          "type": "object",
+          "properties": {"seconds": {"type": "integer"}}
+        },
+        "outputSchema": {"type": "object"}
+      },
+      {
+        "id": "nexora.example.automation-acceptance.retry-probe",
+        "command": "retry-probe",
+        "name": "安全重试探针",
+        "description": "故意失败一次，以检查幂等命令的自动退避重试和尝试记录。",
+        "contextRequirement": "global",
+        "executionSemantics": "idempotent",
+        "maxAttempts": 2,
+        "maxParallelism": 1,
+        "timeoutMs": 30000,
+        "inputSchema": {"type": "object"},
+        "outputSchema": {"type": "object"}
+      },
+      {
+        "id": "nexora.example.automation-acceptance.non-idempotent-probe",
+        "command": "non-idempotent-probe",
+        "name": "结果不确定探针",
+        "description": "长时间模拟外部副作用；异常退出后必须进入 attention，不能自动重放。",
+        "contextRequirement": "global",
+        "executionSemantics": "non-idempotent",
+        "maxAttempts": 1,
+        "maxParallelism": 1,
+        "timeoutMs": 90000,
+        "inputSchema": {
+          "type": "object",
+          "properties": {"seconds": {"type": "integer"}}
+        },
+        "outputSchema": {"type": "object"}
+      }
+    ],
+    "automationEvents": [
+      {
+        "id": "nexora.example.automation-acceptance.file-changed",
+        "event": "file.changed",
+        "name": "项目文件变化"
+      }
+    ],
+    "scriptSurfaces": [
+      {
+        "id": "nexora.example.automation-acceptance.surface",
+        "name": "自动化验收页面",
+        "entry": "ui/index.html",
+        "placements": ["workspace", "dialog"],
+        "allowedCommands": ["global-probe", "either-probe", "long-probe"]
+      }
+    ]
+  },
+  "resources": {
+    "maxMemoryMb": 128,
+    "maxParallelism": 1,
+    "timeoutMs": 90000
+  },
+  "publisher": "Nexora Examples"
+}

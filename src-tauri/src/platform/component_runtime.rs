@@ -3721,6 +3721,7 @@ fn io_error(message: &str, error: impl std::fmt::Display) -> ComponentRuntimeErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::component_packager::{generate_signing_key, pack_component, ComponentPackRequest};
     use ed25519_dalek::{Signer, SigningKey};
     use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
@@ -3875,5 +3876,93 @@ mod tests {
         assert_eq!(inspected.trust.status, ComponentPackageTrustStatus::Trusted);
         assert!(inspected.trust.installable);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn packer_output_is_verified_then_safe_to_extract_for_python_automation() {
+        let root = std::env::temp_dir().join(format!("nexora-packer-roundtrip-{}", Uuid::new_v4()));
+        let source = root.join("source");
+        let package = root.join("automation.pmc-pack");
+        let key = root.join("publisher.json");
+        let extracted = root.join("extracted");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(
+            source.join("component.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schemaVersion": 1,
+                "id": "test.packer-automation",
+                "name": "Packer automation test",
+                "version": "1.0.0",
+                "apiVersion": "1",
+                "runtime": "python-action",
+                "role": "feature",
+                "distribution": "marketplace",
+                "uiMode": "none",
+                "platforms": ["windows-x64"],
+                "entry": "main.py",
+                "contributes": {
+                    "automationCommands": [{
+                        "id": "test.packer-automation.probe",
+                        "command": "probe",
+                        "name": "Probe",
+                        "contextRequirement": "global",
+                        "executionSemantics": "pure",
+                        "inputSchema": {"type": "object"},
+                        "outputSchema": {"type": "object"}
+                    }]
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            source.join("main.py"),
+            "print('{\"ok\":true,\"result\":{}}')\n",
+        )
+        .unwrap();
+
+        let signing = generate_signing_key(&key).unwrap();
+        let packed = pack_component(ComponentPackRequest {
+            source_path: source.to_string_lossy().into_owned(),
+            destination_path: package.to_string_lossy().into_owned(),
+            key_path: key.to_string_lossy().into_owned(),
+            publisher_id: "test.r11.publisher".into(),
+            publisher_name: "R11 Test Publisher".into(),
+            license: "NOASSERTION".into(),
+            producer_version: "1.0.0".into(),
+        })
+        .unwrap();
+        assert_eq!(packed.component_id, "test.packer-automation");
+
+        let untrusted = inspect_component_package(&package).unwrap();
+        assert_eq!(
+            untrusted.trust.status,
+            ComponentPackageTrustStatus::SignedUntrusted
+        );
+        assert!(untrusted.trust.signature_present);
+        assert!(untrusted.trust.signature_valid);
+        assert!(!untrusted.trust.installable);
+
+        let mut trusted_publishers = BTreeMap::new();
+        trusted_publishers.insert(
+            "test.r11.publisher".into(),
+            StoredTrustedPublisher {
+                id: "test.r11.publisher".into(),
+                display_name: "R11 Test Publisher".into(),
+                public_key: signing.public_key,
+                trusted_at: 0,
+            },
+        );
+        let trusted = inspect_component_package_with_trust(&package, &trusted_publishers).unwrap();
+        assert_eq!(trusted.trust.status, ComponentPackageTrustStatus::Trusted);
+        assert!(trusted.trust.installable);
+
+        extract_component_package(&package, &extracted).unwrap();
+        let manifest = read_component_manifest(&extracted.join(COMPONENT_MANIFEST_FILE)).unwrap();
+        validate_entry(&extracted, &manifest).unwrap();
+        validate_platform_compatibility(&manifest).unwrap();
+        validate_native_library_entry(&extracted, &manifest).unwrap();
+        validate_presentation_component(&extracted, &manifest).unwrap();
+        let _ = fs::remove_dir_all(root);
     }
 }
