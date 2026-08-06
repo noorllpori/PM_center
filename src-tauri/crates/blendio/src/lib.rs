@@ -11,6 +11,9 @@ pub mod sdna;
 pub mod summary;
 pub mod view;
 
+pub use array_view::{
+    PointerArrayView, StructArrayView, iter_listbase, read_pointer_array, read_struct_array,
+};
 pub use bhead::{BlockCode, BlockHeader};
 pub use edit::{
     BlendEditSession, BlendPatch, SceneRenderEdit, SceneSelector, WriteOptions, WriteReport,
@@ -28,8 +31,5 @@ pub use sdna::{FieldDef, Schema, StructDef};
 pub use summary::{
     ActionSummary, FileSummary, IdEntry, IdReference, ImageSummary, LibrarySummary, MeshSummary,
     NamedIdSummary, ObjectSummary, SceneSummary, SchemaCounts, TextSummary, summarize,
-};
-pub use array_view::{
-    PointerArrayView, StructArrayView, iter_listbase, read_pointer_array, read_struct_array,
 };
 pub use view::{BlendFile, BlockRef, FieldValue, StructView};

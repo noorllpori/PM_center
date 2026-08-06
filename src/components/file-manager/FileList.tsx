@@ -12,6 +12,7 @@ import { useSettingsStore } from "../../stores/settingsStore";
 import { useTaskStore } from "../../stores/taskStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useWorkspaceTabStore } from "../../stores/workspaceTabStore";
+import { useWorkspaceProfileStore } from "../../stores/workspaceProfileStore";
 import { APP_VERSION } from "../../config/appMeta";
 import type { PluginAction } from "../../types/plugin";
 import { FileIcon, FolderIcon, Image, Film, FileText, Box, Layers } from "lucide-react";
@@ -1216,6 +1217,7 @@ export function FileList({
   const openCollectionInTab = useWorkspaceTabStore(
     (state) => state.openCollectionInTab,
   );
+  const profileId = useWorkspaceProfileStore((state) => state.snapshot?.currentProfile.id);
   const pluginProjectKey = projectPath || "__global__";
   const pluginState = usePluginStore(
     (state) => state.byProject[pluginProjectKey],
@@ -1484,7 +1486,7 @@ export function FileList({
       }
 
       try {
-        const route = await routeFileIntent(file.path, "open", { projectPath: projectPath || undefined });
+        const route = await routeFileIntent(file.path, "open", { projectPath: projectPath || undefined, profileId });
         if (file.is_dir && route.target === "workspace" && route.workspaceTarget === "directory") {
           await loadDirectory(file.path);
           return;
@@ -1510,7 +1512,7 @@ export function FileList({
         });
       }
     },
-    [currentPath, loadDirectory, openCollectionInTab, openFileInTab, projectPath, showToast],
+    [currentPath, loadDirectory, openCollectionInTab, openFileInTab, profileId, projectPath, showToast],
   );
 
   const handleOpenDirectoryTab = useCallback(
@@ -1523,6 +1525,51 @@ export function FileList({
       await onOpenDirectoryTab?.(targetPath);
     },
     [onOpenDirectoryTab],
+  );
+
+  const handleOpenWithSystem = useCallback(
+    async (file: FileInfo) => {
+      try {
+        await invoke(file.is_dir ? "open_path" : "open_file", { path: file.path });
+        showToast({ title: "已交给系统打开", message: file.name, tone: "success" });
+      } catch (error) {
+        console.error("Failed to open file with system:", error);
+        showToast({ title: "系统打开失败", message: String(error), tone: "error" });
+      }
+    },
+    [showToast],
+  );
+
+  const handleOpenInternally = useCallback(
+    async (file: FileInfo) => {
+      if (file.entry_kind === "manual_collection" || file.entry_kind === "image_sequence") {
+        showToast({ title: "此项目没有独立内部处理器", message: "集合和序列使用它们自己的项目页面。", tone: "warning" });
+        return;
+      }
+      try {
+        const route = await routeFileIntent(file.path, "open-internal", { projectPath: projectPath || undefined, profileId });
+        if (!route.accepted || route.target !== "workspace") {
+          showToast({
+            title: "没有可用的 Nexora 文件页面",
+            message: route.diagnostics.map((item) => item.message).join("；") || "请安装或启用对应文件处理器。",
+            tone: "warning",
+          });
+          return;
+        }
+        if (file.is_dir && route.workspaceTarget === "directory") {
+          await loadDirectory(file.path);
+          return;
+        }
+        const tabId = await openFileInTab(file.path);
+        if (!tabId) {
+          showToast({ title: "当前处理器未提供可打开页面", message: route.handlerName || "请检查组件贡献。", tone: "warning" });
+        }
+      } catch (error) {
+        console.error("Failed to open file internally:", error);
+        showToast({ title: "Nexora 打开失败", message: String(error), tone: "error" });
+      }
+    },
+    [loadDirectory, openFileInTab, profileId, projectPath, showToast],
   );
 
   const handleDoubleClick = useCallback(
@@ -1551,7 +1598,7 @@ export function FileList({
         return;
       }
 
-      const route = await routeFileIntent(file.path, "open", { projectPath: projectPath || undefined });
+      const route = await routeFileIntent(file.path, "open", { projectPath: projectPath || undefined, profileId });
       if (file.is_dir) {
         if (route.target === "workspace" && route.workspaceTarget === "directory") {
           await loadDirectory(file.path);
@@ -1621,6 +1668,7 @@ export function FileList({
       openCollectionInTab,
       openFileInStandaloneWindow,
       openFileInTab,
+      profileId,
       projectPath,
       showToast,
     ],
@@ -2710,6 +2758,8 @@ export function FileList({
           onRenameCollection={handleOpenRenameCollectionDialog}
           onDeleteCollection={handleOpenDeleteCollectionDialog}
           onOpenFile={handleSystemOpenFile}
+          onOpenInternally={handleOpenInternally}
+          onOpenWithSystem={handleOpenWithSystem}
           onOpenDirectoryTab={handleOpenDirectoryTab}
           onRunPluginAction={(action) =>
             runPluginAction(action, fileContextSelectedItems)

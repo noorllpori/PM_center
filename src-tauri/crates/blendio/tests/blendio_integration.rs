@@ -82,7 +82,10 @@ fn unique_temp_path(file_name: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("blendio-test-{}-{stamp}-{file_name}", std::process::id()))
+    std::env::temp_dir().join(format!(
+        "blendio-test-{}-{stamp}-{file_name}",
+        std::process::id()
+    ))
 }
 
 fn copy_sample(source: &Path, file_name: &str) -> PathBuf {

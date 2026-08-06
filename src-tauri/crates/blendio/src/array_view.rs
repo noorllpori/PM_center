@@ -32,10 +32,9 @@ pub fn read_struct_array<'a>(
     let Some(block) = file.resolve_old_ptr(old_ptr) else {
         return Ok(None);
     };
-    let struct_def =
-        file.schema()
-            .struct_by_name(struct_name)
-            .ok_or_else(|| BlendError::InvalidSdnaOwned(format!("unknown struct type {struct_name}")))?;
+    let struct_def = file.schema().struct_by_name(struct_name).ok_or_else(|| {
+        BlendError::InvalidSdnaOwned(format!("unknown struct type {struct_name}"))
+    })?;
     let expected_len = struct_def
         .size
         .checked_mul(count)

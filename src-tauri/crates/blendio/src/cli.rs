@@ -177,7 +177,12 @@ fn render_info_text(path: &Path, summary: &FileSummary) -> String {
     )
     .unwrap();
     writeln!(out, "Header size: {} bytes", summary.header.header_size).unwrap();
-    writeln!(out, "BHead layout: {}", bhead_label(summary.header.bhead_type)).unwrap();
+    writeln!(
+        out,
+        "BHead layout: {}",
+        bhead_label(summary.header.bhead_type)
+    )
+    .unwrap();
     writeln!(out, "Block count: {}", summary.block_count).unwrap();
     writeln!(out, "ID count: {}", summary.id_count).unwrap();
     writeln!(
@@ -336,7 +341,12 @@ fn render_block_code_section(out: &mut String, items: &[crate::summary::BlockCod
 
     writeln!(out, "Block codes ({})", items.len()).unwrap();
     for item in items {
-        writeln!(out, "  {} count={} bytes={}", item.code, item.count, item.bytes).unwrap();
+        writeln!(
+            out,
+            "  {} count={} bytes={}",
+            item.code, item.count, item.bytes
+        )
+        .unwrap();
     }
     writeln!(out).unwrap();
 }
@@ -682,7 +692,8 @@ fn format_modifiers(items: &[ModifierSummary]) -> String {
         return "-".to_owned();
     }
 
-    items.iter()
+    items
+        .iter()
         .map(|item| format!("{}:{}", item.name, item.modifier_type))
         .collect::<Vec<_>>()
         .join(", ")

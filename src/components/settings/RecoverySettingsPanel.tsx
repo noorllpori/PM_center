@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import {
   Boxes,
   Blocks,
+  FileCog,
   LogOut,
   RefreshCcw,
   ShieldCheck,
@@ -12,15 +13,17 @@ import { ConfirmDialog, Dialog } from '../Dialog';
 import { useWorkspaceProfileStore } from '../../stores/workspaceProfileStore';
 import { CapabilityDiagnosticsSection } from './CapabilityDiagnosticsSection';
 import { ComponentRuntimeDiagnosticsSection } from './ComponentRuntimeDiagnosticsSection';
+import { FileRoutingSettingsSection } from './FileRoutingSettingsSection';
 import { ModuleDiagnosticsSection } from './ModuleDiagnosticsSection';
 import { WorkspaceProfileDiagnosticsSection } from './WorkspaceProfileDiagnosticsSection';
 
-type RecoveryPage = 'profiles' | 'modules' | 'components' | 'capabilities';
+type RecoveryPage = 'profiles' | 'modules' | 'components' | 'routing' | 'capabilities';
 
 const RECOVERY_PAGES = [
   { id: 'profiles', label: '装配方案', icon: SlidersHorizontal },
   { id: 'modules', label: '模块与组件', icon: Boxes },
   { id: 'components', label: '组件运行时', icon: Blocks },
+  { id: 'routing', label: '文件打开方式', icon: FileCog },
   { id: 'capabilities', label: '权限诊断', icon: ShieldCheck },
 ] as const;
 
@@ -132,6 +135,7 @@ export function RecoverySettingsPanel({
             {activePage === 'profiles' ? <WorkspaceProfileDiagnosticsSection /> : null}
             {activePage === 'modules' ? <ModuleDiagnosticsSection /> : null}
             {activePage === 'components' ? <ComponentRuntimeDiagnosticsSection /> : null}
+            {activePage === 'routing' ? <FileRoutingSettingsSection /> : null}
             {activePage === 'capabilities' ? <CapabilityDiagnosticsSection /> : null}
           </main>
         </div>

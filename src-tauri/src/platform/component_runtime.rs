@@ -1,8 +1,13 @@
+use super::presentation_templates::{
+    load_presentation_template_preview, validate_presentation_component,
+    PresentationTemplatePreview, PresentationTemplatePreviewRequest,
+};
 use base64::Engine;
 use chrono::Utc;
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use pmc_platform::{
     parse_component_manifest, parse_package_header, validate_component_graph, ComponentManifestV1,
-    ComponentRuntime, DigestAlgorithm, PackageKind, PageTemplateContribution,
+    ComponentRuntime, DigestAlgorithm, PackageKind, PageTemplateContribution, PlatformTarget,
     ShellTemplateContribution, ThemePresetContribution, ValidateContract,
 };
 use serde::{Deserialize, Serialize};
@@ -24,7 +29,9 @@ use walkdir::WalkDir;
 use zip::ZipArchive;
 
 const COMPONENT_STATE_SCHEMA_VERSION: u16 = 1;
+const COMPONENT_TRUST_SCHEMA_VERSION: u16 = 1;
 const COMPONENT_MANIFEST_FILE: &str = "component.json";
+const COMPONENT_TRUST_FILE: &str = "trusted-publishers.json";
 const MAX_COMPONENT_FILES: usize = 4096;
 const MAX_COMPONENT_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_CAPTURED_LOG_BYTES: usize = 2 * 1024 * 1024;
@@ -39,6 +46,8 @@ pub enum ComponentRuntimeErrorCode {
     ComponentAlreadyInstalled,
     ComponentManifestInvalid,
     ComponentPackageInvalid,
+    ComponentPackageUntrusted,
+    ComponentPackageSignatureInvalid,
     ComponentRuntimeUnsupported,
     ComponentOperationConflict,
     ComponentOperationNotFound,
@@ -217,7 +226,58 @@ pub struct ComponentPackageInspection {
     pub file_count: usize,
     pub total_bytes: u64,
     pub package_digest: Option<String>,
+    pub content_digest: Option<String>,
+    pub publisher: Option<ComponentPackagePublisher>,
+    pub license: Option<String>,
+    pub trust: ComponentPackageTrust,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComponentPackagePublisher {
+    pub id: String,
+    pub display_name: String,
+    pub public_key: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ComponentPackageTrustStatus {
+    IntegrityOnly,
+    SignedUntrusted,
+    Trusted,
+    InvalidSignature,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComponentPackageTrust {
+    pub status: ComponentPackageTrustStatus,
+    pub signature_present: bool,
+    pub signature_valid: bool,
+    pub installable: bool,
+    pub message: String,
+}
+
+/// An archive that can be embedded in a portable workspace.  The path is
+/// deliberately kept inside the component runtime; callers only receive a
+/// validated, immutable archive path rather than a component directory.
+#[derive(Debug, Clone)]
+pub struct WorkspaceComponentArchive {
+    pub component_id: String,
+    pub version: Option<String>,
+    pub version_requirement: String,
+    pub package_path: Option<PathBuf>,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkspaceComponentInstallResult {
+    /// Components that did not exist before this import. They are the only
+    /// components that may be removed if profile persistence subsequently
+    /// fails.
+    pub installed_component_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -257,6 +317,31 @@ struct StoredComponentRuntimeState {
     schema_version: u16,
     #[serde(default)]
     removed_bundled: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredTrustedPublisher {
+    id: String,
+    display_name: String,
+    public_key: String,
+    trusted_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredComponentTrustState {
+    schema_version: u16,
+    publishers: Vec<StoredTrustedPublisher>,
+}
+
+impl Default for StoredComponentTrustState {
+    fn default() -> Self {
+        Self {
+            schema_version: COMPONENT_TRUST_SCHEMA_VERSION,
+            publishers: Vec::new(),
+        }
+    }
 }
 
 impl Default for StoredComponentRuntimeState {
@@ -304,10 +389,13 @@ pub struct ComponentRuntimeManager {
     app_handle: AppHandle,
     root_path: PathBuf,
     packages_path: PathBuf,
+    archives_path: PathBuf,
     state_path: PathBuf,
+    trust_path: PathBuf,
     logs_path: PathBuf,
     bundled: BTreeMap<String, ComponentManifestV1>,
     state: Mutex<StoredComponentRuntimeState>,
+    trusted_publishers: Mutex<BTreeMap<String, StoredTrustedPublisher>>,
     catalog: Mutex<BTreeMap<String, InstalledComponent>>,
     operations: Mutex<HashMap<String, Arc<OperationControl>>>,
     history: Mutex<VecDeque<ComponentOperationSummary>>,
@@ -324,9 +412,12 @@ impl ComponentRuntimeManager {
     ) -> Result<Arc<Self>, ComponentRuntimeError> {
         let root_path = app_data_dir.join("components");
         let packages_path = root_path.join("packages");
+        let archives_path = root_path.join("archives");
         let logs_path = root_path.join("logs");
         let state_path = root_path.join("runtime-state.json");
+        let trust_path = root_path.join(COMPONENT_TRUST_FILE);
         fs::create_dir_all(&packages_path)
+            .and_then(|_| fs::create_dir_all(&archives_path))
             .and_then(|_| fs::create_dir_all(&logs_path))
             .map_err(|error| io_error("创建组件运行时目录失败", error))?;
 
@@ -339,6 +430,11 @@ impl ComponentRuntimeManager {
             .map(|manifest| (manifest.id.clone(), manifest))
             .collect::<BTreeMap<_, _>>();
         let state = load_state(&state_path)?;
+        let trusted_publishers = load_trusted_publishers(&trust_path)?
+            .publishers
+            .into_iter()
+            .map(|publisher| (publisher.id.clone(), publisher))
+            .collect::<BTreeMap<_, _>>();
         let catalog = load_catalog(&packages_path, &bundled, &state)?;
         validate_component_graph(
             &catalog
@@ -352,10 +448,13 @@ impl ComponentRuntimeManager {
             app_handle,
             root_path,
             packages_path,
+            archives_path,
             state_path,
+            trust_path,
             logs_path,
             bundled,
             state: Mutex::new(state),
+            trusted_publishers: Mutex::new(trusted_publishers),
             catalog: Mutex::new(catalog),
             operations: Mutex::new(HashMap::new()),
             history: Mutex::new(VecDeque::new()),
@@ -517,6 +616,9 @@ impl ComponentRuntimeManager {
             ));
         }
         validate_entry(&staging, &staged_manifest)?;
+        validate_platform_compatibility(&staged_manifest)?;
+        validate_native_library_entry(&staging, &staged_manifest)?;
+        validate_presentation_component(&staging, &staged_manifest)?;
         self.commit_staged_component(staging, staged_manifest, ComponentInstallSource::Local)
             .await
     }
@@ -577,7 +679,406 @@ impl ComponentRuntimeManager {
         &self,
         package_path: &str,
     ) -> Result<ComponentPackageInspection, ComponentRuntimeError> {
-        inspect_component_package(Path::new(package_path))
+        let trusted = self
+            .trusted_publishers
+            .lock()
+            .expect("component trust mutex poisoned")
+            .clone();
+        inspect_component_package_with_trust(Path::new(package_path), &trusted)
+    }
+
+    pub fn read_checked_package_manifest(
+        &self,
+        package_path: &str,
+    ) -> Result<ComponentManifestV1, ComponentRuntimeError> {
+        // `inspect_package` has already completed the archive path, size and
+        // digest checks. This variant lets a workspace preview show an
+        // untrusted publisher as a blocking item instead of failing before a
+        // user can see what the archive contains. It must never be used to
+        // execute or install the package.
+        let _ = self.inspect_package(package_path)?;
+        read_component_manifest_from_package(Path::new(package_path))
+    }
+
+    fn archive_path_for(&self, manifest: &ComponentManifestV1) -> PathBuf {
+        self.archives_path.join(archive_file_name(manifest))
+    }
+
+    fn cache_component_package(
+        &self,
+        package_path: &Path,
+        manifest: &ComponentManifestV1,
+    ) -> Result<(), ComponentRuntimeError> {
+        fs::create_dir_all(&self.archives_path)
+            .map_err(|error| io_error("创建组件归档缓存目录失败", error))?;
+        let destination = self.archive_path_for(manifest);
+        copy_file_atomic(package_path, &destination)
+    }
+
+    /// Returns the exact, previously verified archives required by a profile.
+    /// A directory-installed or bundled component intentionally remains a
+    /// reference: Nexora must never synthesize a redistributable package from
+    /// code whose publisher/signature information is unavailable.
+    pub fn workspace_component_archives(
+        &self,
+        requested: &[(String, String)],
+    ) -> Vec<WorkspaceComponentArchive> {
+        let catalog = self
+            .catalog
+            .lock()
+            .expect("component catalog mutex poisoned")
+            .clone();
+        let mut required = BTreeMap::<String, String>::new();
+        let mut pending = requested.to_vec();
+
+        while let Some((component_id, version_requirement)) = pending.pop() {
+            if required.contains_key(&component_id) {
+                continue;
+            }
+            required.insert(component_id.clone(), version_requirement);
+            if let Some(component) = catalog.get(&component_id) {
+                for dependency in &component.manifest.requires_components {
+                    pending.push((
+                        dependency.id.clone(),
+                        dependency.version_requirement.clone(),
+                    ));
+                }
+            }
+        }
+
+        required
+            .into_iter()
+            .map(|(component_id, version_requirement)| {
+                let Some(component) = catalog.get(&component_id) else {
+                    return WorkspaceComponentArchive {
+                        component_id,
+                        version: None,
+                        version_requirement,
+                        package_path: None,
+                        reason: Some("此组件当前未安装，只保留依赖引用。".into()),
+                    };
+                };
+                if component
+                    .manifest
+                    .extensions
+                    .get("redistributable")
+                    .and_then(Value::as_bool)
+                    == Some(false)
+                {
+                    return WorkspaceComponentArchive {
+                        component_id,
+                        version: Some(component.manifest.version.clone()),
+                        version_requirement,
+                        package_path: None,
+                        reason: Some("组件声明为不可重新分发，只保留依赖引用。".into()),
+                    };
+                }
+                let archive_path = self.archive_path_for(&component.manifest);
+                let validated_archive = archive_path
+                    .is_file()
+                    .then(|| {
+                        self.inspect_package(&archive_path.to_string_lossy())
+                            .ok()
+                            .filter(|inspection| {
+                                inspection.component_id.as_deref() == Some(component_id.as_str())
+                                    && inspection.component_version.as_deref()
+                                        == Some(component.manifest.version.as_str())
+                                    && inspection.trust.installable
+                            })
+                            .map(|_| archive_path.clone())
+                    })
+                    .flatten();
+                WorkspaceComponentArchive {
+                    component_id,
+                    version: Some(component.manifest.version.clone()),
+                    version_requirement,
+                    package_path: validated_archive,
+                    reason: if self.archive_path_for(&component.manifest).is_file()
+                        && self
+                            .inspect_package(&archive_path.to_string_lossy())
+                            .ok()
+                            .is_some_and(|inspection| {
+                                inspection.component_id.as_deref()
+                                    == Some(component.manifest.id.as_str())
+                                    && inspection.component_version.as_deref()
+                                        == Some(component.manifest.version.as_str())
+                                    && inspection.trust.installable
+                            }) {
+                        None
+                    } else if archive_path.is_file() {
+                        Some("已缓存的组件包不再匹配当前版本或信任状态，只保留依赖引用。".into())
+                    } else if component.source == ComponentInstallSource::Bundled {
+                        Some("随 Nexora 提供的组件没有独立分发包，只保留依赖引用。".into())
+                    } else {
+                        Some("此组件不是从已验证的 .pmc-pack 安装，只保留依赖引用。".into())
+                    },
+                }
+            })
+            .collect()
+    }
+
+    /// Installs a group of embedded component packages as one operation. This
+    /// intentionally rejects version replacement: a portable workspace may
+    /// add missing components, but may not silently replace working local
+    /// components. Existing identical versions are reused.
+    pub async fn install_workspace_packages_atomically(
+        &self,
+        package_paths: &[PathBuf],
+    ) -> Result<WorkspaceComponentInstallResult, ComponentRuntimeError> {
+        if package_paths.is_empty() {
+            return Ok(WorkspaceComponentInstallResult {
+                installed_component_ids: Vec::new(),
+            });
+        }
+        let _guard = self.mutation_lock.lock().await;
+        let transaction_root = self
+            .root_path
+            .join(".workspace-staging")
+            .join(Uuid::new_v4().simple().to_string());
+        let staged_root = transaction_root.join("components");
+        let cached_root = transaction_root.join("archives");
+        fs::create_dir_all(&staged_root)
+            .and_then(|_| fs::create_dir_all(&cached_root))
+            .map_err(|error| io_error("创建装配空间组件暂存目录失败", error))?;
+
+        let result = (|| {
+            let mut staged = Vec::<(ComponentManifestV1, PathBuf, PathBuf)>::new();
+            let mut seen = BTreeSet::new();
+            let catalog = self
+                .catalog
+                .lock()
+                .expect("component catalog mutex poisoned")
+                .clone();
+
+            for package_path in package_paths {
+                let package_path = fs::canonicalize(package_path)
+                    .map_err(|error| io_error("装配空间内的组件包不可读取", error))?;
+                let inspection = self.inspect_package(&package_path.to_string_lossy())?;
+                ensure_package_installable(&inspection)?;
+                let component_id = inspection.component_id.clone().ok_or_else(|| {
+                    ComponentRuntimeError::new(
+                        ComponentRuntimeErrorCode::ComponentPackageInvalid,
+                        "组件包缺少组件 ID",
+                    )
+                })?;
+                let component_version = inspection.component_version.clone().ok_or_else(|| {
+                    ComponentRuntimeError::new(
+                        ComponentRuntimeErrorCode::ComponentPackageInvalid,
+                        "组件包缺少组件版本",
+                    )
+                })?;
+                if !seen.insert(component_id.clone()) {
+                    return Err(ComponentRuntimeError::new(
+                        ComponentRuntimeErrorCode::ComponentPackageInvalid,
+                        format!("装配空间包含重复组件包: {component_id}"),
+                    ));
+                }
+                if let Some(installed) = catalog.get(&component_id) {
+                    if installed.manifest.version != component_version {
+                        return Err(ComponentRuntimeError::new(
+                            ComponentRuntimeErrorCode::ComponentDependencyConflict,
+                            format!(
+                                "本机已有组件 {component_id} {}，装配空间要求 {}；为避免静默替换已停止导入",
+                                installed.manifest.version, component_version
+                            ),
+                        ));
+                    }
+                    continue;
+                }
+
+                let component_staging = staged_root.join(&component_id);
+                extract_component_package(&package_path, &component_staging)?;
+                let manifest =
+                    read_component_manifest(&component_staging.join(COMPONENT_MANIFEST_FILE))?;
+                validate_entry(&component_staging, &manifest)?;
+                validate_platform_compatibility(&manifest)?;
+                validate_native_library_entry(&component_staging, &manifest)?;
+                validate_presentation_component(&component_staging, &manifest)?;
+                if manifest.id != component_id || manifest.version != component_version {
+                    return Err(ComponentRuntimeError::new(
+                        ComponentRuntimeErrorCode::ComponentPackageInvalid,
+                        "组件包检查结果与解压后的 component.json 不一致",
+                    ));
+                }
+                let archive_staging = cached_root.join(archive_file_name(&manifest));
+                copy_file_atomic(&package_path, &archive_staging)?;
+                staged.push((manifest, component_staging, archive_staging));
+            }
+
+            let mut next_manifests = catalog
+                .values()
+                .map(|component| component.manifest.clone())
+                .collect::<Vec<_>>();
+            next_manifests.extend(staged.iter().map(|(manifest, _, _)| manifest.clone()));
+            validate_component_graph(&next_manifests).map_err(contract_error)?;
+
+            let mut committed = Vec::<(ComponentManifestV1, PathBuf, PathBuf)>::new();
+            for (manifest, _, _) in &staged {
+                if self.packages_path.join(&manifest.id).exists() {
+                    return Err(ComponentRuntimeError::new(
+                        ComponentRuntimeErrorCode::ComponentDependencyConflict,
+                        format!("组件目录在预检后发生变化: {}", manifest.id),
+                    ));
+                }
+            }
+            for (manifest, component_staging, archive_staging) in &staged {
+                let target = self.packages_path.join(&manifest.id);
+                if let Err(error) = fs::rename(component_staging, &target) {
+                    for (_, component_target, _) in committed.iter().rev() {
+                        let _ = fs::remove_dir_all(component_target);
+                    }
+                    return Err(io_error("提交装配空间组件失败", error));
+                }
+                committed.push((manifest.clone(), target, archive_staging.clone()));
+            }
+
+            for (manifest, _, archive_staging) in &committed {
+                let archive_target = self.archive_path_for(manifest);
+                if let Err(error) = replace_file(archive_staging, &archive_target) {
+                    for (_, component_target, _) in committed.iter().rev() {
+                        let _ = fs::remove_dir_all(component_target);
+                    }
+                    return Err(error);
+                }
+            }
+
+            let mut catalog_guard = self
+                .catalog
+                .lock()
+                .expect("component catalog mutex poisoned");
+            for (manifest, target, _) in &committed {
+                catalog_guard.insert(
+                    manifest.id.clone(),
+                    InstalledComponent {
+                        manifest: manifest.clone(),
+                        source: ComponentInstallSource::Marketplace,
+                        package_root: Some(target.clone()),
+                    },
+                );
+            }
+            Ok(WorkspaceComponentInstallResult {
+                installed_component_ids: committed
+                    .into_iter()
+                    .map(|(manifest, _, _)| manifest.id)
+                    .collect(),
+            })
+        })();
+
+        if result.is_err() {
+            // Targets created above are removed by the failing branch when
+            // possible. The staging root is disposable in every case.
+            let _ = fs::remove_dir_all(&transaction_root);
+        } else {
+            let _ = fs::remove_dir_all(&transaction_root);
+        }
+        result
+    }
+
+    pub async fn rollback_workspace_package_install(
+        &self,
+        component_ids: &[String],
+    ) -> Result<(), ComponentRuntimeError> {
+        if component_ids.is_empty() {
+            return Ok(());
+        }
+        let _guard = self.mutation_lock.lock().await;
+        for component_id in component_ids {
+            if self.active_operation_count(component_id) > 0 {
+                return Err(ComponentRuntimeError::new(
+                    ComponentRuntimeErrorCode::ComponentOperationConflict,
+                    format!("组件 {component_id} 在导入回滚时已开始运行"),
+                ));
+            }
+        }
+        let mut catalog = self
+            .catalog
+            .lock()
+            .expect("component catalog mutex poisoned");
+        for component_id in component_ids {
+            let Some(installed) = catalog.remove(component_id) else {
+                continue;
+            };
+            if let Some(path) = installed.package_root {
+                fs::remove_dir_all(path)
+                    .map_err(|error| io_error("回滚装配空间组件失败", error))?;
+            }
+            let archive = self.archive_path_for(&installed.manifest);
+            let _ = fs::remove_file(archive);
+        }
+        Ok(())
+    }
+
+    pub fn trust_package_publisher(
+        &self,
+        package_path: &str,
+    ) -> Result<ComponentPackagePublisher, ComponentRuntimeError> {
+        let inspection = self.inspect_package(package_path)?;
+        let publisher = inspection.publisher.clone().ok_or_else(|| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentPackageSignatureInvalid,
+                "组件包未提供可验证的发布者签名，不能建立信任",
+            )
+        })?;
+        if !inspection.trust.signature_valid {
+            return Err(ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentPackageSignatureInvalid,
+                "组件包签名无效，不能信任发布者",
+            ));
+        }
+        let mut trusted = self
+            .trusted_publishers
+            .lock()
+            .expect("component trust mutex poisoned");
+        let previous = trusted.get(&publisher.id).cloned();
+        trusted.insert(
+            publisher.id.clone(),
+            StoredTrustedPublisher {
+                id: publisher.id.clone(),
+                display_name: publisher.display_name.clone(),
+                public_key: publisher.public_key.clone(),
+                trusted_at: Utc::now().timestamp_millis(),
+            },
+        );
+        if let Err(error) = persist_trusted_publishers(
+            &self.trust_path,
+            &StoredComponentTrustState {
+                schema_version: COMPONENT_TRUST_SCHEMA_VERSION,
+                publishers: trusted.values().cloned().collect(),
+            },
+        ) {
+            if let Some(previous) = previous {
+                trusted.insert(publisher.id.clone(), previous);
+            } else {
+                trusted.remove(&publisher.id);
+            }
+            return Err(error);
+        }
+        Ok(publisher)
+    }
+
+    pub fn presentation_template_preview(
+        &self,
+        request: &PresentationTemplatePreviewRequest,
+    ) -> Result<PresentationTemplatePreview, ComponentRuntimeError> {
+        let component = self
+            .catalog
+            .lock()
+            .expect("component catalog mutex poisoned")
+            .get(request.component_id.trim())
+            .cloned()
+            .ok_or_else(|| {
+                ComponentRuntimeError::new(
+                    ComponentRuntimeErrorCode::ComponentNotInstalled,
+                    format!("组件 {} 未安装", request.component_id),
+                )
+            })?;
+        let root = component.package_root.as_ref().ok_or_else(|| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentRuntimeUnsupported,
+                "随程序提供的兼容模板由宿主直接渲染，不提供外部 HTML 预览",
+            )
+        })?;
+        load_presentation_template_preview(root, &component.manifest, &request.template_id)
     }
 
     pub async fn install_from_package(
@@ -587,6 +1088,8 @@ impl ComponentRuntimeManager {
         let _guard = self.mutation_lock.lock().await;
         let package_path = fs::canonicalize(&request.package_path)
             .map_err(|error| io_error("组件包不可用", error))?;
+        let inspection = self.inspect_package(&package_path.to_string_lossy())?;
+        ensure_package_installable(&inspection)?;
         let staging_root = self.root_path.join(".staging");
         fs::create_dir_all(&staging_root)
             .map_err(|error| io_error("创建组件安装暂存目录失败", error))?;
@@ -606,8 +1109,32 @@ impl ComponentRuntimeManager {
             let _ = fs::remove_dir_all(&staging);
             return Err(error);
         }
-        self.commit_staged_component(staging, manifest, ComponentInstallSource::Marketplace)
-            .await
+        if let Err(error) = validate_platform_compatibility(&manifest) {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+        if let Err(error) = validate_native_library_entry(&staging, &manifest) {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+        if let Err(error) = validate_presentation_component(&staging, &manifest) {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+        let installed = self
+            .commit_staged_component(staging, manifest, ComponentInstallSource::Marketplace)
+            .await?;
+        // Keeping the original verified archive is what allows a later
+        // self-contained workspace export to preserve the publisher signature.
+        // A cache failure is reported in the log but never turns a completed
+        // component installation into a false failure.
+        if let Err(error) = self.cache_component_package(&package_path, &installed) {
+            eprintln!(
+                "[components] 已安装 {}, 但无法缓存原始 .pmc-pack：{}",
+                installed.id, error.message
+            );
+        }
+        Ok(installed)
     }
 
     pub async fn uninstall(
@@ -953,8 +1480,9 @@ impl ComponentRuntimeManager {
         payload: Value,
     ) -> Result<ProcessResponse, ComponentRuntimeError> {
         match host_adapter(&installed.manifest) {
-            Some("builtin-rust") => {
-                invoke_blendio_adapter(&installed.manifest, control, payload).await
+            Some("bundled-resource-process") => {
+                self.invoke_bundled_resource_process(installed, control, payload)
+                    .await
             }
             Some("builtin-catalog") => invoke_catalog_adapter(&installed.manifest, payload),
             Some(other) => Err(ComponentRuntimeError::new(
@@ -975,7 +1503,8 @@ impl ComponentRuntimeManager {
                 }
                 ComponentRuntime::DataPack => invoke_data_pack(installed, payload),
                 ComponentRuntime::NativeLibrary => {
-                    self.invoke_native_library(installed, control, payload).await
+                    self.invoke_native_library(installed, control, payload)
+                        .await
                 }
                 ComponentRuntime::BuiltinRust => Err(ComponentRuntimeError::new(
                     ComponentRuntimeErrorCode::ComponentRuntimeUnsupported,
@@ -983,6 +1512,48 @@ impl ComponentRuntimeManager {
                 )),
             },
         }
+    }
+
+    async fn invoke_bundled_resource_process(
+        &self,
+        installed: &InstalledComponent,
+        control: &Arc<OperationControl>,
+        payload: Value,
+    ) -> Result<ProcessResponse, ComponentRuntimeError> {
+        if installed.manifest.id != super::builtin_components::PM_BLENDIO_COMPONENT_ID {
+            return Err(ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentRuntimeUnsupported,
+                format!("组件 {} 没有随程序分发的受监督进程", installed.manifest.id),
+            ));
+        }
+        let entry = blendio_service_path().ok_or_else(|| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentHostUnavailable,
+                "未找到 pmc-blendio-service；BlenderIO 不会回退到 Nexora 主进程执行",
+            )
+        })?;
+        let parent = entry.parent().ok_or_else(|| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentHostUnavailable,
+                "BlenderIO 服务资源路径无效",
+            )
+        })?;
+        let file_name = entry
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| {
+                ComponentRuntimeError::new(
+                    ComponentRuntimeErrorCode::ComponentHostUnavailable,
+                    "BlenderIO 服务文件名无效",
+                )
+            })?;
+        let mut process_component = installed.clone();
+        process_component.package_root = Some(parent.to_path_buf());
+        process_component.manifest.entry = Some(file_name.into());
+        process_component.manifest.runtime = ComponentRuntime::NativeProcess;
+        process_component.manifest.extensions.remove("hostAdapter");
+        self.invoke_one_shot(&process_component, control, payload, false)
+            .await
     }
 
     async fn invoke_native_library(
@@ -1006,7 +1577,12 @@ impl ComponentRuntimeManager {
         let entry = resolve_entry(package_root, &installed.manifest)?;
         let mut command = crate::process_utils::tokio_command(&host);
         command
-            .args(["--dll", &entry.to_string_lossy(), "--component-id", &installed.manifest.id])
+            .args([
+                "--dll",
+                &entry.to_string_lossy(),
+                "--component-id",
+                &installed.manifest.id,
+            ])
             .current_dir(package_root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1603,120 +2179,6 @@ async fn invoke_worker_message(
     }
 }
 
-async fn invoke_blendio_adapter(
-    manifest: &ComponentManifestV1,
-    control: &Arc<OperationControl>,
-    payload: Value,
-) -> Result<ProcessResponse, ComponentRuntimeError> {
-    if manifest.id != super::builtin_components::PM_BLENDIO_COMPONENT_ID {
-        return Err(ComponentRuntimeError::new(
-            ComponentRuntimeErrorCode::ComponentRuntimeUnsupported,
-            format!("组件 {} 没有内置 Rust 适配器", manifest.id),
-        ));
-    }
-    let command = payload
-        .get("command")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let input = payload.get("input").cloned().unwrap_or(Value::Null);
-    let path = input_path(&input)?;
-    let cancelled = control.cancelled.load(Ordering::SeqCst);
-    if cancelled {
-        return Err(ComponentRuntimeError::new(
-            ComponentRuntimeErrorCode::ComponentOperationCancelled,
-            "操作已取消",
-        ));
-    }
-    let command_for_worker = command.clone();
-    let result = tokio::task::spawn_blocking(move || -> Result<Value, ComponentRuntimeError> {
-        let path_buf = PathBuf::from(&path);
-        match command_for_worker.as_str() {
-            "inspect" | "read-render-settings" => {
-                let file = blendio::BlendFile::open(&path_buf).map_err(component_process_error)?;
-                let summary = blendio::summarize(&file).map_err(component_process_error)?;
-                let external = blendio::collect_external_data_with_base(&file, Some(&path_buf))
-                    .map_err(component_process_error)?;
-                Ok(json!({ "summary": summary, "externalData": external }))
-            }
-            "collect-external-data" => {
-                let file = blendio::BlendFile::open(&path_buf).map_err(component_process_error)?;
-                let external = blendio::collect_external_data_with_base(&file, Some(&path_buf))
-                    .map_err(component_process_error)?;
-                serde_json::to_value(external).map_err(protocol_error)
-            }
-            "extract-preview" => {
-                let preview = blendio::extract_preview_from_path(&path_buf)
-                    .map_err(component_process_error)?;
-                let Some(preview) = preview else {
-                    return Ok(Value::Null);
-                };
-                let image = image::RgbaImage::from_raw(preview.width, preview.height, preview.rgba)
-                    .ok_or_else(|| {
-                        ComponentRuntimeError::new(
-                            ComponentRuntimeErrorCode::ComponentProcessFailed,
-                            "Blender 预览像素无效",
-                        )
-                    })?;
-                let mut bytes = std::io::Cursor::new(Vec::new());
-                image::DynamicImage::ImageRgba8(image)
-                    .write_to(&mut bytes, image::ImageFormat::Png)
-                    .map_err(component_process_error)?;
-                Ok(json!({
-                    "width": preview.width,
-                    "height": preview.height,
-                    "pngBase64": base64::engine::general_purpose::STANDARD.encode(bytes.into_inner()),
-                }))
-            }
-            "edit-render-settings" => {
-                let scene_selector = serde_json::from_value::<blendio::SceneSelector>(
-                    input.get("sceneSelector").cloned().unwrap_or(Value::Null),
-                )
-                .map_err(protocol_error)?;
-                let edit = serde_json::from_value::<blendio::SceneRenderEdit>(
-                    input.get("edit").cloned().unwrap_or(Value::Null),
-                )
-                .map_err(protocol_error)?;
-                let options = input
-                    .get("options")
-                    .cloned()
-                    .map(serde_json::from_value::<blendio::WriteOptions>)
-                    .transpose()
-                    .map_err(protocol_error)?
-                    .unwrap_or_default();
-                let mut session = blendio::BlendEditSession::open(&path_buf)
-                    .map_err(component_process_error)?;
-                session
-                    .edit_scene_render(scene_selector, edit)
-                    .map_err(component_process_error)?;
-                let report = session.commit(options).map_err(component_process_error)?;
-                serde_json::to_value(report).map_err(protocol_error)
-            }
-            other => Err(ComponentRuntimeError::new(
-                ComponentRuntimeErrorCode::ComponentProtocolError,
-                format!("BlenderIO 不支持命令 {other}"),
-            )),
-        }
-    })
-    .await
-    .map_err(|error| {
-        ComponentRuntimeError::new(
-            ComponentRuntimeErrorCode::ComponentProcessFailed,
-            format!("BlenderIO 适配器任务失败: {error}"),
-        )
-    })??;
-    if control.cancelled.load(Ordering::SeqCst) {
-        return Err(ComponentRuntimeError::new(
-            ComponentRuntimeErrorCode::ComponentOperationCancelled,
-            "操作已取消，旧结果已丢弃",
-        ));
-    }
-    Ok(ProcessResponse {
-        output: result,
-        logs: vec![format!("BlenderIO {command} completed")],
-    })
-}
-
 fn invoke_catalog_adapter(
     manifest: &ComponentManifestV1,
     payload: Value,
@@ -1861,6 +2323,9 @@ fn load_catalog(
         }
         let manifest = read_component_manifest(&manifest_path)?;
         validate_entry(&path, &manifest)?;
+        validate_platform_compatibility(&manifest)?;
+        validate_native_library_entry(&path, &manifest)?;
+        validate_presentation_component(&path, &manifest)?;
         catalog.insert(
             manifest.id.clone(),
             InstalledComponent {
@@ -1879,7 +2344,51 @@ fn read_component_manifest(path: &Path) -> Result<ComponentManifestV1, Component
     parse_component_manifest(&input).map_err(contract_error)
 }
 
-fn inspect_component_package(path: &Path) -> Result<ComponentPackageInspection, ComponentRuntimeError> {
+fn read_component_manifest_from_package(
+    path: &Path,
+) -> Result<ComponentManifestV1, ComponentRuntimeError> {
+    let file = fs::File::open(path).map_err(|error| io_error("打开组件归档失败", error))?;
+    let mut archive = ZipArchive::new(file).map_err(|error| {
+        ComponentRuntimeError::new(
+            ComponentRuntimeErrorCode::ComponentPackageInvalid,
+            format!("组件包不是有效 ZIP 归档: {error}"),
+        )
+    })?;
+    let mut entry = archive.by_name(COMPONENT_MANIFEST_FILE).map_err(|_| {
+        ComponentRuntimeError::new(
+            ComponentRuntimeErrorCode::ComponentPackageInvalid,
+            "组件包根目录缺少 component.json",
+        )
+    })?;
+    if entry.encrypted() || entry.size() > 2 * 1024 * 1024 {
+        return Err(ComponentRuntimeError::new(
+            ComponentRuntimeErrorCode::ComponentPackageInvalid,
+            "组件包的 component.json 不安全或过大",
+        ));
+    }
+    let mut bytes = Vec::with_capacity(entry.size() as usize);
+    entry
+        .read_to_end(&mut bytes)
+        .map_err(|error| io_error("读取组件包 component.json 失败", error))?;
+    let text = std::str::from_utf8(&bytes).map_err(|error| {
+        ComponentRuntimeError::new(
+            ComponentRuntimeErrorCode::ComponentPackageInvalid,
+            format!("component.json 不是 UTF-8: {error}"),
+        )
+    })?;
+    parse_component_manifest(text).map_err(contract_error)
+}
+
+fn inspect_component_package(
+    path: &Path,
+) -> Result<ComponentPackageInspection, ComponentRuntimeError> {
+    inspect_component_package_with_trust(path, &BTreeMap::new())
+}
+
+fn inspect_component_package_with_trust(
+    path: &Path,
+    trusted_publishers: &BTreeMap<String, StoredTrustedPublisher>,
+) -> Result<ComponentPackageInspection, ComponentRuntimeError> {
     let file = fs::File::open(path).map_err(|error| io_error("打开组件归档失败", error))?;
     let mut archive = ZipArchive::new(file).map_err(|error| {
         ComponentRuntimeError::new(
@@ -1891,8 +2400,9 @@ fn inspect_component_package(path: &Path) -> Result<ComponentPackageInspection, 
     let mut file_count = 0usize;
     let mut total_bytes = 0u64;
     let mut digest = blake3::Hasher::new();
+    let mut content_entries = Vec::<(String, Vec<u8>)>::new();
     let mut manifest_bytes = None;
-    let mut package_header_bytes = None;
+    let mut package_header = None;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).map_err(|error| {
             ComponentRuntimeError::new(
@@ -1937,7 +2447,9 @@ fn inspect_component_package(path: &Path) -> Result<ComponentPackageInspection, 
             ));
         }
         let mut bytes = Vec::with_capacity(declared_size.min(8 * 1024 * 1024) as usize);
-        entry.read_to_end(&mut bytes).map_err(|error| io_error("读取组件归档内容失败", error))?;
+        entry
+            .read_to_end(&mut bytes)
+            .map_err(|error| io_error("读取组件归档内容失败", error))?;
         if bytes.len() > 128 * 1024 * 1024 {
             return Err(ComponentRuntimeError::new(
                 ComponentRuntimeErrorCode::ComponentPackageInvalid,
@@ -1953,10 +2465,21 @@ fn inspect_component_package(path: &Path) -> Result<ComponentPackageInspection, 
         }
         digest.update(name.as_bytes());
         digest.update(&bytes);
+        if name != "manifest.json" {
+            content_entries.push((name.clone(), bytes.clone()));
+        }
         if name == COMPONENT_MANIFEST_FILE {
             manifest_bytes = Some(bytes);
         } else if name == "manifest.json" {
-            package_header_bytes = Some(bytes);
+            package_header = Some(
+                parse_package_header(std::str::from_utf8(&bytes).map_err(|error| {
+                    ComponentRuntimeError::new(
+                        ComponentRuntimeErrorCode::ComponentPackageInvalid,
+                        format!("组件包 manifest.json 不是 UTF-8: {error}"),
+                    )
+                })?)
+                .map_err(contract_error)?,
+            );
         }
     }
     let manifest_input = manifest_bytes.ok_or_else(|| {
@@ -1966,16 +2489,7 @@ fn inspect_component_package(path: &Path) -> Result<ComponentPackageInspection, 
         )
     })?;
     let mut warnings = Vec::new();
-    if let Some(header_bytes) = package_header_bytes {
-        let header = parse_package_header(
-            std::str::from_utf8(&header_bytes).map_err(|error| {
-                ComponentRuntimeError::new(
-                    ComponentRuntimeErrorCode::ComponentPackageInvalid,
-                    format!("组件包 manifest.json 不是 UTF-8: {error}"),
-                )
-            })?,
-        )
-        .map_err(contract_error)?;
+    if let Some(header) = &package_header {
         if header.kind != PackageKind::ComponentPack
             || header.payload.path != COMPONENT_MANIFEST_FILE
             || header.payload.digest.algorithm != DigestAlgorithm::Blake3
@@ -1990,15 +2504,29 @@ fn inspect_component_package(path: &Path) -> Result<ComponentPackageInspection, 
     } else {
         warnings.push("未提供 PMC_PACKAGE 包头，按兼容模式检查 component.json".into());
     }
-    let manifest = parse_component_manifest(
-        std::str::from_utf8(&manifest_input).map_err(|error| {
+    let manifest =
+        parse_component_manifest(std::str::from_utf8(&manifest_input).map_err(|error| {
             ComponentRuntimeError::new(
                 ComponentRuntimeErrorCode::ComponentPackageInvalid,
                 format!("component.json 不是 UTF-8: {error}"),
             )
-        })?,
-    )
-    .map_err(contract_error)?;
+        })?)
+        .map_err(contract_error)?;
+    content_entries.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut content_digest = blake3::Hasher::new();
+    for (name, bytes) in content_entries {
+        content_digest.update(name.as_bytes());
+        content_digest.update(&[0]);
+        content_digest.update(&bytes);
+    }
+    let content_digest = content_digest.finalize().to_hex().to_string();
+    let trust = inspect_package_trust(
+        package_header.as_ref(),
+        &content_digest,
+        trusted_publishers,
+        manifest.runtime,
+        &mut warnings,
+    )?;
     Ok(ComponentPackageInspection {
         package_path: path.to_string_lossy().into_owned(),
         valid: true,
@@ -2008,6 +2536,17 @@ fn inspect_component_package(path: &Path) -> Result<ComponentPackageInspection, 
         file_count,
         total_bytes,
         package_digest: Some(digest.finalize().to_hex().to_string()),
+        content_digest: Some(content_digest),
+        publisher: package_header
+            .as_ref()
+            .and_then(package_publisher_from_header),
+        license: package_header
+            .as_ref()
+            .and_then(|header| header.extensions.get("license"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string),
+        trust,
         warnings,
     })
 }
@@ -2039,10 +2578,207 @@ fn extract_component_package(path: &Path, destination: &Path) -> Result<(), Comp
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent).map_err(|error| io_error("创建组件解压目录失败", error))?;
         }
-        let mut output = fs::File::create(&target).map_err(|error| io_error("创建组件解压文件失败", error))?;
-        std::io::copy(&mut entry, &mut output).map_err(|error| io_error("解压组件文件失败", error))?;
+        let mut output =
+            fs::File::create(&target).map_err(|error| io_error("创建组件解压文件失败", error))?;
+        std::io::copy(&mut entry, &mut output)
+            .map_err(|error| io_error("解压组件文件失败", error))?;
     }
     Ok(())
+}
+
+fn package_publisher_from_header(
+    header: &pmc_platform::PackageHeaderV1,
+) -> Option<ComponentPackagePublisher> {
+    let value = header.extensions.get("publisher")?.as_object()?;
+    let id = value.get("id")?.as_str()?.trim();
+    let public_key = value.get("publicKey")?.as_str()?.trim();
+    if id.is_empty() || public_key.is_empty() {
+        return None;
+    }
+    let display_name = value
+        .get("displayName")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(id);
+    Some(ComponentPackagePublisher {
+        id: id.into(),
+        display_name: display_name.into(),
+        public_key: public_key.into(),
+    })
+}
+
+fn inspect_package_trust(
+    header: Option<&pmc_platform::PackageHeaderV1>,
+    computed_content_digest: &str,
+    trusted_publishers: &BTreeMap<String, StoredTrustedPublisher>,
+    runtime: ComponentRuntime,
+    warnings: &mut Vec<String>,
+) -> Result<ComponentPackageTrust, ComponentRuntimeError> {
+    let executable = !matches!(
+        runtime,
+        ComponentRuntime::DataPack | ComponentRuntime::BuiltinRust
+    );
+    let Some(header) = header else {
+        warnings.push("未提供 PMC_PACKAGE 包头，无法验证发布者签名。".into());
+        return Ok(ComponentPackageTrust {
+            status: ComponentPackageTrustStatus::IntegrityOnly,
+            signature_present: false,
+            signature_valid: false,
+            installable: !executable,
+            message: if executable {
+                "含可执行代码的组件包必须携带受信任发布者的 Ed25519 签名。".into()
+            } else {
+                "资料包按兼容模式仅做文件完整性检查。".into()
+            },
+        });
+    };
+    let declared_content_digest = header
+        .extensions
+        .get("contentDigest")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if declared_content_digest != Some(computed_content_digest) {
+        return Ok(ComponentPackageTrust {
+            status: ComponentPackageTrustStatus::InvalidSignature,
+            signature_present: header.extensions.contains_key("signature"),
+            signature_valid: false,
+            installable: false,
+            message: "组件包内容摘要与 manifest.json 不匹配。".into(),
+        });
+    }
+    let publisher = package_publisher_from_header(header);
+    let signature_value = header
+        .extensions
+        .get("signature")
+        .and_then(Value::as_object)
+        .and_then(|signature| {
+            (signature.get("algorithm").and_then(Value::as_str) == Some("ed25519"))
+                .then(|| signature.get("value").and_then(Value::as_str))
+                .flatten()
+        });
+    let (Some(publisher), Some(signature_value)) = (publisher, signature_value) else {
+        return Ok(ComponentPackageTrust {
+            status: ComponentPackageTrustStatus::IntegrityOnly,
+            signature_present: header.extensions.contains_key("signature"),
+            signature_valid: false,
+            installable: !executable,
+            message: if executable {
+                "含可执行代码的组件包缺少有效发布者或 Ed25519 签名。".into()
+            } else {
+                "资料包具备内容摘要，但未提供可验证发布者签名。".into()
+            },
+        });
+    };
+    let key_bytes = match base64::engine::general_purpose::STANDARD.decode(&publisher.public_key) {
+        Ok(value) if value.len() == 32 => value,
+        _ => {
+            return Ok(ComponentPackageTrust {
+                status: ComponentPackageTrustStatus::InvalidSignature,
+                signature_present: true,
+                signature_valid: false,
+                installable: false,
+                message: "发布者 Ed25519 公钥无效。".into(),
+            })
+        }
+    };
+    let signature_bytes = match base64::engine::general_purpose::STANDARD.decode(signature_value) {
+        Ok(value) if value.len() == 64 => value,
+        _ => {
+            return Ok(ComponentPackageTrust {
+                status: ComponentPackageTrustStatus::InvalidSignature,
+                signature_present: true,
+                signature_valid: false,
+                installable: false,
+                message: "组件包 Ed25519 签名格式无效。".into(),
+            })
+        }
+    };
+    let verifying_key = VerifyingKey::from_bytes(
+        key_bytes
+            .as_slice()
+            .try_into()
+            .expect("validated Ed25519 key length"),
+    )
+    .map_err(|_| {
+        ComponentRuntimeError::new(
+            ComponentRuntimeErrorCode::ComponentPackageSignatureInvalid,
+            "发布者 Ed25519 公钥无法解析",
+        )
+    })?;
+    let signature = Signature::from_bytes(
+        signature_bytes
+            .as_slice()
+            .try_into()
+            .expect("validated Ed25519 signature length"),
+    );
+    let signed = package_signature_material(header, computed_content_digest)?;
+    if verifying_key.verify(&signed, &signature).is_err() {
+        return Ok(ComponentPackageTrust {
+            status: ComponentPackageTrustStatus::InvalidSignature,
+            signature_present: true,
+            signature_valid: false,
+            installable: false,
+            message: "组件包 Ed25519 签名校验失败。".into(),
+        });
+    }
+    let trusted = trusted_publishers
+        .get(&publisher.id)
+        .is_some_and(|stored| stored.public_key == publisher.public_key);
+    Ok(ComponentPackageTrust {
+        status: if trusted {
+            ComponentPackageTrustStatus::Trusted
+        } else {
+            ComponentPackageTrustStatus::SignedUntrusted
+        },
+        signature_present: true,
+        signature_valid: true,
+        installable: trusted || !executable,
+        message: if trusted {
+            format!("已验证并信任发布者 {}。", publisher.display_name)
+        } else if executable {
+            format!(
+                "发布者 {} 的签名有效，但尚未获得本机信任。",
+                publisher.display_name
+            )
+        } else {
+            format!(
+                "发布者 {} 的签名有效；资料包可在确认后安装。",
+                publisher.display_name
+            )
+        },
+    })
+}
+
+fn package_signature_material(
+    header: &pmc_platform::PackageHeaderV1,
+    content_digest: &str,
+) -> Result<Vec<u8>, ComponentRuntimeError> {
+    let mut unsigned_header = header.clone();
+    unsigned_header.extensions.remove("signature");
+    let mut material = b"nexora.component-pack.v1\0".to_vec();
+    material.extend(serde_json::to_vec(&unsigned_header).map_err(protocol_error)?);
+    material.push(0);
+    material.extend(content_digest.as_bytes());
+    Ok(material)
+}
+
+fn ensure_package_installable(
+    inspection: &ComponentPackageInspection,
+) -> Result<(), ComponentRuntimeError> {
+    if inspection.trust.installable {
+        return Ok(());
+    }
+    Err(ComponentRuntimeError::new(
+        match inspection.trust.status {
+            ComponentPackageTrustStatus::InvalidSignature => {
+                ComponentRuntimeErrorCode::ComponentPackageSignatureInvalid
+            }
+            _ => ComponentRuntimeErrorCode::ComponentPackageUntrusted,
+        },
+        inspection.trust.message.clone(),
+    ))
 }
 
 fn validate_archive_entry_name(name: &str) -> Result<(), ComponentRuntimeError> {
@@ -2067,6 +2803,54 @@ fn validate_archive_entry_name(name: &str) -> Result<(), ComponentRuntimeError> 
     Ok(())
 }
 
+fn archive_file_name(manifest: &ComponentManifestV1) -> String {
+    format!("{}-{}.pmc-pack", manifest.id, manifest.version)
+}
+
+fn copy_file_atomic(source: &Path, destination: &Path) -> Result<(), ComponentRuntimeError> {
+    let parent = destination.parent().ok_or_else(|| {
+        ComponentRuntimeError::new(
+            ComponentRuntimeErrorCode::ComponentIoError,
+            "组件归档缓存路径缺少父目录",
+        )
+    })?;
+    fs::create_dir_all(parent).map_err(|error| io_error("创建组件归档缓存目录失败", error))?;
+    let temporary = parent.join(format!(
+        ".{}.{}.tmp",
+        destination
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("component.pmc-pack"),
+        Uuid::new_v4().simple()
+    ));
+    let result = (|| {
+        let mut input =
+            fs::File::open(source).map_err(|error| io_error("读取组件包缓存来源失败", error))?;
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| io_error("创建组件包缓存临时文件失败", error))?;
+        std::io::copy(&mut input, &mut output)
+            .map_err(|error| io_error("写入组件包缓存失败", error))?;
+        output
+            .sync_all()
+            .map_err(|error| io_error("同步组件包缓存失败", error))?;
+        replace_file(&temporary, destination)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn replace_file(source: &Path, destination: &Path) -> Result<(), ComponentRuntimeError> {
+    if destination.exists() {
+        fs::remove_file(destination).map_err(|error| io_error("替换组件包缓存失败", error))?;
+    }
+    fs::rename(source, destination).map_err(|error| io_error("提交组件包缓存失败", error))
+}
+
 fn validate_entry(
     root: &Path,
     manifest: &ComponentManifestV1,
@@ -2082,6 +2866,111 @@ fn validate_entry(
         ));
     }
     Ok(())
+}
+
+fn validate_platform_compatibility(
+    manifest: &ComponentManifestV1,
+) -> Result<(), ComponentRuntimeError> {
+    let supported = manifest.platforms.iter().any(|target| match target {
+        PlatformTarget::Any => true,
+        PlatformTarget::WindowsX64 => cfg!(all(target_os = "windows", target_arch = "x86_64")),
+        PlatformTarget::WindowsArm64 => cfg!(all(target_os = "windows", target_arch = "aarch64")),
+    });
+    if supported {
+        return Ok(());
+    }
+    Err(ComponentRuntimeError::new(
+        ComponentRuntimeErrorCode::ComponentRuntimeUnsupported,
+        format!(
+            "组件 {} 不支持当前 Nexora 平台（声明：{}）",
+            manifest.id,
+            manifest
+                .platforms
+                .iter()
+                .map(|target| match target {
+                    PlatformTarget::Any => "any",
+                    PlatformTarget::WindowsX64 => "windows-x64",
+                    PlatformTarget::WindowsArm64 => "windows-arm64",
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    ))
+}
+
+fn validate_native_library_entry(
+    root: &Path,
+    manifest: &ComponentManifestV1,
+) -> Result<(), ComponentRuntimeError> {
+    if manifest.runtime != ComponentRuntime::NativeLibrary {
+        return Ok(());
+    }
+    if !cfg!(target_os = "windows") {
+        return Err(ComponentRuntimeError::new(
+            ComponentRuntimeErrorCode::ComponentRuntimeUnsupported,
+            "native-library 隔离宿主第一版仅支持 Windows",
+        ));
+    }
+    let entry = resolve_entry(root, manifest)?;
+    if entry.extension().and_then(|value| value.to_str()) != Some("dll") {
+        return Err(ComponentRuntimeError::new(
+            ComponentRuntimeErrorCode::ComponentPackageInvalid,
+            "native-library 入口必须是 .dll 文件",
+        ));
+    }
+    let machine = read_pe_machine(&entry)?;
+    let expected = if cfg!(target_arch = "x86_64") {
+        0x8664
+    } else if cfg!(target_arch = "aarch64") {
+        0xaa64
+    } else {
+        return Err(ComponentRuntimeError::new(
+            ComponentRuntimeErrorCode::ComponentRuntimeUnsupported,
+            "当前 CPU 架构不支持 native-library 隔离宿主",
+        ));
+    };
+    if machine != expected {
+        return Err(ComponentRuntimeError::new(
+            ComponentRuntimeErrorCode::ComponentRuntimeUnsupported,
+            format!(
+                "native-library DLL 架构不匹配（DLL: 0x{machine:04x}，Nexora: 0x{expected:04x}）"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn read_pe_machine(path: &Path) -> Result<u16, ComponentRuntimeError> {
+    let mut file = fs::File::open(path).map_err(|error| io_error("读取 DLL 头失败", error))?;
+    let mut dos = [0u8; 64];
+    file.read_exact(&mut dos)
+        .map_err(|error| io_error("DLL 头过短", error))?;
+    if &dos[..2] != b"MZ" {
+        return Err(ComponentRuntimeError::new(
+            ComponentRuntimeErrorCode::ComponentPackageInvalid,
+            "native-library 入口不是有效的 Windows PE DLL",
+        ));
+    }
+    let offset = u32::from_le_bytes([dos[0x3c], dos[0x3d], dos[0x3e], dos[0x3f]]) as u64;
+    if offset > 1024 * 1024 {
+        return Err(ComponentRuntimeError::new(
+            ComponentRuntimeErrorCode::ComponentPackageInvalid,
+            "native-library PE 头偏移异常",
+        ));
+    }
+    use std::io::Seek;
+    file.seek(std::io::SeekFrom::Start(offset))
+        .map_err(|error| io_error("定位 DLL PE 头失败", error))?;
+    let mut header = [0u8; 6];
+    file.read_exact(&mut header)
+        .map_err(|error| io_error("DLL PE 头过短", error))?;
+    if &header[..4] != b"PE\0\0" {
+        return Err(ComponentRuntimeError::new(
+            ComponentRuntimeErrorCode::ComponentPackageInvalid,
+            "native-library 入口缺少有效 PE 标识",
+        ));
+    }
+    Ok(u16::from_le_bytes([header[4], header[5]]))
 }
 
 fn resolve_entry(
@@ -2303,19 +3192,85 @@ fn persist_state(
     result
 }
 
-fn input_path(input: &Value) -> Result<String, ComponentRuntimeError> {
-    input
-        .get("path")
-        .or_else(|| input.get("file"))
-        .and_then(Value::as_str)
-        .filter(|path| !path.trim().is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| {
-            ComponentRuntimeError::new(
-                ComponentRuntimeErrorCode::ComponentProtocolError,
-                "组件命令缺少 path/file 参数",
-            )
-        })
+fn load_trusted_publishers(
+    path: &Path,
+) -> Result<StoredComponentTrustState, ComponentRuntimeError> {
+    if !path.exists() {
+        return Ok(StoredComponentTrustState::default());
+    }
+    let input =
+        fs::read_to_string(path).map_err(|error| io_error("读取组件发布者信任库失败", error))?;
+    let state =
+        serde_json::from_str::<StoredComponentTrustState>(&input).map_err(protocol_error)?;
+    if state.schema_version != COMPONENT_TRUST_SCHEMA_VERSION {
+        return Err(ComponentRuntimeError::new(
+            ComponentRuntimeErrorCode::ComponentPackageInvalid,
+            format!("不支持组件发布者信任库版本 {}", state.schema_version),
+        ));
+    }
+    if state.publishers.iter().any(|publisher| {
+        publisher.id.trim().is_empty()
+            || publisher.display_name.trim().is_empty()
+            || base64::engine::general_purpose::STANDARD
+                .decode(&publisher.public_key)
+                .map(|bytes| bytes.len() != 32)
+                .unwrap_or(true)
+    }) {
+        return Err(ComponentRuntimeError::new(
+            ComponentRuntimeErrorCode::ComponentPackageInvalid,
+            "组件发布者信任库包含无效记录",
+        ));
+    }
+    Ok(state)
+}
+
+fn persist_trusted_publishers(
+    path: &Path,
+    state: &StoredComponentTrustState,
+) -> Result<(), ComponentRuntimeError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| io_error("创建组件发布者信任库目录失败", error))?;
+    }
+    let mut publishers = state.publishers.clone();
+    publishers.sort_by(|left, right| left.id.cmp(&right.id));
+    let stored = StoredComponentTrustState {
+        schema_version: COMPONENT_TRUST_SCHEMA_VERSION,
+        publishers,
+    };
+    let temporary = path.with_extension(format!("{}.tmp", Uuid::new_v4().simple()));
+    let mut bytes = serde_json::to_vec_pretty(&stored).map_err(protocol_error)?;
+    bytes.push(b'\n');
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|error| io_error("创建组件发布者信任库临时文件失败", error))?;
+    file.write_all(&bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|error| io_error("写入组件发布者信任库失败", error))?;
+    let backup = path.with_extension(format!("{}.bak", Uuid::new_v4().simple()));
+    let result = (|| {
+        if path.exists() {
+            fs::rename(path, &backup)
+                .map_err(|error| io_error("备份组件发布者信任库失败", error))?;
+        }
+        if let Err(error) = fs::rename(&temporary, path) {
+            if backup.exists() {
+                let _ = fs::rename(&backup, path);
+            }
+            return Err(io_error("提交组件发布者信任库失败", error));
+        }
+        if backup.exists() {
+            fs::remove_file(&backup)
+                .map_err(|error| io_error("清理组件发布者信任库备份失败", error))?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
 }
 
 fn host_adapter(manifest: &ComponentManifestV1) -> Option<&str> {
@@ -2342,14 +3297,64 @@ fn component_host_path() -> Option<PathBuf> {
             } else {
                 "pmc-component-host"
             };
-            candidates.push(parent.join("resources").join("component-host").join(resource_name));
-            candidates.push(parent.join("_up_").join("resources").join("component-host").join(resource_name));
+            candidates.push(
+                parent
+                    .join("resources")
+                    .join("component-host")
+                    .join(resource_name),
+            );
+            candidates.push(
+                parent
+                    .join("_up_")
+                    .join("resources")
+                    .join("component-host")
+                    .join(resource_name),
+            );
             if let Some(debug_root) = parent.parent() {
                 candidates.push(debug_root.join(if cfg!(target_os = "windows") {
                     "pmc-component-host.exe"
                 } else {
                     "pmc-component-host"
                 }));
+            }
+        }
+    }
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+fn blendio_service_path() -> Option<PathBuf> {
+    let executable = if cfg!(target_os = "windows") {
+        "pmc-blendio-service.exe"
+    } else {
+        "pmc-blendio-service"
+    };
+    let mut candidates = Vec::new();
+    if let Some(path) = std::env::var_os("NEXORA_BLENDIO_SERVICE_PATH") {
+        candidates.push(PathBuf::from(path));
+    }
+    if let Ok(current) = std::env::current_exe() {
+        if let Some(parent) = current.parent() {
+            candidates.push(parent.join(executable));
+            candidates.push(
+                parent
+                    .join("resources")
+                    .join("blendio-service")
+                    .join(executable),
+            );
+            candidates.push(
+                parent
+                    .join("_up_")
+                    .join("resources")
+                    .join("blendio-service")
+                    .join(executable),
+            );
+            if let Some(target_root) = parent.parent() {
+                candidates.push(
+                    target_root
+                        .join("resources")
+                        .join("blendio-service")
+                        .join(executable),
+                );
             }
         }
     }
@@ -2486,13 +3491,6 @@ fn safe_name(value: &str) -> String {
         .collect()
 }
 
-fn component_process_error(error: impl std::fmt::Display) -> ComponentRuntimeError {
-    ComponentRuntimeError::new(
-        ComponentRuntimeErrorCode::ComponentProcessFailed,
-        error.to_string(),
-    )
-}
-
 fn protocol_error(error: impl std::fmt::Display) -> ComponentRuntimeError {
     ComponentRuntimeError::new(
         ComponentRuntimeErrorCode::ComponentProtocolError,
@@ -2517,6 +3515,7 @@ fn io_error(message: &str, error: impl std::fmt::Display) -> ComponentRuntimeErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
     use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
 
@@ -2573,6 +3572,102 @@ mod tests {
         assert_eq!(inspection.component_id.as_deref(), Some("test.pack"));
         assert_eq!(inspection.file_count, 2);
         assert!(inspection.package_digest.is_some());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn signed_executable_package_requires_a_trusted_publisher() {
+        let path = std::env::temp_dir().join(format!("nexora-signed-{}.pmc-pack", Uuid::new_v4()));
+        let manifest = serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1,
+            "id": "example.signed-native",
+            "name": "Signed native example",
+            "version": "1.0.0",
+            "apiVersion": "1",
+            "runtime": "native-process",
+            "platforms": ["windows-x64"],
+            "entry": "bin/windows-x64/example.exe"
+        }))
+        .unwrap();
+        let mut content_hasher = blake3::Hasher::new();
+        content_hasher.update(b"component.json");
+        content_hasher.update(&[0]);
+        content_hasher.update(&manifest);
+        let content_digest = content_hasher.finalize().to_hex().to_string();
+        let signing_key = SigningKey::from_bytes(&[9u8; 32]);
+        let public_key = base64::engine::general_purpose::STANDARD
+            .encode(signing_key.verifying_key().as_bytes());
+        let mut extensions = pmc_platform::ExtensionFields::new();
+        extensions.insert(
+            "contentDigest".into(),
+            Value::String(content_digest.clone()),
+        );
+        extensions.insert(
+            "publisher".into(),
+            serde_json::json!({
+                "id": "example.publisher",
+                "displayName": "Example Publisher",
+                "publicKey": public_key,
+            }),
+        );
+        let mut header = pmc_platform::PackageHeaderV1 {
+            magic: pmc_platform::PACKAGE_MAGIC.into(),
+            schema_version: pmc_platform::PLATFORM_SCHEMA_VERSION,
+            format_version: pmc_platform::PACKAGE_FORMAT_VERSION,
+            kind: pmc_platform::PackageKind::ComponentPack,
+            package_id: "example.signed-native".into(),
+            created_at: 0,
+            producer_version: "1.0.0".into(),
+            payload: pmc_platform::PackagePayloadDescriptor {
+                path: "component.json".into(),
+                digest: pmc_platform::ContentDigest {
+                    algorithm: pmc_platform::DigestAlgorithm::Blake3,
+                    value: blake3::hash(&manifest).to_hex().to_string(),
+                },
+                size_bytes: manifest.len() as u64,
+                extensions: pmc_platform::ExtensionFields::new(),
+            },
+            extensions,
+        };
+        let signature =
+            signing_key.sign(&package_signature_material(&header, &content_digest).unwrap());
+        header.extensions.insert(
+            "signature".into(),
+            serde_json::json!({
+                "algorithm": "ed25519",
+                "value": base64::engine::general_purpose::STANDARD.encode(signature.to_bytes()),
+            }),
+        );
+        let file = fs::File::create(&path).unwrap();
+        let mut writer = ZipWriter::new(file);
+        let options = SimpleFileOptions::default();
+        writer.start_file("component.json", options).unwrap();
+        writer.write_all(&manifest).unwrap();
+        writer.start_file("manifest.json", options).unwrap();
+        writer
+            .write_all(serde_json::to_vec(&header).unwrap().as_slice())
+            .unwrap();
+        writer.finish().unwrap();
+
+        let unsigned = inspect_component_package(&path).unwrap();
+        assert_eq!(
+            unsigned.trust.status,
+            ComponentPackageTrustStatus::SignedUntrusted
+        );
+        assert!(!unsigned.trust.installable);
+        let mut trusted = BTreeMap::new();
+        trusted.insert(
+            "example.publisher".into(),
+            StoredTrustedPublisher {
+                id: "example.publisher".into(),
+                display_name: "Example Publisher".into(),
+                public_key: public_key.clone(),
+                trusted_at: 0,
+            },
+        );
+        let inspected = inspect_component_package_with_trust(&path, &trusted).unwrap();
+        assert_eq!(inspected.trust.status, ComponentPackageTrustStatus::Trusted);
+        assert!(inspected.trust.installable);
         let _ = fs::remove_file(path);
     }
 }

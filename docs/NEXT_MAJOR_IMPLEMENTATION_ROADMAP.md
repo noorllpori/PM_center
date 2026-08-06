@@ -73,7 +73,7 @@ D0 架构记录
 | R7 | DIY 装配编辑器 MVP | accepted | R6 | 2026-08-05 已完成装配编辑、布局所有权、项目资源释放和恢复验收 |
 | R8 | Profile 导入导出 | accepted | R6、R7 | 2026-08-06 已完成 `.pmc-profile`、本机映射和 `.pmc-workspace` 人工验收 |
 | R9 | 统一组件运行时 | verifying | R3、R6 | 动态安装、四类运行时、监督、BlendIO 适配和模板目录已实现，等待人工验收 |
-| R10 | 文件处理路由、隔离宿主与组件包安全 | in-progress | R9 | R10-0/R10-1 基础骨架已实现；仍需隔离宿主、签名和可替换查看器验收 |
+| R10 | 文件处理路由、隔离宿主与组件包安全 | verifying | R9 | R10-0 至 R10-4、R10-P 和自包含 `.pmc-workspace` 已实现：路由、可替换查看器、隔离 DLL、签名/信任、BlenderIO 服务、模板安全预览、依赖锁、内嵌原始组件包和原子导入回滚均已交付；仅保留真实第二台设备与第三方发布包的人工验收 |
 | R11 | 工作流与节点编辑器 | pending | R7、R9 | 需要节点流程实操验收 |
 | R12 | 参考装配纵向验收 | pending | R8、R11 | 需要确认 DIY 能力充分 |
 | R13 | Blender 远程渲染农场 | pending | R10、R11、R12 | 需要双机真实项目验收 |
@@ -606,7 +606,7 @@ R8-P 先增加 `ProfilePresentationBinding`，让 Shell 和 Surface 可以保存
 
 让装配方案和工作流可以使用 Python、原生 EXE 和资料包组件。
 
-R9 同时把当前 `src-tauri/crates/blendio` 能力登记为可安装、卸载和升级的 `pmc.blendio` 标准组件。本轮先通过受信任宿主适配器守卫文件详情、预览、外部依赖和渲染设置写入入口；独立签名进程与所有内部调用彻底移除 crate 直连在 R10 收口。HDA、PPT、PDF 等格式读取器复用同一无头服务组件模型。
+R9 同时把当前 `src-tauri/crates/blendio` 能力登记为可安装、卸载和升级的 `pmc.blendio` 标准组件。R10 已将当前随附实现改由独立 `pmc-blendio-service` 进程承接；后续同 ID 签名包可以替换服务入口，不改变文件详情、预览、外部依赖和渲染设置写入的 ComponentGateway 调用。HDA、PPT、PDF 等格式读取器复用同一无头服务组件模型。
 
 ### 固定实现顺序
 
@@ -658,6 +658,8 @@ R9 同时把当前 `src-tauri/crates/blendio` 能力登记为可安装、卸载�
 - `.pmc-workspace` 支持 `references-only` 和携带可分发组件包的 `self-contained` 导出；
 - 导入先统一预览权限和冲突，确认前零安装、零 Profile 切换。
 
+当前完成：组件包缓存已保留经验证的原始 `.pmc-pack`，因此自包含导出只会携带可重分发且签名仍有效的原归档；导入拒绝锁文件/归档不一致、不同版本静默替换和未明确确认的签名发布者。仓库提供 `npm run component:keygen` 与 `npm run component:pack` 生成确定性 Ed25519 签名归档。
+
 #### R10-2：隔离原生宿主
 
 - `pmc-component-host.exe`；
@@ -682,10 +684,9 @@ R9 同时把当前 `src-tauri/crates/blendio` 能力登记为可安装、卸载�
 
 #### R10-P：表现模板包
 
-- 复用 R10-1 包安全，不建立第二套模板安装器；
-- 受控 `base.html` / CSS 解析、净化、缓存和包内资源协议；
-- ShellTemplate 原子切换、强制恢复节点和 PageTemplate 命名插槽；
-- 主题令牌、响应式预览和模板缺失回退。
+- R10-P1：复用 R10-1 包安全，不建立第二套模板安装器；增加版本化 `template.json`、无权限 `data-pack` 限制、`base.html`/CSS 静态净化、包内资源路径检查和强制恢复节点；
+- R10-P2：受控渲染树、缓存和包内资源协议；ShellTemplate 预览与原子切换、PageTemplate 命名插槽；
+- R10-P3：主题令牌、响应式预览、模板缺失恢复和装配编辑器选择器。
 
 ### 实施内容
 

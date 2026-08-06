@@ -100,7 +100,10 @@ impl BlendFile {
             return Ok(None);
         };
         let bytes = block.bytes();
-        let end = bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len());
+        let end = bytes
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(bytes.len());
         Ok(Some(String::from_utf8_lossy(&bytes[..end]).into_owned()))
     }
 
@@ -185,13 +188,13 @@ impl<'a> BlockRef<'a> {
     }
 
     pub fn view_as(&self, struct_name: &str) -> Result<StructView<'a>> {
-        let struct_def =
-            self.file
-                .schema
-                .struct_by_name(struct_name)
-                .ok_or_else(|| BlendError::InvalidSdnaOwned(format!(
-                    "unknown struct type {struct_name}"
-                )))?;
+        let struct_def = self
+            .file
+            .schema
+            .struct_by_name(struct_name)
+            .ok_or_else(|| {
+                BlendError::InvalidSdnaOwned(format!("unknown struct type {struct_name}"))
+            })?;
         if self.bytes().len() < struct_def.size {
             return Err(BlendError::NonStructBlock {
                 code: self.header().code.as_string(),

@@ -104,8 +104,8 @@ React invoke/listen
 | 脚本/任务 | `ScriptRunner.tsx`、`TaskPanel/`、`taskStore.ts` | 用户脚本、日志、取消/重试与任务面板聚合。 |
 | 设置 | `SettingsPanel.tsx`、`settings/settingsContributionImplementationRegistry.ts`、`settingsStore.ts`、`settings/LocalWebConsoleSettingsSection.tsx` | R7-3 按 `settingsSections` 贡献装配一级范围与二级页面，右侧只挂载当前设置页；模块停用后所属设置即时撤下。普通设置中心与不可停用恢复内核的边界见 `NEXT_MAJOR_R7_SETTINGS_CONTRIBUTIONS.md`。 |
 | 功能中心 | `features/builtinTools.ts`、`features/contributionRegistry.ts`、`features/contributionDataSources.ts`、`features/contributionCatalogDiagnostics.ts`、`stores/contributionRegistryStore.ts`、`components/file-manager/index.tsx` | `Alt+Q` 工具入口；R5 已让工具、Pin、Shell/工作区标签、设置区、右键命令、Widget、DataSource 和节点目录按模块状态动态出现或撤下，并提供目录一致性、实现覆盖、缺失状态和订阅释放诊断。智能剪贴板仍调用独立 Win32 窗口。 |
-| 装配方案运行时 | `platform/profile_runtime.rs`、`platform/profile_package.rs`、`api/workspaceProfiles.ts`、`stores/workspaceProfileStore.ts`、`WorkspaceProfileDiagnosticsSection.tsx`、`WorkspaceProfileEditorDialog.tsx`、`WorkspaceProfileLayoutEditor.tsx`、`features/profileLayout.ts`、`features/profileHome.ts`、`components/shell/ProfileHomeSurface.tsx`、`components/shell/ProfileNavigationBar.tsx` | R6/R7 已验收。R8-1/R8-2 已完成 `.pmc-profile`、工具/路径映射和本机绑定；R8-3 已增加 `.pmc-workspace` 的 Profile、普通变量与页面骨架；第三方 HTML 渲染器仍待 R10-P。 |
-| 组件运行时 | `platform/component_runtime.rs`、`platform/builtin_components.rs`、`api/componentRuntime.ts`、`types/componentRuntime.ts`、`ComponentRuntimeDiagnosticsSection.tsx` | R9 已接入动态组件目录、本地目录安装、随附组件卸载/重装、Python action/worker、原生进程、资料包、统一取消/超时/内存/日志监督、Capability token 和表现模板目录，当前等待人工验收；DLL 与签名包留到 R10。 |
+| 装配方案运行时 | `platform/profile_runtime.rs`、`platform/profile_package.rs`、`api/workspaceProfiles.ts`、`stores/workspaceProfileStore.ts`、`WorkspaceProfileDiagnosticsSection.tsx`、`WorkspaceProfileEditorDialog.tsx`、`WorkspaceProfileLayoutEditor.tsx`、`features/profileLayout.ts`、`features/profileHome.ts`、`components/shell/ProfileHomeSurface.tsx`、`components/shell/ProfileNavigationBar.tsx` | R6/R7 已验收。R8-1/R8-2 已完成 `.pmc-profile`、工具/路径映射和本机绑定；R8-3 已增加 `.pmc-workspace` 的 Profile、普通变量与页面骨架。R10 已补上引用式/自包含导出、依赖锁、嵌入原始签名组件包、预览信任确认及导入回滚；第三方 HTML 只经 R10-P 的受控模板预览链路。 |
+| 组件运行时 | `platform/component_runtime.rs`、`platform/builtin_components.rs`、`api/componentRuntime.ts`、`types/componentRuntime.ts`、`ComponentRuntimeDiagnosticsSection.tsx` | R9 已接入动态组件目录、本地目录安装、随附组件卸载/重装、Python action/worker、原生进程、资料包、统一取消/超时/内存/日志监督、Capability token 和表现模板目录。R10 已补齐 DLL 隔离、签名归档、发布者信任、BlenderIO 服务外置和文件路由；真实第三方包发布仍待人工验收。 |
 | 说明组件 | `components/ui/HelpAssistant.tsx` | 复杂或不可逆概念旁的问号说明；支持文字、图片、视频及自动避让定位。 |
 
 状态 Store 的所有权：
@@ -257,7 +257,7 @@ React invoke/listen
 - R8-2 使用 `toolAliases` 和 `pathVariables` 表达可移植需求；导入时明确映射 Blender、FFmpeg、FFprobe、Python 和普通路径，绝对路径仅存于 `profiles/local-bindings/<profile-id>.json`，绑定失败回滚 Profile，删除方案同步清理；
 - R8-3 `.pmc-workspace` 只携带可移植 Profile、普通变量和 Surface 引用骨架，继续拒绝项目文件、聊天、缓存、凭据、绝对路径和组件二进制；
 - R9 使用应用数据目录 `components/` 管理动态组件。随附组件也可卸载和重新安装；组件执行统一经过 operationId、并行/超时/内存限制、进程树取消、日志和 Capability token。R10-2 已加入隔离 `pmc-component-host` 与 Windows DLL ABI，主进程不直接加载第三方 DLL；
-- R10-0 至 R10-4 已建立文件意图路由和绑定、`.pmc-pack` 安装安全检查、隔离 DLL 宿主、BlenderIO/Blender 工作区拆分及图片/视频/文本/目录处理器组件化。`.pmc-workspace` 在包安全完成后可选携带可分发依赖包；签名、许可证和完整诊断面板仍待后续增强；
+- R10-0 至 R10-4 已建立文件意图路由和绑定、`.pmc-pack` 安装安全检查、隔离 DLL 宿主、BlenderIO/Blender 工作区拆分及图片/视频/文本/目录处理器组件化。`.pmc-workspace` 现支持引用式和自包含模式：前者只记录依赖，后者只嵌入已验证、可再分发的原始组件包，导入预览要求确认新的发布者且不允许静默替换本机不同版本；
 - 可选 `builtin.local-web-console` 默认停用，只允许从本机浏览器访问白名单控制面；不得把它扩展为通用 `invoke`、Shell、文件系统或未经配对的局域网远控入口；
 - 静态启动页由 `shellLayout.home` 决定，复杂启动窗口和条件行为在 R11 通过受控 `app.started` 工作流实现；恢复流程始终优先，目标不可用时回退最小安全主页；
 - 主页不再是固定业务页面：`shellLayout.home` 指向的 Surface 直接成为主页，现有项目主页只是项目管理器贡献。顶部、侧边和紧凑是三个内置 ShellTemplate 兼容预设，后续由受控 `base.html`、PageTemplate 和 ThemePreset 重绘整体结构；完整合同见 `NEXT_MAJOR_PRESENTATION_TEMPLATE_ARCHITECTURE.md`；

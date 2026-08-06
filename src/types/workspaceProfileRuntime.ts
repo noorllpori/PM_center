@@ -87,7 +87,10 @@ export interface ExportWorkspacePackageRequest {
   variables?: Record<string, string>;
   openSurfaceIds?: string[];
   activeSurfaceId?: string | null;
+  distributionMode?: WorkspacePackageDistributionMode;
 }
+
+export type WorkspacePackageDistributionMode = 'references-only' | 'self-contained';
 
 export interface ProfilePackageExportResult {
   packageId: string;
@@ -132,6 +135,23 @@ export interface WorkspacePackageImportPreview extends ProfilePackageImportPrevi
   openSurfaceIds: string[];
   activeSurfaceId?: string | null;
   variables: Record<string, string>;
+  distributionMode: WorkspacePackageDistributionMode;
+  componentPackages: WorkspaceComponentPackagePreview[];
+}
+
+export interface WorkspaceComponentPackagePreview {
+  componentId: string;
+  versionRequirement: string;
+  resolvedVersion?: string | null;
+  embeddedPath?: string | null;
+  embedded: boolean;
+  installable: boolean;
+  trustRequired: boolean;
+  trustStatus: 'integrity-only' | 'signed-untrusted' | 'trusted' | 'invalid-signature';
+  publisherId?: string | null;
+  publisher?: string | null;
+  license?: string | null;
+  note?: string | null;
 }
 
 export type ProfileLocalBindingMode = 'automatic' | 'path';
@@ -156,7 +176,9 @@ export interface ImportWorkspaceProfilePackageRequest {
   pathMappings?: ProfileLocalBindingInput[];
 }
 
-export interface ImportWorkspacePackageRequest extends ImportWorkspaceProfilePackageRequest {}
+export interface ImportWorkspacePackageRequest extends ImportWorkspaceProfilePackageRequest {
+  trustEmbeddedPublisherIds?: string[];
+}
 
 export interface WorkspacePackageImportResult {
   mutation: WorkspaceProfileMutationResult;

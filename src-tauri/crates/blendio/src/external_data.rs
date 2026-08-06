@@ -116,7 +116,9 @@ fn external_image(
     let packed = has_packed_file(file, view);
     let source_code = field_numeric_code(view, "source").unwrap_or_default();
     let image_type_code = field_numeric_code(view, "type").unwrap_or_default();
-    let is_external = filepath.as_ref().is_some_and(|value| !value.trim().is_empty())
+    let is_external = filepath
+        .as_ref()
+        .is_some_and(|value| !value.trim().is_empty())
         && !packed
         && matches!(source_code, 1 | 2 | 3 | 6);
 
@@ -203,18 +205,16 @@ fn count_listbase(file: &BlendFile, parent: &StructView<'_>, field_name: &str) -
     else {
         return 0;
     };
-    iter_listbase(file, &list).map(|blocks| blocks.len()).unwrap_or(0)
+    iter_listbase(file, &list)
+        .map(|blocks| blocks.len())
+        .unwrap_or(0)
 }
 
 fn first_c_string(view: &StructView<'_>, names: &[&str]) -> Option<String> {
     names.iter().find_map(|name| field_c_string(view, name))
 }
 
-fn first_pointer_string(
-    file: &BlendFile,
-    view: &StructView<'_>,
-    names: &[&str],
-) -> Option<String> {
+fn first_pointer_string(file: &BlendFile, view: &StructView<'_>, names: &[&str]) -> Option<String> {
     names
         .iter()
         .find_map(|name| field_pointer_string(file, view, name))

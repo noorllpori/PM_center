@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "example.native-library-echo",
+  "name": "Nexora 隔离原生组件示例",
+  "description": "用于验证 native-library ABI、隔离宿主和健康调用；不读取文件、不申请权限。",
+  "version": "1.0.0",
+  "apiVersion": "1",
+  "runtime": "native-library",
+  "role": "service",
+  "distribution": "local",
+  "uiMode": "none",
+  "platforms": ["windows-x64"],
+  "entry": "bin/windows-x64/nexora_native_library_echo.dll",
+  "capabilities": [],
+  "requiresComponents": [],
+  "optionalComponents": [],
+  "contributes": {},
+  "resources": {
+    "maxMemoryMb": 128,
+    "maxParallelism": 1,
+    "timeoutMs": 10000
+  },
+  "publisher": "Nexora Example",
+  "healthCommand": "health"
+}

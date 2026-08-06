@@ -2,9 +2,10 @@ mod builtin_components;
 mod builtin_modules;
 mod capability_gateway;
 mod component_runtime;
-mod file_router;
 mod component_settings;
+mod file_router;
 mod module_manager;
+mod presentation_templates;
 mod profile_package;
 mod profile_runtime;
 mod resource_registry;
@@ -39,15 +40,20 @@ pub use capability_gateway::{
     CapabilityTokenResponse,
 };
 pub use component_runtime::{
-    ComponentInvocationRequest, ComponentInvocationResult, ComponentRuntimeError,
-    ComponentRuntimeErrorCode, ComponentRuntimeManager, ComponentRuntimeOverview,
-    ComponentPackageInspection, InstallComponentPackageRequest, InstallComponentRequest,
+    ComponentInvocationRequest, ComponentInvocationResult, ComponentPackageInspection,
+    ComponentPackagePublisher, ComponentRuntimeError, ComponentRuntimeErrorCode,
+    ComponentRuntimeManager, ComponentRuntimeOverview, InstallComponentPackageRequest,
+    InstallComponentRequest,
 };
-pub use file_router::{FileRoutePlan, FileRouteRequest};
-pub use file_router::{FileRoutingSnapshot, SetFileAssociationBindingRequest};
 pub use component_settings::{
     ComponentSettingsRequest, ComponentSettingsSnapshot, SaveComponentSettingsRequest,
 };
+pub use file_router::{FileRoutePlan, FileRouteRequest};
+pub use file_router::{
+    FileRoutingScopeContext, FileRoutingSnapshot, RemoveFileAssociationBindingRequest,
+    SetFileAssociationBindingRequest,
+};
+pub use presentation_templates::{PresentationTemplatePreview, PresentationTemplatePreviewRequest};
 
 use builtin_components::builtin_component_manifests;
 use builtin_modules::{
@@ -198,9 +204,10 @@ pub fn route_file_intent(
 
 #[tauri::command]
 pub fn get_file_routing_snapshot(
+    context: Option<FileRoutingScopeContext>,
     runtime: State<'_, PlatformRuntime>,
-) -> FileRoutingSnapshot {
-    runtime.file_routing.snapshot()
+) -> Result<FileRoutingSnapshot, ComponentRuntimeError> {
+    runtime.file_routing.snapshot(context.unwrap_or_default())
 }
 
 #[tauri::command]
@@ -213,10 +220,23 @@ pub fn set_file_association_binding(
 
 #[tauri::command]
 pub fn remove_file_association_binding(
-    binding_id: String,
+    request: RemoveFileAssociationBindingRequest,
     runtime: State<'_, PlatformRuntime>,
 ) -> Result<(), ComponentRuntimeError> {
-    runtime.file_routing.remove(&binding_id)
+    runtime.file_routing.remove(request)
+}
+
+#[tauri::command]
+pub fn get_file_route_trace(
+    route_id: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<FileRoutePlan, ComponentRuntimeError> {
+    runtime.file_routing.route_trace(&route_id).ok_or_else(|| {
+        ComponentRuntimeError::new(
+            ComponentRuntimeErrorCode::ComponentOperationNotFound,
+            format!("文件路由追踪不存在或已过期: {route_id}"),
+        )
+    })
 }
 
 #[tauri::command]
@@ -225,6 +245,22 @@ pub fn inspect_component_package(
     runtime: State<'_, PlatformRuntime>,
 ) -> Result<ComponentPackageInspection, ComponentRuntimeError> {
     runtime.components.inspect_package(&package_path)
+}
+
+#[tauri::command]
+pub fn trust_component_package_publisher(
+    package_path: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<ComponentPackagePublisher, ComponentRuntimeError> {
+    runtime.components.trust_package_publisher(&package_path)
+}
+
+#[tauri::command]
+pub fn get_presentation_template_preview(
+    request: PresentationTemplatePreviewRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<PresentationTemplatePreview, ComponentRuntimeError> {
+    runtime.components.presentation_template_preview(&request)
 }
 
 #[tauri::command]
@@ -252,6 +288,49 @@ pub async fn uninstall_component(
     component_id: String,
     runtime: State<'_, PlatformRuntime>,
 ) -> Result<pmc_platform::ComponentManifestV1, ComponentRuntimeError> {
+    let manifest = runtime.components.manifest(&component_id).ok_or_else(|| {
+        ComponentRuntimeError::new(
+            ComponentRuntimeErrorCode::ComponentNotInstalled,
+            format!("组件 {component_id} 未安装"),
+        )
+    })?;
+    let template_ids = manifest
+        .contributes
+        .shell_templates
+        .iter()
+        .map(|template| template.id.clone())
+        .chain(
+            manifest
+                .contributes
+                .page_templates
+                .iter()
+                .map(|template| template.id.clone()),
+        )
+        .chain(
+            manifest
+                .contributes
+                .theme_presets
+                .iter()
+                .map(|template| template.id.clone()),
+        )
+        .collect::<std::collections::BTreeSet<_>>();
+    let references = runtime
+        .profiles
+        .profiles_referencing_presentation_templates(&template_ids)
+        .map_err(|error| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentDependencyConflict,
+                format!("无法确认表现模板引用，已拒绝卸载: {}", error.message),
+            )
+            .with_details(error.details)
+        })?;
+    if !references.is_empty() {
+        return Err(ComponentRuntimeError::new(
+            ComponentRuntimeErrorCode::ComponentDependencyConflict,
+            "组件提供的表现模板仍被装配方案引用。请先切换到其他模板并保存方案后再卸载。",
+        )
+        .with_details(references));
+    }
     let manifest = runtime.components.uninstall(&component_id).await?;
     sync_component_catalog(&runtime)?;
     Ok(manifest)
@@ -554,7 +633,11 @@ pub fn export_workspace_package(
     runtime: State<'_, PlatformRuntime>,
 ) -> Result<ProfilePackageExportResult, WorkspaceProfileRuntimeError> {
     let profile = runtime.profiles.profile_document(&request.profile_id)?;
-    profile_package::export_workspace_package(&profile, &request)
+    profile_package::export_workspace_package_with_components(
+        &profile,
+        &request,
+        &runtime.components,
+    )
 }
 
 #[tauri::command]
@@ -563,7 +646,12 @@ pub fn inspect_workspace_package(
     runtime: State<'_, PlatformRuntime>,
 ) -> Result<WorkspacePackageImportPreview, WorkspaceProfileRuntimeError> {
     let manifests = formal_module_manifests(&runtime);
-    profile_package::inspect_workspace_package(&package_path, &runtime.profiles, &manifests)
+    profile_package::inspect_workspace_package_with_components(
+        &package_path,
+        &runtime.profiles,
+        &manifests,
+        &runtime.components,
+    )
 }
 
 #[tauri::command]
@@ -573,7 +661,22 @@ pub async fn import_workspace_package(
 ) -> Result<WorkspacePackageImportResult, WorkspaceProfileRuntimeError> {
     let _guard = runtime.profile_switch_lock.lock().await;
     let manifests = formal_module_manifests(&runtime);
-    profile_package::import_workspace_package(&request, &runtime.profiles, &manifests)
+    let imported = profile_package::import_workspace_package_with_components(
+        &request,
+        &runtime.profiles,
+        &manifests,
+        &runtime.components,
+    )
+    .await?;
+    sync_component_catalog(&runtime).map_err(|error| {
+        WorkspaceProfileRuntimeError::new(
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
+            format!("装配空间已导入，但同步组件目录失败：{}", error.message),
+            None,
+        )
+        .with_details(error.details)
+    })?;
+    Ok(imported)
 }
 
 #[tauri::command]

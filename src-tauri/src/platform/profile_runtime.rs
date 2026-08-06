@@ -605,6 +605,18 @@ impl WorkspaceProfileRuntime {
         build_draft_validation(profile, manifests, &self.component_manifests_snapshot())
     }
 
+    /// Used by portable workspace import before embedded component packages
+    /// are committed. This keeps the preview truthful without mutating the
+    /// live component catalog merely to validate a package.
+    pub fn validate_draft_with_component_catalog(
+        &self,
+        profile: &WorkspaceProfileV1,
+        manifests: &[ModuleManifestV1],
+        component_manifests: &[ComponentManifestV1],
+    ) -> WorkspaceProfileDraftValidation {
+        build_draft_validation(profile, manifests, component_manifests)
+    }
+
     pub fn create_profile(
         &self,
         request: &CreateWorkspaceProfileRequest,
@@ -2231,6 +2243,46 @@ impl WorkspaceProfileRuntime {
         Ok(summaries)
     }
 
+    pub fn profiles_referencing_presentation_templates(
+        &self,
+        template_ids: &BTreeSet<String>,
+    ) -> Result<Vec<String>, WorkspaceProfileRuntimeError> {
+        if template_ids.is_empty() || !self.repository_path.exists() {
+            return Ok(Vec::new());
+        }
+        let _guard = self.operation_lock.lock().map_err(|_| {
+            WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileLockPoisoned,
+                "装配方案运行时锁已损坏",
+                None,
+            )
+        })?;
+        let mut references = Vec::new();
+        for entry in fs::read_dir(&self.repository_path)
+            .map_err(|error| io_error("读取装配方案目录失败", &self.repository_path, error))?
+        {
+            let entry = entry.map_err(|error| {
+                io_error("读取装配方案目录项失败", &self.repository_path, error)
+            })?;
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let profile = self.read_profile(&path)?;
+            if profile_presentation_template_ids(&profile)
+                .iter()
+                .any(|id| {
+                    template_ids.contains(*id)
+                        || template_ids.contains(presentation_template_id_alias(id))
+                })
+            {
+                references.push(format!("{} ({})", profile.name, profile.id));
+            }
+        }
+        references.sort();
+        Ok(references)
+    }
+
     fn profile_path(&self, profile_id: &str) -> PathBuf {
         self.repository_path.join(format!("{profile_id}.json"))
     }
@@ -2240,6 +2292,25 @@ impl WorkspaceProfileRuntime {
             .join("local-bindings")
             .join(format!("{profile_id}.json"))
     }
+}
+
+fn profile_presentation_template_ids(profile: &WorkspaceProfileV1) -> Vec<&str> {
+    let mut ids = Vec::new();
+    if let Some(binding) = profile.shell_layout.shell_template.as_ref() {
+        ids.push(binding.id.as_str());
+    }
+    if let Some(binding) = profile.shell_layout.theme_preset.as_ref() {
+        ids.push(binding.id.as_str());
+    }
+    for surface in &profile.surfaces {
+        if let Some(binding) = surface.template.as_ref() {
+            ids.push(binding.id.as_str());
+        }
+        if let Some(binding) = surface.theme_preset.as_ref() {
+            ids.push(binding.id.as_str());
+        }
+    }
+    ids
 }
 
 fn build_migrated_profile(
@@ -2928,6 +2999,8 @@ fn compatibility_issues(
     let contribution_owners = ModuleContributionOwners::from_manifests(manifests);
     let mut issues = Vec::new();
 
+    validate_presentation_bindings(profile, manifests, component_manifests, &mut issues);
+
     for selection in &profile.enabled_components {
         let Some(component) = installed_components.get(selection.id.as_str()) else {
             issues.push(switch_issue(
@@ -3189,6 +3262,127 @@ fn compatibility_issues(
         }
     }
     issues
+}
+
+fn validate_presentation_bindings(
+    profile: &WorkspaceProfileV1,
+    module_manifests: &[ModuleManifestV1],
+    component_manifests: &[ComponentManifestV1],
+    issues: &mut Vec<WorkspaceProfileSwitchIssue>,
+) {
+    let effective_components =
+        best_effort_effective_components(profile, module_manifests, component_manifests);
+    let mut bindings = Vec::new();
+    if let Some(binding) = profile.shell_layout.shell_template.as_ref() {
+        bindings.push(("Shell", binding));
+    }
+    if let Some(binding) = profile.shell_layout.theme_preset.as_ref() {
+        bindings.push(("主题", binding));
+    }
+    for surface in &profile.surfaces {
+        if let Some(binding) = surface.template.as_ref() {
+            bindings.push(("页面", binding));
+        }
+        if let Some(binding) = surface.theme_preset.as_ref() {
+            bindings.push(("主题", binding));
+        }
+    }
+    for (kind, binding) in bindings {
+        let resolved_template_id = presentation_template_id_alias(&binding.id);
+        let owner = component_manifests.iter().find(|component| match kind {
+            "Shell" => component
+                .contributes
+                .shell_templates
+                .iter()
+                .any(|template| template.id == resolved_template_id),
+            "页面" => component
+                .contributes
+                .page_templates
+                .iter()
+                .any(|template| template.id == resolved_template_id),
+            _ => component
+                .contributes
+                .theme_presets
+                .iter()
+                .any(|template| template.id == resolved_template_id),
+        });
+        let Some(owner) = owner else {
+            issues.push(switch_issue(
+                "PRESENTATION_TEMPLATE_MISSING",
+                WorkspaceProfileSwitchIssueSeverity::Error,
+                "presentation",
+                format!("{kind}模板 {} 未安装或类型不匹配", binding.id),
+                None,
+                Some(binding.id.clone()),
+            ));
+            continue;
+        };
+        let template_version =
+            presentation_template_version(owner, kind, resolved_template_id).unwrap_or_default();
+        if !version_requirement_matches(&binding.version_requirement, template_version) {
+            issues.push(switch_issue(
+                "PRESENTATION_TEMPLATE_VERSION_INCOMPATIBLE",
+                WorkspaceProfileSwitchIssueSeverity::Error,
+                "presentation",
+                format!(
+                    "{kind}模板 {} 版本 {} 不满足 {}",
+                    binding.id, template_version, binding.version_requirement
+                ),
+                None,
+                Some(binding.id.clone()),
+            ));
+        }
+        if owner.id != "nexora.presentation.templates" && !effective_components.contains(&owner.id)
+        {
+            issues.push(switch_issue(
+                "PRESENTATION_TEMPLATE_PROVIDER_NOT_ENABLED",
+                WorkspaceProfileSwitchIssueSeverity::Error,
+                "presentation",
+                format!(
+                    "{kind}模板 {} 的组件 {} 未在该装配方案中启用",
+                    binding.id, owner.name
+                ),
+                None,
+                Some(binding.id.clone()),
+            ));
+        }
+    }
+}
+
+fn presentation_template_id_alias(id: &str) -> &str {
+    match id {
+        "builtin.shell.top-bar" => "nexora.shell.top-bar",
+        "builtin.shell.side-bar" => "nexora.shell.side-bar",
+        "builtin.shell.compact" => "nexora.shell.minimal",
+        _ => id,
+    }
+}
+
+fn presentation_template_version<'a>(
+    component: &'a ComponentManifestV1,
+    kind: &str,
+    template_id: &str,
+) -> Option<&'a str> {
+    match kind {
+        "Shell" => component
+            .contributes
+            .shell_templates
+            .iter()
+            .find(|template| template.id == template_id)
+            .map(|template| template.version.as_str()),
+        "页面" => component
+            .contributes
+            .page_templates
+            .iter()
+            .find(|template| template.id == template_id)
+            .map(|template| template.version.as_str()),
+        _ => component
+            .contributes
+            .theme_presets
+            .iter()
+            .find(|template| template.id == template_id)
+            .map(|template| template.version.as_str()),
+    }
 }
 
 #[derive(Default)]

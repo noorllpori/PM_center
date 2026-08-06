@@ -1,10 +1,9 @@
 use pmc_platform::{
     Capability, ComponentContributions, ComponentDependency, ComponentDistribution,
-    ComponentManifestV1, ComponentResourceLimits, ComponentRole, ComponentRuntime,
-    ComponentUiMode, ExtensionFields, FileHandlerContribution,
-    PageTemplateContribution, PlatformTarget, PortDefinition, PortValueType,
-    ShellTemplateContribution, ThemePresetContribution, ToolActionContribution,
-    WorkflowNodeContribution, PLATFORM_SCHEMA_VERSION,
+    ComponentManifestV1, ComponentResourceLimits, ComponentRole, ComponentRuntime, ComponentUiMode,
+    ExtensionFields, FileHandlerContribution, PageTemplateContribution, PlatformTarget,
+    PortDefinition, PortValueType, ShellTemplateContribution, ThemePresetContribution,
+    ToolActionContribution, WorkflowNodeContribution, PLATFORM_SCHEMA_VERSION,
 };
 use serde_json::json;
 
@@ -32,7 +31,7 @@ fn blendio_component_manifest() -> ComponentManifestV1 {
     let mut extensions = ExtensionFields::new();
     extensions.insert("removable".into(), json!(true));
     extensions.insert("installSource".into(), json!("installer-bundle"));
-    extensions.insert("hostAdapter".into(), json!("builtin-rust"));
+    extensions.insert("hostAdapter".into(), json!("bundled-resource-process"));
 
     ComponentManifestV1 {
         schema_version: PLATFORM_SCHEMA_VERSION,
@@ -46,7 +45,7 @@ fn blendio_component_manifest() -> ComponentManifestV1 {
         distribution: ComponentDistribution::Bundled,
         ui_mode: ComponentUiMode::Hosted,
         platforms: vec![PlatformTarget::WindowsX64],
-        entry: Some("bin/windows-x64/blendio.exe".into()),
+        entry: Some("pmc-blendio-service.exe".into()),
         capabilities: vec![
             Capability::ProjectFilesRead,
             Capability::ProjectFilesWrite,
@@ -145,7 +144,9 @@ fn image_file_handler_component_manifest() -> ComponentManifestV1 {
         "Nexora 图像预览",
         "提供可替换的图像工作区页面。",
         "image",
-        &["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "svg", "ico", "avif"],
+        &[
+            "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "svg", "ico", "avif",
+        ],
         &["image/*"],
         &["open", "open-internal", "preview", "thumbnail"],
     )
@@ -157,7 +158,9 @@ fn video_file_handler_component_manifest() -> ComponentManifestV1 {
         "Nexora 视频播放器",
         "提供可替换的视频播放工作区页面。",
         "video",
-        &["mp4", "m4v", "mov", "avi", "mkv", "webm", "wmv", "flv", "mpeg", "mpg", "m2ts"],
+        &[
+            "mp4", "m4v", "mov", "avi", "mkv", "webm", "wmv", "flv", "mpeg", "mpg", "m2ts",
+        ],
         &["video/*"],
         &["open", "open-internal", "preview"],
     )
@@ -169,7 +172,11 @@ fn text_file_handler_component_manifest() -> ComponentManifestV1 {
         "Nexora 文本编辑器",
         "提供可替换的文本和 Markdown 工作区页面。",
         "text",
-        &["txt", "md", "markdown", "mdx", "json", "jsonc", "js", "ts", "tsx", "jsx", "html", "htm", "css", "scss", "py", "rs", "c", "h", "cpp", "hpp", "java", "go", "php", "rb", "xml", "yml", "yaml", "toml", "ini", "conf", "log", "csv", "tsv"],
+        &[
+            "txt", "md", "markdown", "mdx", "json", "jsonc", "js", "ts", "tsx", "jsx", "html",
+            "htm", "css", "scss", "py", "rs", "c", "h", "cpp", "hpp", "java", "go", "php", "rb",
+            "xml", "yml", "yaml", "toml", "ini", "conf", "log", "csv", "tsv",
+        ],
         &["text/plain", "text/markdown", "application/json"],
         &["open", "open-internal", "preview", "edit"],
     )

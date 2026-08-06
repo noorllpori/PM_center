@@ -1,0 +1,9 @@
+[package]
+name = "nexora-native-library-echo"
+version = "1.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+

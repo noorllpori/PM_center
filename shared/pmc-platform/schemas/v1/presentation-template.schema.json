@@ -1,0 +1,66 @@
+{
+  "$id": "https://pm-center.local/schema/v1/presentation-template.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": true,
+  "definitions": {
+    "PresentationTemplateKind": {
+      "enum": [
+        "shell",
+        "page",
+        "theme"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "assets": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "baseHtml": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "id": {
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/definitions/PresentationTemplateKind"
+    },
+    "regions": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "schemaVersion": {
+      "const": 1,
+      "format": "uint16",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "styles": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "version": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "kind",
+    "schemaVersion",
+    "version"
+  ],
+  "title": "PresentationTemplateDocumentV1",
+  "type": "object"
+}

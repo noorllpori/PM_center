@@ -217,7 +217,6 @@ impl BlendEditSession {
             verified: true,
         })
     }
-
 }
 
 fn select_scene<'a>(file: &'a BlendFile, selector: &SceneSelector) -> Result<StructView<'a>> {
@@ -285,7 +284,12 @@ fn patch_i32_or_i16_field(
         4 => value.to_le_bytes().to_vec(),
         _ => return Err(field_type_mismatch(view, field_name)),
     };
-    push_patch(patches, field_offset(file, &field)?, field.bytes(), new_bytes)
+    push_patch(
+        patches,
+        field_offset(file, &field)?,
+        field.bytes(),
+        new_bytes,
+    )
 }
 
 fn patch_fps(
@@ -352,7 +356,12 @@ fn patch_c_string_field(
 
     let mut new_bytes = vec![0_u8; capacity];
     new_bytes[..value_bytes.len()].copy_from_slice(value_bytes);
-    push_patch(patches, field_offset(file, &field)?, field.bytes(), new_bytes)
+    push_patch(
+        patches,
+        field_offset(file, &field)?,
+        field.bytes(),
+        new_bytes,
+    )
 }
 
 fn push_patch(
@@ -408,13 +417,12 @@ fn validate_patches(source: &[u8], patches: &mut [BlendPatch]) -> Result<()> {
 
     let mut previous_end = 0usize;
     for patch in patches {
-        let end = patch
-            .offset
-            .checked_add(patch.old_bytes.len())
-            .ok_or(BlendError::InvalidPatchRange {
+        let end = patch.offset.checked_add(patch.old_bytes.len()).ok_or(
+            BlendError::InvalidPatchRange {
                 start: patch.offset,
                 end: usize::MAX,
-            })?;
+            },
+        )?;
         if end > source.len() || patch.old_bytes.len() != patch.new_bytes.len() {
             return Err(BlendError::InvalidPatchRange {
                 start: patch.offset,
@@ -476,8 +484,7 @@ fn write_compressed_with_patches(
     let writer = BufWriter::new(output);
     match compression {
         CompressionKind::Gzip => {
-            let mut encoder =
-                flate2::write::GzEncoder::new(writer, flate2::Compression::default());
+            let mut encoder = flate2::write::GzEncoder::new(writer, flate2::Compression::default());
             encoder
                 .write_all(&bytes)
                 .map_err(|error| BlendError::CompressionWrite(error.to_string()))?;
@@ -542,10 +549,7 @@ fn temp_output_path(path: &Path) -> PathBuf {
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("file.blend");
-    path.with_file_name(format!(
-        ".{file_name}.pmc-write-{}.tmp",
-        std::process::id()
-    ))
+    path.with_file_name(format!(".{file_name}.pmc-write-{}.tmp", std::process::id()))
 }
 
 fn replace_file(temp_path: &Path, target_path: &Path) -> Result<()> {

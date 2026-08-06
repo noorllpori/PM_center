@@ -19,7 +19,7 @@ R9 把组件从 Profile 中的静态目录项升级为可安装、可卸载、�
 - `builtin-rust` / 宿主适配器：为现有内置实现提供迁移兼容入口；
 - ShellTemplate、PageTemplate、ThemePreset 目录。
 
-R10-1 已加入安全 `.pmc-pack` 安装，R10-2 已加入隔离 `native-library` 宿主和 ABI 握手；签名、许可证和更细粒度恶意包审计仍属于后续增强。第三方 DLL 继续禁止进入 Nexora 主进程。
+R10-1 已加入安全 `.pmc-pack` 安装、内容摘要与 Ed25519 发布者信任；R10-2 已加入隔离 `native-library` 宿主、PE 架构检查和 ABI 握手。许可证会在安装检查中显示；更细粒度供应链审计属于后续增强。第三方 DLL 继续禁止进入 Nexora 主进程。
 
 ## 2. 安装目录与动态目录
 
@@ -84,9 +84,9 @@ components/
 - `blender.inspect` 工作流节点；
 - `blender.file-summary` 数据源。
 
-R9 使用受信任宿主适配器承接现有 Rust BlendIO，避免在本轮重复引入未签名 EXE。文件详情、外部依赖、预览和渲染设置写入在入口处检查组件安装状态；卸载后明确提示重新安装，不再静默继续调用内置解析器。
+R9 使用受信任宿主适配器承接现有 Rust BlendIO，避免在本轮重复引入未签名 EXE。R10 已将当前随附版本迁出 Nexora 主进程，改由 `pmc-blendio-service` 独立进程运行；文件详情、外部依赖、预览和渲染设置写入继续在入口处检查组件安装状态；卸载后明确提示重新安装，不再静默继续调用内置解析器。
 
-真正把所有缩略图和渲染预检内部调用都改为统一 operation/token，及把 BlendIO 交付为独立签名二进制，继续在 R10 收口。
+真正把所有缩略图和渲染预检内部调用都改为统一 operation/token，及将可重分发的 BlendIO 交付为独立签名 `.pmc-pack`，已具备 R10 发布链路；真实第三方发布包与双机导入仍作为人工发行验收项。自包含 `.pmc-workspace` 只嵌入已验证且可再分发的原始归档，不会从已安装目录重建无签名包。
 
 R9 的组件可用性守卫不定义最终双击行为。R10-0 增加 `FileIntentRouter` 后，普通 `.blend` 双击在 BlenderIO/Blender 工作区不可用时必须降级到 Windows 默认程序，并且不能先创建失效标签；渲染预检、结构化解析和缩略图仍返回依赖缺失，不允许用系统打开冒充成功。完整规则见 `NEXT_MAJOR_FILE_HANDLER_ROUTING.md`。
 
@@ -123,7 +123,7 @@ R8-3 同轮增加 `.pmc-workspace`：
 - 导入创建新 Profile，不自动应用；本机工具/路径映射仍写在 Profile 外；
 - 映射写入失败时删除刚导入的 Profile，避免半导入。
 
-第一版不携带项目文件、项目路径、聊天、联系人、缓存、凭据、组件二进制或模板资源。
+装配空间仍不携带项目文件、项目路径、聊天、联系人、缓存或凭据；R10 后可以在用户选择 `self-contained` 时携带可重新分发、已验证的组件二进制和模板归档。默认 `references-only` 继续只携带逻辑依赖。
 
 ## 9. 验收
 

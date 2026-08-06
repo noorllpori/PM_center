@@ -20,17 +20,22 @@ import {
   inspectComponentPackage,
   installComponentFromPackage,
   installComponentFromDirectory,
+  getPresentationTemplatePreview,
+  invokeComponentCommand,
+  trustComponentPackagePublisher,
   reinstallBundledComponent,
   uninstallComponent,
 } from '../../api/componentRuntime';
 import type {
   ComponentPackageInspection,
+  ComponentInvocationResult,
   ComponentOperationSummary,
   ComponentRuntimeCommandError,
   ComponentRuntimeOverview,
   InstalledComponentSummary,
+  PresentationTemplatePreview,
 } from '../../types/componentRuntime';
-import { ConfirmDialog } from '../Dialog';
+import { ConfirmDialog, Dialog } from '../Dialog';
 
 const SOURCE_LABEL = {
   bundled: '随安装包',
@@ -82,6 +87,12 @@ function operationTone(status: ComponentOperationSummary['status']) {
   return 'text-gray-500 dark:text-gray-400';
 }
 
+function previewDocument(preview: PresentationTemplatePreview) {
+  const body = preview.baseHtml || '<main><h1>主题模板</h1><p>该模板只提供视觉令牌，没有独立 HTML 结构。</p></main>';
+  const styles = preview.styles || '';
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; font-src 'none'; connect-src 'none'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"><style>html,body{min-height:100%;margin:0;background:#f8fafc;color:#0f172a;font:14px system-ui,sans-serif}*{box-sizing:border-box}pm-surface-host,pm-overlay-host,pm-window-controls,pm-window-drag-region,pm-recovery-entry,pm-navigation,pm-toolbar,pm-tabs{display:block;min-height:30px;margin:8px;padding:8px;border:1px dashed #94a3b8;border-radius:4px;background:rgba(255,255,255,.78)}pm-surface-host::before{content:'Nexora Surface Host';color:#475569;font-size:12px}pm-overlay-host::before{content:'Overlay Host';color:#475569;font-size:12px}pm-window-controls::before{content:'Window Controls';color:#475569;font-size:12px}pm-window-drag-region::before{content:'Drag Region';color:#475569;font-size:12px}pm-recovery-entry::before{content:'Recovery Entry';color:#475569;font-size:12px}pm-navigation::before{content:'Navigation';color:#475569;font-size:12px}pm-toolbar::before{content:'Toolbar';color:#475569;font-size:12px}pm-tabs::before{content:'Tabs';color:#475569;font-size:12px}</style><style>${styles}</style></head><body>${body}</body></html>`;
+}
+
 export function ComponentRuntimeDiagnosticsSection() {
   const [overview, setOverview] = useState<ComponentRuntimeOverview | null>(null);
   const [pending, setPending] = useState<string | null>(null);
@@ -89,6 +100,8 @@ export function ComponentRuntimeDiagnosticsSection() {
   const [notice, setNotice] = useState<string | null>(null);
   const [uninstallTarget, setUninstallTarget] = useState<InstalledComponentSummary | null>(null);
   const [packageInspection, setPackageInspection] = useState<ComponentPackageInspection | null>(null);
+  const [templatePreview, setTemplatePreview] = useState<PresentationTemplatePreview | null>(null);
+  const [nativeHealthResult, setNativeHealthResult] = useState<ComponentInvocationResult | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -153,7 +166,17 @@ export function ComponentRuntimeDiagnosticsSection() {
       const inspection = await inspectComponentPackage(packagePath);
       setPackageInspection(inspection);
       const label = [inspection.componentName, inspection.componentVersion].filter(Boolean).join(' ');
-      if (!window.confirm(`已通过安全检查：${label || inspection.componentId || '未知组件'}\n文件 ${inspection.fileCount} 个，解压后 ${Math.ceil(inspection.totalBytes / 1024)} KiB。\n\n确认安装并替换同 ID 的旧版本吗？`)) {
+      if (!inspection.trust.installable) {
+        if (inspection.trust.status === 'signed-untrusted' && inspection.publisher) {
+          const shouldTrust = window.confirm(`发布者签名有效，但尚未在本机受信任。\n\n发布者：${inspection.publisher.displayName}\n组件：${label || inspection.componentId || '未知组件'}\n\n确认信任该发布者并继续安装吗？`);
+          if (!shouldTrust) return;
+          await trustComponentPackagePublisher(packagePath);
+        } else {
+          setError(inspection.trust.message);
+          return;
+        }
+      }
+      if (!window.confirm(`组件包检查完成：${label || inspection.componentId || '未知组件'}\n文件 ${inspection.fileCount} 个，解压后 ${Math.ceil(inspection.totalBytes / 1024)} KiB。\n信任状态：${inspection.trust.message}\n\n确认安装并替换同 ID 的旧版本吗？`)) {
         return;
       }
       await runAction('install-package', () => installComponentFromPackage(packagePath), '组件包已校验并安装。');
@@ -168,6 +191,43 @@ export function ComponentRuntimeDiagnosticsSection() {
       + overview.templates.themePresets.length
     : 0, [overview]);
 
+  const openTemplatePreview = async (componentId: string, templateId: string) => {
+    setPending(`preview:${componentId}:${templateId}`);
+    setError(null);
+    try {
+      setTemplatePreview(await getPresentationTemplatePreview(componentId, templateId));
+    } catch (nextError) {
+      setError(errorMessage(nextError));
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const runNativeHealthCheck = async (component: InstalledComponentSummary) => {
+    const healthCommand = (component.manifest as Record<string, unknown>).healthCommand;
+    if (typeof healthCommand !== 'string' || !healthCommand.trim()) return;
+    const key = `health:${component.manifest.id}`;
+    setPending(key);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await invokeComponentCommand({
+        componentId: component.manifest.id,
+        moduleId: 'core.recovery-settings',
+        command: healthCommand,
+        input: { source: 'component-runtime-diagnostics' },
+        timeoutMs: 10_000,
+      });
+      setNativeHealthResult(result);
+      setNotice(`“${component.manifest.name}”已通过隔离宿主健康调用。`);
+    } catch (nextError) {
+      setError(errorMessage(nextError));
+    } finally {
+      await load();
+      setPending(null);
+    }
+  };
+
   return (
     <>
       <section className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
@@ -179,10 +239,10 @@ export function ComponentRuntimeDiagnosticsSection() {
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">组件运行时</h4>
-                <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-500 dark:bg-gray-800 dark:text-gray-400">R10-1</span>
+                <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-500 dark:bg-gray-800 dark:text-gray-400">R10</span>
               </div>
               <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                所有组件使用同一安装目录、依赖校验、进程监督和操作日志；归档包会先做路径、大小、摘要和入口检查。
+                所有组件使用同一安装目录、依赖校验、进程监督和操作日志；归档包会先做路径、大小、摘要、入口及表现模板安全检查。
               </p>
             </div>
           </div>
@@ -247,6 +307,8 @@ export function ComponentRuntimeDiagnosticsSection() {
           <div className="mt-3 rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-800 dark:border-blue-900/50 dark:bg-blue-950/30 dark:text-blue-200">
             最近检查：<span className="font-medium">{packageInspection.componentName || packageInspection.componentId || '组件包'}</span>
             {' · '}{packageInspection.componentVersion || '-'}{' · '}{packageInspection.fileCount} 个文件{' · '}{Math.ceil(packageInspection.totalBytes / 1024)} KiB
+            <span className={packageInspection.trust.installable ? 'mt-1 block text-emerald-700 dark:text-emerald-300' : 'mt-1 block text-red-700 dark:text-red-300'}>{packageInspection.trust.message}</span>
+            {packageInspection.publisher ? <span className="mt-1 block text-gray-500 dark:text-gray-400">发布者：{packageInspection.publisher.displayName}{packageInspection.license ? ` · ${packageInspection.license}` : ''}</span> : null}
             {packageInspection.warnings.length ? (
               <span className="mt-1 block text-amber-700 dark:text-amber-300">{packageInspection.warnings.join('；')}</span>
             ) : null}
@@ -257,6 +319,12 @@ export function ComponentRuntimeDiagnosticsSection() {
           {overview?.installedComponents.map((component) => {
             const id = component.manifest.id;
             const busy = pending === `uninstall:${id}`;
+            const healthCommand = (component.manifest as Record<string, unknown>).healthCommand;
+            const templates = [
+              ...(component.manifest.contributes?.shellTemplates ?? []).map((template) => ({ id: template.id, name: template.name, kind: 'Shell' })),
+              ...(component.manifest.contributes?.pageTemplates ?? []).map((template) => ({ id: template.id, name: template.name, kind: '页面' })),
+              ...(component.manifest.contributes?.themePresets ?? []).map((template) => ({ id: template.id, name: template.name, kind: '主题' })),
+            ];
             return (
               <div key={id} className="py-3">
                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -272,17 +340,48 @@ export function ComponentRuntimeDiagnosticsSection() {
                     <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{component.manifest.description}</p>
                     <p className="mt-1 break-all font-mono text-[11px] text-gray-400">{id} · {component.manifest.version} · {contributionCount(component)} 项贡献</p>
                     {component.packagePath ? <p className="mt-1 break-all text-[11px] text-gray-400">{component.packagePath}</p> : null}
+                    {templates.length ? (
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {templates.map((template) => (
+                          <button
+                            key={template.id}
+                            type="button"
+                            disabled={!component.packagePath || pending !== null}
+                            onClick={() => void openTemplatePreview(id, template.id)}
+                            title={component.packagePath ? `在隔离预览中查看${template.name}` : '随程序提供的兼容模板由宿主直接渲染'}
+                            className="inline-flex items-center gap-1 rounded border border-violet-200 px-1.5 py-1 text-[11px] text-violet-700 hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-45 dark:border-violet-900/60 dark:text-violet-300 dark:hover:bg-violet-950/30"
+                          >
+                            {pending === `preview:${id}:${template.id}` ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                            {template.kind} · {template.name}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setUninstallTarget(component)}
-                    disabled={!component.removable || component.activeOperationCount > 0 || pending !== null}
-                    title={component.activeOperationCount > 0 ? '组件仍有运行中的操作' : '卸载组件'}
-                    className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-red-600 hover:bg-red-50 disabled:opacity-40 dark:text-red-300 dark:hover:bg-red-950/30"
-                  >
-                    {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                    卸载
-                  </button>
+                  <div className="flex shrink-0 items-center gap-1">
+                    {component.manifest.runtime === 'native-library' && typeof healthCommand === 'string' ? (
+                      <button
+                        type="button"
+                        onClick={() => void runNativeHealthCheck(component)}
+                        disabled={pending !== null}
+                        title="通过隔离宿主执行组件健康调用"
+                        className="inline-flex h-8 items-center gap-1.5 rounded-md border border-emerald-200 px-2.5 text-xs text-emerald-700 hover:bg-emerald-50 disabled:opacity-40 dark:border-emerald-900/60 dark:text-emerald-300 dark:hover:bg-emerald-950/30"
+                      >
+                        {pending === `health:${id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                        健康调用
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => setUninstallTarget(component)}
+                      disabled={!component.removable || component.activeOperationCount > 0 || pending !== null}
+                      title={component.activeOperationCount > 0 ? '组件仍有运行中的操作' : '卸载组件'}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-red-600 hover:bg-red-50 disabled:opacity-40 dark:text-red-300 dark:hover:bg-red-950/30"
+                    >
+                      {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                      卸载
+                    </button>
+                  </div>
                 </div>
               </div>
             );
@@ -382,6 +481,44 @@ export function ComponentRuntimeDiagnosticsSection() {
         cancelText="取消"
         type="danger"
       />
+
+      <Dialog
+        isOpen={Boolean(templatePreview)}
+        onClose={() => setTemplatePreview(null)}
+        title={templatePreview ? `${templatePreview.name} · 安全预览` : '安全预览'}
+        size="2xl"
+        contentClassName="min-h-0 overflow-hidden p-0"
+      >
+        {templatePreview ? (
+          <div className="flex min-h-[56vh] flex-col">
+            <div className="border-b border-gray-200 px-4 py-2 text-xs text-gray-500 dark:border-gray-800 dark:text-gray-400">
+              <span>{templatePreview.componentName}</span><span className="mx-2">·</span><span>{templatePreview.kind}</span><span className="mx-2">·</span><span>{templatePreview.version}</span>
+            </div>
+            <iframe
+              title={`${templatePreview.name} 安全预览`}
+              sandbox=""
+              srcDoc={previewDocument(templatePreview)}
+              className="min-h-0 flex-1 border-0 bg-white"
+            />
+            <p className="border-t border-gray-200 px-4 py-2 text-[11px] text-gray-400 dark:border-gray-800">该预览不执行脚本、不开放网络或 Tauri API；插槽显示为宿主占位。</p>
+          </div>
+        ) : null}
+      </Dialog>
+
+      <Dialog
+        isOpen={Boolean(nativeHealthResult)}
+        onClose={() => setNativeHealthResult(null)}
+        title="隔离原生组件健康调用"
+        size="lg"
+      >
+        {nativeHealthResult ? (
+          <div className="space-y-3 text-xs">
+            <p className="text-gray-600 dark:text-gray-300">{nativeHealthResult.componentId} · {nativeHealthResult.durationMs} ms · 宿主进程已完成并退出。</p>
+            <pre className="max-h-72 overflow-auto rounded-md bg-gray-950 p-3 font-mono text-[11px] text-gray-100">{JSON.stringify(nativeHealthResult.output, null, 2)}</pre>
+            {nativeHealthResult.logs.length ? <p className="break-all text-[11px] text-gray-500">{nativeHealthResult.logs.join('\n')}</p> : null}
+          </div>
+        ) : null}
+      </Dialog>
     </>
   );
 }

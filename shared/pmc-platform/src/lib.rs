@@ -4,6 +4,7 @@ mod error;
 mod ids;
 mod module_manifest;
 mod package;
+mod presentation;
 mod profile;
 mod workflow;
 
@@ -12,6 +13,7 @@ pub use component::*;
 pub use error::{ContractError, ContractErrorCode, ContractResult};
 pub use module_manifest::*;
 pub use package::*;
+pub use presentation::*;
 pub use profile::*;
 pub use workflow::*;
 
@@ -97,6 +99,10 @@ pub fn schema_documents() -> Vec<(&'static str, RootSchema)> {
             schema_for!(WorkspaceProfileV1),
         ),
         (
+            "presentation-template.schema.json",
+            schema_for!(PresentationTemplateDocumentV1),
+        ),
+        (
             "workspace-package.schema.json",
             schema_for!(WorkspacePackageV1),
         ),
@@ -169,6 +175,7 @@ mod tests {
         let component =
             parse_component_manifest(&fixture("valid/component-manifest.json")).unwrap();
         parse_workspace_profile(&fixture("valid/workspace-profile.json")).unwrap();
+        parse_presentation_template(&fixture("valid/presentation-template.json")).unwrap();
         let workflow = parse_workflow_manifest(&fixture("valid/workflow-manifest.json")).unwrap();
         parse_package_header(&fixture("valid/package-header.json")).unwrap();
         let contract_error: ContractError =

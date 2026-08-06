@@ -201,6 +201,20 @@ export interface ThemePresetContribution {
   [key: string]: unknown;
 }
 
+export type PresentationTemplateKind = 'shell' | 'page' | 'theme';
+
+export interface PresentationTemplateDocumentV1 {
+  schemaVersion: typeof PLATFORM_SCHEMA_VERSION;
+  id: string;
+  kind: PresentationTemplateKind;
+  version: string;
+  baseHtml?: string;
+  styles?: string;
+  regions?: string[];
+  assets?: string[];
+  [key: string]: unknown;
+}
+
 export interface FileHandlerContribution {
   id: string;
   name: string;

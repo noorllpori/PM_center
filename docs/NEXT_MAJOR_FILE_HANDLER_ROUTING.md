@@ -1,6 +1,6 @@
 # Nexora 文件意图路由与可替换文件处理器
 
-> 状态：`in-progress`（R10-0 至 R10-4 已实现基础链路，正在做集成验收）
+> 状态：`verifying`（R10-0 至 R10-4 和 R10-P1/P2 已实现，正在做完整集成验收）
 >
 > 里程碑：R10-0 至 R10-4
 >
@@ -8,7 +8,7 @@
 >
 > 前置：R3 CapabilityGateway、R5 Contribution Registry、R9 组件运行时
 
-当前实现范围：组件清单支持 `fileHandlers` 贡献和 `fileKinds`（`file`/`directory`）；文件双击、右键打开和目录进入先经过 Tauri `route_file_intent`。图片、视频、文本、目录和 Blender 工作区均由可卸载的 Nexora 组件贡献，组件缺失时普通 `open` 降级系统程序，`inspect` 等严格意图不会伪装成功。`pmc.blendio` 只提供无头 BlendIO 服务，`nexora.blender.workspace` 单独提供内部 Blender 标签页且依赖 BlendIO。组件运行时支持 `.pmc-pack` ZIP 安全检查、暂存解压、BLAKE3 内容摘要、原子升级和隔离 `pmc-component-host`；`native-library` 的 ABI 握手、健康检查和 JSON 调用已接入，DLL 仍不进入 Nexora 主进程。签名、许可证、依赖锁和完整路由诊断页仍属于后续增强。
+当前实现范围：组件清单支持 `fileHandlers` 贡献和 `fileKinds`（`file`/`directory`）；文件双击、右键打开和目录进入先经过 Tauri `route_file_intent`。图片、视频、文本、目录和 Blender 工作区均由可卸载的 Nexora 组件贡献，组件缺失时普通 `open` 降级系统程序，`inspect` 等严格意图不会伪装成功。`pmc.blendio` 只提供无头 BlendIO 服务，`nexora.blender.workspace` 单独提供内部 Blender 标签页且依赖 BlendIO。组件运行时支持 `.pmc-pack` ZIP 安全检查、暂存解压、BLAKE3 完整性摘要、Ed25519 发布者签名和本机发布者信任库；可执行组件包必须签名且发布者已被显式信任。`native-library` 先检查平台与 PE 架构，再由隔离 `pmc-component-host` 执行 ABI 握手和 JSON 调用，DLL 不进入 Nexora 主进程。BlenderIO 的当前随附版本由独立 `pmc-blendio-service` 进程执行，替换为同 ID 的签名组件包不会改变调用方。
 
 ## 1. 目标
 
@@ -423,7 +423,7 @@ Nexora-Blender-Workspace.pmc-pack
 
 `.pmc-profile` 只保存逻辑绑定和组件依赖，不包含组件文件。
 
-`.pmc-workspace` 在 R10 包安全完成后支持：
+`.pmc-workspace` 的 `references-only` 与 `self-contained` 均已可用。后者使用下列包目录约定；导入端会在用户确认后先完成全部签名、依赖、平台和冲突预检，再将缺失组件作为一个导入操作安装，任何常规失败都会回滚本次新增组件及新 Profile：
 
 ```text
 manifest.json
@@ -439,10 +439,24 @@ packages/
 
 - `references-only`：只保存依赖 ID 和版本，体积小；
 - `self-contained`：携带用户有权重新分发的组件包、模板和资料包；
-- 不可分发、许可证禁止或来源不可信的组件只写引用，并在导出预览列出；
-- 导入装配空间先检查所有包，再统一展示权限、发布者、许可证和冲突；
+- 自包含导出只嵌入“曾以已验证 `.pmc-pack` 安装、已缓存原归档、声明允许再分发”的组件。随 Nexora 安装但没有独立归档、由目录安装、来源或信任状态失效、或明确不可分发的组件只写引用，并在导出预览列出原因；导出器不会从已安装目录重新拼装包，以免丢失原发布者签名；
+- `dependency-lock.json` 固定组件 ID、版本要求、已解析版本、嵌入路径和未嵌入原因。导入时会拒绝锁文件与 `packages/` 不一致、重复包、路径穿越、加密或符号链接条目、超限压缩内容、摘要/签名/平台不符和依赖图无效的归档；
+- 导入预览统一展示每个依赖的嵌入状态、发布者、许可证、版本和阻塞原因。有效但尚未受信任的签名发布者必须逐个明确勾选信任；未签名或签名无效的可执行包始终拒绝；
+- 若本机已有同 ID 但版本不同的组件，导入会停止，不会用空间内版本静默替换。版本相同则复用本机组件；仅缺失组件会被安装；
 - 用户确认前不安装任何包、不切换 Profile、不修改绑定；
-- 任一必需包安装失败时回滚本次新装组件和 Profile，不能留下半装配状态。
+- 任一必需包安装、组件目录同步、Profile 写入或本机映射写入失败时，回滚本次新装组件和 Profile，不能留下半装配状态。异常断电时最多留下未被 Profile 引用的已安装组件，绝不会切换到半失效 Profile；恢复设置可安全卸载该组件。
+
+组件开发者可用仓库内的确定性签名工具生成可分发归档：
+
+```powershell
+# 生成一次并妥善保管的 Ed25519 私钥；不要提交到源码或包内
+npm run component:keygen -- D:\Keys\nexora-publisher.json
+
+# 打包包含 component.json 的组件目录
+npm run component:pack -- D:\MyComponent D:\Release\my-component.pmc-pack --key D:\Keys\nexora-publisher.json --publisher-id com.example --publisher-name "Example Studio" --license MIT
+```
+
+打包器按稳定路径顺序写入 ZIP，生成 BLAKE3 内容摘要和 Ed25519 包头签名。它不会把私钥或原始来源目录写进归档。首次安装来自该发布者的可执行包时，用户仍须在 Nexora 中查看并确认该发布者。
 
 ## 13. 公共接口草案
 
@@ -547,7 +561,22 @@ Profile 绑定：nexora.file-handler.blender-workspace
 - 先用 `data-pack`、`python-action`、`python-worker` 和 `native-process` 测试；
 - `.pmc-workspace` 增加依赖锁和可选自包含包目录。
 
-退出门槛：损坏包、路径穿越、压缩炸弹、错误架构和不可信签名不改变已安装状态。
+已实现：ZIP 路径/符号链接/加密/大小限制，原子 staging/替换/回滚，`contentDigest`（除 `manifest.json` 外所有内容的 BLAKE3），以及 Ed25519 发布者签名。包头扩展固定为：
+
+```json
+{
+  "contentDigest": "<blake3 of non-manifest entries>",
+  "publisher": {"id":"vendor.example","displayName":"Example","publicKey":"<base64 32-byte key>"},
+  "license": "MIT",
+  "signature": {"algorithm":"ed25519","value":"<base64 64-byte signature>"}
+}
+```
+
+签名材料是 `nexora.component-pack.v1\0`、移除 `signature` 字段后的确定性包头 JSON、零字节和 `contentDigest`。`native-process`、`native-library`、Python 运行时等含可执行代码的归档包必须签名且发布者位于本机信任库；无代码 `data-pack` 可以经明确确认以完整性模式安装。信任库位于组件运行时根目录 `trusted-publishers.json`，仅保存发布者 ID、显示名、公钥和信任时间，不保存私钥。DLL 安装期读取 PE 机器类型，拒绝本机架构不匹配的二进制。
+
+退出门槛：损坏包、路径穿越、压缩炸弹、错误架构、内容摘要不符和不可信签名不改变已安装状态。
+
+当前完成：`.pmc-workspace` 已支持 `references-only` 和 `self-contained`。自包含包使用 `dependency-lock.json`、嵌入原始已验证归档和导入期统一预览；缺失组件安装、Profile 写入和本机映射写入任一常规失败都会回滚。`nexora-component-pack` 负责可重复的 Ed25519 签名包生成，避免手工构造 ZIP 造成摘要或签名不一致。
 
 ### R10-2：隔离原生宿主
 
@@ -556,7 +585,7 @@ Profile 绑定：nexora.file-handler.blender-workspace
 - 崩溃、死循环、内存增长和宿主重启诊断；
 - DLL 不能进入 Nexora 主进程。
 
-当前完成：`pmc-component-host` 独立 Cargo binary；Windows `LoadLibraryW`、`nexora_component_abi_v1` 握手、`nexora_component_invoke_v1` JSON ABI、请求/响应大小限制、崩溃/超时错误码和发布资源自动准备。正式打包前由 `prepare:component-host` 编译并放入 Tauri resources；开发环境优先使用环境变量、应用旁路或 `target/debug` 宿主。调用导出约定为 `extern "system" fn(requestPtr, requestLen, responsePtr, responseCapacity) -> i64`，返回写入响应缓冲区的 JSON 字节数，负数表示组件错误。
+当前完成：`pmc-component-host` 独立 Cargo binary；Windows `LoadLibraryW`、`nexora_component_abi_v1` 握手、`nexora_component_invoke_v1` JSON ABI、请求/响应大小限制、崩溃/超时错误码和发布资源自动准备。正式打包前由 `prepare:component-host` 编译并放入 Tauri resources；开发环境优先使用环境变量、应用旁路或 `target/debug` 宿主。调用导出约定为 `extern "system" fn(requestPtr, requestLen, responsePtr, responseCapacity) -> i64`，返回写入响应缓冲区的 JSON 字节数，负数表示组件错误。仓库提供 `examples/native-library-echo`，开发/构建前自动生成 DLL；在组件运行时页面安装目录后可以直接点“健康调用”验证整个隔离链路。
 
 ### R10-3：BlenderIO 与 Blender 工作区外置
 
@@ -564,7 +593,7 @@ Profile 绑定：nexora.file-handler.blender-workspace
 - 把 Blender 页面、菜单和 Surface 登记为独立文件处理器组件；
 - 完成第 11 节的无包、安装、卸载、重装和第三方替换验收。
 
-当前完成：BlendIO 服务和 Blender 工作区已拆为两个组件；工作区默认不自动安装，可从“可重新安装/安装器随附”列表显式安装。只安装 BlendIO 时解析/渲染预检仍可用，但 `.blend` 普通打开回退系统；安装工作区且 BlendIO 可用时才创建内部 Blender 标签。
+当前完成：BlendIO 服务和 Blender 工作区已拆为两个组件；工作区默认不自动安装，可从“可重新安装/安装器随附”列表显式安装。`pmc.blendio` 目前由随安装包的 `pmc-blendio-service` 独立进程执行，不再在 Nexora 主进程通过 Rust adapter 直接读取 `.blend`。只安装 BlendIO 时解析/渲染预检仍可用，但 `.blend` 普通打开回退系统；安装工作区且 BlendIO 可用时才创建内部 Blender 标签。后续外部发布包以同 ID 接管该进程入口。
 
 ### R10-4：内置查看器组件化
 
@@ -577,7 +606,7 @@ Profile 绑定：nexora.file-handler.blender-workspace
 
 ### R10-P：表现模板包
 
-在 R10-1 包安全之上实现 `base.html`、CSS 净化、资源协议、ShellTemplate 和 PageTemplate 原子切换，不与文件处理器另建安装系统。
+R10-P1 已在 R10-1 包安全之上加入 `template.json` 合同、`base.html`/CSS 静态净化和资源路径检查，不与文件处理器另建安装系统。外部模板必须使用无权限 `data-pack`；真实渲染、预览和 Shell 原子切换归 R10-P2。
 
 ## 17. 自动测试
 

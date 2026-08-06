@@ -1,0 +1,458 @@
+use super::{ComponentRuntimeError, ComponentRuntimeErrorCode};
+use pmc_platform::{
+    parse_presentation_template, ComponentManifestV1, ComponentRuntime, PageTemplateContribution,
+    PresentationTemplateDocumentV1, PresentationTemplateKind, ShellTemplateContribution,
+    ThemePresetContribution,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::fs;
+use std::path::{Component, Path, PathBuf};
+
+const MAX_TEMPLATE_DOCUMENT_BYTES: u64 = 512 * 1024;
+const REQUIRED_SHELL_NODES: [&str; 5] = [
+    "pm-surface-host",
+    "pm-overlay-host",
+    "pm-window-controls",
+    "pm-window-drag-region",
+    "pm-recovery-entry",
+];
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PresentationTemplatePreviewRequest {
+    pub component_id: String,
+    pub template_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PresentationTemplatePreview {
+    pub component_id: String,
+    pub template_id: String,
+    pub component_name: String,
+    pub name: String,
+    pub kind: PresentationTemplateKind,
+    pub version: String,
+    pub base_html: Option<String>,
+    pub styles: Option<String>,
+    pub regions: Vec<String>,
+    pub content_digest: String,
+}
+
+/// External presentation components are data-only. Validate every referenced
+/// template while it is still in staging so invalid markup cannot reach a
+/// profile or replace the current Shell.
+pub fn validate_presentation_component(
+    root: &Path,
+    manifest: &ComponentManifestV1,
+) -> Result<(), ComponentRuntimeError> {
+    let has_presentation = !manifest.contributes.shell_templates.is_empty()
+        || !manifest.contributes.page_templates.is_empty()
+        || !manifest.contributes.theme_presets.is_empty();
+    if !has_presentation {
+        return Ok(());
+    }
+    if manifest.runtime != ComponentRuntime::DataPack {
+        return Err(template_error("外部表现模板组件必须使用 data-pack 运行时"));
+    }
+    if !manifest.capabilities.is_empty() {
+        return Err(template_error("外部表现模板组件不能申请能力权限"));
+    }
+    for template in &manifest.contributes.shell_templates {
+        validate_shell_template(root, template)?;
+    }
+    for template in &manifest.contributes.page_templates {
+        validate_page_template(root, template)?;
+    }
+    for template in &manifest.contributes.theme_presets {
+        validate_theme_template(root, template)?;
+    }
+    Ok(())
+}
+
+/// Loads only already-validated, package-local presentation resources. This is
+/// deliberately separate from component invocation: callers receive static
+/// markup for a sandboxed preview, never a path or a capability-bearing API.
+pub fn load_presentation_template_preview(
+    root: &Path,
+    manifest: &ComponentManifestV1,
+    template_id: &str,
+) -> Result<PresentationTemplatePreview, ComponentRuntimeError> {
+    let template_id = template_id.trim();
+    if template_id.is_empty() {
+        return Err(template_error("表现模板预览缺少 templateId"));
+    }
+    let (kind, name, version, regions, descriptor_value, is_shell) = if let Some(template) =
+        manifest
+            .contributes
+            .shell_templates
+            .iter()
+            .find(|template| template.id == template_id)
+    {
+        (
+            PresentationTemplateKind::Shell,
+            template.name.clone(),
+            template.version.clone(),
+            Vec::new(),
+            template.extensions.get("templatePath"),
+            true,
+        )
+    } else if let Some(template) = manifest
+        .contributes
+        .page_templates
+        .iter()
+        .find(|template| template.id == template_id)
+    {
+        (
+            PresentationTemplateKind::Page,
+            template.name.clone(),
+            template.version.clone(),
+            template.regions.clone(),
+            template.extensions.get("templatePath"),
+            false,
+        )
+    } else if let Some(template) = manifest
+        .contributes
+        .theme_presets
+        .iter()
+        .find(|template| template.id == template_id)
+    {
+        (
+            PresentationTemplateKind::Theme,
+            template.name.clone(),
+            template.version.clone(),
+            Vec::new(),
+            template.extensions.get("templatePath"),
+            false,
+        )
+    } else {
+        return Err(template_error(format!(
+            "组件没有声明表现模板: {template_id}"
+        )));
+    };
+    let descriptor = read_descriptor(root, descriptor_value)?;
+    validate_descriptor(&descriptor, template_id, &version, kind)?;
+    let base_html = match descriptor.base_html.as_deref() {
+        Some(path) => {
+            let html = read_limited_text(&resolve_template_path(root, path)?)?;
+            validate_html(&html, is_shell)?;
+            Some(html)
+        }
+        None if kind == PresentationTemplateKind::Theme => None,
+        None => return Err(template_error("页面或 Shell 模板缺少 baseHtml")),
+    };
+    let styles = match descriptor.styles.as_deref() {
+        Some(path) => {
+            let css = read_limited_text(&resolve_template_path(root, path)?)?;
+            validate_css(&css)?;
+            Some(css)
+        }
+        None => None,
+    };
+    let content_digest = blake3::hash(
+        format!(
+            "{}\n{}\n{}\n{}",
+            manifest.id,
+            template_id,
+            base_html.as_deref().unwrap_or_default(),
+            styles.as_deref().unwrap_or_default()
+        )
+        .as_bytes(),
+    )
+    .to_hex()
+    .to_string();
+    Ok(PresentationTemplatePreview {
+        component_id: manifest.id.clone(),
+        template_id: template_id.into(),
+        component_name: manifest.name.clone(),
+        name,
+        kind,
+        version,
+        base_html,
+        styles,
+        regions,
+        content_digest,
+    })
+}
+
+fn validate_shell_template(
+    root: &Path,
+    contribution: &ShellTemplateContribution,
+) -> Result<(), ComponentRuntimeError> {
+    if contribution.adapter.is_some() {
+        return Err(template_error("外部 Shell 模板不能声明宿主 adapter"));
+    }
+    let descriptor = read_descriptor(root, contribution.extensions.get("templatePath"))?;
+    validate_descriptor(
+        &descriptor,
+        contribution.id.as_str(),
+        contribution.version.as_str(),
+        PresentationTemplateKind::Shell,
+    )?;
+    let html = read_template_text(
+        root,
+        descriptor.base_html.as_deref(),
+        "Shell 模板缺少 baseHtml",
+    )?;
+    validate_html(&html, true)?;
+    validate_styles(root, descriptor.styles.as_deref())?;
+    Ok(())
+}
+
+fn validate_page_template(
+    root: &Path,
+    contribution: &PageTemplateContribution,
+) -> Result<(), ComponentRuntimeError> {
+    let descriptor = read_descriptor(root, contribution.extensions.get("templatePath"))?;
+    validate_descriptor(
+        &descriptor,
+        contribution.id.as_str(),
+        contribution.version.as_str(),
+        PresentationTemplateKind::Page,
+    )?;
+    let html = read_template_text(
+        root,
+        descriptor.base_html.as_deref(),
+        "页面模板缺少 baseHtml",
+    )?;
+    validate_html(&html, false)?;
+    if contribution
+        .regions
+        .iter()
+        .any(|region| !descriptor.regions.iter().any(|value| value == region))
+    {
+        return Err(template_error(
+            "页面模板 descriptor 未声明组件贡献所需的全部 region",
+        ));
+    }
+    validate_styles(root, descriptor.styles.as_deref())?;
+    Ok(())
+}
+
+fn validate_theme_template(
+    root: &Path,
+    contribution: &ThemePresetContribution,
+) -> Result<(), ComponentRuntimeError> {
+    let descriptor = read_descriptor(root, contribution.extensions.get("templatePath"))?;
+    validate_descriptor(
+        &descriptor,
+        contribution.id.as_str(),
+        contribution.version.as_str(),
+        PresentationTemplateKind::Theme,
+    )?;
+    if descriptor.base_html.is_some() {
+        return Err(template_error("主题模板不能携带 baseHtml"));
+    }
+    validate_styles(root, descriptor.styles.as_deref())
+}
+
+fn read_descriptor(
+    root: &Path,
+    value: Option<&Value>,
+) -> Result<PresentationTemplateDocumentV1, ComponentRuntimeError> {
+    let path = value
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| template_error("表现模板贡献缺少 templatePath"))?;
+    let descriptor_path = resolve_template_path(root, path)?;
+    let source = read_limited_text(&descriptor_path)?;
+    parse_presentation_template(&source)
+        .map_err(|error| template_error(format!("template.json 无效: {error}")))
+}
+
+fn validate_descriptor(
+    descriptor: &PresentationTemplateDocumentV1,
+    id: &str,
+    version: &str,
+    expected_kind: PresentationTemplateKind,
+) -> Result<(), ComponentRuntimeError> {
+    if descriptor.id != id || descriptor.version != version || descriptor.kind != expected_kind {
+        return Err(template_error(
+            "template.json 的 id、version 或 kind 与组件贡献不匹配",
+        ));
+    }
+    Ok(())
+}
+
+fn read_template_text(
+    root: &Path,
+    value: Option<&str>,
+    missing_message: &str,
+) -> Result<String, ComponentRuntimeError> {
+    let path = value
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| template_error(missing_message))?;
+    read_limited_text(&resolve_template_path(root, path)?)
+}
+
+fn validate_styles(root: &Path, value: Option<&str>) -> Result<(), ComponentRuntimeError> {
+    let Some(path) = value.filter(|value| !value.trim().is_empty()) else {
+        return Ok(());
+    };
+    let css = read_limited_text(&resolve_template_path(root, path)?)?;
+    validate_css(&css)
+}
+
+fn read_limited_text(path: &Path) -> Result<String, ComponentRuntimeError> {
+    let metadata =
+        fs::metadata(path).map_err(|error| template_error(format!("模板资源不可用: {error}")))?;
+    if !metadata.is_file() {
+        return Err(template_error("模板资源必须是普通文件"));
+    }
+    if metadata.len() > MAX_TEMPLATE_DOCUMENT_BYTES {
+        return Err(template_error("单个模板文档不能超过 512 KiB"));
+    }
+    fs::read_to_string(path)
+        .map_err(|error| template_error(format!("模板资源不是有效 UTF-8: {error}")))
+}
+
+fn resolve_template_path(root: &Path, relative: &str) -> Result<PathBuf, ComponentRuntimeError> {
+    let path = Path::new(relative);
+    if relative.trim().is_empty()
+        || path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(template_error("模板资源路径不安全"));
+    }
+    let resolved = root.join(path);
+    let root = fs::canonicalize(root)
+        .map_err(|error| template_error(format!("模板包目录不可用: {error}")))?;
+    let resolved = fs::canonicalize(&resolved)
+        .map_err(|error| template_error(format!("模板资源不可用: {error}")))?;
+    if !resolved.starts_with(&root) {
+        return Err(template_error("模板资源路径越界"));
+    }
+    Ok(resolved)
+}
+
+fn validate_html(source: &str, is_shell: bool) -> Result<(), ComponentRuntimeError> {
+    let lowered = source.to_ascii_lowercase();
+    for forbidden in [
+        "<script",
+        "<iframe",
+        "<object",
+        "<embed",
+        "<base",
+        "javascript:",
+        "vbscript:",
+        "file:",
+        "data:",
+        "window.__tauri__",
+        "window.__nexora__",
+        "eval(",
+        "import(",
+    ] {
+        if lowered.contains(forbidden) {
+            return Err(template_error(format!(
+                "模板 HTML 包含禁止内容: {forbidden}"
+            )));
+        }
+    }
+    if source
+        .split('<')
+        .skip(1)
+        .any(|tag| tag.trim_start().to_ascii_lowercase().starts_with("link"))
+    {
+        return Err(template_error("模板 HTML 不允许通过 link 加载外部资源"));
+    }
+    if contains_inline_event_handler(&lowered) {
+        return Err(template_error("模板 HTML 不允许内联事件处理器"));
+    }
+    if contains_external_url(&lowered) {
+        return Err(template_error("模板 HTML 不允许远程资源"));
+    }
+    if is_shell {
+        for node in REQUIRED_SHELL_NODES {
+            if !lowered.contains(&format!("<{node}")) {
+                return Err(template_error(format!("Shell 模板缺少强制节点 <{node}>")));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn contains_inline_event_handler(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    bytes
+        .windows(3)
+        .any(|window| window[0].is_ascii_whitespace() && window[1] == b'o' && window[2] == b'n')
+}
+
+fn contains_external_url(source: &str) -> bool {
+    source.contains("http://") || source.contains("https://") || source.contains("//")
+}
+
+fn validate_css(source: &str) -> Result<(), ComponentRuntimeError> {
+    let lowered = source.to_ascii_lowercase();
+    for forbidden in [
+        "@import",
+        "expression(",
+        "javascript:",
+        "vbscript:",
+        "file:",
+        "data:",
+        "http://",
+        "https://",
+        "url(//",
+    ] {
+        if lowered.contains(forbidden) {
+            return Err(template_error(format!(
+                "模板 CSS 包含禁止内容: {forbidden}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn template_error(message: impl Into<String>) -> ComponentRuntimeError {
+    ComponentRuntimeError::new(ComponentRuntimeErrorCode::ComponentPackageInvalid, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn rejects_scripted_or_remote_html() {
+        assert!(validate_html("<pm-surface-host /><script>alert(1)</script>", false).is_err());
+        assert!(validate_html("<img src=\"https://example.com/image.png\">", false).is_err());
+        assert!(validate_html("<button onclick=\"run()\">Run</button>", false).is_err());
+    }
+
+    #[test]
+    fn requires_recovery_nodes_for_shells() {
+        assert!(validate_html("<pm-surface-host />", true).is_err());
+        assert!(validate_html(
+            "<pm-surface-host /><pm-overlay-host /><pm-window-controls /><pm-window-drag-region /><pm-recovery-entry />",
+            true,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn rejects_external_css() {
+        assert!(validate_css("@import url(https://example.com/theme.css);").is_err());
+        assert!(validate_css("main { background: url(../assets/hero.png); }").is_ok());
+    }
+
+    #[test]
+    fn local_example_template_passes_staging_validation() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("src-tauri must have a workspace parent")
+            .join("examples")
+            .join("presentation-template-studio");
+        let manifest = pmc_platform::parse_component_manifest(
+            &fs::read_to_string(root.join("component.json")).unwrap(),
+        )
+        .unwrap();
+        validate_presentation_component(&root, &manifest).unwrap();
+    }
+}

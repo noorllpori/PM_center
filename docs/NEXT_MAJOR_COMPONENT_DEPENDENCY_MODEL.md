@@ -181,17 +181,17 @@ pmc.psd-reader   -> PSD 图层、画布、字体与链接资源
 - R7-0 已登记 `pmc.blendio` 的正式 Component Manifest；
 - 渲染中心已通过 `requiresComponents` 声明必需依赖，项目资源已通过 `optionalComponents` 声明可选依赖；
 - Profile Runtime 已计算显式组件、模块传递组件和组件传递依赖，并在缺失、版本不兼容或循环时阻止应用；
-- 当前执行仍由宿主内 `blendio` crate adapter 完成，尚未切换到可卸载 EXE 的 ComponentGateway 调用。
+- 当前随附执行已由 `pmc-blendio-service` 独立进程承接；ComponentGateway 调用不再在 Nexora 主进程直接运行 BlendIO。可重分发的签名 EXE 包仍复用同一组件 ID 和依赖合同。
 
 迁移顺序：
 
 1. [已完成] 保留现有 crate 和 Tauri 命令，避免当前功能回归；
-2. [R9 verifying] 将现有 BlendIO 能力登记为可卸载、可重装的 `pmc.blendio` 组件，并通过受信任宿主适配器迁移现有 Rust 实现；独立签名二进制留到 R10；
-3. [R9 verifying] 已实现动态目录、本地目录安装、随附组件卸载/重装、依赖图校验和 Profile/Capability 目录同步；归档包签名与升级回滚进入 R10；
+2. [R10 已实现，待双机人工验收] 将现有 BlendIO 能力登记为可卸载、可重装的 `pmc.blendio` 组件，并由随附独立服务进程迁移现有 Rust 实现；可重分发签名二进制使用同一服务合同；
+3. [R10 已实现，待双机人工验收] 已实现动态目录、本地目录安装、随附组件卸载/重装、依赖图校验、Profile/Capability 目录同步、归档包签名信任与升级回滚；自包含装配空间只嵌入已验证的原始 `.pmc-pack`，并在导入时阻止不同版本的静默替换；
 4. 让旧 `get_file_details` 等命令成为 ComponentGateway 的兼容 adapter；
 5. 渲染中心把场景预检、外部资源和渲染设置读取改为组件调用；
 6. [已完成合同] 项目资源模块把 `.blend` 预览和详情声明为可选组件能力；
-7. R9 已在 BlendIO 业务入口增加组件可用性守卫；R10 独立宿主完成后移除业务模块对 `blendio` crate 的直接引用；
+7. R9 已在 BlendIO 业务入口增加组件可用性守卫；R10 服务进程已经移除 Nexora 主进程执行路径，后续格式服务继续禁止业务模块直接引用解析 crate；
 8. R11 将相同命令注册为工作流节点，R13 远程节点按组件版本报告能力。
 
 ## 6. R7 编辑器中的表现

@@ -387,10 +387,7 @@ fn scene_summary(file: &BlendFile, view: &StructView<'_>) -> SceneSummary {
             .as_ref()
             .and_then(|render| field_i32_or_i16(render, "efra"))
             .unwrap_or_default(),
-        fps: render
-            .as_ref()
-            .map(render_fps)
-            .unwrap_or(0.0),
+        fps: render.as_ref().map(render_fps).unwrap_or(0.0),
         resolution_x: render
             .as_ref()
             .and_then(|render| field_i32_or_i16(render, "xsch"))
@@ -728,7 +725,11 @@ fn object_has_animation(file: &BlendFile, view: &StructView<'_>) -> bool {
     let Some(adt_ptr) = field_pointer(view, "adt") else {
         return false;
     };
-    let Some(adt) = file.view_old_ptr_as_struct(adt_ptr, "AnimData").ok().flatten() else {
+    let Some(adt) = file
+        .view_old_ptr_as_struct(adt_ptr, "AnimData")
+        .ok()
+        .flatten()
+    else {
         return true;
     };
     field_pointer(&adt, "action").is_some()
@@ -741,7 +742,10 @@ fn object_has_animation(file: &BlendFile, view: &StructView<'_>) -> bool {
 
 fn object_action_name(file: &BlendFile, view: &StructView<'_>) -> Option<String> {
     let adt_ptr = field_pointer(view, "adt")?;
-    let adt = file.view_old_ptr_as_struct(adt_ptr, "AnimData").ok().flatten()?;
+    let adt = file
+        .view_old_ptr_as_struct(adt_ptr, "AnimData")
+        .ok()
+        .flatten()?;
     let action_ptr = field_pointer(&adt, "action")?;
     resolve_id_reference(file, action_ptr)
         .ok()
@@ -750,7 +754,10 @@ fn object_action_name(file: &BlendFile, view: &StructView<'_>) -> Option<String>
 }
 
 fn object_modifiers(file: &BlendFile, view: &StructView<'_>) -> Vec<ModifierSummary> {
-    let Some(list) = view.field("modifiers").and_then(|field| field.as_struct_view()) else {
+    let Some(list) = view
+        .field("modifiers")
+        .and_then(|field| field.as_struct_view())
+    else {
         return Vec::new();
     };
     let Ok(blocks) = iter_listbase(file, &list) else {
@@ -779,7 +786,9 @@ fn count_listbase(file: &BlendFile, parent: &StructView<'_>, field_name: &str) -
     else {
         return 0;
     };
-    iter_listbase(file, &list).map(|blocks| blocks.len()).unwrap_or(0)
+    iter_listbase(file, &list)
+        .map(|blocks| blocks.len())
+        .unwrap_or(0)
 }
 
 fn custom_data_layer_names(
@@ -787,14 +796,20 @@ fn custom_data_layer_names(
     parent: &StructView<'_>,
     field_name: &str,
 ) -> Vec<String> {
-    let Some(custom_data) = parent.field(field_name).and_then(|field| field.as_struct_view()) else {
+    let Some(custom_data) = parent
+        .field(field_name)
+        .and_then(|field| field.as_struct_view())
+    else {
         return Vec::new();
     };
-    let layer_count = field_i32(&custom_data, "totlayer").unwrap_or_default().max(0) as usize;
+    let layer_count = field_i32(&custom_data, "totlayer")
+        .unwrap_or_default()
+        .max(0) as usize;
     let Some(layer_ptr) = field_pointer(&custom_data, "layers") else {
         return Vec::new();
     };
-    let Ok(Some(layers)) = read_struct_array(file, layer_ptr, "CustomDataLayer", layer_count) else {
+    let Ok(Some(layers)) = read_struct_array(file, layer_ptr, "CustomDataLayer", layer_count)
+    else {
         return Vec::new();
     };
     layers
@@ -805,7 +820,10 @@ fn custom_data_layer_names(
 }
 
 fn node_tree_name(file: &BlendFile, ptr: u64) -> Option<String> {
-    let view = file.view_old_ptr_as_struct(ptr, "bNodeTree").ok().flatten()?;
+    let view = file
+        .view_old_ptr_as_struct(ptr, "bNodeTree")
+        .ok()
+        .flatten()?;
     raw_id_name(&view).map(|value| strip_id_prefix(&value))
 }
 

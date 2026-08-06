@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "example.studio-template",
+  "name": "示例 Studio Shell 模板",
+  "description": "用于验证 Nexora 外部表现模板包的安装与静态安全检查。",
+  "version": "1.0.0",
+  "apiVersion": "1",
+  "runtime": "data-pack",
+  "role": "data",
+  "distribution": "local",
+  "uiMode": "none",
+  "platforms": ["any"],
+  "entry": "presentation",
+  "capabilities": [],
+  "contributes": {
+    "shellTemplates": [
+      {
+        "id": "example.shell.studio",
+        "name": "Studio 工作台",
+        "version": "1.0.0",
+        "templatePath": "presentation/shell/studio/template.json"
+      }
+    ]
+  }
+}

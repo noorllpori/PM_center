@@ -1,3 +1,7 @@
+use super::component_runtime::{
+    ComponentPackageInspection, ComponentPackageTrustStatus, ComponentRuntimeManager,
+    WorkspaceComponentArchive,
+};
 use super::{
     WorkspaceProfileDraftValidation, WorkspaceProfileMutationResult, WorkspaceProfileRuntime,
     WorkspaceProfileRuntimeError, WorkspaceProfileRuntimeErrorCode,
@@ -5,11 +9,11 @@ use super::{
 };
 use chrono::Utc;
 use pmc_platform::{
-    parse_package_header, parse_workspace_package, parse_workspace_profile, ContentDigest,
-    DigestAlgorithm, ExtensionFields, ModuleManifestV1, PackageHeaderV1, PackageKind,
-    PackagePayloadDescriptor, ProfilePathVariable, ProfilePathVariableKind, ProfileToolAlias,
-    ValidateContract, WorkspacePackageV1, WorkspaceProfileV1, PACKAGE_FORMAT_VERSION,
-    PACKAGE_MAGIC, PLATFORM_SCHEMA_VERSION,
+    parse_package_header, parse_workspace_package, parse_workspace_profile, ComponentManifestV1,
+    ContentDigest, DigestAlgorithm, ExtensionFields, ModuleManifestV1, PackageHeaderV1,
+    PackageKind, PackagePayloadDescriptor, ProfilePathVariable, ProfilePathVariableKind,
+    ProfileToolAlias, ValidateContract, WorkspacePackageV1, WorkspaceProfileV1,
+    PACKAGE_FORMAT_VERSION, PACKAGE_MAGIC, PLATFORM_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -24,10 +28,16 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 const MANIFEST_PATH: &str = "manifest.json";
 const PROFILE_PAYLOAD_PATH: &str = "profile.json";
 const WORKSPACE_PAYLOAD_PATH: &str = "workspace.json";
+const WORKSPACE_DEPENDENCY_LOCK_PATH: &str = "dependency-lock.json";
+const WORKSPACE_PACKAGE_PREFIX: &str = "packages/";
 const MAX_ARCHIVE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_ENTRY_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_TOTAL_UNCOMPRESSED_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES: usize = 8;
+const MAX_WORKSPACE_ARCHIVE_BYTES: u64 = 768 * 1024 * 1024;
+const MAX_WORKSPACE_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_WORKSPACE_TOTAL_UNCOMPRESSED_BYTES: u64 = 640 * 1024 * 1024;
+const MAX_WORKSPACE_ARCHIVE_ENTRIES: usize = 512;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,6 +66,25 @@ pub struct ExportWorkspacePackageRequest {
     pub open_surface_ids: Vec<String>,
     #[serde(default)]
     pub active_surface_id: Option<String>,
+    #[serde(default)]
+    pub distribution_mode: WorkspacePackageDistributionMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkspacePackageDistributionMode {
+    #[default]
+    ReferencesOnly,
+    SelfContained,
+}
+
+impl WorkspacePackageDistributionMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ReferencesOnly => "references-only",
+            Self::SelfContained => "self-contained",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -67,6 +96,8 @@ pub struct ImportWorkspacePackageRequest {
     pub tool_mappings: Vec<ProfileLocalBindingInput>,
     #[serde(default)]
     pub path_mappings: Vec<ProfileLocalBindingInput>,
+    #[serde(default)]
+    pub trust_embedded_publisher_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -88,6 +119,8 @@ pub struct WorkspacePackageImportPreview {
     pub open_surface_ids: Vec<String>,
     pub active_surface_id: Option<String>,
     pub variables: BTreeMap<String, String>,
+    pub distribution_mode: WorkspacePackageDistributionMode,
+    pub component_packages: Vec<WorkspaceComponentPackagePreview>,
     pub tool_aliases: Vec<ProfileToolAlias>,
     pub path_variables: Vec<ProfilePathVariable>,
     pub reusable_binding_presets: Vec<ProfileLocalBindingPreset>,
@@ -95,6 +128,29 @@ pub struct WorkspacePackageImportPreview {
     pub missing_component_ids: Vec<String>,
     pub issues: Vec<ProfilePackageIssue>,
     pub can_import: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceComponentPackagePreview {
+    pub component_id: String,
+    pub version_requirement: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedded_path: Option<String>,
+    pub embedded: bool,
+    pub installable: bool,
+    pub trust_required: bool,
+    pub trust_status: ComponentPackageTrustStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publisher_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publisher: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -193,6 +249,12 @@ struct InspectedProfilePackage {
 struct InspectedWorkspacePackage {
     preview: WorkspacePackageImportPreview,
     workspace: WorkspacePackageV1,
+    embedded_packages: Vec<EmbeddedWorkspaceComponentPackage>,
+}
+
+struct EmbeddedWorkspaceComponentPackage {
+    lock: WorkspaceDependencyLockEntry,
+    bytes: Vec<u8>,
 }
 
 struct InspectedPackagePayload {
@@ -201,6 +263,29 @@ struct InspectedPackagePayload {
     header: PackageHeaderV1,
     payload_bytes: Vec<u8>,
     payload_digest: String,
+    attachments: BTreeMap<String, Vec<u8>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceDependencyLock {
+    schema_version: u16,
+    distribution_mode: WorkspacePackageDistributionMode,
+    #[serde(default)]
+    components: Vec<WorkspaceDependencyLockEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceDependencyLockEntry {
+    component_id: String,
+    version_requirement: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resolved_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    embedded_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -334,6 +419,22 @@ pub fn export_workspace_package(
     profile: &WorkspaceProfileV1,
     request: &ExportWorkspacePackageRequest,
 ) -> Result<ProfilePackageExportResult, WorkspaceProfileRuntimeError> {
+    export_workspace_package_internal(profile, request, None)
+}
+
+pub fn export_workspace_package_with_components(
+    profile: &WorkspaceProfileV1,
+    request: &ExportWorkspacePackageRequest,
+    components: &ComponentRuntimeManager,
+) -> Result<ProfilePackageExportResult, WorkspaceProfileRuntimeError> {
+    export_workspace_package_internal(profile, request, Some(components))
+}
+
+fn export_workspace_package_internal(
+    profile: &WorkspaceProfileV1,
+    request: &ExportWorkspacePackageRequest,
+    components: Option<&ComponentRuntimeManager>,
+) -> Result<ProfilePackageExportResult, WorkspaceProfileRuntimeError> {
     let destination = PathBuf::from(&request.destination_path);
     let parent = destination.parent().ok_or_else(|| {
         package_error(
@@ -383,6 +484,70 @@ pub fn export_workspace_package(
     let payload_bytes = canonical_json_bytes(&workspace)?;
     let payload_digest = blake3::hash(&payload_bytes).to_hex().to_string();
     let package_id = format!("workspace.p{}", &payload_digest[..24]);
+    let requested_components = workspace
+        .profile
+        .enabled_components
+        .iter()
+        .map(|selection| (selection.id.clone(), selection.version_requirement.clone()))
+        .collect::<Vec<_>>();
+    let archives = components
+        .map(|manager| manager.workspace_component_archives(&requested_components))
+        .unwrap_or_else(|| {
+            requested_components
+                .iter()
+                .map(
+                    |(component_id, version_requirement)| WorkspaceComponentArchive {
+                        component_id: component_id.clone(),
+                        version: None,
+                        version_requirement: version_requirement.clone(),
+                        package_path: None,
+                        reason: Some("导出端没有组件归档运行时，只保留依赖引用。".into()),
+                    },
+                )
+                .collect()
+        });
+    let mut package_entries = BTreeMap::<String, Vec<u8>>::new();
+    let mut lock_entries = Vec::with_capacity(archives.len());
+    for (index, archive) in archives.into_iter().enumerate() {
+        let embedded_path =
+            if request.distribution_mode == WorkspacePackageDistributionMode::SelfContained {
+                archive
+                    .package_path
+                    .as_ref()
+                    .map(|source| {
+                        let name = format!("{index:03}-{}.pmc-pack", archive.component_id);
+                        let archive_path = format!("{WORKSPACE_PACKAGE_PREFIX}{name}");
+                        let bytes = fs::read(source).map_err(|error| {
+                            package_io_error("读取待打包组件归档失败", source, error)
+                        })?;
+                        if bytes.len() as u64 > MAX_WORKSPACE_ENTRY_BYTES {
+                            return Err(package_error(
+                                WorkspaceProfileRuntimeErrorCode::ProfilePackageTooLarge,
+                                format!("组件包 {} 超过装配空间单文件限制", archive.component_id),
+                                Some(source),
+                            ));
+                        }
+                        package_entries.insert(archive_path.clone(), bytes);
+                        Ok(archive_path)
+                    })
+                    .transpose()?
+            } else {
+                None
+            };
+        lock_entries.push(WorkspaceDependencyLockEntry {
+            component_id: archive.component_id,
+            version_requirement: archive.version_requirement,
+            resolved_version: archive.version,
+            embedded_path,
+            note: archive.reason,
+        });
+    }
+    let lock = WorkspaceDependencyLock {
+        schema_version: 1,
+        distribution_mode: request.distribution_mode,
+        components: lock_entries,
+    };
+    let lock_bytes = canonical_json_bytes(&lock)?;
     let header = PackageHeaderV1 {
         magic: PACKAGE_MAGIC.into(),
         schema_version: PLATFORM_SCHEMA_VERSION,
@@ -400,13 +565,25 @@ pub fn export_workspace_package(
             size_bytes: payload_bytes.len() as u64,
             extensions: ExtensionFields::new(),
         },
-        extensions: ExtensionFields::new(),
+        extensions: [
+            (
+                "distributionMode".into(),
+                Value::String(request.distribution_mode.as_str().into()),
+            ),
+            (
+                "embeddedPackageCount".into(),
+                Value::from(package_entries.len() as u64),
+            ),
+        ]
+        .into_iter()
+        .collect(),
     };
-    write_package_archive(
+    write_workspace_archive(
         &destination,
-        WORKSPACE_PAYLOAD_PATH,
         &canonical_json_bytes(&header)?,
         &payload_bytes,
+        &lock_bytes,
+        &package_entries,
     )?;
     let size_bytes = fs::metadata(&destination)
         .map_err(|error| package_io_error("读取导出装配空间大小失败", &destination, error))?
@@ -424,7 +601,18 @@ pub fn inspect_workspace_package(
     runtime: &WorkspaceProfileRuntime,
     manifests: &[ModuleManifestV1],
 ) -> Result<WorkspacePackageImportPreview, WorkspaceProfileRuntimeError> {
-    inspect_workspace_package_internal(package_path, runtime, manifests).map(|value| value.preview)
+    inspect_workspace_package_internal(package_path, runtime, manifests, None)
+        .map(|value| value.preview)
+}
+
+pub fn inspect_workspace_package_with_components(
+    package_path: &str,
+    runtime: &WorkspaceProfileRuntime,
+    manifests: &[ModuleManifestV1],
+    components: &ComponentRuntimeManager,
+) -> Result<WorkspacePackageImportPreview, WorkspaceProfileRuntimeError> {
+    inspect_workspace_package_internal(package_path, runtime, manifests, Some(components))
+        .map(|value| value.preview)
 }
 
 pub fn import_workspace_package(
@@ -432,7 +620,8 @@ pub fn import_workspace_package(
     runtime: &WorkspaceProfileRuntime,
     manifests: &[ModuleManifestV1],
 ) -> Result<WorkspacePackageImportResult, WorkspaceProfileRuntimeError> {
-    let inspected = inspect_workspace_package_internal(&request.package_path, runtime, manifests)?;
+    let inspected =
+        inspect_workspace_package_internal(&request.package_path, runtime, manifests, None)?;
     if !inspected.preview.can_import {
         return Err(package_error(
             WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
@@ -478,10 +667,141 @@ pub fn import_workspace_package(
     })
 }
 
+pub async fn import_workspace_package_with_components(
+    request: &ImportWorkspacePackageRequest,
+    runtime: &WorkspaceProfileRuntime,
+    manifests: &[ModuleManifestV1],
+    components: &ComponentRuntimeManager,
+) -> Result<WorkspacePackageImportResult, WorkspaceProfileRuntimeError> {
+    let inspected = inspect_workspace_package_internal(
+        &request.package_path,
+        runtime,
+        manifests,
+        Some(components),
+    )?;
+    if !inspected.preview.can_import {
+        return Err(package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
+            "装配空间存在阻塞问题，未导入任何内容",
+            Some(Path::new(&request.package_path)),
+        )
+        .with_details(
+            inspected
+                .preview
+                .issues
+                .iter()
+                .filter(|issue| issue.severity == ProfilePackageIssueSeverity::Error)
+                .map(|issue| format!("{}: {}", issue.code, issue.message))
+                .collect(),
+        ));
+    }
+    let profile_request = ImportWorkspaceProfilePackageRequest {
+        package_path: request.package_path.clone(),
+        name: request.name.clone(),
+        tool_mappings: request.tool_mappings.clone(),
+        path_mappings: request.path_mappings.clone(),
+    };
+    let bindings = validate_local_bindings(&inspected.workspace.profile, &profile_request)?;
+    let staging_root = std::env::temp_dir().join(format!(
+        "nexora-workspace-import-{}",
+        Uuid::new_v4().simple()
+    ));
+    let install_paths =
+        write_embedded_workspace_packages(&staging_root, &inspected.embedded_packages)?;
+    if let Err(error) = trust_selected_workspace_publishers(
+        components,
+        &install_paths,
+        &request.trust_embedded_publisher_ids,
+    ) {
+        let _ = fs::remove_dir_all(&staging_root);
+        return Err(error);
+    }
+    let install_result = match components
+        .install_workspace_packages_atomically(&install_paths)
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging_root);
+            return Err(component_package_error("装配空间组件预检或安装失败", error));
+        }
+    };
+    let after_install_catalog = components.manifests();
+    if let Err(error) = runtime.replace_component_manifests(after_install_catalog) {
+        let rollback = components
+            .rollback_workspace_package_install(&install_result.installed_component_ids)
+            .await;
+        let _ = runtime.replace_component_manifests(components.manifests());
+        let _ = fs::remove_dir_all(&staging_root);
+        return Err(component_catalog_rollback_error(
+            "同步组件目录失败",
+            error,
+            rollback,
+        ));
+    }
+
+    let imported = runtime.import_profile_document(
+        &inspected.workspace.profile,
+        &request.name,
+        &inspected.preview.package_id,
+        manifests,
+    );
+    let imported = match imported {
+        Ok(value) => value,
+        Err(error) => {
+            let rollback = components
+                .rollback_workspace_package_install(&install_result.installed_component_ids)
+                .await;
+            let _ = runtime.replace_component_manifests(components.manifests());
+            let _ = fs::remove_dir_all(&staging_root);
+            return Err(component_catalog_rollback_error(
+                "写入导入方案失败，组件已回滚",
+                error,
+                rollback,
+            ));
+        }
+    };
+    let stored = StoredProfileLocalBindings {
+        schema_version: 1,
+        profile_id: imported.profile.id.clone(),
+        package_id: inspected.preview.package_id,
+        created_at: Utc::now().timestamp_millis(),
+        tool_mappings: bindings.0,
+        path_mappings: bindings.1,
+    };
+    if let Err(mut binding_error) = write_local_bindings(runtime, &stored) {
+        if let Err(rollback_error) = runtime.delete_profile(&imported.profile.id, manifests) {
+            binding_error.details.push(format!(
+                "本机映射写入失败后，装配空间导入 Profile 回滚也失败：{}",
+                rollback_error.message
+            ));
+        }
+        if let Err(rollback_error) = components
+            .rollback_workspace_package_install(&install_result.installed_component_ids)
+            .await
+        {
+            binding_error
+                .details
+                .push(format!("组件回滚失败：{}", rollback_error.message));
+        }
+        let _ = runtime.replace_component_manifests(components.manifests());
+        let _ = fs::remove_dir_all(&staging_root);
+        return Err(binding_error);
+    }
+    let _ = fs::remove_dir_all(&staging_root);
+    Ok(WorkspacePackageImportResult {
+        mutation: imported,
+        variables: inspected.workspace.variables,
+        open_surface_ids: inspected.workspace.open_surface_ids,
+        active_surface_id: inspected.workspace.active_surface_id,
+    })
+}
+
 fn inspect_workspace_package_internal(
     package_path: &str,
     runtime: &WorkspaceProfileRuntime,
     manifests: &[ModuleManifestV1],
+    components: Option<&ComponentRuntimeManager>,
 ) -> Result<InspectedWorkspacePackage, WorkspaceProfileRuntimeError> {
     let inspected =
         inspect_package_payload(package_path, PackageKind::Workspace, WORKSPACE_PAYLOAD_PATH)?;
@@ -507,8 +827,26 @@ fn inspect_workspace_package_internal(
             Some(&inspected.path),
         )
     })?;
+    let dependency_lock = parse_workspace_dependency_lock(
+        &inspected.attachments,
+        &inspected.path,
+        &workspace.profile,
+    )?;
+    let (component_packages, embedded_packages, embedded_manifests) =
+        inspect_embedded_workspace_component_packages(
+            &dependency_lock,
+            &inspected.attachments,
+            &inspected.path,
+            components,
+        )?;
     let profile = &workspace.profile;
-    let validation = runtime.validate_draft(profile, manifests);
+    let mut component_catalog = runtime.component_manifests();
+    for manifest in embedded_manifests {
+        component_catalog.retain(|existing| existing.id != manifest.id);
+        component_catalog.push(manifest);
+    }
+    let validation =
+        runtime.validate_draft_with_component_catalog(profile, manifests, &component_catalog);
     let installed_modules = manifests
         .iter()
         .map(|manifest| manifest.id.as_str())
@@ -522,7 +860,11 @@ fn inspect_workspace_package_internal(
     let missing_component_ids = profile
         .enabled_components
         .iter()
-        .filter(|selection| runtime.component_manifest(&selection.id).is_none())
+        .filter(|selection| {
+            !component_catalog
+                .iter()
+                .any(|manifest| manifest.id == selection.id)
+        })
         .map(|selection| selection.id.clone())
         .collect::<Vec<_>>();
     let snapshot = runtime.snapshot(manifests)?;
@@ -535,6 +877,9 @@ fn inspect_workspace_package_internal(
     );
     let issues = validation_issues(&validation);
     let can_import = validation.valid
+        && component_packages
+            .iter()
+            .all(|package| package.installable || package.trust_required)
         && !issues
             .iter()
             .any(|issue| issue.severity == ProfilePackageIssueSeverity::Error);
@@ -561,6 +906,8 @@ fn inspect_workspace_package_internal(
         open_surface_ids: workspace.open_surface_ids.clone(),
         active_surface_id: workspace.active_surface_id.clone(),
         variables: workspace.variables.clone(),
+        distribution_mode: dependency_lock.distribution_mode,
+        component_packages,
         tool_aliases: profile.tool_aliases.clone(),
         path_variables: profile.path_variables.clone(),
         reusable_binding_presets,
@@ -569,7 +916,382 @@ fn inspect_workspace_package_internal(
         issues,
         can_import,
     };
-    Ok(InspectedWorkspacePackage { preview, workspace })
+    Ok(InspectedWorkspacePackage {
+        preview,
+        workspace,
+        embedded_packages,
+    })
+}
+
+fn parse_workspace_dependency_lock(
+    attachments: &BTreeMap<String, Vec<u8>>,
+    package_path: &Path,
+    profile: &WorkspaceProfileV1,
+) -> Result<WorkspaceDependencyLock, WorkspaceProfileRuntimeError> {
+    let Some(bytes) = attachments.get(WORKSPACE_DEPENDENCY_LOCK_PATH) else {
+        if attachments
+            .keys()
+            .any(|path| valid_workspace_package_entry_name(path))
+        {
+            return Err(package_error(
+                WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
+                "装配空间携带了组件包，但缺少 dependency-lock.json",
+                Some(package_path),
+            ));
+        }
+        return Ok(WorkspaceDependencyLock {
+            schema_version: 1,
+            distribution_mode: WorkspacePackageDistributionMode::ReferencesOnly,
+            components: profile
+                .enabled_components
+                .iter()
+                .map(|selection| WorkspaceDependencyLockEntry {
+                    component_id: selection.id.clone(),
+                    version_requirement: selection.version_requirement.clone(),
+                    resolved_version: None,
+                    embedded_path: None,
+                    note: Some("旧版引用式装配空间未提供依赖锁。".into()),
+                })
+                .collect(),
+        });
+    };
+    let lock: WorkspaceDependencyLock = serde_json::from_slice(bytes).map_err(|error| {
+        package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
+            format!("dependency-lock.json 无法解析：{error}"),
+            Some(package_path),
+        )
+    })?;
+    if lock.schema_version != 1 {
+        return Err(package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageUnsupported,
+            format!(
+                "不支持 dependency-lock.json schemaVersion {}",
+                lock.schema_version
+            ),
+            Some(package_path),
+        ));
+    }
+    let mut component_ids = BTreeSet::new();
+    let mut embedded_paths = BTreeSet::new();
+    for entry in &lock.components {
+        if entry.component_id.trim().is_empty() || entry.version_requirement.trim().is_empty() {
+            return Err(package_error(
+                WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
+                "依赖锁包含空组件 ID 或版本要求",
+                Some(package_path),
+            ));
+        }
+        if !component_ids.insert(entry.component_id.as_str()) {
+            return Err(package_error(
+                WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
+                format!("依赖锁包含重复组件: {}", entry.component_id),
+                Some(package_path),
+            ));
+        }
+        if let Some(path) = &entry.embedded_path {
+            if !valid_workspace_package_entry_name(path) || !embedded_paths.insert(path.as_str()) {
+                return Err(package_error(
+                    WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
+                    format!("依赖锁中的嵌入组件路径无效或重复: {path}"),
+                    Some(package_path),
+                ));
+            }
+        }
+    }
+    let attachment_paths = attachments
+        .keys()
+        .filter(|path| valid_workspace_package_entry_name(path))
+        .collect::<BTreeSet<_>>();
+    if attachment_paths.len() != embedded_paths.len()
+        || attachment_paths
+            .iter()
+            .any(|path| !embedded_paths.contains((*path).as_str()))
+    {
+        return Err(package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
+            "依赖锁与 packages/ 中的组件包列表不一致",
+            Some(package_path),
+        ));
+    }
+    if lock.distribution_mode == WorkspacePackageDistributionMode::ReferencesOnly
+        && !attachment_paths.is_empty()
+    {
+        return Err(package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
+            "references-only 装配空间不能携带组件归档",
+            Some(package_path),
+        ));
+    }
+    Ok(lock)
+}
+
+fn inspect_embedded_workspace_component_packages(
+    lock: &WorkspaceDependencyLock,
+    attachments: &BTreeMap<String, Vec<u8>>,
+    workspace_path: &Path,
+    components: Option<&ComponentRuntimeManager>,
+) -> Result<
+    (
+        Vec<WorkspaceComponentPackagePreview>,
+        Vec<EmbeddedWorkspaceComponentPackage>,
+        Vec<ComponentManifestV1>,
+    ),
+    WorkspaceProfileRuntimeError,
+> {
+    let mut previews = Vec::with_capacity(lock.components.len());
+    let mut embedded = Vec::new();
+    let mut manifests = Vec::new();
+    let temporary_root = std::env::temp_dir().join(format!(
+        "nexora-workspace-inspect-{}",
+        Uuid::new_v4().simple()
+    ));
+    if lock
+        .components
+        .iter()
+        .any(|entry| entry.embedded_path.is_some())
+    {
+        fs::create_dir_all(&temporary_root).map_err(|error| {
+            package_io_error("创建组件包检查暂存目录失败", &temporary_root, error)
+        })?;
+    }
+
+    let result = (|| {
+        for (index, entry) in lock.components.iter().enumerate() {
+            let Some(embedded_path) = &entry.embedded_path else {
+                previews.push(WorkspaceComponentPackagePreview {
+                    component_id: entry.component_id.clone(),
+                    version_requirement: entry.version_requirement.clone(),
+                    resolved_version: entry.resolved_version.clone(),
+                    embedded_path: None,
+                    embedded: false,
+                    installable: true,
+                    trust_required: false,
+                    trust_status: ComponentPackageTrustStatus::IntegrityOnly,
+                    publisher_id: None,
+                    publisher: None,
+                    license: None,
+                    note: entry.note.clone(),
+                });
+                continue;
+            };
+            let bytes = attachments.get(embedded_path).ok_or_else(|| {
+                package_error(
+                    WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
+                    format!("缺少嵌入组件包: {embedded_path}"),
+                    Some(workspace_path),
+                )
+            })?;
+            let package_path = temporary_root.join(format!("{index:03}.pmc-pack"));
+            write_binary_file(&package_path, bytes)?;
+            let Some(manager) = components else {
+                return Err(package_error(
+                    WorkspaceProfileRuntimeErrorCode::ProfilePackageUnsupported,
+                    "当前运行时不支持检查自包含装配空间组件包",
+                    Some(workspace_path),
+                ));
+            };
+            let inspection = manager
+                .inspect_package(&package_path.to_string_lossy())
+                .map_err(|error| component_package_error("嵌入组件包检查失败", error))?;
+            let manifest = manager
+                .read_checked_package_manifest(&package_path.to_string_lossy())
+                .map_err(|error| component_package_error("嵌入组件包清单无效", error))?;
+            if manifest.id != entry.component_id
+                || entry
+                    .resolved_version
+                    .as_deref()
+                    .is_some_and(|version| version != manifest.version)
+            {
+                return Err(package_error(
+                    WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
+                    format!(
+                        "嵌入组件包与 dependency-lock 不一致: {}",
+                        entry.component_id
+                    ),
+                    Some(workspace_path),
+                ));
+            }
+            previews.push(component_preview_from_inspection(
+                entry,
+                embedded_path,
+                &inspection,
+            ));
+            manifests.push(manifest);
+            embedded.push(EmbeddedWorkspaceComponentPackage {
+                lock: entry.clone(),
+                bytes: bytes.clone(),
+            });
+        }
+        Ok(())
+    })();
+    let _ = fs::remove_dir_all(&temporary_root);
+    result?;
+    Ok((previews, embedded, manifests))
+}
+
+fn component_preview_from_inspection(
+    entry: &WorkspaceDependencyLockEntry,
+    embedded_path: &str,
+    inspection: &ComponentPackageInspection,
+) -> WorkspaceComponentPackagePreview {
+    WorkspaceComponentPackagePreview {
+        component_id: entry.component_id.clone(),
+        version_requirement: entry.version_requirement.clone(),
+        resolved_version: inspection
+            .component_version
+            .clone()
+            .or_else(|| entry.resolved_version.clone()),
+        embedded_path: Some(embedded_path.into()),
+        embedded: true,
+        installable: inspection.trust.installable,
+        trust_required: inspection.trust.status == ComponentPackageTrustStatus::SignedUntrusted,
+        trust_status: inspection.trust.status,
+        publisher_id: inspection
+            .publisher
+            .as_ref()
+            .map(|publisher| publisher.id.clone()),
+        publisher: inspection
+            .publisher
+            .as_ref()
+            .map(|publisher| publisher.display_name.clone()),
+        license: inspection.license.clone(),
+        note: if inspection.trust.installable {
+            entry.note.clone()
+        } else {
+            Some(inspection.trust.message.clone())
+        },
+    }
+}
+
+fn write_embedded_workspace_packages(
+    root: &Path,
+    packages: &[EmbeddedWorkspaceComponentPackage],
+) -> Result<Vec<PathBuf>, WorkspaceProfileRuntimeError> {
+    let mut paths = Vec::with_capacity(packages.len());
+    for (index, package) in packages.iter().enumerate() {
+        let version = package
+            .lock
+            .resolved_version
+            .as_deref()
+            .unwrap_or("unknown");
+        let path = root.join(format!(
+            "{index:03}-{}-{version}.pmc-pack",
+            package.lock.component_id
+        ));
+        write_binary_file(&path, &package.bytes)?;
+        paths.push(path);
+    }
+    Ok(paths)
+}
+
+fn trust_selected_workspace_publishers(
+    components: &ComponentRuntimeManager,
+    package_paths: &[PathBuf],
+    trusted_publisher_ids: &[String],
+) -> Result<(), WorkspaceProfileRuntimeError> {
+    let selected = trusted_publisher_ids
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .collect::<BTreeSet<_>>();
+    for path in package_paths {
+        let inspection = components
+            .inspect_package(&path.to_string_lossy())
+            .map_err(|error| component_package_error("嵌入组件包检查失败", error))?;
+        if inspection.trust.status != ComponentPackageTrustStatus::SignedUntrusted {
+            continue;
+        }
+        let publisher = inspection.publisher.ok_or_else(|| {
+            package_error(
+                WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
+                "嵌入组件包声明为未信任签名，但缺少发布者资料",
+                Some(path),
+            )
+        })?;
+        if !selected.contains(publisher.id.as_str()) {
+            return Err(package_error(
+                WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
+                format!(
+                    "组件 {} 的发布者 {} 尚未确认信任",
+                    inspection.component_id.unwrap_or_else(|| "未知组件".into()),
+                    publisher.display_name
+                ),
+                Some(path),
+            ));
+        }
+        components
+            .trust_package_publisher(&path.to_string_lossy())
+            .map_err(|error| component_package_error("保存组件发布者信任失败", error))?;
+    }
+    Ok(())
+}
+
+fn write_binary_file(path: &Path, bytes: &[u8]) -> Result<(), WorkspaceProfileRuntimeError> {
+    let parent = path.parent().ok_or_else(|| {
+        package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfileIoError,
+            "暂存文件路径缺少父目录",
+            Some(path),
+        )
+    })?;
+    fs::create_dir_all(parent)
+        .map_err(|error| package_io_error("创建暂存目录失败", parent, error))?;
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+        .map_err(|error| package_io_error("创建暂存组件包失败", path, error))?;
+    file.write_all(bytes)
+        .map_err(|error| package_io_error("写入暂存组件包失败", path, error))?;
+    file.sync_all()
+        .map_err(|error| package_io_error("同步暂存组件包失败", path, error))
+}
+
+fn component_package_error(
+    context: &str,
+    error: super::component_runtime::ComponentRuntimeError,
+) -> WorkspaceProfileRuntimeError {
+    package_error(
+        WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
+        format!("{context}：{}", error.message),
+        None,
+    )
+    .with_details(
+        std::iter::once(format!("componentCode={:?}", error.code))
+            .chain(error.details)
+            .collect(),
+    )
+}
+
+fn component_catalog_rollback_error(
+    context: &str,
+    error: WorkspaceProfileRuntimeError,
+    rollback: Result<(), super::component_runtime::ComponentRuntimeError>,
+) -> WorkspaceProfileRuntimeError {
+    let mut mapped = package_error(
+        error.code,
+        format!("{context}：{}", error.message),
+        error.path.as_deref().map(Path::new),
+    )
+    .with_details(error.details);
+    if let Err(rollback_error) = rollback {
+        mapped.details.push(format!(
+            "组件回滚失败：{} ({:?})",
+            rollback_error.message, rollback_error.code
+        ));
+    }
+    mapped
+}
+
+fn valid_workspace_package_entry_name(name: &str) -> bool {
+    let Some(file_name) = name.strip_prefix(WORKSPACE_PACKAGE_PREFIX) else {
+        return false;
+    };
+    !file_name.is_empty()
+        && !file_name.contains('/')
+        && !file_name.contains('\\')
+        && file_name.ends_with(".pmc-pack")
 }
 
 fn inspect_package_payload(
@@ -578,6 +1300,27 @@ fn inspect_package_payload(
     expected_payload_path: &str,
 ) -> Result<InspectedPackagePayload, WorkspaceProfileRuntimeError> {
     let path = PathBuf::from(package_path);
+    let workspace_archive = expected_kind == PackageKind::Workspace;
+    let max_archive_bytes = if workspace_archive {
+        MAX_WORKSPACE_ARCHIVE_BYTES
+    } else {
+        MAX_ARCHIVE_BYTES
+    };
+    let max_entry_bytes = if workspace_archive {
+        MAX_WORKSPACE_ENTRY_BYTES
+    } else {
+        MAX_ENTRY_BYTES
+    };
+    let max_total_uncompressed = if workspace_archive {
+        MAX_WORKSPACE_TOTAL_UNCOMPRESSED_BYTES
+    } else {
+        MAX_TOTAL_UNCOMPRESSED_BYTES
+    };
+    let max_entries = if workspace_archive {
+        MAX_WORKSPACE_ARCHIVE_ENTRIES
+    } else {
+        MAX_ARCHIVE_ENTRIES
+    };
     let metadata =
         fs::metadata(&path).map_err(|error| package_io_error("读取装配空间失败", &path, error))?;
     if !metadata.is_file() {
@@ -587,10 +1330,10 @@ fn inspect_package_payload(
             Some(&path),
         ));
     }
-    if metadata.len() > MAX_ARCHIVE_BYTES {
+    if metadata.len() > max_archive_bytes {
         return Err(package_error(
             WorkspaceProfileRuntimeErrorCode::ProfilePackageTooLarge,
-            format!("装配空间超过 {} MiB 限制", MAX_ARCHIVE_BYTES / 1024 / 1024),
+            format!("装配空间超过 {} MiB 限制", max_archive_bytes / 1024 / 1024),
             Some(&path),
         ));
     }
@@ -598,10 +1341,10 @@ fn inspect_package_payload(
         File::open(&path).map_err(|error| package_io_error("打开装配空间失败", &path, error))?;
     let mut archive = ZipArchive::new(file)
         .map_err(|error| package_zip_error("装配空间不是有效 ZIP 容器", &path, error))?;
-    if archive.len() > MAX_ARCHIVE_ENTRIES {
+    if archive.len() > max_entries {
         return Err(package_error(
             WorkspaceProfileRuntimeErrorCode::ProfilePackageTooLarge,
-            format!("装配空间条目超过 {MAX_ARCHIVE_ENTRIES} 个限制"),
+            format!("装配空间条目超过 {max_entries} 个限制"),
             Some(&path),
         ));
     }
@@ -612,9 +1355,19 @@ fn inspect_package_payload(
             .by_index(index)
             .map_err(|error| package_zip_error("读取装配空间条目失败", &path, error))?;
         let name = entry.name().to_string();
+        let allowed_attachment = workspace_archive
+            && (name == WORKSPACE_DEPENDENCY_LOCK_PATH
+                || valid_workspace_package_entry_name(&name));
         if invalid_archive_path(&name)
             || entry.is_dir()
-            || !matches!(name.as_str(), MANIFEST_PATH) && name != expected_payload_path
+            || entry.encrypted()
+            || entry
+                .unix_mode()
+                .map(|mode| mode & 0o170000 == 0o120000)
+                .unwrap_or(false)
+            || (!matches!(name.as_str(), MANIFEST_PATH)
+                && name != expected_payload_path
+                && !allowed_attachment)
         {
             return Err(package_error(
                 WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid,
@@ -622,7 +1375,7 @@ fn inspect_package_payload(
                 Some(&path),
             ));
         }
-        if entries.contains_key(&name) || entry.size() > MAX_ENTRY_BYTES {
+        if entries.contains_key(&name) || entry.size() > max_entry_bytes {
             return Err(package_error(
                 WorkspaceProfileRuntimeErrorCode::ProfilePackageTooLarge,
                 format!("装配空间条目重复或过大：{name}"),
@@ -630,7 +1383,7 @@ fn inspect_package_payload(
             ));
         }
         total_uncompressed = total_uncompressed.saturating_add(entry.size());
-        if total_uncompressed > MAX_TOTAL_UNCOMPRESSED_BYTES {
+        if total_uncompressed > max_total_uncompressed {
             return Err(package_error(
                 WorkspaceProfileRuntimeErrorCode::ProfilePackageTooLarge,
                 "装配空间解压后内容超过安全限制",
@@ -640,7 +1393,7 @@ fn inspect_package_payload(
         let mut bytes = Vec::with_capacity(entry.size() as usize);
         entry
             .by_ref()
-            .take(MAX_ENTRY_BYTES + 1)
+            .take(max_entry_bytes + 1)
             .read_to_end(&mut bytes)
             .map_err(|error| {
                 package_error(
@@ -649,7 +1402,7 @@ fn inspect_package_payload(
                     Some(&path),
                 )
             })?;
-        if bytes.len() as u64 > MAX_ENTRY_BYTES {
+        if bytes.len() as u64 > max_entry_bytes {
             return Err(package_error(
                 WorkspaceProfileRuntimeErrorCode::ProfilePackageTooLarge,
                 format!("装配空间条目解压后过大：{name}"),
@@ -724,6 +1477,7 @@ fn inspect_package_payload(
         header,
         payload_bytes,
         payload_digest,
+        attachments: entries,
     })
 }
 
@@ -765,6 +1519,79 @@ fn write_package_archive(
         archive
             .write_all(payload_bytes)
             .map_err(|error| package_io_error("写入装配空间内容失败", &temporary, error))?;
+        let file = archive
+            .finish()
+            .map_err(|error| package_zip_error("完成装配空间失败", &temporary, error))?;
+        file.sync_all()
+            .map_err(|error| package_io_error("同步装配空间失败", &temporary, error))?;
+        replace_export_file(&temporary, destination)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn write_workspace_archive(
+    destination: &Path,
+    manifest_bytes: &[u8],
+    workspace_bytes: &[u8],
+    dependency_lock_bytes: &[u8],
+    package_entries: &BTreeMap<String, Vec<u8>>,
+) -> Result<(), WorkspaceProfileRuntimeError> {
+    let total_bytes = manifest_bytes.len() as u64
+        + workspace_bytes.len() as u64
+        + dependency_lock_bytes.len() as u64
+        + package_entries
+            .values()
+            .map(|bytes| bytes.len() as u64)
+            .sum::<u64>();
+    if total_bytes > MAX_WORKSPACE_TOTAL_UNCOMPRESSED_BYTES {
+        return Err(package_error(
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageTooLarge,
+            "装配空间包含的组件包超过总大小限制",
+            Some(destination),
+        ));
+    }
+    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+    let temporary = parent.join(format!(
+        ".{}.{}.tmp",
+        destination
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("workspace.pmc-workspace"),
+        Uuid::new_v4().simple()
+    ));
+    let result = (|| {
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| package_io_error("创建装配空间临时文件失败", &temporary, error))?;
+        let mut archive = ZipWriter::new(file);
+        let options = SimpleFileOptions::default()
+            .compression_method(CompressionMethod::Stored)
+            .last_modified_time(zip::DateTime::default())
+            .unix_permissions(0o644);
+        for (path, bytes) in std::iter::once((MANIFEST_PATH, manifest_bytes))
+            .chain(std::iter::once((WORKSPACE_PAYLOAD_PATH, workspace_bytes)))
+            .chain(std::iter::once((
+                WORKSPACE_DEPENDENCY_LOCK_PATH,
+                dependency_lock_bytes,
+            )))
+            .chain(
+                package_entries
+                    .iter()
+                    .map(|(path, bytes)| (path.as_str(), bytes.as_slice())),
+            )
+        {
+            archive
+                .start_file(path, options)
+                .map_err(|error| package_zip_error("写入装配空间条目失败", &temporary, error))?;
+            archive
+                .write_all(bytes)
+                .map_err(|error| package_io_error("写入装配空间条目失败", &temporary, error))?;
+        }
         let file = archive
             .finish()
             .map_err(|error| package_zip_error("完成装配空间失败", &temporary, error))?;
@@ -1849,6 +2676,7 @@ mod tests {
                 variables: [("mode".into(), "review".into())].into_iter().collect(),
                 open_surface_ids: vec!["lan-collaboration-main".into(), "project-home".into()],
                 active_surface_id: Some("project-home".into()),
+                distribution_mode: WorkspacePackageDistributionMode::ReferencesOnly,
             },
         )
         .unwrap();
@@ -1870,6 +2698,7 @@ mod tests {
                 name: preview.suggested_name,
                 tool_mappings: Vec::new(),
                 path_mappings: Vec::new(),
+                trust_embedded_publisher_ids: Vec::new(),
             },
             &runtime,
             &[],
@@ -1899,6 +2728,7 @@ mod tests {
                 variables: BTreeMap::new(),
                 open_surface_ids: vec!["project-home".into()],
                 active_surface_id: Some("missing-page".into()),
+                distribution_mode: WorkspacePackageDistributionMode::ReferencesOnly,
             },
         )
         .unwrap_err();
@@ -1906,6 +2736,59 @@ mod tests {
             error.code,
             WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid
         ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workspace_rejects_embedded_package_missing_from_dependency_lock() {
+        let root = temp_root("workspace-lock-mismatch");
+        fs::create_dir_all(&root).unwrap();
+        let package = root.join("portable.pmc-workspace");
+        let source = profile("Portable workspace");
+        export_workspace_package(
+            &source,
+            &ExportWorkspacePackageRequest {
+                profile_id: source.id.clone(),
+                destination_path: package.to_string_lossy().into_owned(),
+                variables: BTreeMap::new(),
+                open_surface_ids: Vec::new(),
+                active_surface_id: None,
+                distribution_mode: WorkspacePackageDistributionMode::ReferencesOnly,
+            },
+        )
+        .unwrap();
+
+        let source_file = File::open(&package).unwrap();
+        let mut source_archive = ZipArchive::new(source_file).unwrap();
+        let mut entries = BTreeMap::new();
+        for index in 0..source_archive.len() {
+            let mut entry = source_archive.by_index(index).unwrap();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            entries.insert(entry.name().to_string(), bytes);
+        }
+        drop(source_archive);
+        let file = File::create(&package).unwrap();
+        let mut archive = ZipWriter::new(file);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        for (path, bytes) in entries {
+            archive.start_file(path, options).unwrap();
+            archive.write_all(&bytes).unwrap();
+        }
+        archive
+            .start_file("packages/unlocked.pmc-pack", options)
+            .unwrap();
+        archive.write_all(b"not a component package").unwrap();
+        archive.finish().unwrap();
+
+        let runtime = initialized_runtime(&root.join("runtime"));
+        let error =
+            inspect_workspace_package(package.to_str().unwrap(), &runtime, &[]).unwrap_err();
+        assert!(matches!(
+            error.code,
+            WorkspaceProfileRuntimeErrorCode::ProfilePackageInvalid
+        ));
+        assert!(error.message.contains("依赖锁"));
         let _ = fs::remove_dir_all(root);
     }
 

@@ -148,9 +148,12 @@ export function WorkspaceProfileDiagnosticsSection() {
   const [importToolMappings, setImportToolMappings] = useState<Record<string, string>>({});
   const [importPathMappings, setImportPathMappings] = useState<Record<string, string>>({});
   const [importBindingPresetId, setImportBindingPresetId] = useState('');
+  const [trustedEmbeddedPublisherIds, setTrustedEmbeddedPublisherIds] = useState<string[]>([]);
   const [packageBusy, setPackageBusy] = useState<string | null>(null);
   const [packageNotice, setPackageNotice] = useState<string | null>(null);
   const [packageError, setPackageError] = useState<string | null>(null);
+  const [workspaceExportTarget, setWorkspaceExportTarget] = useState<{ id: string; name: string } | null>(null);
+  const [workspaceExportMode, setWorkspaceExportMode] = useState<'references-only' | 'self-contained'>('references-only');
   const [openActionsProfileId, setOpenActionsProfileId] = useState<string | null>(null);
   const [previewingProfileId, setPreviewingProfileId] = useState<string | null>(null);
   const currentSummary = snapshot?.profiles.find((profile) => profile.current) ?? null;
@@ -200,6 +203,12 @@ export function WorkspaceProfileDiagnosticsSection() {
     ? importPreview.toolAliases.every((alias) => !alias.required || Boolean(importToolMappings[alias.id]))
       && importPreview.pathVariables.every((variable) => !variable.required || Boolean(importPathMappings[variable.id]))
     : false;
+  const requiredEmbeddedPublisherIds = importPackageKind === 'workspace' && importPreview
+    ? Array.from(new Set((importPreview as WorkspacePackageImportPreview).componentPackages
+      .filter((component) => component.trustRequired && component.publisherId)
+      .map((component) => component.publisherId as string)))
+    : [];
+  const embeddedPublishersTrusted = requiredEmbeddedPublisherIds.every((id) => trustedEmbeddedPublisherIds.includes(id));
 
   const confirmationMessage = switchPreview
     ? [
@@ -292,7 +301,11 @@ export function WorkspaceProfileDiagnosticsSection() {
     }
   };
 
-  const exportWorkspace = async (profileId: string, profileName: string) => {
+  const exportWorkspace = async (
+    profileId: string,
+    profileName: string,
+    distributionMode: 'references-only' | 'self-contained',
+  ) => {
     setPackageError(null);
     setPackageNotice(null);
     setPackageBusy(`workspace:${profileId}`);
@@ -316,8 +329,9 @@ export function WorkspaceProfileDiagnosticsSection() {
         variables: {},
         openSurfaceIds,
         activeSurfaceId,
+        distributionMode,
       });
-      setPackageNotice(`已导出装配空间“${profileName}” · ${formatBytes(result.sizeBytes)}`);
+      setPackageNotice(`已导出${distributionMode === 'self-contained' ? '自包含' : '引用式'}装配空间“${profileName}” · ${formatBytes(result.sizeBytes)}`);
     } catch (exportError) {
       setPackageError(packageErrorMessage(exportError));
     } finally {
@@ -346,6 +360,7 @@ export function WorkspaceProfileDiagnosticsSection() {
       ));
       setImportPathMappings({});
       setImportBindingPresetId('');
+      setTrustedEmbeddedPublisherIds([]);
     } catch (inspectError) {
       setPackageError(packageErrorMessage(inspectError));
     } finally {
@@ -374,6 +389,7 @@ export function WorkspaceProfileDiagnosticsSection() {
       ));
       setImportPathMappings({});
       setImportBindingPresetId('');
+      setTrustedEmbeddedPublisherIds([]);
     } catch (inspectError) {
       setPackageError(packageErrorMessage(inspectError));
     } finally {
@@ -402,6 +418,7 @@ export function WorkspaceProfileDiagnosticsSection() {
           const path = importPathMappings[variable.id];
           return path ? [{ id: variable.id, mode: 'path' as const, path }] : [];
         }),
+        trustEmbeddedPublisherIds: importPackageKind === 'workspace' ? trustedEmbeddedPublisherIds : [],
       };
       const importedName = importPackageKind === 'workspace'
         ? (await importWorkspacePackage(request)).mutation.profile.name
@@ -413,6 +430,7 @@ export function WorkspaceProfileDiagnosticsSection() {
       setImportToolMappings({});
       setImportPathMappings({});
       setImportBindingPresetId('');
+      setTrustedEmbeddedPublisherIds([]);
       setPackageNotice(`已导入“${importedName}”，当前运行方案未改变。`);
     } catch (importError) {
       setPackageError(packageErrorMessage(importError));
@@ -619,7 +637,8 @@ export function WorkspaceProfileDiagnosticsSection() {
                             type="button"
                             onClick={() => {
                               setOpenActionsProfileId(null);
-                              void exportWorkspace(profile.id, profile.name);
+                              setWorkspaceExportTarget({ id: profile.id, name: profile.name });
+                              setWorkspaceExportMode('references-only');
                             }}
                             className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
                           >
@@ -915,6 +934,68 @@ export function WorkspaceProfileDiagnosticsSection() {
         cancelText="取消"
         type="danger"
       />
+      <Dialog
+        isOpen={Boolean(workspaceExportTarget)}
+        onClose={() => {
+          if (!packageBusy) setWorkspaceExportTarget(null);
+        }}
+        title="导出装配空间"
+        size="sm"
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => setWorkspaceExportTarget(null)}
+              disabled={Boolean(packageBusy)}
+              className="rounded-md px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-300 dark:hover:bg-gray-800"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (!workspaceExportTarget) return;
+                const target = workspaceExportTarget;
+                setWorkspaceExportTarget(null);
+                void exportWorkspace(target.id, target.name, workspaceExportMode);
+              }}
+              disabled={Boolean(packageBusy)}
+              className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-2 text-sm text-white hover:bg-indigo-700 disabled:opacity-50"
+            >
+              <FileArchive className="h-4 w-4" />
+              选择位置并导出
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-2">
+          <p className="text-sm text-gray-700 dark:text-gray-200">
+            {workspaceExportTarget ? `“${workspaceExportTarget.name}”` : '当前装配方案'}
+          </p>
+          <label className={`block cursor-pointer rounded-md border p-3 transition-colors ${workspaceExportMode === 'references-only' ? 'border-indigo-400 bg-indigo-50/60 dark:border-indigo-700 dark:bg-indigo-950/30' : 'border-gray-200 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800'}`}>
+            <input
+              type="radio"
+              name="workspace-export-mode"
+              checked={workspaceExportMode === 'references-only'}
+              onChange={() => setWorkspaceExportMode('references-only')}
+              className="sr-only"
+            />
+            <span className="text-sm font-medium text-gray-900 dark:text-gray-100">引用式</span>
+            <span className="mt-1 block text-xs text-gray-500 dark:text-gray-400">只记录组件 ID、版本要求和页面配置。导入设备需自行安装相应组件。</span>
+          </label>
+          <label className={`block cursor-pointer rounded-md border p-3 transition-colors ${workspaceExportMode === 'self-contained' ? 'border-indigo-400 bg-indigo-50/60 dark:border-indigo-700 dark:bg-indigo-950/30' : 'border-gray-200 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800'}`}>
+            <input
+              type="radio"
+              name="workspace-export-mode"
+              checked={workspaceExportMode === 'self-contained'}
+              onChange={() => setWorkspaceExportMode('self-contained')}
+              className="sr-only"
+            />
+            <span className="text-sm font-medium text-gray-900 dark:text-gray-100">自包含</span>
+            <span className="mt-1 block text-xs text-gray-500 dark:text-gray-400">携带已验证且允许重新分发的 .pmc-pack；随安装包或未缓存来源的组件会保持引用，并在导入预览中明确列出。</span>
+          </label>
+        </div>
+      </Dialog>
       <InputDialog
         isOpen={Boolean(createDialog)}
         onClose={() => setCreateDialog(null)}
@@ -941,6 +1022,7 @@ export function WorkspaceProfileDiagnosticsSection() {
             setImportToolMappings({});
             setImportPathMappings({});
             setImportBindingPresetId('');
+            setTrustedEmbeddedPublisherIds([]);
           }
         }}
         title={importPackageKind === 'workspace' ? '导入装配空间' : '导入装配方案'}
@@ -954,6 +1036,7 @@ export function WorkspaceProfileDiagnosticsSection() {
                 setImportToolMappings({});
                 setImportPathMappings({});
                 setImportBindingPresetId('');
+                setTrustedEmbeddedPublisherIds([]);
               }}
               disabled={packageBusy === 'import'}
               className="rounded-md px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-300 dark:hover:bg-gray-800"
@@ -963,7 +1046,7 @@ export function WorkspaceProfileDiagnosticsSection() {
             <button
               type="button"
               onClick={() => void importPackage()}
-              disabled={!importPreview?.canImport || !mappingsReady || !importName.trim() || packageBusy === 'import'}
+              disabled={!importPreview?.canImport || !mappingsReady || !embeddedPublishersTrusted || !importName.trim() || packageBusy === 'import'}
               className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-2 text-sm text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {packageBusy === 'import' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
@@ -990,9 +1073,16 @@ export function WorkspaceProfileDiagnosticsSection() {
                   {importPreview.packageId} · Nexora {importPreview.producerVersion} · {formatBytes(importPreview.packageSizeBytes)}
                 </p>
                 {importPackageKind === 'workspace' ? (
-                  <p className="mt-1 text-[11px] text-indigo-600 dark:text-indigo-300">
-                    包含 {(importPreview as WorkspacePackageImportPreview).openSurfaceIds.length} 个打开页面引用、{Object.keys((importPreview as WorkspacePackageImportPreview).variables).length} 个普通变量。
-                  </p>
+                  <div className="mt-1 text-[11px] text-indigo-600 dark:text-indigo-300">
+                    <p>
+                      {(importPreview as WorkspacePackageImportPreview).distributionMode === 'self-contained' ? '自包含装配空间' : '引用式装配空间'} · 包含 {(importPreview as WorkspacePackageImportPreview).openSurfaceIds.length} 个打开页面引用、{Object.keys((importPreview as WorkspacePackageImportPreview).variables).length} 个普通变量。
+                    </p>
+                    {(importPreview as WorkspacePackageImportPreview).componentPackages.length > 0 ? (
+                      <p className="mt-1">
+                        {(importPreview as WorkspacePackageImportPreview).componentPackages.filter((item) => item.embedded).length} 个嵌入组件包，{(importPreview as WorkspacePackageImportPreview).componentPackages.filter((item) => !item.embedded).length} 个组件引用。
+                      </p>
+                    ) : null}
+                  </div>
                 ) : null}
               </div>
             </div>
@@ -1011,6 +1101,51 @@ export function WorkspaceProfileDiagnosticsSection() {
                 </div>
               ))}
             </div>
+
+            {importPackageKind === 'workspace' && (importPreview as WorkspacePackageImportPreview).componentPackages.length > 0 ? (
+              <div className="rounded-md border border-gray-200 p-3 dark:border-gray-700">
+                <p className="text-xs font-semibold text-gray-800 dark:text-gray-200">组件包与依赖</p>
+                <div className="mt-2 divide-y divide-gray-100 dark:divide-gray-800">
+                  {(importPreview as WorkspacePackageImportPreview).componentPackages.map((component) => (
+                    <div key={component.componentId} className="flex items-start justify-between gap-3 py-2 text-xs">
+                      <div className="min-w-0">
+                        <p className="break-all font-medium text-gray-800 dark:text-gray-200">{component.componentId}</p>
+                        <p className="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">{component.resolvedVersion ?? component.versionRequirement}{component.publisher ? ` · ${component.publisher}` : ''}{component.license ? ` · ${component.license}` : ''}</p>
+                        {component.note ? <p className="mt-0.5 text-[11px] text-amber-700 dark:text-amber-300">{component.note}</p> : null}
+                      </div>
+                      <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] ${component.embedded ? (component.installable ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300' : 'bg-red-100 text-red-700 dark:bg-red-950/50 dark:text-red-300') : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300'}`}>
+                        {component.embedded ? (component.installable ? '随包安装' : '不可安装') : '仅引用'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                {requiredEmbeddedPublisherIds.length > 0 ? (
+                  <div className="mt-3 space-y-2 border-t border-amber-200 pt-3 dark:border-amber-900/60">
+                    <p className="text-[11px] text-amber-800 dark:text-amber-200">这些组件包签名有效，但发布者尚未在本机信任。确认后会把对应公钥加入本机信任库，之后才会安装组件。</p>
+                    {requiredEmbeddedPublisherIds.map((publisherId) => {
+                      const component = (importPreview as WorkspacePackageImportPreview).componentPackages.find((item) => item.publisherId === publisherId);
+                      const checked = trustedEmbeddedPublisherIds.includes(publisherId);
+                      return (
+                        <label key={publisherId} className="flex cursor-pointer items-start gap-2 text-xs text-gray-700 dark:text-gray-200">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(event) => {
+                              setTrustedEmbeddedPublisherIds((ids) => event.target.checked
+                                ? [...new Set([...ids, publisherId])]
+                                : ids.filter((id) => id !== publisherId));
+                            }}
+                            disabled={packageBusy === 'import'}
+                            className="mt-0.5"
+                          />
+                          <span>信任发布者 {component?.publisher ?? publisherId} <span className="font-mono text-[10px] text-gray-400">{publisherId}</span></span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
 
             {(importPreview.toolAliases.length > 0 || importPreview.pathVariables.length > 0) ? (
               <div className="space-y-3 rounded-md border border-indigo-200 bg-indigo-50/50 p-3 dark:border-indigo-900 dark:bg-indigo-950/20">

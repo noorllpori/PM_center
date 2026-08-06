@@ -1,6 +1,11 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { ComponentManifestV1 } from '../types/platform';
-import type { ComponentPackageInspection, ComponentRuntimeOverview } from '../types/componentRuntime';
+import type {
+  ComponentPackageInspection,
+  ComponentInvocationResult,
+  ComponentRuntimeOverview,
+  PresentationTemplatePreview,
+} from '../types/componentRuntime';
 
 export const COMPONENT_OPERATION_EVENT = 'nexora:component-operation';
 
@@ -15,13 +20,29 @@ export const installComponentFromDirectory = (sourcePath: string) =>
 export const inspectComponentPackage = (packagePath: string) =>
   invoke<ComponentPackageInspection>('inspect_component_package', { packagePath });
 
+export const getPresentationTemplatePreview = (componentId: string, templateId: string) =>
+  invoke<PresentationTemplatePreview>('get_presentation_template_preview', {
+    request: { componentId, templateId },
+  });
+
 export const installComponentFromPackage = (packagePath: string) =>
   invoke<ComponentManifestV1>('install_component_from_package', {
     request: { packagePath },
   });
 
+export const trustComponentPackagePublisher = (packagePath: string) =>
+  invoke<{ id: string; displayName: string; publicKey: string }>('trust_component_package_publisher', { packagePath });
+
 export const uninstallComponent = (componentId: string) =>
   invoke<ComponentManifestV1>('uninstall_component', { componentId });
+
+export const invokeComponentCommand = (request: {
+  componentId: string;
+  moduleId: string;
+  command: string;
+  input?: unknown;
+  timeoutMs?: number;
+}) => invoke<ComponentInvocationResult>('invoke_component_command', { request });
 
 export const reinstallBundledComponent = (componentId: string) =>
   invoke<ComponentManifestV1>('reinstall_bundled_component', { componentId });

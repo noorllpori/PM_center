@@ -1,0 +1,23 @@
+.studio-shell {
+  display: grid;
+  grid-template-columns: 13rem minmax(0, 1fr);
+  grid-template-rows: 2.75rem minmax(0, 1fr);
+  min-height: 100%;
+  background: var(--nexora-surface, #f8fafc);
+  color: var(--nexora-foreground, #172033);
+}
+
+.studio-shell__header {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: space-between;
+}
+
+.studio-shell__navigation {
+  min-width: 0;
+  border-right: 1px solid var(--nexora-border, #d9e0ea);
+}
+
+.studio-shell__workspace {
+  min-width: 0;
+}

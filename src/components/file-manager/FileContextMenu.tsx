@@ -59,6 +59,8 @@ interface ContextMenuProps {
   onRenameCollection?: (file: FileInfo) => Promise<void> | void;
   onDeleteCollection?: (file: FileInfo) => Promise<void> | void;
   onOpenFile?: (file: FileInfo) => Promise<void> | void;
+  onOpenInternally?: (file: FileInfo) => Promise<void> | void;
+  onOpenWithSystem?: (file: FileInfo) => Promise<void> | void;
   onOpenDirectoryTab?: (file: FileInfo) => Promise<void> | void;
   onRunPluginAction?: (action: PluginAction) => void;
 }
@@ -347,6 +349,8 @@ export function FileContextMenu({
   onRenameCollection,
   onDeleteCollection,
   onOpenFile,
+  onOpenInternally,
+  onOpenWithSystem,
   onOpenDirectoryTab,
   onRunPluginAction,
 }: ContextMenuProps) {
@@ -567,6 +571,30 @@ export function FileContextMenu({
     onClose();
   };
 
+  const handleOpenInternally = async () => {
+    try {
+      await onOpenInternally?.(file);
+    } catch (error) {
+      console.error('Failed to open internally:', error);
+    }
+    onClose();
+  };
+
+  const handleOpenWithSystem = async () => {
+    try {
+      if (onOpenWithSystem) {
+        await onOpenWithSystem(file);
+      } else if (file.is_dir) {
+        await invoke('open_path', { path: file.path });
+      } else {
+        await invoke('open_file', { path: file.path });
+      }
+    } catch (error) {
+      console.error('Failed to open with system:', error);
+    }
+    onClose();
+  };
+
   const handleAddSelectionToCollection = async (collection?: FileInfo) => {
     if (!ensureContributionAvailable(
       CONTEXT_COMMAND_CONTRIBUTIONS.projectCollections,
@@ -762,6 +790,16 @@ export function FileContextMenu({
       >
         <MenuItem onClick={handleOpen} icon={<FolderOpen className="w-4 h-4" />}>
           {file.is_dir ? '打开文件夹' : '打开'}
+        </MenuItem>
+
+        {!file.is_dir && onOpenInternally ? (
+          <MenuItem onClick={handleOpenInternally} icon={<FileEdit className="w-4 h-4" />}>
+            使用 Nexora 打开
+          </MenuItem>
+        ) : null}
+
+        <MenuItem onClick={handleOpenWithSystem} icon={<ExternalLink className="w-4 h-4" />}>
+          使用系统打开
         </MenuItem>
 
         <MenuItem onClick={handleReveal} icon={<ExternalLink className="w-4 h-4" />}>

@@ -47,6 +47,17 @@ export interface ComponentOperationSummary {
   logPath?: string | null;
 }
 
+export interface ComponentInvocationResult {
+  operationId: string;
+  componentId: string;
+  componentVersion: string;
+  command: string;
+  runtime: ComponentRuntime;
+  output: unknown;
+  logs: string[];
+  durationMs: number;
+}
+
 export interface PresentationTemplateOwner {
   componentId: string;
   componentName: string;
@@ -81,7 +92,38 @@ export interface ComponentPackageInspection {
   fileCount: number;
   totalBytes: number;
   packageDigest?: string | null;
+  contentDigest?: string | null;
+  publisher?: ComponentPackagePublisher | null;
+  license?: string | null;
+  trust: ComponentPackageTrust;
   warnings: string[];
+}
+
+export interface ComponentPackagePublisher {
+  id: string;
+  displayName: string;
+  publicKey: string;
+}
+
+export interface ComponentPackageTrust {
+  status: 'integrity-only' | 'signed-untrusted' | 'trusted' | 'invalid-signature';
+  signaturePresent: boolean;
+  signatureValid: boolean;
+  installable: boolean;
+  message: string;
+}
+
+export interface PresentationTemplatePreview {
+  componentId: string;
+  templateId: string;
+  componentName: string;
+  name: string;
+  kind: 'shell' | 'page' | 'theme';
+  version: string;
+  baseHtml?: string | null;
+  styles?: string | null;
+  regions: string[];
+  contentDigest: string;
 }
 
 export interface ComponentRuntimeCommandError {

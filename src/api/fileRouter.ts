@@ -15,6 +15,25 @@ export interface FileRouteDiagnostic {
   message: string;
 }
 
+export interface FileRouteCandidate {
+  handlerId: string;
+  handlerName: string;
+  componentId: string;
+  componentName: string;
+  priority: number;
+  workspaceTarget?: string | null;
+  eligible: boolean;
+  selected: boolean;
+  reasons: FileRouteDiagnostic[];
+}
+
+export interface FileRouteBindingResolution {
+  id: string;
+  scope: string;
+  handler: string;
+  behavior: 'fallback' | 'strict' | string;
+}
+
 export interface FileRoutePlan {
   routeId: string;
   path: string;
@@ -27,6 +46,8 @@ export interface FileRoutePlan {
   target: 'workspace' | 'component' | 'system' | 'none';
   workspaceTarget?: string | null;
   diagnostics: FileRouteDiagnostic[];
+  candidates: FileRouteCandidate[];
+  binding?: FileRouteBindingResolution | null;
 }
 
 export interface FileAssociationBinding {
@@ -44,6 +65,13 @@ export interface FileAssociationBinding {
 export interface FileRoutingSnapshot {
   bindings: FileAssociationBinding[];
   storagePath: string;
+  storagePaths: Array<{ scope: 'global' | 'profile' | 'project' | string; path: string; available: boolean }>;
+  context: FileRoutingScopeContext;
+}
+
+export interface FileRoutingScopeContext {
+  projectPath?: string;
+  profileId?: string;
 }
 
 export const routeFileIntent = (
@@ -58,8 +86,14 @@ export const routeFileIntent = (
 export const getFileRoutingSnapshot = () =>
   invoke<FileRoutingSnapshot>('get_file_routing_snapshot');
 
+export const getFileRoutingSnapshotForContext = (context: FileRoutingScopeContext) =>
+  invoke<FileRoutingSnapshot>('get_file_routing_snapshot', { context });
+
 export const setFileAssociationBinding = (binding: FileAssociationBinding) =>
   invoke<void>('set_file_association_binding', { request: { binding } });
 
-export const removeFileAssociationBinding = (bindingId: string) =>
-  invoke<void>('remove_file_association_binding', { bindingId });
+export const removeFileAssociationBinding = (bindingId: string, context?: FileRoutingScopeContext) =>
+  invoke<void>('remove_file_association_binding', { request: { bindingId, context } });
+
+export const getFileRouteTrace = (routeId: string) =>
+  invoke<FileRoutePlan>('get_file_route_trace', { routeId });

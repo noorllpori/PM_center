@@ -70,7 +70,9 @@ pub fn extract_preview_from_bytes(
         }
 
         match code {
-            BlockCode::TEST => return Ok(parse_preview_payload(&bytes[payload_offset..payload_end])),
+            BlockCode::TEST => {
+                return Ok(parse_preview_payload(&bytes[payload_offset..payload_end]));
+            }
             BlockCode::REND => {
                 offset = payload_end;
             }
@@ -130,9 +132,7 @@ mod tests {
     #[test]
     fn extracts_and_flips_preview_block() {
         let mut bytes = b"BLENDER-v250".to_vec();
-        let pixels = [
-            1_u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
-        ];
+        let pixels = [1_u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
 
         bytes.extend_from_slice(&BlockCode::TEST.raw().to_le_bytes());
         bytes.extend_from_slice(&(8_u32 + pixels.len() as u32).to_le_bytes());

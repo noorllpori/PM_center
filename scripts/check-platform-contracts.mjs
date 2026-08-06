@@ -13,6 +13,7 @@ const cases = [
   ['module-manifest.schema.json', 'module-manifest.json'],
   ['component-manifest.schema.json', 'component-manifest.json'],
   ['workspace-profile.schema.json', 'workspace-profile.json'],
+  ['presentation-template.schema.json', 'presentation-template.json'],
   ['workflow-manifest.schema.json', 'workflow-manifest.json'],
   ['package-header.schema.json', 'package-header.json'],
   ['contract-error.schema.json', 'contract-error.json'],

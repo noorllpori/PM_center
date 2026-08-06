@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "example.shell.studio",
+  "kind": "shell",
+  "version": "1.0.0",
+  "baseHtml": "presentation/shell/studio/base.html",
+  "styles": "presentation/shell/studio/styles.css",
+  "regions": ["navigation", "toolbar", "content"]
+}
