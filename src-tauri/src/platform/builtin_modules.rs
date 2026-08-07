@@ -30,8 +30,10 @@ pub const EXTERNAL_TOOLS_MODULE_ID: &str = "builtin.external-tools";
 pub use super::script_automation::SCRIPT_AUTOMATION_MODULE_ID;
 pub use crate::automation_runtime::AUTOMATION_RUNTIME_MODULE_ID;
 pub use crate::local_web_console::LOCAL_WEB_CONSOLE_MODULE_ID;
+pub use crate::media_library::MEDIA_LIBRARY_MODULE_ID;
 pub use crate::project_resources::PROJECT_RESOURCES_MODULE_ID;
 pub use crate::render_center::RENDER_CENTER_MODULE_ID;
+pub use crate::render_farm::RENDER_FARM_MODULE_ID;
 pub const AUTOMATION_PYTHON_TOOL_ID: &str = "builtin.automation-runtime.python-tool";
 pub const AUTOMATION_TASK_TOOL_ID: &str = "builtin.automation-runtime.task-tool";
 pub const AUTOMATION_PYTHON_SURFACE_ID: &str = "builtin.automation-runtime.python-surface";
@@ -44,6 +46,9 @@ pub const AUTOMATION_PLUGIN_CONTEXT_COMMANDS_ID: &str =
 pub const RENDER_TOOL_ID: &str = "builtin.render-center.tool";
 pub const RENDER_WORKSPACE_TAB_ID: &str = "builtin.render-center.workspace-tab";
 pub const RENDER_SURFACE_ID: &str = "builtin.render-center.surface";
+pub const EXTERNAL_RENDER_STATION_SURFACE_ID: &str =
+    "builtin.render-center.external-station-surface";
+pub const MEDIA_LIBRARY_SURFACE_ID: &str = "builtin.media-library.surface";
 pub const PROJECT_CACHE_TOOL_ID: &str = "builtin.project-resources.cache-tool";
 pub const PROJECT_MDT_TOOL_ID: &str = "builtin.project-resources.mdt-tool";
 pub const PROJECT_CACHE_WORKSPACE_TAB_ID: &str = "builtin.project-resources.cache-workspace-tab";
@@ -580,53 +585,55 @@ fn render_center_capabilities() -> Vec<Capability> {
     ]
 }
 
-pub fn render_center_module() -> RegisteredModule {
+pub(crate) fn render_center_manifest() -> ModuleManifestV1 {
     let mut extensions = ExtensionFields::new();
     extensions.insert("defaultEnabled".into(), Value::Bool(true));
-    RegisteredModule {
-        manifest: ModuleManifestV1 {
-            schema_version: 1,
-            id: RENDER_CENTER_MODULE_ID.into(),
-            name: "渲染中心".into(),
-            description: "管理渲染队列、Blender Worker、渲染脚本、性能采样和视频打包生命周期。"
-                .into(),
-            version: "1.0.0".into(),
-            api_version: "1".into(),
-            scope: ModuleScope::Global,
-            builtin: true,
-            requires_modules: vec![
-                ModuleDependency {
-                    id: PROJECT_RESOURCES_MODULE_ID.into(),
-                    version_requirement: "^1.0".into(),
-                },
-                ModuleDependency {
-                    id: EXTERNAL_TOOLS_MODULE_ID.into(),
-                    version_requirement: "^1.0".into(),
-                },
+    ModuleManifestV1 {
+        schema_version: 1,
+        id: RENDER_CENTER_MODULE_ID.into(),
+        name: "渲染中心".into(),
+        description: "管理渲染队列、Blender Worker、渲染脚本、性能采样和视频打包生命周期。".into(),
+        version: "1.0.0".into(),
+        api_version: "1".into(),
+        scope: ModuleScope::Global,
+        builtin: true,
+        // The scheduler owns its own SQLite namespace.  Project resources
+        // remain an optional UI integration, not a runtime prerequisite.
+        requires_modules: vec![ModuleDependency {
+            id: EXTERNAL_TOOLS_MODULE_ID.into(),
+            version_requirement: "^1.0".into(),
+        }],
+        optional_modules: Vec::new(),
+        requires_components: vec![ComponentDependency {
+            id: PM_BLENDIO_COMPONENT_ID.into(),
+            version_requirement: "^1.0".into(),
+        }],
+        optional_components: Vec::new(),
+        conflicts: Vec::new(),
+        capabilities: render_center_capabilities(),
+        background_services: vec![
+            "render-scheduler".into(),
+            "blender-worker-registry".into(),
+            "render-performance-sampling".into(),
+            "render-video-packaging".into(),
+        ],
+        contributes: ModuleContributions {
+            workspace_tabs: vec![RENDER_WORKSPACE_TAB_ID.into()],
+            tools: vec![RENDER_TOOL_ID.into()],
+            surfaces: vec![
+                RENDER_SURFACE_ID.into(),
+                EXTERNAL_RENDER_STATION_SURFACE_ID.into(),
             ],
-            optional_modules: Vec::new(),
-            requires_components: vec![ComponentDependency {
-                id: PM_BLENDIO_COMPONENT_ID.into(),
-                version_requirement: "^1.0".into(),
-            }],
-            optional_components: Vec::new(),
-            conflicts: Vec::new(),
-            capabilities: render_center_capabilities(),
-            background_services: vec![
-                "render-scheduler".into(),
-                "blender-worker-registry".into(),
-                "render-performance-sampling".into(),
-                "render-video-packaging".into(),
-            ],
-            contributes: ModuleContributions {
-                workspace_tabs: vec![RENDER_WORKSPACE_TAB_ID.into()],
-                tools: vec![RENDER_TOOL_ID.into()],
-                surfaces: vec![RENDER_SURFACE_ID.into()],
-                ..ModuleContributions::default()
-            },
-            data_policy: ModuleDataPolicy::default(),
-            extensions,
+            ..ModuleContributions::default()
         },
+        data_policy: ModuleDataPolicy::default(),
+        extensions,
+    }
+}
+
+pub fn render_center_module() -> RegisteredModule {
+    RegisteredModule {
+        manifest: render_center_manifest(),
         lifecycle: Arc::new(RenderCenterLifecycle),
         diagnostic: false,
     }
@@ -639,6 +646,219 @@ pub fn render_center_component() -> CapabilityComponentRegistration {
         version: "1.0.0".into(),
         module_id: RENDER_CENTER_MODULE_ID.into(),
         capabilities: render_center_capabilities(),
+    }
+}
+
+/// R13 begins as an opt-in foundation.  It deliberately declares no user
+/// surface yet: pairing, encrypted transport and remote job UI arrive in
+/// separate slices once the contracts below have real network adapters.
+struct RenderFarmLifecycle;
+
+impl ModuleLifecycle for RenderFarmLifecycle {
+    fn start<'a>(&'a self, context: ModuleContext) -> LifecycleFuture<'a, ()> {
+        Box::pin(async move {
+            crate::render_farm::start_runtime();
+            let mut details = BTreeMap::new();
+            details.insert("database".into(), "render_farm.db (WAL)".into());
+            details.insert(
+                "identity".into(),
+                "Windows Credential Manager Ed25519 key".into(),
+            );
+            details.insert(
+                "scope".into(),
+                "配对、加密传输合同、能力报告、渲染包和控制端帧租约".into(),
+            );
+            context.resources.register(
+                context.module_id,
+                ResourceKind::Database,
+                "渲染农场身份与控制端租约存储",
+                details,
+                Box::new(|| Box::pin(crate::render_farm::stop_runtime())),
+            );
+            Ok(())
+        })
+    }
+
+    fn stop<'a>(&'a self, _context: ModuleContext) -> LifecycleFuture<'a, ()> {
+        Box::pin(crate::render_farm::stop_runtime())
+    }
+
+    fn health<'a>(&'a self, _context: ModuleContext) -> LifecycleFuture<'a, ModuleHealth> {
+        Box::pin(async {
+            if crate::render_farm::is_running() {
+                Ok(ModuleHealth::healthy(
+                    "可信设备、加密传输合同、渲染包与控制端租约基础层可用；网络传输适配器尚未启用",
+                ))
+            } else {
+                Ok(ModuleHealth {
+                    level: ModuleHealthLevel::Unhealthy,
+                    message: "渲染农场模块当前未启用".into(),
+                    checked_at: Some(chrono::Utc::now().timestamp_millis()),
+                })
+            }
+        })
+    }
+
+    fn start_timeout(&self) -> Duration {
+        Duration::from_secs(5)
+    }
+
+    fn stop_timeout(&self) -> Duration {
+        Duration::from_secs(10)
+    }
+}
+
+fn render_farm_capabilities() -> Vec<Capability> {
+    vec![
+        Capability::AppSettingsRead,
+        Capability::AppSettingsWrite,
+        Capability::FilesystemExternalRead,
+        Capability::FilesystemExternalWrite,
+        Capability::NetworkLanDiscover,
+        Capability::NetworkLanTransfer,
+        Capability::RenderQueueRead,
+        Capability::RenderQueueWrite,
+        Capability::RenderResultCommit,
+    ]
+}
+
+pub(crate) fn render_farm_manifest() -> ModuleManifestV1 {
+    let mut extensions = ExtensionFields::new();
+    extensions.insert("defaultEnabled".into(), Value::Bool(false));
+    ModuleManifestV1 {
+        schema_version: 1,
+        id: RENDER_FARM_MODULE_ID.into(),
+        name: "Blender 渲染农场".into(),
+        description: "提供受信任设备配对、节点能力预检、不可变渲染包与控制端帧租约；默认停用。"
+            .into(),
+        version: "1.0.0".into(),
+        api_version: "1".into(),
+        scope: ModuleScope::Global,
+        builtin: true,
+        requires_modules: vec![
+            ModuleDependency {
+                id: LAN_COLLABORATION_MODULE_ID.into(),
+                version_requirement: "^1.0".into(),
+            },
+            ModuleDependency {
+                id: RENDER_CENTER_MODULE_ID.into(),
+                version_requirement: "^1.0".into(),
+            },
+        ],
+        optional_modules: Vec::new(),
+        requires_components: vec![ComponentDependency {
+            id: PM_BLENDIO_COMPONENT_ID.into(),
+            version_requirement: "^1.0".into(),
+        }],
+        optional_components: Vec::new(),
+        conflicts: Vec::new(),
+        capabilities: render_farm_capabilities(),
+        background_services: Vec::new(),
+        contributes: ModuleContributions::default(),
+        data_policy: ModuleDataPolicy::default(),
+        extensions,
+    }
+}
+
+pub fn render_farm_module() -> RegisteredModule {
+    RegisteredModule {
+        manifest: render_farm_manifest(),
+        lifecycle: Arc::new(RenderFarmLifecycle),
+        diagnostic: false,
+    }
+}
+
+pub fn render_farm_component() -> CapabilityComponentRegistration {
+    CapabilityComponentRegistration {
+        id: "builtin.render-farm.service".into(),
+        name: "渲染农场可信节点与租约组件".into(),
+        version: "1.0.0".into(),
+        module_id: RENDER_FARM_MODULE_ID.into(),
+        capabilities: render_farm_capabilities(),
+    }
+}
+
+struct MediaLibraryLifecycle;
+
+impl ModuleLifecycle for MediaLibraryLifecycle {
+    fn start<'a>(&'a self, _context: ModuleContext) -> LifecycleFuture<'a, ()> {
+        Box::pin(async move {
+            crate::media_library::start_runtime();
+            Ok(())
+        })
+    }
+
+    fn stop<'a>(&'a self, _context: ModuleContext) -> LifecycleFuture<'a, ()> {
+        Box::pin(crate::media_library::stop_runtime())
+    }
+
+    fn health<'a>(&'a self, _context: ModuleContext) -> LifecycleFuture<'a, ModuleHealth> {
+        Box::pin(async move {
+            if crate::media_library::is_running() {
+                Ok(ModuleHealth::healthy(
+                    "媒体资料库待命；资料库数据库按用户选择的目录独立保存",
+                ))
+            } else {
+                Ok(ModuleHealth {
+                    level: ModuleHealthLevel::Unhealthy,
+                    message: "媒体资料库当前未启用".into(),
+                    checked_at: Some(chrono::Utc::now().timestamp_millis()),
+                })
+            }
+        })
+    }
+
+    fn start_timeout(&self) -> Duration {
+        Duration::from_secs(5)
+    }
+
+    fn stop_timeout(&self) -> Duration {
+        Duration::from_secs(5)
+    }
+}
+
+fn media_library_capabilities() -> Vec<Capability> {
+    vec![
+        Capability::FilesystemExternalRead,
+        Capability::FilesystemExternalWrite,
+        Capability::FilesystemDialogOpen,
+    ]
+}
+
+pub(crate) fn media_library_manifest() -> ModuleManifestV1 {
+    let mut extensions = ExtensionFields::new();
+    extensions.insert("defaultEnabled".into(), Value::Bool(false));
+    ModuleManifestV1 {
+        schema_version: 1,
+        id: MEDIA_LIBRARY_MODULE_ID.into(),
+        name: "媒体资料库".into(),
+        description:
+            "收集、归类和归档图片、视频、音频与参考文件；每个资料库保存独立媒体目录和索引。".into(),
+        version: "1.0.0".into(),
+        api_version: "1".into(),
+        scope: ModuleScope::Global,
+        builtin: true,
+        requires_modules: Vec::new(),
+        optional_modules: Vec::new(),
+        requires_components: Vec::new(),
+        optional_components: Vec::new(),
+        conflicts: Vec::new(),
+        capabilities: media_library_capabilities(),
+        background_services: Vec::new(),
+        contributes: ModuleContributions {
+            surfaces: vec![MEDIA_LIBRARY_SURFACE_ID.into()],
+            ..ModuleContributions::default()
+        },
+        data_policy: ModuleDataPolicy::default(),
+        extensions,
+    }
+}
+
+pub fn media_library_module() -> RegisteredModule {
+    RegisteredModule {
+        manifest: media_library_manifest(),
+        lifecycle: Arc::new(MediaLibraryLifecycle),
+        diagnostic: false,
     }
 }
 
@@ -787,53 +1007,57 @@ fn project_resource_capabilities() -> Vec<Capability> {
     ]
 }
 
+pub(crate) fn project_resources_manifest() -> ModuleManifestV1 {
+    let mut extensions = ExtensionFields::new();
+    extensions.insert("defaultEnabled".into(), Value::Bool(true));
+    ModuleManifestV1 {
+        schema_version: 1,
+        id: PROJECT_RESOURCES_MODULE_ID.into(),
+        name: "项目资源".into(),
+        description: "管理项目数据库、目录索引、文件监听和项目关闭后的资源释放。".into(),
+        version: "1.0.0".into(),
+        api_version: "1".into(),
+        scope: ModuleScope::Project,
+        builtin: true,
+        requires_modules: Vec::new(),
+        optional_modules: Vec::new(),
+        requires_components: Vec::new(),
+        optional_components: vec![ComponentDependency {
+            id: PM_BLENDIO_COMPONENT_ID.into(),
+            version_requirement: "^1.0".into(),
+        }],
+        conflicts: Vec::new(),
+        capabilities: project_resource_capabilities(),
+        background_services: vec![
+            "project-database-registry".into(),
+            "tree-cache-registry".into(),
+            "active-project-watcher".into(),
+            "dirty-directory-repair".into(),
+        ],
+        contributes: ModuleContributions {
+            workspace_tabs: vec![PROJECT_CACHE_WORKSPACE_TAB_ID.into()],
+            tools: vec![PROJECT_CACHE_TOOL_ID.into(), PROJECT_MDT_TOOL_ID.into()],
+            surfaces: vec![
+                PROJECT_CACHE_SURFACE_ID.into(),
+                PROJECT_MDT_SURFACE_ID.into(),
+            ],
+            settings_sections: vec![
+                PROJECT_GLOBAL_EXCLUSIONS_SETTINGS_SECTION_ID.into(),
+                PROJECT_RULES_SETTINGS_SECTION_ID.into(),
+            ],
+            context_commands: vec![PROJECT_COLLECTION_CONTEXT_COMMANDS_ID.into()],
+            ..ModuleContributions::default()
+        },
+        data_policy: ModuleDataPolicy::default(),
+        extensions,
+    }
+}
+
 pub fn project_resources_module(
     databases: crate::project_resources::ProjectDatabaseState,
 ) -> RegisteredModule {
-    let mut extensions = ExtensionFields::new();
-    extensions.insert("defaultEnabled".into(), Value::Bool(true));
     RegisteredModule {
-        manifest: ModuleManifestV1 {
-            schema_version: 1,
-            id: PROJECT_RESOURCES_MODULE_ID.into(),
-            name: "项目资源".into(),
-            description: "管理项目数据库、目录索引、文件监听和项目关闭后的资源释放。".into(),
-            version: "1.0.0".into(),
-            api_version: "1".into(),
-            scope: ModuleScope::Project,
-            builtin: true,
-            requires_modules: Vec::new(),
-            optional_modules: Vec::new(),
-            requires_components: Vec::new(),
-            optional_components: vec![ComponentDependency {
-                id: PM_BLENDIO_COMPONENT_ID.into(),
-                version_requirement: "^1.0".into(),
-            }],
-            conflicts: Vec::new(),
-            capabilities: project_resource_capabilities(),
-            background_services: vec![
-                "project-database-registry".into(),
-                "tree-cache-registry".into(),
-                "active-project-watcher".into(),
-                "dirty-directory-repair".into(),
-            ],
-            contributes: ModuleContributions {
-                workspace_tabs: vec![PROJECT_CACHE_WORKSPACE_TAB_ID.into()],
-                tools: vec![PROJECT_CACHE_TOOL_ID.into(), PROJECT_MDT_TOOL_ID.into()],
-                surfaces: vec![
-                    PROJECT_CACHE_SURFACE_ID.into(),
-                    PROJECT_MDT_SURFACE_ID.into(),
-                ],
-                settings_sections: vec![
-                    PROJECT_GLOBAL_EXCLUSIONS_SETTINGS_SECTION_ID.into(),
-                    PROJECT_RULES_SETTINGS_SECTION_ID.into(),
-                ],
-                context_commands: vec![PROJECT_COLLECTION_CONTEXT_COMMANDS_ID.into()],
-                ..ModuleContributions::default()
-            },
-            data_policy: ModuleDataPolicy::default(),
-            extensions,
-        },
+        manifest: project_resources_manifest(),
         lifecycle: Arc::new(ProjectResourcesLifecycle::new(databases)),
         diagnostic: false,
     }
@@ -1045,44 +1269,48 @@ fn lan_capabilities() -> Vec<Capability> {
     ]
 }
 
+pub(crate) fn lan_collaboration_manifest() -> ModuleManifestV1 {
+    let mut extensions = ExtensionFields::new();
+    extensions.insert("defaultEnabled".into(), Value::Bool(true));
+    ModuleManifestV1 {
+        schema_version: 1,
+        id: LAN_COLLABORATION_MODULE_ID.into(),
+        name: "局域网协同".into(),
+        description: "管理联系人发现、局域网消息、文件传输和可选服务器连接。".into(),
+        version: "1.0.0".into(),
+        api_version: "1".into(),
+        scope: ModuleScope::Global,
+        builtin: true,
+        requires_modules: Vec::new(),
+        optional_modules: Vec::new(),
+        requires_components: Vec::new(),
+        optional_components: Vec::new(),
+        conflicts: Vec::new(),
+        capabilities: lan_capabilities(),
+        background_services: vec![
+            "udp-discovery".into(),
+            "tcp-message-server".into(),
+            "server-client".into(),
+            "transfer-supervisor".into(),
+        ],
+        contributes: ModuleContributions {
+            shell_tabs: vec![LAN_SHELL_TAB_ID.into()],
+            workspace_tabs: vec![LAN_PROJECT_WORKSPACE_TAB_ID.into()],
+            tools: vec![LAN_MAIN_TOOL_ID.into(), LAN_PROJECT_TOOL_ID.into()],
+            surfaces: vec![LAN_MAIN_SURFACE_ID.into(), LAN_PROJECT_SURFACE_ID.into()],
+            ..ModuleContributions::default()
+        },
+        data_policy: ModuleDataPolicy::default(),
+        extensions,
+    }
+}
+
 pub fn lan_collaboration_module(
     app_data_dir: PathBuf,
     app_handle: tauri::AppHandle,
 ) -> RegisteredModule {
-    let mut extensions = ExtensionFields::new();
-    extensions.insert("defaultEnabled".into(), Value::Bool(true));
     RegisteredModule {
-        manifest: ModuleManifestV1 {
-            schema_version: 1,
-            id: LAN_COLLABORATION_MODULE_ID.into(),
-            name: "局域网协同".into(),
-            description: "管理联系人发现、局域网消息、文件传输和可选服务器连接。".into(),
-            version: "1.0.0".into(),
-            api_version: "1".into(),
-            scope: ModuleScope::Global,
-            builtin: true,
-            requires_modules: Vec::new(),
-            optional_modules: Vec::new(),
-            requires_components: Vec::new(),
-            optional_components: Vec::new(),
-            conflicts: Vec::new(),
-            capabilities: lan_capabilities(),
-            background_services: vec![
-                "udp-discovery".into(),
-                "tcp-message-server".into(),
-                "server-client".into(),
-                "transfer-supervisor".into(),
-            ],
-            contributes: ModuleContributions {
-                shell_tabs: vec![LAN_SHELL_TAB_ID.into()],
-                workspace_tabs: vec![LAN_PROJECT_WORKSPACE_TAB_ID.into()],
-                tools: vec![LAN_MAIN_TOOL_ID.into(), LAN_PROJECT_TOOL_ID.into()],
-                surfaces: vec![LAN_MAIN_SURFACE_ID.into(), LAN_PROJECT_SURFACE_ID.into()],
-                ..ModuleContributions::default()
-            },
-            data_policy: ModuleDataPolicy::default(),
-            extensions,
-        },
+        manifest: lan_collaboration_manifest(),
         lifecycle: Arc::new(LanCollaborationLifecycle::new(app_data_dir, app_handle)),
         diagnostic: false,
     }
@@ -1837,11 +2065,13 @@ mod project_resource_tests {
             module.manifest.extensions.get("defaultEnabled"),
             Some(&Value::Bool(true))
         );
-        assert!(module
-            .manifest
-            .requires_modules
-            .iter()
-            .any(|dependency| dependency.id == PROJECT_RESOURCES_MODULE_ID));
+        assert_eq!(
+            module.manifest.requires_modules,
+            vec![ModuleDependency {
+                id: EXTERNAL_TOOLS_MODULE_ID.into(),
+                version_requirement: "^1.0".into(),
+            }]
+        );
         assert!(module
             .manifest
             .capabilities
@@ -1860,8 +2090,55 @@ mod project_resource_tests {
         );
         assert_eq!(
             module.manifest.contributes.surfaces,
-            vec![RENDER_SURFACE_ID.to_string()]
+            vec![
+                RENDER_SURFACE_ID.to_string(),
+                EXTERNAL_RENDER_STATION_SURFACE_ID.to_string(),
+            ]
         );
+    }
+
+    #[test]
+    fn media_library_manifest_is_optional_and_project_free() {
+        let module = media_library_module();
+        assert_eq!(module.manifest.id, MEDIA_LIBRARY_MODULE_ID);
+        assert_eq!(module.manifest.scope, ModuleScope::Global);
+        assert_eq!(
+            module.manifest.extensions.get("defaultEnabled"),
+            Some(&Value::Bool(false))
+        );
+        assert!(module.manifest.requires_modules.is_empty());
+        assert!(module.manifest.background_services.is_empty());
+        assert_eq!(
+            module.manifest.contributes.surfaces,
+            vec![MEDIA_LIBRARY_SURFACE_ID.to_string()]
+        );
+    }
+
+    #[test]
+    fn render_farm_manifest_is_opt_in_and_does_not_start_a_transport() {
+        let manifest = render_farm_manifest();
+        assert_eq!(manifest.id, RENDER_FARM_MODULE_ID);
+        assert_eq!(manifest.scope, ModuleScope::Global);
+        assert_eq!(
+            manifest.extensions.get("defaultEnabled"),
+            Some(&Value::Bool(false))
+        );
+        assert_eq!(
+            manifest
+                .requires_modules
+                .iter()
+                .map(|dependency| dependency.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![LAN_COLLABORATION_MODULE_ID, RENDER_CENTER_MODULE_ID]
+        );
+        assert!(manifest.background_services.is_empty());
+        assert!(manifest.contributes.surfaces.is_empty());
+        assert!(manifest
+            .capabilities
+            .contains(&Capability::RenderResultCommit));
+        assert!(manifest
+            .capabilities
+            .contains(&Capability::NetworkLanTransfer));
     }
 
     #[test]
@@ -1877,6 +2154,8 @@ mod project_resource_tests {
             ("tools", RENDER_TOOL_ID),
             ("workspaceTabs", RENDER_WORKSPACE_TAB_ID),
             ("surfaces", RENDER_SURFACE_ID),
+            ("surfaces", EXTERNAL_RENDER_STATION_SURFACE_ID),
+            ("surfaces", MEDIA_LIBRARY_SURFACE_ID),
             ("tools", PROJECT_CACHE_TOOL_ID),
             ("tools", PROJECT_MDT_TOOL_ID),
             ("workspaceTabs", PROJECT_CACHE_WORKSPACE_TAB_ID),

@@ -15,6 +15,7 @@ mod fs;
 mod icon_extractor;
 mod link_preview;
 mod local_web_console;
+mod media_library;
 mod p2p;
 mod platform;
 mod plugin;
@@ -23,6 +24,7 @@ mod project_resources;
 mod python;
 mod python_env;
 mod render_center;
+mod render_farm;
 mod smart_clipboard;
 mod task;
 mod thumbnail_cache;
@@ -1532,6 +1534,27 @@ pub fn run() {
             local_web_console::open_local_web_console,
             smart_clipboard::open_smart_clipboard,
             link_preview::get_link_preview,
+            media_library::list_media_libraries,
+            media_library::open_media_library,
+            media_library::get_media_library_snapshot,
+            media_library::import_media_items,
+            media_library::create_media_collection,
+            media_library::update_media_annotation,
+            media_library::set_media_item_tags,
+            render_farm::get_render_farm_snapshot,
+            render_farm::create_render_farm_pairing_offer,
+            render_farm::accept_render_farm_pairing_offer,
+            render_farm::complete_render_farm_pairing,
+            render_farm::revoke_render_farm_device,
+            render_farm::record_render_node_capability_report,
+            render_farm::preflight_render_node,
+            render_farm::create_render_pack,
+            render_farm::claim_remote_render_frame,
+            render_farm::commit_remote_render_frame_result,
+            render_farm::recover_expired_render_farm_leases,
+            render_farm::seal_render_farm_transport,
+            render_farm::open_render_farm_transport,
+            render_center::get_external_render_station_context,
             render_center::inspect_render_sources,
             render_center::create_render_batch,
             render_center::list_render_jobs,

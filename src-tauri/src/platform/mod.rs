@@ -8,9 +8,16 @@ mod module_manager;
 mod presentation_templates;
 mod profile_package;
 mod profile_runtime;
+#[cfg(test)]
+mod reference_assemblies;
 mod resource_registry;
 mod script_automation;
 
+pub use builtin_modules::{
+    AUTOMATION_RUNTIME_MODULE_ID, LOCAL_WEB_CONSOLE_MODULE_ID, MEDIA_LIBRARY_MODULE_ID,
+    PROJECT_RESOURCES_MODULE_ID, RENDER_CENTER_MODULE_ID, RENDER_FARM_MODULE_ID,
+    SMART_CLIPBOARD_MODULE_ID,
+};
 pub use module_manager::{
     DisablePreview, ModuleDiagnosticSnapshot, ModuleManager, ModuleManagerError,
     ModuleRuntimeOverview, ModuleState, StopStrategy,
@@ -28,11 +35,6 @@ pub use profile_runtime::{
     WorkspaceProfileRuntime, WorkspaceProfileRuntimeError, WorkspaceProfileRuntimeErrorCode,
     WorkspaceProfileRuntimeSnapshot, WorkspaceProfileSwitchPhase, WorkspaceProfileSwitchPreview,
     WorkspaceProfileSwitchResult,
-};
-
-pub use builtin_modules::{
-    AUTOMATION_RUNTIME_MODULE_ID, LOCAL_WEB_CONSOLE_MODULE_ID, PROJECT_RESOURCES_MODULE_ID,
-    RENDER_CENTER_MODULE_ID, SMART_CLIPBOARD_MODULE_ID,
 };
 pub use script_automation::{
     AutomationEventRequest, AutomationRun, AutomationRunFilter, AutomationRuntimeSnapshot,
@@ -69,10 +71,10 @@ use builtin_modules::{
     automation_runtime_component, automation_runtime_module, desktop_integration_module,
     diagnostic_components, diagnostic_modules, external_tools_module, lan_collaboration_component,
     lan_collaboration_module, local_web_console_component, local_web_console_module,
-    project_manager_module, project_resources_component, project_resources_module,
-    render_center_component, render_center_module, script_automation_module,
-    session_runtime_module, settings_center_module, smart_clipboard_component,
-    smart_clipboard_module, DiagnosticControls, DIAGNOSTIC_BASE_ID,
+    media_library_module, project_manager_module, project_resources_component,
+    project_resources_module, render_center_component, render_center_module, render_farm_component,
+    render_farm_module, script_automation_module, session_runtime_module, settings_center_module,
+    smart_clipboard_component, smart_clipboard_module, DiagnosticControls, DIAGNOSTIC_BASE_ID,
 };
 use capability_gateway::{run_security_diagnostic, CapabilityGateway};
 use component_settings::ComponentSettingsStore;
@@ -104,6 +106,8 @@ impl PlatformRuntime {
     ) -> Result<Self, ModuleManagerError> {
         crate::project_resources::initialize_lifecycle_control();
         crate::automation_runtime::initialize_lifecycle_control();
+        crate::media_library::initialize_lifecycle_control();
+        crate::render_farm::initialize_lifecycle_control();
         crate::render_center::initialize_lifecycle_control();
         let components = ComponentRuntimeManager::new(
             app_data_dir,
@@ -148,7 +152,9 @@ impl PlatformRuntime {
         modules.push(project_manager_module());
         modules.push(automation_runtime_module());
         modules.push(script_automation_module(script_automation.clone()));
+        modules.push(media_library_module());
         modules.push(render_center_module());
+        modules.push(render_farm_module());
         let manager = ModuleManager::new(app_data_dir.join("module-runtime.json"), modules)?;
         let project_resources_desired = manager
             .snapshot(PROJECT_RESOURCES_MODULE_ID)?
@@ -158,8 +164,12 @@ impl PlatformRuntime {
             .snapshot(AUTOMATION_RUNTIME_MODULE_ID)?
             .desired_enabled;
         crate::automation_runtime::set_initial_desired_enabled(automation_runtime_desired);
+        let media_library_desired = manager.snapshot(MEDIA_LIBRARY_MODULE_ID)?.desired_enabled;
+        crate::media_library::set_initial_desired_enabled(media_library_desired);
         let render_center_desired = manager.snapshot(RENDER_CENTER_MODULE_ID)?.desired_enabled;
         crate::render_center::set_initial_desired_enabled(render_center_desired);
+        let render_farm_desired = manager.snapshot(RENDER_FARM_MODULE_ID)?.desired_enabled;
+        crate::render_farm::set_initial_desired_enabled(render_farm_desired);
         let mut capability_components = diagnostic_components();
         capability_components.push(smart_clipboard_component());
         capability_components.push(lan_collaboration_component());
@@ -167,6 +177,7 @@ impl PlatformRuntime {
         capability_components.push(project_resources_component());
         capability_components.push(automation_runtime_component());
         capability_components.push(render_center_component());
+        capability_components.push(render_farm_component());
         let gateway = CapabilityGateway::new(
             app_data_dir.join("capability-gateway.db"),
             manager.clone(),

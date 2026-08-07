@@ -7,6 +7,8 @@ import { SURFACE_CONTRIBUTIONS } from '../../features/contributionRegistry';
 import { CacheManagerSurface } from '../file-manager/CacheManagerSurface';
 import { LanProjectPlaceholderSurface } from '../file-manager/LanProjectPlaceholderSurface';
 import { RenderCenterSurface } from '../file-manager/RenderCenterSurface';
+import { ExternalRenderStationSurface } from '../render/ExternalRenderStationSurface';
+import { MediaLibrarySurface } from '../media/MediaLibrarySurface';
 import { LanCollaborationSurface } from '../lan/LanCollaborationSurface';
 import { ProjectHomeSurface } from '../shell/ProjectHomeSurface';
 import { ProjectWorkspace } from '../file-manager/ProjectWorkspace';
@@ -42,6 +44,8 @@ export const SHELL_SURFACE_RENDERERS: Record<
   [SURFACE_CONTRIBUTIONS.projectHome.id]: ProjectHomeSurface,
   [SURFACE_CONTRIBUTIONS.projectWorkspace.id]: ProjectWorkspace,
   [SURFACE_CONTRIBUTIONS.lanMain.id]: LanCollaborationSurface,
+  [SURFACE_CONTRIBUTIONS.externalRenderStation.id]: ExternalRenderStationSurface,
+  [SURFACE_CONTRIBUTIONS.mediaLibrary.id]: MediaLibrarySurface,
 };
 
 export function getContributionImplementationInventory(): ContributionImplementationInventory {

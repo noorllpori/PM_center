@@ -26,6 +26,12 @@ pub const RENDER_CENTER_DISABLED: &str = "RENDER_CENTER_MODULE_DISABLED";
 pub const RENDER_CENTER_STARTING: &str = "RENDER_CENTER_MODULE_STARTING";
 pub const RENDER_CENTER_STOPPING: &str = "RENDER_CENTER_MODULE_STOPPING";
 
+/// A render-station is intentionally not a project.  It owns only the render
+/// queue database, worker logs and default `renders/` output underneath the
+/// application data directory, so the renderer can be assembled without a
+/// project watcher or project-resource database registry.
+pub const EXTERNAL_RENDER_STATION_DIRECTORY: &str = "render-station";
+
 const PHASE_DISABLED: u8 = 0;
 const PHASE_STARTING: u8 = 1;
 const PHASE_RUNNING: u8 = 2;
@@ -63,6 +69,16 @@ pub struct RenderSourceInfo {
     pub path: String,
     pub scenes: Vec<RenderSceneInfo>,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalRenderStationContext {
+    /// Private queue root used as the existing scheduler namespace.
+    pub storage_path: String,
+    /// Default delivery location for batches that do not choose an output root.
+    pub default_output_root: String,
+    pub display_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1110,6 +1126,40 @@ pub fn init_project_storage(project_path: &str) -> Result<(), String> {
     conn.execute("DELETE FROM render_workers", [])
         .map_err(|error| error.to_string())?;
     Ok(())
+}
+
+/// Initializes the standalone render-station namespace without touching a
+/// user project.  Render scheduler APIs keep their established `projectPath`
+/// argument as a queue namespace; this context supplies a private namespace
+/// rather than pretending that an arbitrary user directory is a project.
+pub fn initialize_external_render_station(
+    app_data_dir: &Path,
+) -> Result<ExternalRenderStationContext, String> {
+    let storage_root = app_data_dir.join(EXTERNAL_RENDER_STATION_DIRECTORY);
+    fs::create_dir_all(&storage_root)
+        .map_err(|error| format!("创建外部渲染器目录失败: {error}"))?;
+    let storage_path = storage_root.to_string_lossy().into_owned();
+    init_project_storage(&storage_path)?;
+    let default_output_root = storage_root.join("renders");
+    fs::create_dir_all(&default_output_root)
+        .map_err(|error| format!("创建外部渲染输出目录失败: {error}"))?;
+    Ok(ExternalRenderStationContext {
+        storage_path,
+        default_output_root: default_output_root.to_string_lossy().into_owned(),
+        display_name: "外部 Blender 渲染器".into(),
+    })
+}
+
+#[tauri::command]
+pub async fn get_external_render_station_context(
+    app_handle: tauri::AppHandle,
+) -> Result<ExternalRenderStationContext, String> {
+    wait_until_running().await?;
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("读取应用数据目录失败: {error}"))?;
+    initialize_external_render_station(&app_data_dir)
 }
 
 fn recover_interrupted_frames(conn: &Connection) -> Result<(), String> {
@@ -6118,6 +6168,25 @@ mod tests {
             .unwrap();
         assert_eq!(force_render_column, 1);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn external_render_station_uses_only_private_app_data_storage() {
+        let app_data =
+            std::env::temp_dir().join(format!("nexora-render-station-test-{}", Uuid::new_v4()));
+        let context = initialize_external_render_station(&app_data).unwrap();
+        let station_root = app_data.join(EXTERNAL_RENDER_STATION_DIRECTORY);
+
+        assert_eq!(PathBuf::from(&context.storage_path), station_root);
+        assert_eq!(
+            PathBuf::from(&context.default_output_root),
+            station_root.join("renders")
+        );
+        assert!(station_root.join(".pm_center/data.db").is_file());
+        assert!(station_root.join(".pm_center/render_jobs").is_dir());
+        assert!(station_root.join("renders").is_dir());
+        assert!(!app_data.join(".pm_center").exists());
+        let _ = fs::remove_dir_all(app_data);
     }
 
     #[test]

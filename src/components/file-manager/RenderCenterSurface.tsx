@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { open } from '@tauri-apps/plugin-dialog';
 import {
   AlertCircle,
   Activity,
@@ -247,7 +248,16 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-export function RenderCenterSurface({ isActive }: { isActive: boolean }) {
+export function RenderCenterSurface({
+  isActive,
+  stationKind = 'project',
+  defaultOutputRoot = '',
+}: {
+  isActive: boolean;
+  stationKind?: 'project' | 'external';
+  defaultOutputRoot?: string;
+}) {
+  const externalStation = stationKind === 'external';
   const { projectPath, projectName } = useProjectStoreShallow((state) => ({
     projectPath: state.projectPath,
     projectName: state.projectName,
@@ -443,11 +453,13 @@ export function RenderCenterSurface({ isActive }: { isActive: boolean }) {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <Layers3 className="h-5 w-5 text-orange-500" />
-            <h2 className="truncate text-base font-semibold">渲染与批处理</h2>
+            <h2 className="truncate text-base font-semibold">{externalStation ? '外部 Blender 渲染器' : '渲染与批处理'}</h2>
             <HelpAssistant
               title="渲染中心怎么用"
               text={[
-                '先点击“新建批次”，选择 Blender 版本并添加一个或多个 .blend 文件。每个文件会成为独立作业。',
+                externalStation
+                  ? '外部渲染器不需要打开项目。新建批次时从系统文件选择器加入一个或多个 .blend 文件。'
+                  : '先点击“新建批次”，选择 Blender 版本并添加一个或多个 .blend 文件。每个文件会成为独立作业。',
                 '在作业中设置场景、帧范围、单任务并发、分辨率和格式后加入队列；新批次不会自动开始，点击左侧“开始/继续队列”才会启动或继续暂停/取消的批次。',
                 '任务创建后可用右上角铅笔修改设置；暂停会立即终止 Worker，并把中断帧恢复为等待状态。',
                 '拖动批次标题调整批次顺序；任务卡片只能在所属批次内排序。排序不会开始或暂停渲染。',
@@ -457,7 +469,7 @@ export function RenderCenterSurface({ isActive }: { isActive: boolean }) {
             />
             <span className="truncate text-xs text-gray-500">{projectName}</span>
           </div>
-          <p className="mt-0.5 truncate text-xs text-gray-500">本机队列 · {activeCount} 个活动作业 · 同时任务 {concurrency} · Blender 上限 {maxBlenderProcesses}</p>
+          <p className="mt-0.5 truncate text-xs text-gray-500">{externalStation ? '独立渲染站队列' : '本机队列'} · {activeCount} 个活动作业 · 同时任务 {concurrency} · Blender 上限 {maxBlenderProcesses}</p>
         </div>
         <div className="flex items-center gap-1.5">
           <label className="flex h-8 items-center gap-2 rounded border border-gray-200 px-2 text-xs dark:border-gray-700" title="同时加载并运行的独立渲染任务数">
@@ -667,6 +679,8 @@ export function RenderCenterSurface({ isActive }: { isActive: boolean }) {
           projectPath={projectPath}
           presets={presets}
           initialSources={initialSources}
+          selectionMode={externalStation ? 'system' : 'project'}
+          defaultOutputRoot={defaultOutputRoot}
           onClose={() => setShowCreate(false)}
           onCreated={async () => { setShowCreate(false); setView('queue'); await refresh(); }}
         />
@@ -1653,7 +1667,23 @@ interface EditableJob {
 
 type RenderFilePickerTarget = 'blend' | 'outputRoot' | 'preHook' | 'postHook';
 
-function CreateBatchDialog({ projectPath, presets, initialSources, onClose, onCreated }: { projectPath: string; presets: RenderPreset[]; initialSources: string[]; onClose: () => void; onCreated: () => Promise<void> }) {
+function CreateBatchDialog({
+  projectPath,
+  presets,
+  initialSources,
+  selectionMode,
+  defaultOutputRoot,
+  onClose,
+  onCreated,
+}: {
+  projectPath: string;
+  presets: RenderPreset[];
+  initialSources: string[];
+  selectionMode: 'project' | 'system';
+  defaultOutputRoot: string;
+  onClose: () => void;
+  onCreated: () => Promise<void>;
+}) {
   const blenderDefault = useSettingsStore((state) => state.toolPaths.blender) || '';
   const blenderInstallations = useSettingsStore((state) => state.blenderInstallations);
   const availableBlenders = useMemo(
@@ -1668,7 +1698,7 @@ function CreateBatchDialog({ projectPath, presets, initialSources, onClose, onCr
       ? blenderDefault
       : availableBlenders[0]?.path || ''
   ));
-  const [outputRoot, setOutputRoot] = useState('');
+  const [outputRoot, setOutputRoot] = useState(defaultOutputRoot);
   const [preHook, setPreHook] = useState('');
   const [postHook, setPostHook] = useState('');
   const [forceOverwrite, setForceOverwrite] = useState(false);
@@ -1703,11 +1733,35 @@ function CreateBatchDialog({ projectPath, presets, initialSources, onClose, onCr
   }, [initialSources, inspectPaths]);
 
   const updateJob = (index: number, patch: Partial<EditableJob>) => setJobs((items) => items.map((item, current) => current === index ? { ...item, ...patch } : item));
+  const applyPickerSelection = async (target: RenderFilePickerTarget, paths: string[]) => {
+    if (target === 'blend') await inspectPaths(paths);
+    if (target === 'outputRoot') setOutputRoot(paths[0] || '');
+    if (target === 'preHook') setPreHook(paths[0] || '');
+    if (target === 'postHook') setPostHook(paths[0] || '');
+  };
   const handleFilePickerSelection = async (paths: string[]) => {
-    if (filePickerTarget === 'blend') await inspectPaths(paths);
-    if (filePickerTarget === 'outputRoot') setOutputRoot(paths[0] || '');
-    if (filePickerTarget === 'preHook') setPreHook(paths[0] || '');
-    if (filePickerTarget === 'postHook') setPostHook(paths[0] || '');
+    if (filePickerTarget) await applyPickerSelection(filePickerTarget, paths);
+  };
+  const openSystemPicker = async (target: RenderFilePickerTarget) => {
+    const extensions = target === 'blend' ? ['blend'] : target === 'preHook' || target === 'postHook' ? ['py'] : [];
+    try {
+      const selected = await open({
+        multiple: target === 'blend',
+        directory: target === 'outputRoot',
+        filters: extensions.length > 0 ? [{ name: target === 'blend' ? 'Blender 文件' : 'Python 脚本', extensions }] : undefined,
+      });
+      const paths = selected === null ? [] : Array.isArray(selected) ? selected : [selected];
+      await applyPickerSelection(target, paths);
+    } catch (error) {
+      showToast({ title: '系统文件选择失败', message: String(error), tone: 'error' });
+    }
+  };
+  const selectPaths = (target: RenderFilePickerTarget) => {
+    if (selectionMode === 'system') {
+      void openSystemPicker(target);
+      return;
+    }
+    setFilePickerTarget(target);
   };
   const projectFilePickerTarget: ProjectFilePickerTarget = filePickerTarget === 'outputRoot' ? 'directory' : 'file';
   const filePickerExtensions = filePickerTarget === 'blend' ? ['blend'] : filePickerTarget === 'preHook' || filePickerTarget === 'postHook' ? ['py'] : [];
@@ -1773,14 +1827,14 @@ function CreateBatchDialog({ projectPath, presets, initialSources, onClose, onCr
                 ))}
               </select>
             </Field>
-            <PathField label="输出根目录（默认项目 renders）" value={outputRoot} onChange={setOutputRoot} onBrowse={() => setFilePickerTarget('outputRoot')} />
+            <PathField label={selectionMode === 'system' ? '输出根目录（默认渲染站 renders）' : '输出根目录（默认项目 renders）'} value={outputRoot} onChange={setOutputRoot} onBrowse={() => selectPaths('outputRoot')} />
             <div className="grid grid-cols-2 gap-3"><Field label={<span className="inline-flex items-center gap-1">失败重试<HelpAssistant title="失败重试" text={['单帧失败后会等待再尝试，最多按这里的次数重试。', '适合临时资源加载失败；场景或插件报错时应先修复错误再继续。']} placement="top-start" /></span>}><input type="number" min={0} max={10} value={maxRetries} onChange={(e) => setMaxRetries(Number(e.target.value))} /></Field><label className="mt-6 flex h-9 items-center gap-1.5 text-xs"><input type="checkbox" checked={forceOverwrite} onChange={(e) => setForceOverwrite(e.target.checked)} className="h-4 w-4" />强制覆盖已有帧<HelpAssistant title="强制覆盖" text={['关闭时，已有有效图片会被跳过，适合断点续渲。', '开启后会重新写入同名输出文件，适合正式重渲。']} placement="top-end" /></label></div>
-            <PathField label="前置脚本（Nexora Python）" value={preHook} onChange={setPreHook} onBrowse={() => setFilePickerTarget('preHook')} />
-            <PathField label="后置脚本（Nexora Python）" value={postHook} onChange={setPostHook} onBrowse={() => setFilePickerTarget('postHook')} />
+            <PathField label="前置脚本（Nexora Python）" value={preHook} onChange={setPreHook} onBrowse={() => selectPaths('preHook')} />
+            <PathField label="后置脚本（Nexora Python）" value={postHook} onChange={setPostHook} onBrowse={() => selectPaths('postHook')} />
           </div>
-          <div className="mt-5 flex items-center justify-between border-b border-gray-200 pb-2 dark:border-gray-800"><div><div className="flex items-center gap-1.5"><h4 className="text-sm font-semibold">源文件与场景</h4><HelpAssistant title="添加源文件" text={['可以一次选择多个 .blend。Nexora 会用上方 Blender 版本读取每个文件的场景信息。', '每个 .blend 只选择一个场景，并在加入队列后生成一个独立任务；不同文件可设不同的单任务并发数量。']} placement="top-start" width={330} /></div><p className="text-xs text-gray-500">每个文件选择一个场景并生成独立作业</p></div><button disabled={inspecting || !blenderPath} onClick={() => setFilePickerTarget('blend')} className="flex h-8 items-center gap-1.5 rounded border border-gray-300 px-3 text-xs disabled:opacity-50 dark:border-gray-700">{inspecting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}添加 .blend</button></div>
+          <div className="mt-5 flex items-center justify-between border-b border-gray-200 pb-2 dark:border-gray-800"><div><div className="flex items-center gap-1.5"><h4 className="text-sm font-semibold">源文件与场景</h4><HelpAssistant title="添加源文件" text={[selectionMode === 'system' ? '从系统文件选择器加入任意位置的 .blend 文件。' : '可以一次选择多个 .blend。Nexora 会用上方 Blender 版本读取每个文件的场景信息。', '每个 .blend 只选择一个场景，并在加入队列后生成一个独立任务；不同文件可设不同的单任务并发数量。']} placement="top-start" width={330} /></div><p className="text-xs text-gray-500">每个文件选择一个场景并生成独立作业</p></div><button disabled={inspecting || !blenderPath} onClick={() => selectPaths('blend')} className="flex h-8 items-center gap-1.5 rounded border border-gray-300 px-3 text-xs disabled:opacity-50 dark:border-gray-700">{inspecting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}添加 .blend</button></div>
           {jobs.length === 0 ? <div className="flex h-32 items-center justify-center text-sm text-gray-500">选择一个或多个 Blender 文件开始</div> : <div>{jobs.map((job,index) => <EditableJobRow key={job.path} job={job} onChange={(patch) => updateJob(index, patch)} onRemove={() => setJobs((items) => items.filter((_,current) => current !== index))} />)}</div>}
-          <div className="mt-5 border-t border-gray-200 pt-4 dark:border-gray-800"><div className="flex flex-wrap items-end gap-2"><Field label="保存当前通用设置为预设"><input value={presetName} onChange={(e) => setPresetName(e.target.value)} placeholder="预设名称" /></Field><select value={presetScope} onChange={(e) => setPresetScope(e.target.value as 'project'|'global')} className="h-9"><option value="project">项目</option><option value="global">全局</option></select><button disabled={!presetName.trim()} onClick={() => void savePreset()} className="flex h-9 items-center gap-1.5 rounded border border-gray-300 px-3 text-xs disabled:opacity-40 dark:border-gray-700"><Save className="h-4 w-4" />保存预设</button></div></div>
+          <div className="mt-5 border-t border-gray-200 pt-4 dark:border-gray-800"><div className="flex flex-wrap items-end gap-2"><Field label="保存当前通用设置为预设"><input value={presetName} onChange={(e) => setPresetName(e.target.value)} placeholder="预设名称" /></Field><select value={presetScope} onChange={(e) => setPresetScope(e.target.value as 'project'|'global')} className="h-9"><option value="project">{selectionMode === 'system' ? '渲染站' : '项目'}</option><option value="global">全局</option></select><button disabled={!presetName.trim()} onClick={() => void savePreset()} className="flex h-9 items-center gap-1.5 rounded border border-gray-300 px-3 text-xs disabled:opacity-40 dark:border-gray-700"><Save className="h-4 w-4" />保存预设</button></div></div>
         </div>
         <div className="flex min-h-[60px] items-center justify-between border-t border-gray-200 px-5 dark:border-gray-800"><span className="text-xs text-gray-500">{jobs.filter((job) => !job.error).length} 个有效作业</span><div className="flex gap-2"><button className="h-9 rounded px-4 text-xs" onClick={onClose}>取消</button><button disabled={submitting || !jobs.some((job) => !job.error) || !blenderPath} onClick={() => void submit()} className="flex h-9 items-center gap-1.5 rounded bg-gray-900 px-4 text-xs font-medium text-white disabled:opacity-40 dark:bg-white dark:text-gray-900">{submitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}加入队列</button></div></div>
       </div>

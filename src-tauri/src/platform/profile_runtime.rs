@@ -25,9 +25,28 @@ const BLANK_PROFILE_ID: &str = "local.blank-workspace";
 const DEFAULT_PROFILE_ID: &str = "local.default-pm-center";
 const MIGRATION_SOURCE: &str = "current-pm-center";
 const PROJECT_MANAGER_MODULE_ID: &str = "builtin.project-manager";
+#[cfg(test)]
+const LAN_COLLABORATION_MODULE_ID: &str = "builtin.lan-collaboration";
+#[cfg(test)]
+const RENDER_CENTER_MODULE_ID: &str = "builtin.render-center";
+#[cfg(test)]
+const MEDIA_LIBRARY_MODULE_ID: &str = "builtin.media-library";
 const SCRIPT_AUTOMATION_MODULE_ID: &str = "builtin.script-automation";
 const PROJECT_HOME_PROFILE_SURFACE_ID: &str = "pm-center-project-home";
 const PROJECT_HOME_CONTRIBUTION_ID: &str = "builtin.project-manager.home-surface";
+#[cfg(test)]
+const LAN_MAIN_PROFILE_SURFACE_ID: &str = "lan-collaboration-main";
+#[cfg(test)]
+const LAN_MAIN_CONTRIBUTION_ID: &str = "builtin.lan-collaboration.main-surface";
+#[cfg(test)]
+const EXTERNAL_RENDER_STATION_PROFILE_SURFACE_ID: &str = "external-render-station";
+#[cfg(test)]
+const EXTERNAL_RENDER_STATION_CONTRIBUTION_ID: &str =
+    "builtin.render-center.external-station-surface";
+#[cfg(test)]
+const MEDIA_LIBRARY_PROFILE_SURFACE_ID: &str = "media-library";
+#[cfg(test)]
+const MEDIA_LIBRARY_CONTRIBUTION_ID: &str = "builtin.media-library.surface";
 const PROJECT_DIRECTORY_WIDGET_ID: &str = "builtin.project-manager.project-directory-widget";
 const PROJECT_QUICK_ACTIONS_WIDGET_ID: &str = "builtin.project-manager.quick-actions-widget";
 const RECENT_PROJECTS_WIDGET_ID: &str = "builtin.project-manager.recent-projects-widget";
@@ -2735,7 +2754,238 @@ fn build_blank_profile() -> WorkspaceProfileV1 {
     }
 }
 
-fn build_default_profile(manifests: &[ModuleManifestV1]) -> WorkspaceProfileV1 {
+#[cfg(test)]
+pub(crate) fn build_project_manager_reference_profile(
+    manifests: &[ModuleManifestV1],
+) -> Result<WorkspaceProfileV1, String> {
+    let enabled_modules = reference_module_selections(manifests, PROJECT_MANAGER_MODULE_ID)?;
+    let mut extensions = ExtensionFields::new();
+    extensions.insert(
+        "referenceAssembly".into(),
+        json!({ "id": "reference.project-manager", "version": 1 }),
+    );
+    Ok(WorkspaceProfileV1 {
+        schema_version: PLATFORM_SCHEMA_VERSION,
+        id: "reference.project-manager".into(),
+        name: "项目管理器参考装配".into(),
+        description: "R12-A 最小项目管理器装配；局域网、渲染和剪贴板按需添加，不是固定模式。"
+            .into(),
+        revision: 1,
+        enabled_modules,
+        enabled_components: Vec::new(),
+        module_settings: BTreeMap::new(),
+        component_settings: BTreeMap::new(),
+        tool_aliases: Vec::new(),
+        path_variables: Vec::new(),
+        shell_layout: ProfileShellLayout {
+            home: Some(PROJECT_HOME_PROFILE_SURFACE_ID.into()),
+            ..ProfileShellLayout::default()
+        },
+        surfaces: vec![project_home_surface()],
+        data_sources: project_home_data_sources(),
+        command_bindings: project_home_command_bindings(),
+        workflow_bindings: Vec::new(),
+        automation_bindings: Vec::new(),
+        variables: BTreeMap::new(),
+        extensions,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn build_lan_communications_reference_profile(
+    manifests: &[ModuleManifestV1],
+) -> Result<WorkspaceProfileV1, String> {
+    let enabled_modules = reference_module_selections(manifests, LAN_COLLABORATION_MODULE_ID)?;
+    let mut extensions = ExtensionFields::new();
+    extensions.insert(
+        "referenceAssembly".into(),
+        json!({ "id": "reference.lan-communications", "version": 1 }),
+    );
+    Ok(WorkspaceProfileV1 {
+        schema_version: PLATFORM_SCHEMA_VERSION,
+        id: "reference.lan-communications".into(),
+        name: "局域网通信端参考装配".into(),
+        description: "R12-C 独立局域网通信端；联系人、消息和传输不依赖项目管理器。".into(),
+        revision: 1,
+        enabled_modules,
+        enabled_components: Vec::new(),
+        module_settings: BTreeMap::new(),
+        component_settings: BTreeMap::new(),
+        tool_aliases: Vec::new(),
+        path_variables: Vec::new(),
+        shell_layout: ProfileShellLayout {
+            home: Some(LAN_MAIN_PROFILE_SURFACE_ID.into()),
+            ..ProfileShellLayout::default()
+        },
+        surfaces: vec![lan_main_surface()],
+        data_sources: Vec::new(),
+        command_bindings: Vec::new(),
+        workflow_bindings: Vec::new(),
+        automation_bindings: Vec::new(),
+        variables: BTreeMap::new(),
+        extensions,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn build_external_blender_renderer_reference_profile(
+    manifests: &[ModuleManifestV1],
+) -> Result<WorkspaceProfileV1, String> {
+    let enabled_modules = reference_module_selections(manifests, RENDER_CENTER_MODULE_ID)?;
+    let mut extensions = ExtensionFields::new();
+    extensions.insert(
+        "referenceAssembly".into(),
+        json!({ "id": "reference.external-blender-renderer", "version": 1 }),
+    );
+    Ok(WorkspaceProfileV1 {
+        schema_version: PLATFORM_SCHEMA_VERSION,
+        id: "reference.external-blender-renderer".into(),
+        name: "Blender 外部渲染器参考装配".into(),
+        description: "R12-D 独立 Blender 渲染器；队列、Worker 和交付结果不依赖项目管理器。".into(),
+        revision: 1,
+        enabled_modules,
+        enabled_components: Vec::new(),
+        module_settings: BTreeMap::new(),
+        component_settings: BTreeMap::new(),
+        tool_aliases: Vec::new(),
+        path_variables: Vec::new(),
+        shell_layout: ProfileShellLayout {
+            home: Some(EXTERNAL_RENDER_STATION_PROFILE_SURFACE_ID.into()),
+            ..ProfileShellLayout::default()
+        },
+        surfaces: vec![external_render_station_surface()],
+        data_sources: Vec::new(),
+        command_bindings: Vec::new(),
+        workflow_bindings: Vec::new(),
+        automation_bindings: Vec::new(),
+        variables: BTreeMap::new(),
+        extensions,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn build_media_library_reference_profile(
+    manifests: &[ModuleManifestV1],
+) -> Result<WorkspaceProfileV1, String> {
+    let enabled_modules = reference_module_selections(manifests, MEDIA_LIBRARY_MODULE_ID)?;
+    let mut extensions = ExtensionFields::new();
+    extensions.insert(
+        "referenceAssembly".into(),
+        json!({ "id": "reference.media-library", "version": 1 }),
+    );
+    Ok(WorkspaceProfileV1 {
+        schema_version: PLATFORM_SCHEMA_VERSION,
+        id: "reference.media-library".into(),
+        name: "媒体资料库参考装配".into(),
+        description: "R12-B 独立媒体资料库；索引、注释和归档均保存到用户选择的资料库目录。".into(),
+        revision: 1,
+        enabled_modules,
+        enabled_components: Vec::new(),
+        module_settings: BTreeMap::new(),
+        component_settings: BTreeMap::new(),
+        tool_aliases: Vec::new(),
+        path_variables: Vec::new(),
+        shell_layout: ProfileShellLayout {
+            home: Some(MEDIA_LIBRARY_PROFILE_SURFACE_ID.into()),
+            ..ProfileShellLayout::default()
+        },
+        surfaces: vec![media_library_surface()],
+        data_sources: Vec::new(),
+        command_bindings: Vec::new(),
+        workflow_bindings: Vec::new(),
+        automation_bindings: Vec::new(),
+        variables: BTreeMap::new(),
+        extensions,
+    })
+}
+
+#[cfg(test)]
+fn reference_module_selections(
+    manifests: &[ModuleManifestV1],
+    root_module_id: &str,
+) -> Result<Vec<ProfileModuleSelection>, String> {
+    let manifest_by_id = manifests
+        .iter()
+        .map(|manifest| (manifest.id.as_str(), manifest))
+        .collect::<BTreeMap<_, _>>();
+    let mut required_ids = BTreeSet::from([root_module_id.to_string()]);
+    let mut pending = vec![root_module_id];
+    while let Some(module_id) = pending.pop() {
+        let manifest = manifest_by_id
+            .get(module_id)
+            .ok_or_else(|| format!("参考装配缺少模块：{module_id}"))?;
+        for dependency in &manifest.requires_modules {
+            if required_ids.insert(dependency.id.clone()) {
+                pending.push(&dependency.id);
+            }
+        }
+    }
+    let mut enabled_modules = required_ids
+        .iter()
+        .map(|module_id| {
+            manifest_by_id
+                .get(module_id.as_str())
+                .map(|manifest| ProfileModuleSelection {
+                    id: manifest.id.clone(),
+                    version_requirement: format!("^{}", manifest.version),
+                    extensions: ExtensionFields::new(),
+                })
+                .ok_or_else(|| format!("参考装配缺少模块：{module_id}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    enabled_modules.sort_by(|left, right| left.id.cmp(&right.id));
+    Ok(enabled_modules)
+}
+
+#[cfg(test)]
+fn lan_main_surface() -> ProfileSurface {
+    ProfileSurface {
+        id: LAN_MAIN_PROFILE_SURFACE_ID.into(),
+        title: Some("局域网主面板".into()),
+        kind: SurfaceKind::ShellPage,
+        layout: SurfaceLayoutKind::ContributionDefined,
+        contribution: Some(LAN_MAIN_CONTRIBUTION_ID.into()),
+        template: None,
+        theme_preset: None,
+        widgets: Vec::new(),
+        settings: BTreeMap::new(),
+        extensions: ExtensionFields::new(),
+    }
+}
+
+#[cfg(test)]
+fn external_render_station_surface() -> ProfileSurface {
+    ProfileSurface {
+        id: EXTERNAL_RENDER_STATION_PROFILE_SURFACE_ID.into(),
+        title: Some("外部 Blender 渲染器".into()),
+        kind: SurfaceKind::ShellPage,
+        layout: SurfaceLayoutKind::ContributionDefined,
+        contribution: Some(EXTERNAL_RENDER_STATION_CONTRIBUTION_ID.into()),
+        template: None,
+        theme_preset: None,
+        widgets: Vec::new(),
+        settings: BTreeMap::new(),
+        extensions: ExtensionFields::new(),
+    }
+}
+
+#[cfg(test)]
+fn media_library_surface() -> ProfileSurface {
+    ProfileSurface {
+        id: MEDIA_LIBRARY_PROFILE_SURFACE_ID.into(),
+        title: Some("媒体资料库".into()),
+        kind: SurfaceKind::ShellPage,
+        layout: SurfaceLayoutKind::ContributionDefined,
+        contribution: Some(MEDIA_LIBRARY_CONTRIBUTION_ID.into()),
+        template: None,
+        theme_preset: None,
+        widgets: Vec::new(),
+        settings: BTreeMap::new(),
+        extensions: ExtensionFields::new(),
+    }
+}
+
+pub(crate) fn build_default_profile(manifests: &[ModuleManifestV1]) -> WorkspaceProfileV1 {
     let manifest_by_id = manifests
         .iter()
         .map(|manifest| (manifest.id.as_str(), manifest))

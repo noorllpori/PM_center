@@ -12,6 +12,7 @@ export const BUILTIN_MODULE_IDS = {
   externalTools: 'builtin.external-tools',
   lanCollaboration: 'builtin.lan-collaboration',
   localWebConsole: 'builtin.local-web-console',
+  mediaLibrary: 'builtin.media-library',
   projectManager: 'builtin.project-manager',
   projectResources: 'builtin.project-resources',
   renderCenter: 'builtin.render-center',
@@ -150,6 +151,24 @@ export const SURFACE_CONTRIBUTIONS = {
     ),
     title: '渲染与批处理',
     host: 'workspace',
+  },
+  externalRenderStation: {
+    ...contribution(
+      'builtin.render-center.external-station-surface',
+      'surfaces',
+      BUILTIN_MODULE_IDS.renderCenter,
+    ),
+    title: '外部 Blender 渲染器',
+    host: 'shell',
+  },
+  mediaLibrary: {
+    ...contribution(
+      'builtin.media-library.surface',
+      'surfaces',
+      BUILTIN_MODULE_IDS.mediaLibrary,
+    ),
+    title: '媒体资料库',
+    host: 'shell',
   },
   cacheManager: {
     ...contribution(

@@ -15,7 +15,7 @@ pub const TEXT_FILE_HANDLER_COMPONENT_ID: &str = "nexora.file-handler.text";
 pub const DIRECTORY_FILE_HANDLER_COMPONENT_ID: &str = "nexora.file-handler.directory";
 pub const PRESENTATION_TEMPLATES_COMPONENT_ID: &str = "nexora.presentation.templates";
 
-pub fn builtin_component_manifests() -> Vec<ComponentManifestV1> {
+pub(crate) fn builtin_component_manifests() -> Vec<ComponentManifestV1> {
     vec![
         blendio_component_manifest(),
         blender_workspace_component_manifest(),
