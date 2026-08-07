@@ -60,6 +60,12 @@ export interface ContributionRegistrySnapshot {
 
 export const TOOL_CONTRIBUTIONS = {
   renderCenter: contribution('builtin.render-center.tool', 'tools', BUILTIN_MODULE_IDS.renderCenter),
+  externalRenderStation: contribution(
+    'builtin.render-center.external-station-tool',
+    'tools',
+    BUILTIN_MODULE_IDS.renderCenter,
+  ),
+  mediaLibrary: contribution('builtin.media-library.tool', 'tools', BUILTIN_MODULE_IDS.mediaLibrary),
   cacheManager: contribution('builtin.project-resources.cache-tool', 'tools', BUILTIN_MODULE_IDS.projectResources),
   lanMain: contribution('builtin.lan-collaboration.main-tool', 'tools', BUILTIN_MODULE_IDS.lanCollaboration),
   lanProject: contribution('builtin.lan-collaboration.project-tool', 'tools', BUILTIN_MODULE_IDS.lanCollaboration),
@@ -692,7 +698,7 @@ export const CONTEXT_COMMAND_CONTRIBUTIONS = {
 
 export interface ShellTabContributionDefinition extends ContributionDefinition {
   tabId: string;
-  tabType: 'lan' | 'project';
+  tabType: 'lan' | 'project' | 'external-render-station' | 'media-library';
   instanceMode: 'singleton' | 'per-project';
   title: string;
   surfaceId: string;
@@ -718,6 +724,30 @@ export const SHELL_TAB_CONTRIBUTIONS = {
     instanceMode: 'singleton',
     title: '设备协作',
     surfaceId: SURFACE_CONTRIBUTIONS.lanMain.id,
+  },
+  externalRenderStation: {
+    ...contribution(
+      'builtin.render-center.external-station-shell-tab',
+      'shellTabs',
+      BUILTIN_MODULE_IDS.renderCenter,
+    ),
+    tabId: 'external-render-station',
+    tabType: 'external-render-station',
+    instanceMode: 'singleton',
+    title: '外部 Blender 渲染器',
+    surfaceId: SURFACE_CONTRIBUTIONS.externalRenderStation.id,
+  },
+  mediaLibrary: {
+    ...contribution(
+      'builtin.media-library.shell-tab',
+      'shellTabs',
+      BUILTIN_MODULE_IDS.mediaLibrary,
+    ),
+    tabId: 'media-library',
+    tabType: 'media-library',
+    instanceMode: 'singleton',
+    title: '媒体资料库',
+    surfaceId: SURFACE_CONTRIBUTIONS.mediaLibrary.id,
   },
 } as const satisfies Record<string, ShellTabContributionDefinition>;
 

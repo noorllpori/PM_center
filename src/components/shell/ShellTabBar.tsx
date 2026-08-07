@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Folder, Home, MessagesSquare, ShieldAlert, X } from 'lucide-react';
+import { Clapperboard, Folder, Home, LibraryBig, MessagesSquare, ShieldAlert, X } from 'lucide-react';
 import { ConfirmDialog } from '../Dialog';
 import type { ShellTab } from '../../stores/shellTabStore';
 import { useSettingsStore } from '../../stores/settingsStore';
@@ -21,6 +21,10 @@ function getTabIcon(tab: ShellTab) {
       return <Folder className="h-4 w-4 text-blue-500" />;
     case 'lan':
       return <MessagesSquare className="h-4 w-4 text-emerald-600" />;
+    case 'external-render-station':
+      return <Clapperboard className="h-4 w-4 text-orange-500" />;
+    case 'media-library':
+      return <LibraryBig className="h-4 w-4 text-teal-600" />;
     default:
       return null;
   }

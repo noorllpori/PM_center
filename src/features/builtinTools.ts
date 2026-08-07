@@ -6,6 +6,7 @@ import {
   Database,
   FileSearch,
   FlaskConical,
+  LibraryBig,
   ListTodo,
   MessageCircle,
   MonitorCog,
@@ -26,6 +27,8 @@ export const OPEN_BUILTIN_TOOLS_CENTER_EVENT = 'pm-center:open-builtin-tools-cen
 
 export type BuiltinToolId =
   | 'render-center'
+  | 'external-render-station'
+  | 'media-library'
   | 'cache-manager'
   | 'p2p-chat'
   | 'p2p-project'
@@ -100,6 +103,46 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     pinnable: true,
     keywords: ['blender', 'render', '批渲染', '队列', '视频'],
     openTarget: { type: 'workspaceTab', contributionId: WORKSPACE_TAB_CONTRIBUTIONS.render.id },
+  },
+  {
+    id: 'external-render-station',
+    contribution: TOOL_CONTRIBUTIONS.externalRenderStation,
+    title: '外部 Blender 渲染器',
+    description: '不打开项目也能创建和管理 Blender 批渲染任务。',
+    help: [
+      '使用独立的渲染站队列和日志，不会创建项目 watcher、TreeCache 或项目 .pm_center 数据。',
+      '可直接从系统文件选择器加入任意位置的 .blend；交付目录、帧范围和 Worker 设置与项目渲染中心一致。',
+      '这是 Shell 页面，可固定到快捷栏，也可加入导航；重复打开会聚焦同一个渲染器标签。',
+    ],
+    category: 'workflow',
+    icon: Clapperboard,
+    requiresProject: false,
+    pinnable: true,
+    keywords: ['blender', 'render', '外部', '无项目', '渲染站'],
+    openTarget: {
+      type: 'shellTab',
+      contributionId: SHELL_TAB_CONTRIBUTIONS.externalRenderStation.id,
+    },
+  },
+  {
+    id: 'media-library',
+    contribution: TOOL_CONTRIBUTIONS.mediaLibrary,
+    title: '媒体资料库',
+    description: '独立收集、整理和查看图片、视频、音频与参考文件。',
+    help: [
+      '资料库是用户选择的普通目录，索引独立保存；可以只引用、复制入库或移动归档。',
+      '支持搜索、集合、标签、备注、评分、重复内容关联以及图片和视频预览。',
+      '这是 Shell 页面，可固定到快捷栏，也可加入导航；它不依赖当前项目。',
+    ],
+    category: 'workflow',
+    icon: LibraryBig,
+    requiresProject: false,
+    pinnable: true,
+    keywords: ['media', 'library', '图片', '视频', '音频', '资料库', '归档'],
+    openTarget: {
+      type: 'shellTab',
+      contributionId: SHELL_TAB_CONTRIBUTIONS.mediaLibrary.id,
+    },
   },
   {
     id: 'cache-manager',

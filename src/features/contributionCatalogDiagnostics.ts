@@ -199,6 +199,26 @@ export function inspectContributionCatalog(
     if (!shellRendererIds.has(surface.id)) {
       pushIssue(issues, 'SHELL_SURFACE_RENDERER_MISSING', surface.id, 'Shell Surface 缺少渲染器');
     }
+    if (tab.instanceMode === 'singleton') {
+      const launchTool = BUILTIN_TOOLS.find(
+        (tool) => tool.openTarget.type === 'shellTab' && tool.openTarget.contributionId === tab.id,
+      );
+      if (!launchTool) {
+        pushIssue(
+          issues,
+          'SHELL_TAB_TOOL_MISSING',
+          tab.id,
+          '独立 Shell 页面必须提供可固定的工具入口，避免只能作为启动主页使用',
+        );
+      } else if (!launchTool.pinnable) {
+        pushIssue(
+          issues,
+          'SHELL_TAB_TOOL_NOT_PINNABLE',
+          tab.id,
+          `独立 Shell 页面对应的工具“${launchTool.title}”不可固定到快捷栏`,
+        );
+      }
+    }
   });
 
   Object.values(WIDGET_CONTRIBUTIONS).forEach((widget) => {

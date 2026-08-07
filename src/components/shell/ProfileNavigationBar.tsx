@@ -1,4 +1,4 @@
-import { Menu, MessagesSquare, PanelsTopLeft } from 'lucide-react';
+import { Clapperboard, LibraryBig, Menu, MessagesSquare, PanelsTopLeft } from 'lucide-react';
 import type { ShellNavigationKind } from '../../types/platform';
 import type { ResolvedProfileNavigationItem } from '../../features/profileLayout';
 
@@ -15,6 +15,12 @@ interface ProfileNavigationBarProps {
 function NavigationIcon({ item }: { item: ResolvedProfileNavigationItem }) {
   if (item.tabContribution?.tabType === 'lan') {
     return <MessagesSquare className="h-4 w-4" />;
+  }
+  if (item.tabContribution?.tabType === 'external-render-station') {
+    return <Clapperboard className="h-4 w-4" />;
+  }
+  if (item.tabContribution?.tabType === 'media-library') {
+    return <LibraryBig className="h-4 w-4" />;
   }
   return <PanelsTopLeft className="h-4 w-4" />;
 }

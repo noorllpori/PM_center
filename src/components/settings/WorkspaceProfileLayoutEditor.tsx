@@ -82,6 +82,16 @@ const SHELL_TEMPLATE_OPTIONS: Array<{
   },
 ];
 
+const LEGACY_SHELL_TEMPLATE_ALIASES: Record<string, string> = {
+  'builtin.shell.top-bar': 'nexora.shell.top-bar',
+  'builtin.shell.side-bar': 'nexora.shell.side-bar',
+  'builtin.shell.compact': 'nexora.shell.minimal',
+};
+
+function canonicalShellTemplateId(id: string | undefined) {
+  return id ? LEGACY_SHELL_TEMPLATE_ALIASES[id] ?? id : '';
+}
+
 function selectComponent(profile: WorkspaceProfileV1, componentId: string, version: string) {
   const enabled = new Map((profile.enabledComponents ?? []).map((item) => [item.id, item] as const));
   const selection: ProfileComponentSelection = {
@@ -195,6 +205,11 @@ export function WorkspaceProfileLayoutEditor({
     .filter((item) => !SHELL_TEMPLATE_OPTIONS.some((builtin) => builtin.templateId === item.template.id))
     .sort((left, right) => left.template.name.localeCompare(right.template.name, 'zh-CN')),
   [componentRuntime]);
+  const selectedShellTemplateId = draft.shellLayout?.shellTemplate?.id ?? '';
+  const canonicalSelectedShellTemplateId = canonicalShellTemplateId(selectedShellTemplateId);
+  const selectedBuiltinShellTemplate = SHELL_TEMPLATE_OPTIONS.some(
+    (option) => option.templateId === canonicalSelectedShellTemplateId,
+  );
 
   const mutate = (updater: (profile: WorkspaceProfileV1) => void) => {
     onChange((profile) => {
@@ -253,7 +268,7 @@ export function WorkspaceProfileLayoutEditor({
                   ) : null}
               </select>
               <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-                未选择主页时始终进入恢复安全页，不会出现空白窗口。
+                主页只决定启动时激活的页面；同一页面可另外加入导航或固定到快捷栏，并不互斥。未选择主页时始终进入恢复安全页，不会出现空白窗口。
               </p>
             </div>
           </section>
@@ -270,8 +285,8 @@ export function WorkspaceProfileLayoutEditor({
               <div className="inline-flex overflow-hidden rounded-md border border-gray-200 dark:border-gray-700">
                 {SHELL_TEMPLATE_OPTIONS.map((option) => {
                   const Icon = option.icon;
-                  const active = draft.shellLayout?.shellTemplate?.id
-                    ? draft.shellLayout.shellTemplate.id === option.templateId
+                  const active = selectedShellTemplateId
+                    ? canonicalSelectedShellTemplateId === option.templateId
                     : (draft.shellLayout?.navigationKind ?? 'top-bar') === option.value;
                   return (
                     <button
@@ -306,7 +321,7 @@ export function WorkspaceProfileLayoutEditor({
               <label className="md:col-span-2">
                 <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-300">安装的 Shell 模板</span>
                 <select
-                  value={draft.shellLayout?.shellTemplate?.id ?? ''}
+                  value={selectedBuiltinShellTemplate ? '' : selectedShellTemplateId}
                   onChange={(event) => {
                     const selected = externalShellTemplates.find((item) => item.template.id === event.target.value);
                     if (!selected) return;
@@ -327,12 +342,15 @@ export function WorkspaceProfileLayoutEditor({
                   {externalShellTemplates.map((item) => (
                     <option key={item.template.id} value={item.template.id}>{item.template.name} · {item.owner.componentName}</option>
                   ))}
-                  {draft.shellLayout?.shellTemplate?.id
-                    && !SHELL_TEMPLATE_OPTIONS.some((item) => item.templateId === draft.shellLayout?.shellTemplate?.id)
-                    && !externalShellTemplates.some((item) => item.template.id === draft.shellLayout?.shellTemplate?.id) ? (
-                      <option value={draft.shellLayout.shellTemplate.id} disabled>{draft.shellLayout.shellTemplate.id}（模板缺失）</option>
+                  {selectedShellTemplateId
+                    && !selectedBuiltinShellTemplate
+                    && !externalShellTemplates.some((item) => item.template.id === selectedShellTemplateId) ? (
+                      <option value={selectedShellTemplateId} disabled>{selectedShellTemplateId}（模板缺失）</option>
                     ) : null}
                 </select>
+                {selectedShellTemplateId !== canonicalSelectedShellTemplateId ? (
+                  <p className="mt-1 text-[11px] text-gray-400">旧版模板标识已兼容为“{SHELL_TEMPLATE_OPTIONS.find((item) => item.templateId === canonicalSelectedShellTemplateId)?.label}”。下次选择布局并保存后会写入新标识。</p>
+                ) : null}
                 {externalShellTemplates.length ? (
                   <p className="mt-1 text-[11px] text-gray-400">模板包先经静态净化和沙箱预览；Shell 仍由 Nexora 恢复容器托管，缺失时自动回退内置布局。</p>
                 ) : null}

@@ -4,7 +4,7 @@ import {
   SHELL_TAB_CONTRIBUTIONS,
 } from '../features/contributionRegistry';
 
-export type ShellTabType = 'home' | 'project' | 'lan';
+export type ShellTabType = 'home' | 'project' | 'lan' | 'external-render-station' | 'media-library';
 
 export interface ShellTab {
   id: string;

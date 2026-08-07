@@ -44,11 +44,16 @@ pub const AUTOMATION_PROJECT_SETTINGS_SECTION_ID: &str =
 pub const AUTOMATION_PLUGIN_CONTEXT_COMMANDS_ID: &str =
     "builtin.automation-runtime.plugin-context-commands";
 pub const RENDER_TOOL_ID: &str = "builtin.render-center.tool";
+pub const EXTERNAL_RENDER_STATION_TOOL_ID: &str = "builtin.render-center.external-station-tool";
 pub const RENDER_WORKSPACE_TAB_ID: &str = "builtin.render-center.workspace-tab";
 pub const RENDER_SURFACE_ID: &str = "builtin.render-center.surface";
 pub const EXTERNAL_RENDER_STATION_SURFACE_ID: &str =
     "builtin.render-center.external-station-surface";
+pub const EXTERNAL_RENDER_STATION_SHELL_TAB_ID: &str =
+    "builtin.render-center.external-station-shell-tab";
 pub const MEDIA_LIBRARY_SURFACE_ID: &str = "builtin.media-library.surface";
+pub const MEDIA_LIBRARY_SHELL_TAB_ID: &str = "builtin.media-library.shell-tab";
+pub const MEDIA_LIBRARY_TOOL_ID: &str = "builtin.media-library.tool";
 pub const PROJECT_CACHE_TOOL_ID: &str = "builtin.project-resources.cache-tool";
 pub const PROJECT_MDT_TOOL_ID: &str = "builtin.project-resources.mdt-tool";
 pub const PROJECT_CACHE_WORKSPACE_TAB_ID: &str = "builtin.project-resources.cache-workspace-tab";
@@ -618,8 +623,12 @@ pub(crate) fn render_center_manifest() -> ModuleManifestV1 {
             "render-video-packaging".into(),
         ],
         contributes: ModuleContributions {
+            shell_tabs: vec![EXTERNAL_RENDER_STATION_SHELL_TAB_ID.into()],
             workspace_tabs: vec![RENDER_WORKSPACE_TAB_ID.into()],
-            tools: vec![RENDER_TOOL_ID.into()],
+            tools: vec![
+                RENDER_TOOL_ID.into(),
+                EXTERNAL_RENDER_STATION_TOOL_ID.into(),
+            ],
             surfaces: vec![
                 RENDER_SURFACE_ID.into(),
                 EXTERNAL_RENDER_STATION_SURFACE_ID.into(),
@@ -846,6 +855,8 @@ pub(crate) fn media_library_manifest() -> ModuleManifestV1 {
         capabilities: media_library_capabilities(),
         background_services: Vec::new(),
         contributes: ModuleContributions {
+            shell_tabs: vec![MEDIA_LIBRARY_SHELL_TAB_ID.into()],
+            tools: vec![MEDIA_LIBRARY_TOOL_ID.into()],
             surfaces: vec![MEDIA_LIBRARY_SURFACE_ID.into()],
             ..ModuleContributions::default()
         },
@@ -2085,8 +2096,15 @@ mod project_resource_tests {
             vec![RENDER_WORKSPACE_TAB_ID.to_string()]
         );
         assert_eq!(
+            module.manifest.contributes.shell_tabs,
+            vec![EXTERNAL_RENDER_STATION_SHELL_TAB_ID.to_string()]
+        );
+        assert_eq!(
             module.manifest.contributes.tools,
-            vec![RENDER_TOOL_ID.to_string()]
+            vec![
+                RENDER_TOOL_ID.to_string(),
+                EXTERNAL_RENDER_STATION_TOOL_ID.to_string(),
+            ]
         );
         assert_eq!(
             module.manifest.contributes.surfaces,
@@ -2108,6 +2126,14 @@ mod project_resource_tests {
         );
         assert!(module.manifest.requires_modules.is_empty());
         assert!(module.manifest.background_services.is_empty());
+        assert_eq!(
+            module.manifest.contributes.shell_tabs,
+            vec![MEDIA_LIBRARY_SHELL_TAB_ID.to_string()]
+        );
+        assert_eq!(
+            module.manifest.contributes.tools,
+            vec![MEDIA_LIBRARY_TOOL_ID.to_string()]
+        );
         assert_eq!(
             module.manifest.contributes.surfaces,
             vec![MEDIA_LIBRARY_SURFACE_ID.to_string()]
@@ -2152,9 +2178,13 @@ mod project_resource_tests {
             ("settingsSections", AUTOMATION_PROJECT_SETTINGS_SECTION_ID),
             ("contextCommands", AUTOMATION_PLUGIN_CONTEXT_COMMANDS_ID),
             ("tools", RENDER_TOOL_ID),
+            ("tools", EXTERNAL_RENDER_STATION_TOOL_ID),
             ("workspaceTabs", RENDER_WORKSPACE_TAB_ID),
+            ("shellTabs", EXTERNAL_RENDER_STATION_SHELL_TAB_ID),
             ("surfaces", RENDER_SURFACE_ID),
             ("surfaces", EXTERNAL_RENDER_STATION_SURFACE_ID),
+            ("shellTabs", MEDIA_LIBRARY_SHELL_TAB_ID),
+            ("tools", MEDIA_LIBRARY_TOOL_ID),
             ("surfaces", MEDIA_LIBRARY_SURFACE_ID),
             ("tools", PROJECT_CACHE_TOOL_ID),
             ("tools", PROJECT_MDT_TOOL_ID),
