@@ -1,9 +1,7 @@
 import { Component, useMemo, useState, type ErrorInfo, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
-  Boxes,
-  Blocks,
-  FileCog,
+  Activity,
   LogOut,
   RefreshCcw,
   ShieldCheck,
@@ -13,17 +11,13 @@ import { ConfirmDialog, Dialog } from '../Dialog';
 import { useWorkspaceProfileStore } from '../../stores/workspaceProfileStore';
 import { CapabilityDiagnosticsSection } from './CapabilityDiagnosticsSection';
 import { ComponentRuntimeDiagnosticsSection } from './ComponentRuntimeDiagnosticsSection';
-import { FileRoutingSettingsSection } from './FileRoutingSettingsSection';
-import { ModuleDiagnosticsSection } from './ModuleDiagnosticsSection';
 import { WorkspaceProfileDiagnosticsSection } from './WorkspaceProfileDiagnosticsSection';
 
-type RecoveryPage = 'profiles' | 'modules' | 'components' | 'routing' | 'capabilities';
+type RecoveryPage = 'profiles' | 'diagnostics' | 'capabilities';
 
 const RECOVERY_PAGES = [
-  { id: 'profiles', label: '装配方案', icon: SlidersHorizontal },
-  { id: 'modules', label: '模块与组件', icon: Boxes },
-  { id: 'components', label: '组件运行时', icon: Blocks },
-  { id: 'routing', label: '文件打开方式', icon: FileCog },
+  { id: 'profiles', label: '方案恢复', icon: SlidersHorizontal },
+  { id: 'diagnostics', label: '高级诊断', icon: Activity },
   { id: 'capabilities', label: '权限诊断', icon: ShieldCheck },
 ] as const;
 
@@ -87,12 +81,12 @@ export function RecoverySettingsPanel({
     if (!switchPreview) return '';
     return [
       `将切换到“${switchPreview.targetProfileName}”。`,
-      `启用 ${switchPreview.modulesToEnable.length} 个模块，停止 ${switchPreview.modulesToDisable.length} 个模块。`,
+      `启用 ${switchPreview.modulesToEnable.length} 个内置组件，停止 ${switchPreview.modulesToDisable.length} 个内置组件。`,
       `快捷栏增加 ${switchPreview.pinnedToolsAdded.length} 项，移除 ${switchPreview.pinnedToolsRemoved.length} 项。`,
       switchPreview.resourcesToRelease > 0
         ? `将释放 ${switchPreview.resourcesToRelease} 个后台资源。`
         : '没有后台资源需要释放。',
-      '自定义 Profile、组件数据和普通设置不会被删除。',
+      '自定义方案、组件数据和普通设置不会被删除。',
     ].join('\n');
   }, [switchPreview]);
 
@@ -172,9 +166,7 @@ export function RecoverySettingsPanel({
             ) : null}
             <RecoveryPageBoundary page={activePage}>
               {activePage === 'profiles' ? <WorkspaceProfileDiagnosticsSection /> : null}
-              {activePage === 'modules' ? <ModuleDiagnosticsSection /> : null}
-              {activePage === 'components' ? <ComponentRuntimeDiagnosticsSection /> : null}
-              {activePage === 'routing' ? <FileRoutingSettingsSection /> : null}
+              {activePage === 'diagnostics' ? <ComponentRuntimeDiagnosticsSection /> : null}
               {activePage === 'capabilities' ? <CapabilityDiagnosticsSection /> : null}
             </RecoveryPageBoundary>
           </main>

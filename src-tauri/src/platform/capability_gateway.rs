@@ -1618,6 +1618,11 @@ fn validate_scope_kind(
         | Capability::ProjectFilesWrite
         | Capability::ProjectMetadataRead
         | Capability::ProjectMetadataWrite => kind == CapabilityScopeKind::Project,
+        Capability::ProjectStorageRead
+        | Capability::ProjectStorageWrite
+        | Capability::ProjectStorageDirect => {
+            matches!(kind, CapabilityScopeKind::Project | CapabilityScopeKind::None)
+        }
         Capability::CacheInspect | Capability::CacheMaintain => kind == CapabilityScopeKind::Cache,
         Capability::FilesystemExternalRead | Capability::FilesystemExternalWrite => matches!(
             kind,
@@ -1653,13 +1658,15 @@ fn capability_allows_operation(capability: Capability, operation: CapabilityOper
         | ProjectOpen
         | ProjectFilesRead
         | ProjectMetadataRead
+        | ProjectStorageRead
         | CacheInspect
         | RenderInspect
         | RenderQueueRead => matches!(operation, Read),
         AppProfileWrite | AppSettingsWrite | ClipboardWrite | ProjectFilesWrite
-        | ProjectMetadataWrite | RenderQueueWrite | RenderResultCommit => {
+        | ProjectMetadataWrite | ProjectStorageWrite | RenderQueueWrite | RenderResultCommit => {
             matches!(operation, Write | Delete)
         }
+        ProjectStorageDirect => matches!(operation, Read),
         FilesystemExternalWrite | CacheMaintain => matches!(operation, Write | Delete),
         FilesystemDialogOpen | TaskRun | TaskCancel | PythonExecute | PythonPackagesManage
         | ProcessSpawn | RenderWorkerExecute => matches!(operation, Execute),

@@ -201,8 +201,8 @@ export function CapabilityDiagnosticsSection() {
             <HelpAssistant
               title="能力权限"
               text={[
-                '模块和组件必须先在 manifest 中声明能力，运行时再由网关签发短期令牌。',
-                '仅本次：批准一次操作；始终允许：绑定当前模块/组件版本、操作和路径范围。',
+                '组件必须先在 manifest 中声明能力，运行时再由网关签发短期令牌。',
+                '仅本次：批准一次操作；始终允许：绑定当前组件版本、操作和路径范围。',
                 '令牌默认 60 秒有效且只能使用一次，不能跨组件或路径复用。',
               ]}
               placement="bottom-start"
@@ -210,7 +210,7 @@ export function CapabilityDiagnosticsSection() {
             />
           </div>
           <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            当前使用隔离诊断组件验证权限；真实业务模块将在 R4 接入同一守卫。
+            当前使用隔离诊断组件验证权限；业务组件通过同一权限网关接受检查。
           </p>
         </div>
         <button
@@ -310,7 +310,7 @@ export function CapabilityDiagnosticsSection() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h5 className="text-xs font-semibold text-gray-800 dark:text-gray-200">长期授权</h5>
-            <p className="mt-0.5 text-[11px] text-gray-500">组件或模块版本变化后自动失效。</p>
+            <p className="mt-0.5 text-[11px] text-gray-500">组件版本变化后自动失效。</p>
           </div>
           <span className="text-xs text-gray-500">{overview?.grants.length || 0} 条</span>
         </div>

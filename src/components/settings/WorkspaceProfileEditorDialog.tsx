@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  Bot,
   Boxes,
   CheckCircle2,
+  FileCog,
   LayoutTemplate,
   Layers3,
   Loader2,
@@ -10,9 +12,11 @@ import {
   Redo2,
   RefreshCw,
   Save,
+  Settings2,
   Undo2,
 } from 'lucide-react';
 import { getPlatformModuleRuntime } from '../../api/platformModules';
+import { getComponentRuntimeOverview } from '../../api/componentRuntime';
 import {
   getWorkspaceProfileDocument,
   validateWorkspaceProfileDraft,
@@ -21,8 +25,11 @@ import { useWorkspaceProfileStore } from '../../stores/workspaceProfileStore';
 import type {
   ModuleManifestV1,
   ProfileModuleSelection,
+  ComponentCategory,
+  JsonValue,
   WorkspaceProfileV1,
 } from '../../types/platform';
+import type { ComponentRuntimeOverview } from '../../types/componentRuntime';
 import type { PlatformModuleDiagnostic } from '../../types/platformRuntime';
 import type {
   WorkspaceProfileDraftValidation,
@@ -64,6 +71,71 @@ function selectedModuleIds(profile: WorkspaceProfileV1 | null) {
   return new Set((profile?.enabledModules ?? []).map((selection) => selection.id));
 }
 
+const CATEGORY_LABELS: Record<ComponentCategory, string> = {
+  workspace: '工作区',
+  'file-handler': '文件处理',
+  service: '服务',
+  automation: '自动化',
+  appearance: '外观',
+  integration: '集成',
+  data: '数据',
+};
+
+function inferredLegacyCategory(manifest: ModuleManifestV1): ComponentCategory {
+  const value = `${manifest.id} ${manifest.name}`.toLowerCase();
+  if (value.includes('file') || value.includes('文件') || value.includes('blender')) return 'file-handler';
+  if (value.includes('automation') || value.includes('task') || value.includes('任务')) return 'automation';
+  if (value.includes('theme') || value.includes('layout') || value.includes('外观')) return 'appearance';
+  if (value.includes('lan') || value.includes('render') || value.includes('cache')) return 'service';
+  return 'workspace';
+}
+
+function ProfileJsonEditor({
+  value,
+  onCommit,
+}: {
+  value: Record<string, JsonValue>;
+  onCommit: (value: Record<string, JsonValue>) => void;
+}) {
+  const serialized = JSON.stringify(value, null, 2);
+  const [text, setText] = useState(serialized);
+  const [parseError, setParseError] = useState<string | null>(null);
+
+  useEffect(() => setText(serialized), [serialized]);
+
+  const commit = () => {
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+        throw new Error('根值必须是 JSON 对象');
+      }
+      onCommit(parsed as Record<string, JsonValue>);
+      setParseError(null);
+    } catch (error) {
+      setParseError(String(error));
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      <textarea
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+        spellCheck={false}
+        className="min-h-72 w-full resize-y rounded-md border border-gray-300 bg-white p-3 font-mono text-xs leading-5 outline-none focus:border-indigo-500 dark:border-gray-700 dark:bg-gray-900"
+      />
+      <div className="flex items-center justify-between gap-3">
+        <p className={`text-xs ${parseError ? 'text-red-600 dark:text-red-300' : 'text-gray-500'}`}>
+          {parseError || '按组件 ID 保存版本化配置；停用组件不会删除这些值。'}
+        </p>
+        <button type="button" onClick={commit} className="shrink-0 rounded-md bg-indigo-600 px-3 py-1.5 text-xs text-white hover:bg-indigo-700">
+          应用到草稿
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function WorkspaceProfileEditorDialog({
   isOpen,
   profileId,
@@ -77,12 +149,15 @@ export function WorkspaceProfileEditorDialog({
   const isMutating = useWorkspaceProfileStore((state) => state.isMutating);
   const [draft, setDraft] = useState<WorkspaceProfileV1 | null>(null);
   const [modules, setModules] = useState<PlatformModuleDiagnostic[]>([]);
+  const [componentRuntime, setComponentRuntime] = useState<ComponentRuntimeOverview | null>(null);
   const [validation, setValidation] = useState<WorkspaceProfileDraftValidation | null>(null);
   const [loading, setLoading] = useState(false);
   const [validating, setValidating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
-  const [activeEditorSection, setActiveEditorSection] = useState<'modules' | 'layout'>('modules');
+  const [activeEditorSection, setActiveEditorSection] = useState<
+    'components' | 'layout' | 'file-handlers' | 'automation' | 'settings'
+  >('components');
   const [closeConfirmationOpen, setCloseConfirmationOpen] = useState(false);
   const originalDocumentRef = useRef('');
   const validationSequenceRef = useRef(0);
@@ -95,9 +170,10 @@ export function WorkspaceProfileEditorDialog({
     setError(null);
     setSaveMessage(null);
     try {
-      const [profile, overview] = await Promise.all([
+      const [profile, overview, runtimeOverview] = await Promise.all([
         getWorkspaceProfileDocument(profileId),
         getPlatformModuleRuntime(),
+        getComponentRuntimeOverview(),
       ]);
       const editable = cloneProfile(profile);
       setDraft(editable);
@@ -106,12 +182,14 @@ export function WorkspaceProfileEditorDialog({
           .filter((module) => !module.diagnostic)
           .sort((left, right) => left.manifest.name.localeCompare(right.manifest.name, 'zh-CN')),
       );
+      setComponentRuntime(runtimeOverview);
       originalDocumentRef.current = JSON.stringify(editable);
       undoStackRef.current = [];
       redoStackRef.current = [];
     } catch (loadError) {
       setDraft(null);
       setModules([]);
+      setComponentRuntime(null);
       setValidation(null);
       setError(formatRuntimeError(loadError));
     } finally {
@@ -125,7 +203,7 @@ export function WorkspaceProfileEditorDialog({
       setValidation(null);
       setError(null);
       setSaveMessage(null);
-      setActiveEditorSection('modules');
+      setActiveEditorSection('components');
       setCloseConfirmationOpen(false);
       undoStackRef.current = [];
       redoStackRef.current = [];
@@ -177,6 +255,22 @@ export function WorkspaceProfileEditorDialog({
   const missingComponentSelections = useMemo(
     () => (draft?.enabledComponents ?? []).filter((selection) => !knownComponentIds.has(selection.id)),
     [draft, knownComponentIds],
+  );
+  const installedComponentManifests = useMemo(
+    () => new Map(
+      (componentRuntime?.installedComponents ?? []).map((component) => [component.manifest.id, component.manifest] as const),
+    ),
+    [componentRuntime],
+  );
+  const effectiveFileHandlers = useMemo(
+    () => (validation?.components ?? [])
+      .filter((component) => component.effectiveEnabled)
+      .flatMap((component) => (installedComponentManifests.get(component.id)?.contributes?.fileHandlers ?? []).map((handler) => ({
+        ...handler,
+        componentId: component.id,
+        componentName: component.name,
+      }))),
+    [installedComponentManifests, validation?.components],
   );
   const dirty = Boolean(draft) && JSON.stringify(draft) !== originalDocumentRef.current;
   const editingCurrentProfile = Boolean(profileId) && profileId === currentProfileId;
@@ -362,7 +456,7 @@ export function WorkspaceProfileEditorDialog({
       {loading ? (
         <div className="flex min-h-80 items-center justify-center gap-2 text-sm text-gray-500">
           <Loader2 className="h-4 w-4 animate-spin" />
-          正在读取装配方案与模块目录...
+          正在读取装配方案与组件目录...
         </div>
       ) : !draft ? (
         <div className="flex min-h-64 flex-col items-center justify-center gap-3 text-center">
@@ -384,7 +478,7 @@ export function WorkspaceProfileEditorDialog({
           {editingCurrentProfile ? (
             <div className="flex items-start gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700 dark:border-blue-900/50 dark:bg-blue-950/30 dark:text-blue-300">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-              <span>正在编辑当前装配方案。点击“保存并应用”后，模块、主页、导航和快捷栏会立即按新配置更新。</span>
+              <span>正在编辑当前装配方案。点击“保存并应用”后，组件、界面、自动化和组件设置会作为同一份草稿原子更新。</span>
             </div>
           ) : null}
           <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.6fr)]">
@@ -425,20 +519,20 @@ export function WorkspaceProfileEditorDialog({
             <div className="inline-flex overflow-hidden rounded-md border border-gray-200 dark:border-gray-700">
               <button
                 type="button"
-                onClick={() => setActiveEditorSection('modules')}
+                onClick={() => setActiveEditorSection('components')}
                 className={`inline-flex h-9 items-center gap-1.5 border-r border-gray-200 px-3 text-sm dark:border-gray-700 ${
-                  activeEditorSection === 'modules'
+                  activeEditorSection === 'components'
                     ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300'
                     : 'text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800'
                 }`}
               >
                 <Layers3 className="h-4 w-4" />
-                模块与组件
+                组件
               </button>
               <button
                 type="button"
                 onClick={() => setActiveEditorSection('layout')}
-                className={`inline-flex h-9 items-center gap-1.5 px-3 text-sm ${
+                className={`inline-flex h-9 items-center gap-1.5 border-r border-gray-200 px-3 text-sm dark:border-gray-700 ${
                   activeEditorSection === 'layout'
                     ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300'
                     : 'text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800'
@@ -446,6 +540,42 @@ export function WorkspaceProfileEditorDialog({
               >
                 <LayoutTemplate className="h-4 w-4" />
                 界面装配
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveEditorSection('file-handlers')}
+                className={`inline-flex h-9 items-center gap-1.5 border-r border-gray-200 px-3 text-sm dark:border-gray-700 ${
+                  activeEditorSection === 'file-handlers'
+                    ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300'
+                    : 'text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800'
+                }`}
+              >
+                <FileCog className="h-4 w-4" />
+                文件处理
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveEditorSection('automation')}
+                className={`inline-flex h-9 items-center gap-1.5 border-r border-gray-200 px-3 text-sm dark:border-gray-700 ${
+                  activeEditorSection === 'automation'
+                    ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300'
+                    : 'text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800'
+                }`}
+              >
+                <Bot className="h-4 w-4" />
+                自动化
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveEditorSection('settings')}
+                className={`inline-flex h-9 items-center gap-1.5 px-3 text-sm ${
+                  activeEditorSection === 'settings'
+                    ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300'
+                    : 'text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800'
+                }`}
+              >
+                <Settings2 className="h-4 w-4" />
+                组件设置
               </button>
             </div>
             <div className="flex items-center gap-1">
@@ -470,13 +600,13 @@ export function WorkspaceProfileEditorDialog({
             </div>
           </div>
 
-          {activeEditorSection === 'modules' ? <>
+          {activeEditorSection === 'components' ? <>
           <div className="grid min-h-[390px] gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
             <section className="min-w-0 rounded-md border border-gray-200 dark:border-gray-700">
               <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2.5 dark:border-gray-700">
                 <div className="flex items-center gap-2">
                   <Layers3 className="h-4 w-4 text-indigo-600" />
-                  <h4 className="text-sm font-semibold">模块</h4>
+                  <h4 className="text-sm font-semibold">内置组件</h4>
                 </div>
                 <span className="text-xs text-gray-500">已选 {selectedIds.size}/{modules.length}</span>
               </div>
@@ -490,7 +620,7 @@ export function WorkspaceProfileEditorDialog({
                       className="mt-0.5 h-4 w-4 rounded border-gray-300 text-red-600 focus:ring-red-500"
                     />
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-red-700 dark:text-red-300">未安装模块</p>
+                      <p className="text-sm font-medium text-red-700 dark:text-red-300">缺失的内置组件</p>
                       <p className="mt-1 break-all font-mono text-[11px] text-red-600 dark:text-red-400">{selection.id} · {selection.versionRequirement || '*'}</p>
                       <p className="mt-1 text-[11px] text-red-600 dark:text-red-400">取消勾选后可修复此阻塞方案。</p>
                     </div>
@@ -517,18 +647,21 @@ export function WorkspaceProfileEditorDialog({
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-1.5">
                           <span className="text-sm font-medium text-gray-900 dark:text-gray-100">{manifest.name}</span>
+                          <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                            {CATEGORY_LABELS[inferredLegacyCategory(manifest)]}
+                          </span>
                           <span className="font-mono text-[11px] text-gray-400">v{manifest.version}</span>
                         </div>
                         <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{manifest.description}</p>
                         <p className="mt-1 break-all font-mono text-[11px] text-gray-400">{manifest.id}</p>
                         {manifest.requiresModules?.length ? (
                           <p className="mt-1 text-[11px] text-blue-600 dark:text-blue-300">
-                            必需模块：{manifest.requiresModules.map((dependency) => dependency.id).join('、')}
+                            必需组件：{manifest.requiresModules.map((dependency) => dependency.id).join('、')}
                           </p>
                         ) : null}
                         {manifest.requiresComponents?.length ? (
                           <p className="mt-1 text-[11px] text-violet-600 dark:text-violet-300">
-                            自动组件：{manifest.requiresComponents.map((dependency) => dependency.id).join('、')}
+                            附加组件：{manifest.requiresComponents.map((dependency) => dependency.id).join('、')}
                           </p>
                         ) : null}
                         {requiredBy.length ? (
@@ -547,7 +680,7 @@ export function WorkspaceProfileEditorDialog({
               <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2.5 dark:border-gray-700">
                 <div className="flex items-center gap-2">
                   <Package className="h-4 w-4 text-violet-600" />
-                  <h4 className="text-sm font-semibold">组件</h4>
+                  <h4 className="text-sm font-semibold">可安装组件</h4>
                 </div>
                 <span className="text-xs text-gray-500">
                   有效 {validation?.effectiveComponentCount ?? 0}
@@ -584,6 +717,9 @@ export function WorkspaceProfileEditorDialog({
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-1.5">
                           <span className="text-sm font-medium text-gray-900 dark:text-gray-100">{component.name}</span>
+                          <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                            {CATEGORY_LABELS[component.category ?? 'integration']}
+                          </span>
                           {component.effectiveEnabled ? (
                             <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300">生效</span>
                           ) : null}
@@ -592,7 +728,7 @@ export function WorkspaceProfileEditorDialog({
                         <p className="mt-1 break-all font-mono text-[11px] text-gray-400">{component.id} · {component.runtime}</p>
                         {component.requiredByModules.length ? (
                           <p className="mt-1 text-[11px] text-blue-600 dark:text-blue-300">
-                            模块依赖：{component.requiredByModules.map((id) => moduleById.get(id)?.manifest.name || id).join('、')}
+                            内置组件依赖：{component.requiredByModules.map((id) => moduleById.get(id)?.manifest.name || id).join('、')}
                           </p>
                         ) : null}
                         {component.requiredByComponents.length ? (
@@ -633,7 +769,7 @@ export function WorkspaceProfileEditorDialog({
                 </span>
               </div>
               <span className="text-xs text-gray-500">
-                {validation?.selectedModuleCount ?? 0} 模块 · {validation?.explicitComponentCount ?? 0} 显式组件 · {validation?.effectiveComponentCount ?? 0} 有效组件
+                {(validation?.selectedModuleCount ?? 0) + (validation?.explicitComponentCount ?? 0)} 个已选组件 · {validation?.effectiveComponentCount ?? 0} 个有效依赖组件
               </span>
             </div>
             {validation?.issues.length ? (
@@ -652,12 +788,98 @@ export function WorkspaceProfileEditorDialog({
               </div>
             ) : null}
           </section>
-          </> : (
+          </> : activeEditorSection === 'layout' ? (
             <WorkspaceProfileLayoutEditor
               draft={draft}
               modules={modules.map((module) => module.manifest)}
               onChange={updateDraft}
             />
+          ) : activeEditorSection === 'file-handlers' ? (
+            <section className="rounded-md border border-gray-200 dark:border-gray-700">
+              <div className="border-b border-gray-200 px-4 py-3 dark:border-gray-700">
+                <h4 className="text-sm font-semibold">当前方案的文件处理能力</h4>
+                <p className="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">
+                  这里显示由已选组件注入的处理器。停用对应组件后，双击和右键入口会一起撤下并回退到系统打开。
+                </p>
+              </div>
+              <div className="max-h-[470px] divide-y divide-gray-100 overflow-auto dark:divide-gray-800">
+                {effectiveFileHandlers.map((handler) => (
+                  <div key={`${handler.componentId}:${handler.id}`} className="px-4 py-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-medium text-gray-900 dark:text-gray-100">{handler.name}</span>
+                      <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600 dark:bg-gray-800 dark:text-gray-300">{handler.componentName}</span>
+                    </div>
+                    <p className="mt-1 font-mono text-[11px] text-gray-400">{handler.id}</p>
+                    <p className="mt-1 text-xs text-gray-500">
+                      后缀 {(handler.extensions ?? []).map((extension) => `.${extension}`).join('、') || '不限'} · 意图 {handler.intents.join('、') || 'open'}
+                    </p>
+                  </div>
+                ))}
+                {!effectiveFileHandlers.length ? (
+                  <div className="flex min-h-40 items-center justify-center gap-2 px-4 text-sm text-gray-500">
+                    <FileCog className="h-4 w-4" />当前方案没有启用文件处理组件
+                  </div>
+                ) : null}
+              </div>
+            </section>
+          ) : activeEditorSection === 'automation' ? (
+            <section className="rounded-md border border-gray-200 dark:border-gray-700">
+              <div className="border-b border-gray-200 px-4 py-3 dark:border-gray-700">
+                <h4 className="text-sm font-semibold">自动化绑定</h4>
+                <p className="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">
+                  绑定属于当前方案草稿；切换、停用或删除会在“保存并应用”后统一生效。
+                </p>
+              </div>
+              <div className="max-h-[470px] divide-y divide-gray-100 overflow-auto dark:divide-gray-800">
+                {(draft.automationBindings ?? []).map((binding) => (
+                  <div key={binding.id} className="flex items-start gap-3 px-4 py-3">
+                    <input
+                      type="checkbox"
+                      checked={binding.enabled !== false}
+                      onChange={(event) => updateDraft((current) => ({
+                        ...current,
+                        automationBindings: (current.automationBindings ?? []).map((candidate) => (
+                          candidate.id === binding.id ? { ...candidate, enabled: event.target.checked } : candidate
+                        )),
+                      }))}
+                      className="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{binding.componentId} / {binding.command}</p>
+                      <p className="mt-1 font-mono text-[11px] text-gray-400">{binding.id} · {binding.trigger.kind}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => updateDraft((current) => ({
+                        ...current,
+                        automationBindings: (current.automationBindings ?? []).filter((candidate) => candidate.id !== binding.id),
+                      }))}
+                      className="rounded-md px-2 py-1 text-xs text-red-600 hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-950/30"
+                    >
+                      移除
+                    </button>
+                  </div>
+                ))}
+                {!draft.automationBindings?.length ? (
+                  <div className="flex min-h-40 items-center justify-center gap-2 px-4 text-sm text-gray-500">
+                    <Bot className="h-4 w-4" />当前方案没有自动化绑定，可在脚本开发者工作台创建
+                  </div>
+                ) : null}
+              </div>
+            </section>
+          ) : (
+            <section className="rounded-md border border-gray-200 p-4 dark:border-gray-700">
+              <div className="mb-3">
+                <h4 className="text-sm font-semibold">方案级组件设置</h4>
+                <p className="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">
+                  此处编辑方案文档中的 `componentSettings`。设备路径、凭据、信任和权限不属于方案，仍保留在设备级设置。
+                </p>
+              </div>
+              <ProfileJsonEditor
+                value={draft.componentSettings ?? {}}
+                onCommit={(value) => updateDraft((current) => ({ ...current, componentSettings: value }))}
+              />
+            </section>
           )}
         </div>
       )}

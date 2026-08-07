@@ -75,7 +75,7 @@ export function MinimalSafeHome({
             </p>
           </div>
           <div>
-            <p className="text-xs text-gray-500 dark:text-gray-400">启用模块</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400">启用组件</p>
             <p className="mt-1 text-sm font-medium text-gray-900 dark:text-gray-100">
               {profile?.enabledModules?.length ?? 0}
             </p>

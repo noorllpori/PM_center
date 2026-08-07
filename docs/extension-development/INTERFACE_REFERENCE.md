@@ -1,126 +1,287 @@
-# 公开接口参考
+# Nexora 扩展接口参考
 
-状态：Nexora 2.8.5 开发线。本文只列可以让外部组件或装配空间依赖的接口；Rust 内部函数、Tauri command、React Store 和 SQLite 表不是第三方兼容合同。
+适用版本：Nexora `2.8.5`。本文是面向只持有 Nexora 安装版 EXE 的组件开发者的权威公开合同。Nexora 的 Rust 函数、Tauri command、React Store、DOM、CSS 类名、SQLite 表和内部目录结构均不是公开 API。
 
-## 1. 合同版本
+## 1. 接口状态
 
-| 合同 | 稳定文件 | 用途 |
-| --- | --- | --- |
-| Component Manifest v1 | `shared/pmc-platform/schemas/v1/component-manifest.schema.json` | `component.json` 的结构、运行时、依赖、贡献与资源限制。 |
-| Workspace Profile v1 | `shared/pmc-platform/schemas/v1/workspace-profile.schema.json` | 装配方案的 Module/Component、Surface、导航、工具、设置和自动化绑定。 |
-| Workspace Package v1 | `shared/pmc-platform/schemas/v1/workspace-package.schema.json` | `.pmc-workspace` 的页面骨架与 Profile。 |
-| Package Header v1 | `shared/pmc-platform/schemas/v1/package-header.schema.json` | `.pmc-profile`、`.pmc-workspace`、`.pmc-pack`、`.pmc-renderpack` 的 ZIP 包头。 |
-| Presentation Template v1 | `shared/pmc-platform/schemas/v1/presentation-template.schema.json` | 安全 Shell/Page 模板描述。 |
-| Python SDK v1 | `src-tauri/resources/script-sdk/nexora_sdk/__init__.py` | 脚本输入、进度、取消、依赖调用、组件状态与 Surface 事件。 |
-
-`schemaVersion: 1` 与 `apiVersion: "1"` 是当前兼容边界。新字段必须向后兼容，破坏性变化必须新建版本，而不是复用 v1 字段含义。
-
-## 2. Component Manifest 核心字段
-
-| 字段 | 作用 |
+| 状态 | 含义 |
 | --- | --- |
-| `id`、`name`、`version`、`apiVersion` | 稳定组件身份和 SemVer 兼容性。 |
-| `runtime`、`entry`、`platforms` | 执行方式、包内相对入口和支持平台。 |
-| `role`、`distribution`、`uiMode` | 组件用途/来源/界面模式描述，不授予权限。 |
-| `capabilities` | 可能使用的 Capability 声明；实际调用仍需要授权。 |
-| `requiresComponents`、`optionalComponents` | 组件依赖图，禁止环和自依赖。 |
-| `contributes` | 自动化、脚本页面、文件处理器、设置、模板等声明。 |
-| `resources` | `maxMemoryMb`、`maxParallelism`、`timeoutMs`。 |
-| `publisher` | 显示性发布者信息；包签名的发布者身份位于包头。 |
+| `stable-2.8.5` | 已在 2.8.5 实现并纳入兼容检查，第三方可以依赖。 |
+| `experimental` | 已实现但可能在同一主版本调整，必须提供降级行为。 |
+| `planned-r14.5` | 合同已规划但当前安装版不保证可用。 |
+| `reserved-r17` | 只保留方向和命名，禁止生成可执行依赖。 |
 
-允许的 Capability 名称由 `shared/pmc-platform/src/capability.rs` 的 `Capability::ALL` 定义，例如 `project.files.read`、`project.files.write`、`filesystem.external.read`、`network.http.request`、`process.spawn` 和 `render.queue.write`。选择最小集合。
+没有明确目标版本时，只能使用 `stable-2.8.5`。组件不能通过猜测内部命令来绕过状态限制。
 
-## 3. Contribution 支持矩阵
+## 2. 用户模型与兼容层
 
-| `contributes` 项 | 状态 | 正确用途 |
-| --- | --- | --- |
-| `automationCommands` | 公开可用 | 用于手动、事件和 cron 运行；Python SDK/Task Center 可追踪。 |
-| `automationEvents` | 公开可用 | 只声明组件允许绑定的白名单事件。 |
-| `scriptSurfaces` | 公开可用，当前入口固定 | 沙箱 HTML/CSS/JS 页面，从功能中心打开为对话框或在工作台预览；`placements` 不会自动生成任意 Shell/工作区/Widget 宿主。 |
-| `fileHandlers` | 公开可用 | 让文件意图路由器选择处理器，支持扩展名、MIME、意图、优先级和目标。 |
-| `settingsSections` | 公开可用 | 结构化设置字段，由 Nexora 统一渲染与保存。 |
-| `shellTemplates`、`pageTemplates`、`themePresets` | 公开可用 | 静态资源模板，经净化、预览和恢复 Shell 处理。 |
-| `toolActions` | 可声明/诊断 | 不等于自动获得任意宿主工具栏按钮；使用 Script Surface 或由未来受控宿主入口承载。 |
-| `widgets`、`dataSources` | 可保留引用 | 当前没有第三方 React 渲染器 ABI，不能作为独立 UI 扩展承诺。 |
-| `workflowNodes` | 冻结兼容 | 可往返保存，但不执行、不提供 DAG 画布。 |
+用户侧只有三个概念：组件、方案、项目。
 
-## 4. Python SDK v1
+- 组件：可安装、卸载、启停和依赖的功能单元，运行时可以是 Python、EXE、隔离 DLL、资料包或宿主服务。
+- 方案：选择组件、界面、文件处理、自动化和组件设置的版本化装配文档。
+- 项目：用户业务目录及其 `.pm_center` 管理数据。
 
-脚本应首先调用 `read_request()`，它返回命令、用户输入和不可变执行上下文。SDK 当前提供：
+旧方案中的 `enabledModules`、`moduleSettings` 和 Module Manifest 由 Nexora 内部适配器继续读取。它们是 `stable-2.8.5` 兼容输入，不是新第三方组件可使用的开发合同。新组件只使用 `component.json` 和 `enabledComponents`。
 
-| 函数 | 作用 |
-| --- | --- |
-| `read_request()` | 读取一次 JSON 请求和 `Context`。 |
-| `log(message)` | 写入结构化运行日志。 |
-| `progress(value, message)` | 上报 0 到 1 的进度。 |
-| `is_cancelled(context)` / `raise_if_cancelled(context)` | 检查宿主取消标志。 |
-| `write_result(value)` / `write_error(message)` | 输出最终协议结果。 |
-| `call_component(component_id, command, payload, ...)` | 调用已声明依赖的组件命令。 |
-| `get_state` / `set_state` / `delete_state` | 读写组件自己的 `global` 或 `project` 状态。 |
-| `emit_surface_event(surface_id, event, payload)` | 向自身已声明 Script Surface 发送受控事件。 |
+## 3. Component Manifest v1
 
-SDK 桥仅监听本机回环地址，且每次运行使用随机 nonce。依赖调用仍需有效 Profile 闭包、Manifest 依赖和本次已授权 Capability；SDK 不提供任意 Tauri IPC。
-
-## 5. 当前随附组件可依赖项
-
-| 组件 ID | 可公开依赖的用途 | 当前公开边界 |
-| --- | --- | --- |
-| `pmc.blendio` | Blender 文件结构读取 | 在 Manifest 中声明 `requiresComponents` 后，可通过 SDK 调用 `inspect`，输入为 `{"path":"..."}`；示例见 `examples/script-automation-blend-audit/`。其他 BlenderIO 命令在形成独立 Schema 前不应被第三方包视为稳定接口。 |
-| `nexora.blender.workspace` | `.blend` 内部文件工作区 | 文件路由宿主功能，不是给第三方脚本直接调用的服务。 |
-| `nexora.file-handler.image`、`video`、`text`、`directory` | 图片、视频、文本和目录的内置处理器 | 它们提供宿主页面；第三方若要替换，应声明自己的 `fileHandlers`，不能调用内置 React 页面。 |
-| `nexora.presentation.templates` | 内置 Shell、页面与主题模板 | 可被 Profile 引用；模板 ID 与版本受组件依赖/卸载检查保护。 |
-
-随附组件可卸载，不代表会永远存在。依赖组件必须处理“未安装、版本不兼容或被当前 Profile 排除”的状态。
-
-## 6. 可执行组件行协议
-
-`python-action`、`python-worker` 和 `native-process` 使用 JSON。请求至少包含：
+状态：`stable-2.8.5`。根文件名固定为 `component.json`，`schemaVersion` 和 `apiVersion` 当前均为 `1`。
 
 ```json
 {
-  "protocol": "nexora.component.v1",
-  "operationId": "uuid",
-  "componentId": "com.example.asset-audit",
-  "componentVersion": "0.1.0",
-  "command": "scan",
-  "input": {},
-  "cancellationFile": "..."
+  "schemaVersion": 1,
+  "id": "com.example.project-audit",
+  "name": "项目检查",
+  "description": "读取项目文件并生成检查结果。",
+  "version": "1.0.0",
+  "apiVersion": "1",
+  "runtime": "python-action",
+  "role": "feature",
+  "category": "automation",
+  "tags": ["audit", "project"],
+  "distribution": "local",
+  "uiMode": "headless",
+  "platforms": ["windows-x64"],
+  "entry": "main.py",
+  "capabilities": ["project.files.read"],
+  "requiresComponents": [],
+  "optionalComponents": [],
+  "contributes": {
+    "automationCommands": []
+  },
+  "resources": {
+    "maxMemoryMb": 256,
+    "maxParallelism": 1,
+    "timeoutMs": 120000
+  }
 }
 ```
 
-最终响应：
+核心字段：
 
-```json
-{"ok": true, "result": {}}
-```
-
-或：
-
-```json
-{"ok": false, "error": "readable failure"}
-```
-
-常驻 Worker 在启动时先输出 `{"type":"worker-ready"}`，之后逐行接收请求。长任务可输出 `{"type":"progress","operationId":"...","progress":0.5,"message":"..."}`、`heartbeat` 或 `log`；最终结果必须关联当前 `operationId`。
-
-## 7. 包与导入接口
-
-| 扩展名 | 内容 | 重要限制 |
+| 字段 | 状态 | 规则 |
 | --- | --- | --- |
-| `.pmc-pack` | 一个可安装组件的签名 ZIP | 可执行包需可信发布者；保留原始验证归档后才能被自包含空间重新分发。 |
-| `.pmc-profile` | 可移植 Profile | 不携带组件文件、绝对路径、凭据或用户业务数据。 |
-| `.pmc-workspace` | Profile、变量、Surface 骨架，且可选嵌入组件包 | 导入为新 Profile，不自动切换；不携带项目源文件或聊天资料。 |
-| `.pmc-renderpack` | 受控 Blender 渲染资源包 | 农场实际传输仍属于 R13 后续实现。 |
+| `id`、`version`、`apiVersion` | `stable-2.8.5` | ID 必须稳定；版本和依赖使用 SemVer。 |
+| `runtime`、`entry`、`platforms` | `stable-2.8.5` | 入口只能是组件包内相对路径。 |
+| `role`、`distribution`、`uiMode` | `stable-2.8.5` | 只描述用途，不授予权限。 |
+| `category` | `stable-2.8.5` | `workspace`、`file-handler`、`service`、`automation`、`appearance`、`integration`、`data`。 |
+| `tags` | `stable-2.8.5` | 最多 32 个稳定标签，用于检索与展示。 |
+| `capabilities` | `stable-2.8.5` | 声明可能请求的权限；运行时仍需授权。 |
+| `requiresComponents` | `stable-2.8.5` | 缺失或版本不兼容时组件被阻止。 |
+| `optionalComponents` | `stable-2.8.5` | 可选依赖缺失时组件必须自行降级。 |
+| `contributes` | `stable-2.8.5` | 公开命令、页面、文件处理器、设置和模板。 |
 
-所有包使用 `PMC_PACKAGE`、Package Header、BLAKE3 和严格 ZIP 条目检查。不要自行构造 ZIP；用工作台或 `nexora-component-pack` 生成 `.pmc-pack`，用 Nexora 的导出功能生成 Profile/装配空间。
+组件分类只影响展示，不改变 Capability、生命周期或卸载规则。
 
-## 8. 非 API 清单
+## 4. 组件命令与 Component Bridge v1
 
-以下内容即使当前可从源码调用，也不能被第三方包依赖：
+状态：`stable-2.8.5`。`automationCommands` 同时是自动化命令和公开组件命令目录，不存在第二套 `exports` 协议。
 
-- `src-tauri/src/platform/*` 的 Rust 实现与 Tauri command 名；
-- React 组件、Zustand Store、CSS class、前端 `contributionRegistry.ts` 私有对象；
-- 应用数据内部路径、SQLite 表、运行时状态 JSON；
-- 内置 Component/Module 的未文档化命令和 `extensions` 中的私有字段；
-- 当前局域网聊天协议与未来农场传输的内部帧格式。
+```json
+{
+  "id": "com.example.audit.inspect",
+  "command": "inspect",
+  "name": "检查文件",
+  "contextRequirement": "project-required",
+  "executionSemantics": "pure",
+  "requiredCapability": "project.files.read",
+  "capabilityOperation": "read",
+  "inputSchema": {"type": "object"},
+  "outputSchema": {"type": "object"},
+  "maxAttempts": 1,
+  "maxParallelism": 1,
+  "timeoutMs": 30000
+}
+```
 
-需要新能力时，应先提出 Manifest/SDK/Schema 合同，再实现宿主支持；不能用“临时直接调用”变成事实 API。
+调用方使用：
+
+```python
+result = call_component(
+    "pmc.blendio",
+    "inspect",
+    {"path": resolved_path},
+    capability="project.files.read",
+    timeout_ms=120000,
+)
+```
+
+宿主依次验证：
+
+1. 目标在调用方 `requiresComponents` 或 `optionalComponents` 中声明。
+2. 依赖已安装、SemVer 兼容并进入当前方案有效闭包。
+3. 目标 Manifest 的 `automationCommands` 公开了该 `command`。
+4. 当前运行获得目标命令要求的 Capability。
+5. 项目上下文、超时、取消和调用链合法。
+
+自调用、未声明依赖、失效依赖和递归调用会被拒绝。通用组件发布/订阅总线是 `reserved-r17`；R14.5 继续使用宿主事件与自动化绑定。
+
+### 4.1 统一错误
+
+状态：`stable-2.8.5`。
+
+```json
+{
+  "code": "dependency_not_active",
+  "message": "依赖组件未进入当前方案有效闭包",
+  "details": {"componentId": "pmc.blendio"},
+  "retryable": false
+}
+```
+
+Python SDK 抛出 `NexoraBridgeError`，字段为 `code`、`details` 和 `retryable`。调用方必须把错误当作业务结果处理，不能假设依赖永远存在。
+
+## 5. BlenderIO 公共命令
+
+状态：`stable-2.8.5`。
+
+- 组件 ID：`pmc.blendio`
+- 命令 ID：`pmc.blendio.inspect`
+- 运行命令：`inspect`
+- 依赖版本建议：`^1.0`
+- Capability：`project.files.read`
+- 输入：`{"path":"C:\\absolute\\project\\file.blend"}`
+- 输出：结构化 JSON 对象；字段随 BlendIO 1.x 向后兼容扩展，调用方应忽略未知字段。
+
+项目内文件应先通过 `resolve_project_file()` 得到受控绝对路径。外部文件不是项目接口的一部分，需要单独的外部文件 Capability 和用户选择流程。
+
+## 6. Python SDK v1
+
+状态：`stable-2.8.5`。SDK 位于 Nexora 随组件运行时提供的 `nexora_sdk` 包中。
+
+### 6.1 基础运行
+
+```python
+request = read_request()
+log("starting")
+progress(0.5, "half way")
+raise_if_cancelled(request.context)
+write_result({"ok": True})
+```
+
+| 函数 | 状态 | 返回/作用 |
+| --- | --- | --- |
+| `read_request()` | `stable-2.8.5` | 返回命令、输入和不可变运行上下文。 |
+| `log(message)` | `stable-2.8.5` | 写入任务中心结构化日志。 |
+| `progress(value, message)` | `stable-2.8.5` | 上报 0 到 1 的进度。 |
+| `is_cancelled(context)`、`raise_if_cancelled(context)` | `stable-2.8.5` | 响应取消。 |
+| `write_result(value)`、`write_error(message)` | `stable-2.8.5` | 输出最终协议结果。 |
+| `call_component(...)` | `stable-2.8.5` | 调用已声明依赖的公开命令。 |
+| `emit_surface_event(...)` | `stable-2.8.5` | 向组件自己的沙箱页面发送受控事件。 |
+
+### 6.2 项目接口
+
+| 函数 | Capability | 状态 |
+| --- | --- | --- |
+| `get_project_context()` | 项目读类 Capability | `stable-2.8.5` |
+| `list_project_files(relative_path="", cursor=0, limit=100)` | `project.files.read` | `stable-2.8.5` |
+| `stat_project_file(relative_path)` | `project.files.read` | `stable-2.8.5` |
+| `resolve_project_file(relative_path, access="read")` | `project.files.read/write` | `stable-2.8.5` |
+| `mutate_project_files(mutations)` | `project.files.write` | `stable-2.8.5` |
+| `get_project_metadata(key, default=None)` | `project.metadata.read` | `stable-2.8.5` |
+| `set_project_metadata(key, value)` | `project.metadata.write` | `stable-2.8.5` |
+
+文件列表每页最多 500 项。相对路径不得是绝对路径、包含 `..` 或进入 `.pm_center`。批量变更最多 100 项，支持：
+
+```json
+{"kind":"create-directory","path":"output"}
+{"kind":"copy","path":"a.txt","destination":"backup/a.txt","overwrite":false}
+{"kind":"move","path":"a.txt","destination":"archive/a.txt","overwrite":false}
+{"kind":"rename","path":"a.txt","destination":"b.txt","overwrite":false}
+{"kind":"delete","path":"tmp.txt"}
+```
+
+写操作由 Nexora 负责冲突检查、Watcher 通知、TreeCache 失效和审计。组件禁止直接连接项目数据库或修改 TreeCache。
+
+### 6.3 状态与 Blob
+
+| 函数 | Capability | 状态 |
+| --- | --- | --- |
+| `get_state`、`set_state`、`delete_state` | 组件自身状态 | `stable-2.8.5` |
+| `put_blob(name, data, scope, kind)` | `project.storage.write` | `stable-2.8.5` |
+| `open_blob(name, scope, kind)` | `project.storage.read` | `stable-2.8.5` |
+| `list_blobs(scope, kind)` | `project.storage.read` | `stable-2.8.5` |
+| `delete_blob(name, scope, kind)` | `project.storage.write` | `stable-2.8.5` |
+| `get_storage_directory(scope, kind)` | `project.storage.direct` | `stable-2.8.5` |
+
+`scope` 为 `global` 或 `project`，`kind` 为 `state` 或 `cache`。Bridge Blob 单次写入上限 512 KiB。`open_blob()` 返回包含 Base64 数据和元数据的对象。
+
+- `state`：停用、卸载和普通缓存清理时保留；删除需要单独确认。
+- `cache`：可被缓存中心删除，组件必须能够重建。
+- `direct`：只返回本组件自己的专属目录，禁止拼接或探测其他组件目录。
+
+项目存储当前物理上位于 `.pm_center/components/<component-id>/`，但该路径不是公开合同；只通过 SDK 获取句柄或目录。
+
+## 7. Capability
+
+状态：全部 `stable-2.8.5`。Manifest 只能声明实际使用的最小集合。
+
+```text
+app.profile.read              app.profile.write
+app.settings.read             app.settings.write
+notification.send             clipboard.read
+clipboard.write               filesystem.dialog.open
+filesystem.external.read      filesystem.external.write
+project.open                  project.files.read
+project.files.write           project.metadata.read
+project.metadata.write        project.storage.read
+project.storage.write         project.storage.direct
+cache.inspect                 cache.maintain
+task.run                      task.cancel
+python.execute                python.packages.manage
+process.spawn                 network.http.request
+network.lan.discover          network.lan.message
+network.lan.transfer          network.server.connect
+render.inspect                render.queue.read
+render.queue.write            render.worker.execute
+render.result.commit
+```
+
+Python 是受信任代码模型。Capability 约束 Nexora Bridge 与宿主接口，不承诺限制 Python 标准库在当前 Windows 用户权限下能做的事情。生产环境只能运行可信签名包；开发目录必须由用户显式信任。
+
+## 8. 页面、文件处理和设置贡献
+
+| Contribution | 状态 | 边界 |
+| --- | --- | --- |
+| `scriptSurfaces` | `stable-2.8.5` | 沙箱 HTML/CSS/JS；只能调用 `allowedCommands`。 |
+| `fileHandlers` | `stable-2.8.5` | 声明扩展名、MIME、意图、优先级和工作区目标。 |
+| `settingsSections` | `stable-2.8.5` | 由 Nexora 按 Schema 渲染；停用后表单撤下，数据保留。 |
+| `shellTemplates`、`pageTemplates`、`themePresets` | `stable-2.8.5` | 静态模板，经净化和恢复 Shell 承载。 |
+| `toolActions` | `experimental` | 可登记和诊断，不保证任意宿主工具栏位置。 |
+| `widgets`、`dataSources` | `experimental` | 无第三方 React ABI。 |
+| `workflowNodes`、`workflowBindings` | 兼容冻结 | 可往返保存，但不执行。 |
+| Hosted Surface、项目管理器级 ABI | `reserved-r17` | 当前不得生成或伪造。 |
+
+Script Surface 使用 CSP 和会话 nonce，不能访问宿主 DOM、Tauri IPC、本机 URL 或任意远程脚本。页面崩溃只撤下自身。
+
+## 9. 开发目录与安全重载
+
+状态：`experimental`。
+
+受信任开发目录出现后，顶部显示 `DEV` 按钮。单击扫描并重载发生变化的组件；菜单可重新扫描、重载全部、打开日志和进入开发者工作台。
+
+重载会拒绝有不可安全取消的非幂等运行或活动原生操作的组件，并返回运行/操作 ID。安装采用暂存与备份替换，校验或安装失败时保留旧版本。Python Worker、EXE 和隔离 DLL 由运行时重新创建，贡献目录重新同步。
+
+## 10. 包、签名和方案
+
+| 文件 | 状态 | 内容 |
+| --- | --- | --- |
+| `.pmc-pack` | `stable-2.8.5` | 单个签名组件包。 |
+| `.pmc-profile` | `stable-2.8.5` | 方案逻辑，不携带组件本体、凭据和绝对路径。 |
+| `.pmc-workspace` | `stable-2.8.5` | 方案、界面骨架和可选可分发组件原包。 |
+
+正式可执行组件需要受信任发布者签名。使用安装版开发者工作台创建模板、校验、信任开发目录、调试、生成密钥并打包；不要手工伪造 ZIP 或包头。
+
+## 11. 兼容与禁止事项
+
+- 未安装或未进入当前方案有效闭包的组件不贡献功能，也不能被调用。
+- 卸载和停用不删除组件 `state`；清理缓存只删除 `cache`。
+- 新组件不得写 `enabledModules`、`moduleSettings` 或 Module Manifest。
+- 不得调用任意 Tauri command、React Store、内部事件名、数据库表或 TreeCache。
+- 不得依赖 `.pm_center`、应用数据目录和安装目录的物理结构。
+- 不得把 `planned-r14.5` 或 `reserved-r17` 写成已实现能力。
+
+端到端样例：
+
+- `examples/script-project-storage`：项目资料、JSON 状态、Blob 和专属目录。
+- `examples/script-automation-blend-audit`：声明依赖并调用 `pmc.blendio/inspect`。

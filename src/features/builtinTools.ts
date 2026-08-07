@@ -236,7 +236,7 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     description: '开发、调试和组合可安装的 Python 脚本组件。',
     help: [
       '正式自动化属于组件目录或 .pmc-pack；单个 .py 只用于开发期调试，不作为装配功能直接分发。',
-      '支持手动、应用事件和五段式 cron 触发。绑定保存在当前装配方案中，停用模块不会删除绑定或运行历史。',
+      '支持手动、应用事件和五段式 cron 触发。绑定保存在当前装配方案中，停用组件不会删除绑定或运行历史。',
       'Python 属于受信任代码，仍拥有当前 Windows 用户权限；隔离页面不能访问宿主 DOM、Tauri API 或本机 URL。',
     ],
     category: 'workflow',
@@ -326,7 +326,7 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     help: [
       '网页控制台只监听 127.0.0.1，默认关闭，需要在设置中明确启用后才能访问。',
       '浏览器入口使用持久访问令牌，只开放状态、部分常规设置、显示或隐藏主窗口、重启和退出等白名单操作。',
-      '端口或网页权限修改后需要重启该模块；不会开放文件系统、Shell 或任意 Tauri 命令。',
+      '端口或网页权限修改后需要重启该组件；不会开放文件系统、Shell 或任意 Tauri 命令。',
     ],
     category: 'system',
     icon: MonitorCog,
@@ -345,9 +345,9 @@ export const BUILTIN_TOOLS: BuiltinToolDefinition[] = [
     title: '贡献隔离样本',
     description: '验证工具、页面、Widget、数据源和工作流节点的动态装配。',
     help: [
-      '该入口只在“贡献隔离样本”诊断模块启用时出现，用于验证贡献注册表本身。',
+      '该入口只在“贡献隔离样本”诊断组件启用时出现，用于验证贡献注册表本身。',
       '页面通过通用工作区贡献打开，不在主应用打开逻辑中增加专用分支。',
-      '停用诊断模块后，入口、Pin 和已打开标签会撤下；重新启用后数据目录重新可用。',
+      '停用诊断组件后，入口、Pin 和已打开标签会撤下；重新启用后数据目录重新可用。',
     ],
     category: 'system',
     icon: FlaskConical,

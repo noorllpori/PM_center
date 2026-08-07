@@ -2,7 +2,7 @@
 
 > 当前基线：`2.8.5`。本文件是 Nexora 的长期开发上下文；新增、修改或排查功能前，先确认其归属模块和下面的固定交互规则。README 保留对外简介和较长的愿望清单，本文件记录当前实际架构与已确定的产品约束。
 >
-> 下一超大版本将把现有单体功能升级为用户可 DIY 的模块装配平台。项目管理器、媒体资料管理器、局域网通信端和 Blender 渲染控制端/节点只是参考成品，不是系统写死的四种模式。完整架构见 `docs/NEXT_MAJOR_MODULAR_PLATFORM.md`，逐步开发顺序、退出门槛和确认模板见 `docs/NEXT_MAJOR_IMPLEMENTATION_ROADMAP.md`，R1 合同候选见 `docs/NEXT_MAJOR_SCHEMA_V1.md`，文件打开、后缀绑定和可替换查看器见 `docs/NEXT_MAJOR_FILE_HANDLER_ROUTING.md`。
+> 下一超大版本将把现有单体功能升级为用户可 DIY 的模块装配平台。项目管理器、媒体资料管理器、局域网通信端和 Blender 渲染控制端/节点只是参考成品，不是系统写死的四种模式。完整架构见 `docs/NEXT_MAJOR_MODULAR_PLATFORM.md`，逐步开发顺序、退出门槛和确认模板见 `docs/NEXT_MAJOR_IMPLEMENTATION_ROADMAP.md`，R15-R18 云端生态与宿主扩展路线见 `docs/NEXT_MAJOR_R15_R18_CLOUD_ECOSYSTEM_AND_HOST_ABI.md`，文件打开、后缀绑定和可替换查看器见 `docs/NEXT_MAJOR_FILE_HANDLER_ROUTING.md`。
 
 ## 1. 产品定位
 
@@ -249,7 +249,7 @@ React invoke/listen
 - 下一超大版本的主线是“统一宿主运行时 + Capability + Module + Component + Script Automation + Profile”，不维护四套长期分叉代码；这里的宿主运行时不是组件分类，所有正式组件统一支持安装、卸载和升级；
 - Profile 是用户可新建、修改、导出和分享的装配方案；项目管理器、媒体管理器、通信端和 Blender 渲染器只是验证系统能力的参考组合，不得写死为固定枚举；
 - R6-2 已提供“当前 Nexora 装配方案”和普通“空白装配空间”的切换预览。预览只读，实际切换按目标模块集合执行并在失败时恢复旧集合；快捷栏 Pin 由 Profile 中稳定 Tool 贡献 ID 驱动；
-- R6-3 已完成 Profile 会话归属和中断恢复并验收；R7 组件目录和草稿编辑器已验收。R9 已实现本地目录安装、随附组件卸载/重装和外部进程监督；组件商城下载、签名归档升级与 DLL 隔离仍属于 R10；
+- R6-3 已完成 Profile 会话归属和中断恢复并验收；R7 组件目录和草稿编辑器已验收。R9 已实现本地目录安装、随附组件卸载/重装和外部进程监督；R10 负责本地签名包、原子升级回退与 DLL 隔离，在线账户、组件源和商城固定属于 R15；
 - R7-2A 已把主页入口改为 Profile Home Resolver，并完成安全主页人工验收；R7-2B 已新增可停用的 `builtin.project-manager` 管理项目主页和项目 Shell，并完成停用撤下、资源释放与热恢复验收；R7-2C 已让项目主页由 4 个 Widget、4 个 DataSource 和稳定 Command 贡献组合，默认 Profile 迁移幂等补齐这些绑定；`builtin.project-resources` 继续保留数据库/Watcher 等资源层；
 - R7-3 将设置系统拆成 `core.recovery-settings` 与 `builtin.settings-center` 两层。当前先实施设置贡献目录和动态装配；恢复 Surface 落地前，普通设置入口不能被停用。业务模块关闭后必须同步撤下自己的设置 UI，取消停用确认不得产生副作用；
 - R7 已于 2026-08-05 完成验收；R8-1/R8-2 已验收，R8-3 `.pmc-workspace` 已实现待验收；R9 统一组件运行时已实现待验收；
@@ -259,13 +259,16 @@ React invoke/listen
 - R9 使用应用数据目录 `components/` 管理动态组件。随附组件也可卸载和重新安装；组件执行统一经过 operationId、并行/超时/内存限制、进程树取消、日志和 Capability token。R10-2 已加入隔离 `pmc-component-host` 与 Windows DLL ABI，主进程不直接加载第三方 DLL；
 - R10-0 至 R10-4 已建立文件意图路由和绑定、`.pmc-pack` 安装安全检查、隔离 DLL 宿主、BlenderIO/Blender 工作区拆分及图片/视频/文本/目录处理器组件化。`.pmc-workspace` 现支持引用式和自包含模式：前者只记录依赖，后者只嵌入已验证、可再分发的原始组件包，导入预览要求确认新的发布者且不允许静默替换本机不同版本；
 - R11-A 已实现，详细合同位于 `docs/NEXT_MAJOR_R11_SCRIPT_AUTOMATION.md`：新增可停用 `builtin.script-automation`、软件级运行数据库、Profile `automationBindings`、Python SDK、手动/事件/cron 触发、权限等待、安全重试、attention、脚本开发者工作台和隔离页面；旧 Workflow/DAG 合同只保留兼容解析，不建设节点画布；
+- R15 固定为云端账户、组件商城、组件源、已购/已安装、更新渠道和版本回退；R16 固定为非敏感设置、Profile、Workspace 和团队装配库同步；
+- R17 才开放第三方 Hosted Surface、项目上下文、菜单/Widget/DataSource 和可替换 `project-manager` 角色；组件始终不能直接接入内部 React、Store、TreeCache、Tauri command 或数据库表；
+- R18 建立新的可视化装配与受控编排合同 v2，复用 R11/R17 的真实命令、权限和生命周期，不解冻旧 Workflow 执行合同；
 - 可选 `builtin.local-web-console` 默认停用，只允许从本机浏览器访问白名单控制面；不得把它扩展为通用 `invoke`、Shell、文件系统或未经配对的局域网远控入口；
 - 静态启动页由 `shellLayout.home` 决定，复杂启动窗口和条件行为可在 R11 通过受控 `app.started` 脚本自动化实现；恢复流程始终优先，目标不可用时回退最小安全主页；
 - 主页不再是固定业务页面：`shellLayout.home` 指向的 Surface 直接成为主页，现有项目主页只是项目管理器贡献。顶部、侧边和紧凑是三个内置 ShellTemplate 兼容预设，后续由受控 `base.html`、PageTemplate 和 ThemePreset 重绘整体结构；完整合同见 `NEXT_MAJOR_PRESENTATION_TEMPLATE_ARCHITECTURE.md`；
 - 当前功能中心 Pin 只是入口偏好，不能作为模块启停。真正停用必须停止端口、watcher、调度器、原生线程、子进程和数据库资源；
 - 现有 Python 插件作为兼容组件保留，后续扩展到受控 Python Worker、原生独立进程、隔离 DLL 和资料包；
 - 渲染农场复用局域网传输与项目同步，不依赖聊天 UI，远程执行必须增加设备信任、权限和任务协议；
-- 完整架构统一维护在 `docs/NEXT_MAJOR_MODULAR_PLATFORM.md`，执行顺序和验收状态维护在 `docs/NEXT_MAJOR_IMPLEMENTATION_ROADMAP.md`；实现阶段不得跳过未验收前置里程碑，也不得在功能中心或 `lib.rs` 中继续增加缺少生命周期和权限边界的平行系统；
+- 完整架构统一维护在 `docs/NEXT_MAJOR_MODULAR_PLATFORM.md`，执行顺序和验收状态维护在 `docs/NEXT_MAJOR_IMPLEMENTATION_ROADMAP.md`，R15-R18 专项范围维护在 `docs/NEXT_MAJOR_R15_R18_CLOUD_ECOSYSTEM_AND_HOST_ABI.md`；实现阶段不得跳过未验收前置里程碑，也不得在功能中心或 `lib.rs` 中继续增加缺少生命周期和权限边界的平行系统；
 - 缓存中心：增加报告准确性、恢复提示和受保护数据审计；不做静默自动清理。
 - 渲染中心：完善任务/批次管理、视频打包进度与取消、真实场景性能回归；后续渲染农场建立在当前 Worker 协议和全局资源模型之上。
 - 文件体验：继续使用缓存、Watcher、内部选择器、文件操作面板和统一右键，而非在单个页面复制文件系统逻辑。

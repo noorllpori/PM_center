@@ -52,7 +52,7 @@ function DiagnosticRegistrySummaryWidget({
   value,
 }: ContributedWidgetRendererProps) {
   const metrics = [
-    { label: '模块', value: objectNumber(value, 'moduleCount'), icon: Boxes },
+    { label: '组件', value: objectNumber(value, 'moduleCount'), icon: Boxes },
     { label: '运行中', value: objectNumber(value, 'runningModuleCount'), icon: CircleCheck },
     { label: '有效贡献', value: objectNumber(value, 'contributionCount'), icon: Layers3 },
     { label: '冲突', value: objectNumber(value, 'conflictCount'), icon: GitBranch },

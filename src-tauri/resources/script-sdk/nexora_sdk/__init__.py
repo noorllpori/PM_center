@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import base64
 import socket
 import sys
 from dataclasses import dataclass
@@ -39,6 +40,21 @@ class Request:
     payload: Any
     context: Context
     raw: Dict[str, Any]
+
+
+class NexoraBridgeError(RuntimeError):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        details: Any = None,
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = details
+        self.retryable = retryable
 
 
 def read_request() -> Request:
@@ -122,7 +138,18 @@ def _bridge_request(operation: str, payload: Dict[str, Any], timeout: float = 30
         raise RuntimeError("Nexora SDK bridge closed without a response")
     response = json.loads(line.decode("utf-8"))
     if not response.get("ok"):
-        raise RuntimeError(str(response.get("error") or "Nexora SDK bridge request failed"))
+        error = response.get("error")
+        if isinstance(error, dict):
+            raise NexoraBridgeError(
+                str(error.get("code") or "bridge_request_failed"),
+                str(error.get("message") or "Nexora SDK bridge request failed"),
+                details=error.get("details"),
+                retryable=bool(error.get("retryable", False)),
+            )
+        raise NexoraBridgeError(
+            "bridge_request_failed",
+            str(error or "Nexora SDK bridge request failed"),
+        )
     return response.get("result")
 
 
@@ -169,6 +196,118 @@ def emit_surface_event(surface_id: str, event: str, payload: Any = None) -> Any:
     return _bridge_request(
         "surface.emit",
         {"surfaceId": surface_id, "event": event, "payload": payload},
+    )
+
+
+def get_project_context() -> Dict[str, Any]:
+    return _bridge_request("project.context.get", {})
+
+
+def list_project_files(
+    relative_path: str = "",
+    *,
+    cursor: int = 0,
+    limit: int = 100,
+) -> Dict[str, Any]:
+    return _bridge_request(
+        "project.files.list",
+        {
+            "relativePath": relative_path,
+            "cursor": max(0, int(cursor)),
+            "limit": max(1, min(500, int(limit))),
+        },
+    )
+
+
+def stat_project_file(relative_path: str) -> Dict[str, Any]:
+    return _bridge_request(
+        "project.files.stat",
+        {"relativePath": relative_path},
+    )
+
+
+def resolve_project_file(relative_path: str, *, access: str = "read") -> Dict[str, Any]:
+    return _bridge_request(
+        "project.files.resolve",
+        {"relativePath": relative_path, "access": access},
+    )
+
+
+def mutate_project_files(mutations: list[Dict[str, Any]]) -> Dict[str, Any]:
+    return _bridge_request(
+        "project.files.mutate",
+        {"mutations": mutations},
+        timeout=120.0,
+    )
+
+
+def get_project_metadata(key: str, default: Any = None) -> Any:
+    value = _bridge_request("project.metadata.get", {"key": key})
+    return default if value is None else value
+
+
+def set_project_metadata(key: str, value: Any) -> Any:
+    return _bridge_request("project.metadata.set", {"key": key, "value": value})
+
+
+def put_blob(
+    name: str,
+    data: bytes | bytearray | memoryview | str,
+    *,
+    scope: str = "global",
+    kind: str = "state",
+) -> Dict[str, Any]:
+    raw = data.encode("utf-8") if isinstance(data, str) else bytes(data)
+    return _bridge_request(
+        "storage.blob.put",
+        {
+            "name": name,
+            "dataBase64": base64.b64encode(raw).decode("ascii"),
+            "scope": scope,
+            "kind": kind,
+        },
+    )
+
+
+def open_blob(
+    name: str,
+    *,
+    scope: str = "global",
+    kind: str = "state",
+) -> Dict[str, Any]:
+    return _bridge_request(
+        "storage.blob.open",
+        {"name": name, "scope": scope, "kind": kind},
+    )
+
+
+def list_blobs(*, scope: str = "global", kind: str = "state") -> Dict[str, Any]:
+    return _bridge_request(
+        "storage.blob.list",
+        {"scope": scope, "kind": kind},
+    )
+
+
+def delete_blob(
+    name: str,
+    *,
+    scope: str = "global",
+    kind: str = "state",
+) -> Dict[str, Any]:
+    return _bridge_request(
+        "storage.blob.delete",
+        {"name": name, "scope": scope, "kind": kind},
+    )
+
+
+def get_storage_directory(
+    *,
+    scope: str = "global",
+    kind: str = "state",
+) -> Dict[str, Any]:
+    return _bridge_request(
+        "storage.directory",
+        {"scope": scope, "kind": kind},
     )
 
 

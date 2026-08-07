@@ -532,6 +532,7 @@ fn compute_cache_report(project_path: &str) -> Result<CacheReport, String> {
     let scripts = pm_center.join("scripts");
     let plugins = pm_center.join("plugins");
     let render_jobs = pm_center.join("render_jobs");
+    let components = pm_center.join("components");
 
     let (total_files, total_bytes) = path_stats(&pm_center);
     let (thumbnail_count, thumbnail_bytes) = path_stats(&thumbnails);
@@ -541,6 +542,24 @@ fn compute_cache_report(project_path: &str) -> Result<CacheReport, String> {
     let (script_count, script_bytes) = path_stats(&scripts);
     let (plugin_count, plugin_bytes) = path_stats(&plugins);
     let (render_job_count, render_job_bytes) = path_stats(&render_jobs);
+    let mut component_state_count = 0_u64;
+    let mut component_state_bytes = 0_u64;
+    let mut component_cache_count = 0_u64;
+    let mut component_cache_bytes = 0_u64;
+    if components.exists() {
+        for entry in fs::read_dir(&components).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            if !entry.file_type().map_err(|error| error.to_string())?.is_dir() {
+                continue;
+            }
+            let (state_count, state_bytes) = path_stats(&entry.path().join("state"));
+            let (cache_count, cache_bytes) = path_stats(&entry.path().join("cache"));
+            component_state_count = component_state_count.saturating_add(state_count);
+            component_state_bytes = component_state_bytes.saturating_add(state_bytes);
+            component_cache_count = component_cache_count.saturating_add(cache_count);
+            component_cache_bytes = component_cache_bytes.saturating_add(cache_bytes);
+        }
+    }
 
     let tree_result = read_tree_summary(&tree_db);
     let tree = tree_result.clone().unwrap_or_else(|_| TreeCacheSummary {
@@ -553,13 +572,17 @@ fn compute_cache_report(project_path: &str) -> Result<CacheReport, String> {
         .saturating_add(data_bytes)
         .saturating_add(script_bytes)
         .saturating_add(plugin_bytes)
-        .saturating_add(render_job_bytes);
+        .saturating_add(render_job_bytes)
+        .saturating_add(component_state_bytes)
+        .saturating_add(component_cache_bytes);
     let known_files = thumbnail_count
         .saturating_add(tree_file_count)
         .saturating_add(data_file_count)
         .saturating_add(script_count)
         .saturating_add(plugin_count)
-        .saturating_add(render_job_count);
+        .saturating_add(render_job_count)
+        .saturating_add(component_state_count)
+        .saturating_add(component_cache_count);
     let other_bytes = total_bytes.saturating_sub(known_bytes);
     let other_count = total_files.saturating_sub(known_files);
 
@@ -590,8 +613,11 @@ fn compute_cache_report(project_path: &str) -> Result<CacheReport, String> {
         .saturating_add(script_bytes)
         .saturating_add(plugin_bytes)
         .saturating_add(render_job_bytes)
+        .saturating_add(component_state_bytes)
         .saturating_add(other_bytes);
-    let reclaimable_bytes = thumbnail_bytes.saturating_add(tree.file_details_logical_bytes);
+    let reclaimable_bytes = thumbnail_bytes
+        .saturating_add(tree.file_details_logical_bytes)
+        .saturating_add(component_cache_bytes);
     let categories = vec![
         CacheCategoryReport {
             id: "thumbnails".to_string(),
@@ -642,6 +668,28 @@ fn compute_cache_report(project_path: &str) -> Result<CacheReport, String> {
             .to_string(),
             protected: false,
             description: "与目录索引共享 tree_cache.db，大小为 payload 逻辑估算".to_string(),
+        },
+        CacheCategoryReport {
+            id: "componentCache".to_string(),
+            label: "组件缓存".to_string(),
+            physical_bytes: component_cache_bytes,
+            logical_bytes: None,
+            entry_count: component_cache_count,
+            anomaly_count: 0,
+            status: "healthy".to_string(),
+            protected: false,
+            description: "组件声明为可重建的项目缓存，清理可回收缓存时会删除".to_string(),
+        },
+        CacheCategoryReport {
+            id: "componentState".to_string(),
+            label: "组件持久状态".to_string(),
+            physical_bytes: component_state_bytes,
+            logical_bytes: None,
+            entry_count: component_state_count,
+            anomaly_count: 0,
+            status: "healthy".to_string(),
+            protected: true,
+            description: "组件持久业务状态，停用、卸载和缓存清理均不会删除".to_string(),
         },
         CacheCategoryReport {
             id: "projectData".to_string(),
@@ -1135,6 +1183,29 @@ fn clear_file_details(project_path: &str) -> Result<u64, String> {
         .map(|count| count as u64)
 }
 
+fn clear_component_caches(project_path: &str) -> Result<u64, String> {
+    let root = validate_project_path(project_path)?
+        .join(".pm_center")
+        .join("components");
+    if !root.exists() {
+        return Ok(0);
+    }
+    let mut affected = 0_u64;
+    for entry in fs::read_dir(&root).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        if !entry.file_type().map_err(|error| error.to_string())?.is_dir() {
+            continue;
+        }
+        let cache = entry.path().join("cache");
+        if !cache.exists() {
+            continue;
+        }
+        affected = affected.saturating_add(path_stats(&cache).0);
+        fs::remove_dir_all(&cache).map_err(|error| error.to_string())?;
+    }
+    Ok(affected)
+}
+
 fn run_action(
     app: &tauri::AppHandle,
     project_path: &str,
@@ -1231,7 +1302,12 @@ fn run_action(
                 None,
                 false,
             );
-            thumbnail_count.saturating_add(clear_file_details(project_path)?)
+            let detail_count = clear_file_details(project_path)?;
+            throw_if_cancelled(operation_id)?;
+            let component_cache_count = clear_component_caches(project_path)?;
+            thumbnail_count
+                .saturating_add(detail_count)
+                .saturating_add(component_cache_count)
         }
         CacheAction::ResetAndRepair => {
             emit_progress(
@@ -1259,8 +1335,10 @@ fn run_action(
                 false,
             );
             let details_count = clear_file_details(project_path)?;
+            let component_cache_count = clear_component_caches(project_path)?;
             thumbnail_count
                 .saturating_add(details_count)
+                .saturating_add(component_cache_count)
                 .saturating_add(tree_cache::rebuild_project_tree_cache_with_control(
                     project_path,
                     exclude_patterns,
@@ -1401,6 +1479,30 @@ mod tests {
             .find(|item| item.id == "projectData")
             .unwrap();
         assert!(project_data.protected);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn component_cache_is_reclaimable_but_state_is_preserved() {
+        let root = test_project();
+        let component_root = root.join(".pm_center/components/com.example.asset");
+        fs::create_dir_all(component_root.join("state")).unwrap();
+        fs::create_dir_all(component_root.join("cache")).unwrap();
+        fs::write(component_root.join("state/index.json"), b"state").unwrap();
+        fs::write(component_root.join("cache/preview.bin"), b"cache").unwrap();
+
+        let report = compute_cache_report(&root.to_string_lossy()).unwrap();
+        assert_eq!(
+            report.categories.iter().find(|item| item.id == "componentCache").unwrap().entry_count,
+            1,
+        );
+        assert!(
+            report.categories.iter().find(|item| item.id == "componentState").unwrap().protected,
+        );
+
+        assert_eq!(clear_component_caches(&root.to_string_lossy()).unwrap(), 1);
+        assert!(!component_root.join("cache").exists());
+        assert_eq!(fs::read(component_root.join("state/index.json")).unwrap(), b"state");
         let _ = fs::remove_dir_all(root);
     }
 

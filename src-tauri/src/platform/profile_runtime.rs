@@ -258,6 +258,9 @@ pub struct WorkspaceProfileComponentSummary {
     pub required_by_modules: Vec<String>,
     pub required_by_components: Vec<String>,
     pub settings_sections: Vec<ComponentSettingsSection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<pmc_platform::ComponentCategory>,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3213,6 +3216,8 @@ fn component_summaries(
                 .into_iter()
                 .collect(),
             settings_sections: manifest.contributes.settings_sections.clone(),
+            category: manifest.category,
+            tags: manifest.tags.clone(),
         })
         .collect::<Vec<_>>();
     summaries.sort_by(|left, right| {
@@ -4070,6 +4075,8 @@ mod tests {
             description: String::new(),
             version: version.into(),
             api_version: "1".into(),
+            category: None,
+            tags: Vec::new(),
             runtime: ComponentRuntime::NativeProcess,
             role: ComponentRole::Service,
             distribution: ComponentDistribution::Bundled,

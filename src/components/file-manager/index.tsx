@@ -1596,6 +1596,7 @@ export function FileManager() {
         onCloseTab={handleCloseShellTab}
         onReorderTabs={reorderTabs}
         onOpenRecovery={() => setIsRecoverySettingsOpen(true)}
+        onOpenDeveloperWorkbench={() => setIsScriptDeveloperWorkbenchOpen(true)}
       />
 
       {profileNavigationKind !== 'side-bar' ? (

@@ -35,6 +35,12 @@ pub enum Capability {
     ProjectMetadataRead,
     #[serde(rename = "project.metadata.write")]
     ProjectMetadataWrite,
+    #[serde(rename = "project.storage.read")]
+    ProjectStorageRead,
+    #[serde(rename = "project.storage.write")]
+    ProjectStorageWrite,
+    #[serde(rename = "project.storage.direct")]
+    ProjectStorageDirect,
     #[serde(rename = "cache.inspect")]
     CacheInspect,
     #[serde(rename = "cache.maintain")]
@@ -96,6 +102,9 @@ impl Capability {
         Self::ProjectFilesWrite,
         Self::ProjectMetadataRead,
         Self::ProjectMetadataWrite,
+        Self::ProjectStorageRead,
+        Self::ProjectStorageWrite,
+        Self::ProjectStorageDirect,
         Self::CacheInspect,
         Self::CacheMaintain,
         Self::TaskRun,
@@ -132,6 +141,9 @@ impl Capability {
             Self::ProjectFilesWrite => "project.files.write",
             Self::ProjectMetadataRead => "project.metadata.read",
             Self::ProjectMetadataWrite => "project.metadata.write",
+            Self::ProjectStorageRead => "project.storage.read",
+            Self::ProjectStorageWrite => "project.storage.write",
+            Self::ProjectStorageDirect => "project.storage.direct",
             Self::CacheInspect => "cache.inspect",
             Self::CacheMaintain => "cache.maintain",
             Self::TaskRun => "task.run",
@@ -168,6 +180,7 @@ impl Capability {
             | Self::ProjectOpen
             | Self::ProjectFilesRead
             | Self::ProjectMetadataRead
+            | Self::ProjectStorageRead
             | Self::CacheInspect
             | Self::TaskCancel
             | Self::NetworkLanDiscover
@@ -180,6 +193,7 @@ impl Capability {
             | Self::FilesystemExternalRead
             | Self::ProjectFilesWrite
             | Self::ProjectMetadataWrite
+            | Self::ProjectStorageWrite
             | Self::TaskRun
             | Self::NetworkHttpRequest
             | Self::NetworkLanMessage
@@ -187,6 +201,7 @@ impl Capability {
             | Self::NetworkServerConnect
             | Self::RenderQueueWrite => CapabilityRisk::Sensitive,
             Self::FilesystemExternalWrite
+            | Self::ProjectStorageDirect
             | Self::CacheMaintain
             | Self::PythonExecute
             | Self::PythonPackagesManage

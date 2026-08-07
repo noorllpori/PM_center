@@ -298,7 +298,7 @@ export const DATA_SOURCE_CONTRIBUTIONS = {
       DIAGNOSTIC_CONTRIBUTION_MODULE_ID,
     ),
     title: '贡献注册表摘要',
-    description: '读取当前有效贡献、冲突和模块状态的只读摘要。',
+    description: '读取当前有效贡献、冲突和组件状态的只读摘要。',
     scope: 'global',
     valueType: 'object',
   },
@@ -461,7 +461,7 @@ export const WORKFLOW_NODE_CONTRIBUTIONS = {
       DIAGNOSTIC_CONTRIBUTION_MODULE_ID,
     ),
     title: '诊断回显',
-    description: '用于验证工作流节点目录、端口定义和模块动态撤下。',
+    description: '用于验证工作流节点目录、端口定义和组件动态撤下。',
     category: '诊断',
     command: 'diagnostic.echo',
     inputs: [
@@ -1011,22 +1011,22 @@ export function getContributionUnavailableReason(
     return null;
   }
   if (!snapshot.isLoaded) {
-    return '模块贡献正在加载';
+    return '组件贡献正在加载';
   }
 
   const conflict = snapshot.conflicts.find(
     (item) => item.kind === definition.kind && item.contributionId === definition.id,
   );
   if (conflict) {
-    return `贡献 ID 被多个模块占用：${conflict.moduleIds.join('、')}`;
+    return `贡献 ID 被多个组件占用：${conflict.moduleIds.join('、')}`;
   }
 
   const module = snapshot.modulesById[definition.moduleId];
   if (!module) {
-    return `提供该功能的模块未安装：${definition.moduleId}`;
+    return `提供该功能的组件未安装：${definition.moduleId}`;
   }
   if (snapshot.claims[definition.kind][definition.id] !== definition.moduleId) {
-    return `模块清单未声明该功能：${definition.id}`;
+    return `组件清单未声明该功能：${definition.id}`;
   }
   return moduleStateReason(module.state);
 }
@@ -1034,19 +1034,19 @@ export function getContributionUnavailableReason(
 function moduleStateReason(state: PlatformModuleState) {
   switch (state) {
     case 'disabled':
-      return '提供该功能的模块已停用';
+      return '提供该功能的组件已停用';
     case 'starting':
     case 'resolving':
-      return '提供该功能的模块正在启动';
+      return '提供该功能的组件正在启动';
     case 'stopping':
-      return '提供该功能的模块正在停止';
+      return '提供该功能的组件正在停止';
     case 'blocked':
-      return '提供该功能的模块被依赖或冲突阻止';
+      return '提供该功能的组件被依赖或冲突阻止';
     case 'restart-required':
-      return '提供该功能的模块需要重启';
+      return '提供该功能的组件需要重启';
     case 'error':
-      return '提供该功能的模块启动失败';
+      return '提供该功能的组件启动失败';
     default:
-      return '提供该功能的模块当前不可用';
+      return '提供该功能的组件当前不可用';
   }
 }

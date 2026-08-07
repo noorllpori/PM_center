@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from nexora_sdk import (
     call_component,
     emit_surface_event,
@@ -9,7 +7,9 @@ from nexora_sdk import (
     progress,
     raise_if_cancelled,
     read_request,
+    resolve_project_file,
     set_state,
+    stat_project_file,
     write_error,
     write_result,
 )
@@ -31,39 +31,30 @@ def main() -> None:
         write_error("blendPath must point to a .blend file")
         return
 
-    project_root = Path(request.context.project_path).resolve()
-    candidate = Path(blend_path)
-    if not candidate.is_absolute():
-        candidate = project_root / candidate
-    candidate = candidate.resolve()
-
-    try:
-        candidate.relative_to(project_root)
-    except ValueError:
-        write_error("blendPath must remain inside the current project")
+    file_info = stat_project_file(blend_path)
+    if file_info.get("isDirectory"):
+        write_error("blendPath must point to a file")
         return
-
-    if not candidate.is_file():
-        write_error(f"file does not exist: {candidate}")
-        return
+    resolved = resolve_project_file(blend_path)
+    candidate = str(resolved["path"])
 
     raise_if_cancelled(request.context)
     progress(0.35, "validated project file")
     log(f"run={request.context.run_id}")
-    log(f"project={project_root}")
+    log(f"project={request.context.project_path}")
     log(f"blend={candidate}")
     blendio = call_component(
         "pmc.blendio",
         "inspect",
-        {"path": str(candidate)},
+        {"path": candidate},
         capability="project.files.read",
         timeout_ms=120_000,
     )
     raise_if_cancelled(request.context)
     progress(0.9, "BlenderIO inspection completed")
     summary = {
-        "file": str(candidate),
-        "sizeBytes": candidate.stat().st_size,
+        "file": blend_path,
+        "sizeBytes": file_info.get("sizeBytes", 0),
         "runId": request.context.run_id,
     }
     set_state("lastAudit", summary, scope="project")

@@ -1,5 +1,6 @@
 import type {
   ComponentDistribution,
+  ComponentCategory,
   ComponentSettingsSection,
   ComponentRole,
   ComponentRuntime,
@@ -48,6 +49,8 @@ export interface WorkspaceProfileComponentSummary {
   requiredByModules: string[];
   requiredByComponents: string[];
   settingsSections: ComponentSettingsSection[];
+  category?: ComponentCategory;
+  tags: string[];
 }
 
 export interface WorkspaceProfileDraftValidation {

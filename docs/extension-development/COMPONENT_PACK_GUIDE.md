@@ -29,6 +29,8 @@ EXE/DLL 组件通常使用 `bin/windows-x64/`，但路径本身由 `entry` 明�
   "apiVersion": "1",
   "runtime": "python-action",
   "role": "feature",
+  "category": "automation",
+  "tags": ["audit", "project"],
   "distribution": "local",
   "uiMode": "contributed",
   "platforms": ["windows-x64"],
@@ -82,7 +84,7 @@ if __name__ == "__main__":
     main()
 ```
 
-完整字段定义以 `shared/pmc-platform/schemas/v1/component-manifest.schema.json` 为准。稳定 ID 应使用开发者命名空间，例如 `com.example.*`；第三方不得使用 `nexora.*` 伪装为内置发布者。
+完整字段定义以 [INTERFACE_REFERENCE.md](INTERFACE_REFERENCE.md) 和 Nexora 开发者工作台的校验结果为准。稳定 ID 应使用开发者命名空间，例如 `com.example.*`；第三方不得使用 `nexora.*` 伪装为内置发布者。
 
 ## 3. 运行时选择
 
@@ -102,9 +104,9 @@ if __name__ == "__main__":
 - `capabilities` 只声明组件可能请求的能力。真正调用仍需宿主获得一次性授权令牌。
 - 自动化命令需要声明项目上下文、执行语义、输入/输出 Schema、重试次数、并行数与超时。
 - `pure` 和 `idempotent` 才允许在崩溃后自动重试；副作用无法安全重放时使用 `non-idempotent`。
-- Profile 绑定决定何时运行：手动、白名单事件或五段式 cron。保存绑定不会自动运行。
+- 方案绑定决定何时运行：手动、白名单事件或五段式 cron。保存绑定不会自动运行。
 
-可调用的事件白名单与完整行为见 `docs/NEXT_MAJOR_R11_SCRIPT_AUTOMATION.md`。脚本组件可通过 `nexora_sdk.call_component()` 调用其 Manifest 已声明依赖的命令，不能调用任意 Tauri command。
+可调用的事件白名单与完整行为以开发者工作台显示的合同校验和 [INTERFACE_REFERENCE.md](INTERFACE_REFERENCE.md) 为准。脚本组件可通过 `nexora_sdk.call_component()` 调用其 Manifest 已声明依赖的命令，不能调用任意 Tauri command。
 
 ## 5. Script Surface
 
@@ -114,12 +116,15 @@ Script Surface 是第三方界面的公开入口：组件清单声明 HTML 入�
 
 ## 6. 签名与安装
 
-开发阶段可从目录安装；包含 Python/EXE/DLL 的目录必须由用户显式信任后才能运行。分发阶段应使用签名包：
+开发阶段可从目录安装；包含 Python/EXE/DLL 的目录必须由用户显式信任后才能运行。分发阶段应使用 Nexora 开发者工作台生成的签名包：
 
-```powershell
-npm run component:keygen -- D:\Keys\example-publisher.json
-npm run component:pack -- D:\Work\asset-audit D:\Release\asset-audit.pmc-pack --key D:\Keys\example-publisher.json --publisher-id com.example --publisher-name "Example Studio" --license MIT
-```
+1. 在 `Alt+Q -> 脚本自动化` 创建或选择你的组件目录；
+2. 使用“校验”处理 Manifest、依赖、权限和入口问题；
+3. 明确“信任此开发目录”，再从目录安装/热重载并调试；
+4. 在工作台创建或选择自己的 Ed25519 发布者私钥；
+5. 使用“打包并签名”输出 `.pmc-pack`，在另一台设备通过发布者信任和安装流程验证。
+
+Nexora 本体源码、Cargo、Node 和内部 CLI 都不是此流程的前提。`native-process` / `native-library` 的 EXE/DLL 可使用开发者自己的编译工具构建，但仍应把成品放入组件目录后交由 Nexora 校验、签名、安装和分发。
 
 包安装会检查 BLAKE3 摘要、签名、发布者信任、ZIP 条目、路径穿越、大小、平台、入口、依赖、DLL 架构和表现模板。签名有效但发布者未知时，需要用户先审阅并信任发布者；不要把“安装成功”解释为“已获所有 Capability”。
 
@@ -130,5 +135,5 @@ npm run component:pack -- D:\Work\asset-audit D:\Release\asset-audit.pmc-pack --
 3. 测试无项目、有项目、拒绝权限、取消、超时、重复调用与异常退出；
 4. 测试缺失依赖、版本不兼容、卸载和重装；
 5. 用未信任发布者与受损 `.pmc-pack` 测试安装拒绝；
-6. 在干净 Windows 用户或第二台设备执行安装、加入 Profile、卸载和回滚；
+6. 在干净 Windows 用户或第二台设备执行安装、加入方案、卸载和回滚；
 7. 发布包附带许可证、版本说明、支持的 Nexora/API 版本和已知限制。

@@ -8,6 +8,8 @@ import type {
   AutomationRuntimeSnapshot,
   ComponentPackRequest,
   ComponentPackResult,
+  DevelopmentComponentSnapshot,
+  DevelopmentReloadResult,
   RemoveAutomationBindingRequest,
   SaveAutomationBindingRequest,
   ScriptComponentValidation,
@@ -51,6 +53,9 @@ export const emitAutomationEvent = (
 export const validateScriptComponent = (path: string) =>
   invoke<ScriptComponentValidation>('validate_script_component', { path });
 
+export const getDevelopmentComponentSnapshot = () =>
+  invoke<DevelopmentComponentSnapshot[]>('get_development_component_snapshot');
+
 export const trustScriptDevelopmentDirectory = (path: string) =>
   invoke<string[]>('trust_script_development_directory', { path });
 
@@ -60,12 +65,18 @@ export const untrustScriptDevelopmentDirectory = (path: string) =>
 export const reloadScriptComponent = (componentId: string) =>
   invoke('reload_script_component', { componentId });
 
+export const reloadDevelopmentComponents = (onlyDirty = true) =>
+  invoke<DevelopmentReloadResult>('reload_development_components', { onlyDirty });
+
 export const createScriptComponentTemplate = (request: {
   parentPath: string;
   componentId: string;
   name: string;
   includeSurface: boolean;
 }) => invoke<string>('create_script_component_template', { request });
+
+export const openScriptDevelopmentDirectoryInVSCode = (path: string) =>
+  invoke<void>('open_script_development_directory_in_vscode', { path });
 
 export const generateScriptSigningKey = (path: string) =>
   invoke<SigningKeyResult>('generate_script_signing_key', { path });

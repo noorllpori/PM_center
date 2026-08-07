@@ -1,11 +1,8 @@
 # Nexora 扩展与装配空间开发指南
 
-本目录给两类开发者使用：
+本目录面向 **已安装 Nexora EXE 的组件和装配空间开发者**。Nexora 本体是闭源产品：第三方不需要、也不会获得 Nexora 源码仓库、Cargo/Node 构建环境或内部打包 CLI。
 
-1. 只有 Nexora 安装版 EXE，希望在本机制作、测试、签名和分发组件或装配空间的人；
-2. 使用 Nexora 源码仓库，希望通过 CLI、示例和自动检查开发组件的人。
-
-它不要求修改 Nexora 主程序。正式扩展以组件目录或签名 `.pmc-pack` 交付，不以散乱 `.py` 文件或直接调用 Tauri command 交付。
+正式扩展以开发者自己的组件目录或签名 `.pmc-pack` 交付；创建、校验、信任、调试、签名、安装与装配空间导入均通过 Nexora 安装版完成。不以散乱 `.py` 文件或直接调用 Tauri command 交付。
 
 ## 选择哪种扩展
 
@@ -15,40 +12,29 @@
 | 包装已有命令行程序 | `native-process` | [COMPONENT_PACK_GUIDE.md](COMPONENT_PACK_GUIDE.md) |
 | 只交付数据、模板、主题或静态资源 | `data-pack` | [COMPONENT_PACK_GUIDE.md](COMPONENT_PACK_GUIDE.md) |
 | 高性能二进制库 | `native-library` | [COMPONENT_PACK_GUIDE.md](COMPONENT_PACK_GUIDE.md)，仅 Windows 隔离宿主 |
-| 组合模块、组件、导航、快捷栏、主页和模板 | `.pmc-profile` / `.pmc-workspace` | [WORKSPACE_AUTHORING.md](WORKSPACE_AUTHORING.md) |
+| 组合组件、导航、快捷栏、主页和模板 | `.pmc-profile` / `.pmc-workspace` | [WORKSPACE_AUTHORING.md](WORKSPACE_AUTHORING.md) |
+| 让开发者 AI 生成合规组件 | 规范化稳定接口合同 | [AI_COMPONENT_AUTHORING_REFERENCE.md](AI_COMPONENT_AUTHORING_REFERENCE.md) |
 
 ## 最短路径：只有安装版 Nexora
 
 1. 在 `Alt+Q -> 脚本自动化` 打开开发者工作台，创建 Python 组件模板到你自己的开发目录。
-2. 编辑 `component.json` 与入口脚本；先使用工作台的“校验”。
+2. 点击“VS Code”在外部编辑器中编辑 `component.json` 与入口脚本；内置编辑器仅用于临时小修改。先使用工作台的“校验”。
 3. 明确“信任此开发目录”。信任是允许本机 Python 代码运行的安全决定，不是普通安装步骤。
-4. 从目录安装/热重载组件，把它加入当前 Profile，手动调试自动化命令和 Script Surface。
+4. 从目录安装/热重载组件，把它加入当前方案，手动调试自动化命令和 Script Surface。
 5. 使用工作台生成 Ed25519 私钥并打包签名 `.pmc-pack`。私钥只保存在开发者控制的位置，不能放进组件目录、装配空间或 Git。
-6. 在另一台干净用户环境中检查包、信任发布者、安装、启用、卸载、重装和 Profile/装配空间导入。
+6. 在另一台干净用户环境中检查包、信任发布者、安装、启用、卸载、重装和方案/装配空间导入。
 
-安装版的工作台是脚本组件的首选开发工具；它不依赖安装 Cargo。Native Process/Library 仍需要你自己的编译工具链。
+安装版工作台是脚本组件的唯一官方开发和发布入口，不依赖 Nexora 本体源码、Cargo、Node 或任何 Nexora 内部命令行工具。`native-process` / `native-library` 的二进制可用你选择的编译器制作，但组件目录的校验、信任、签名、安装和分发仍在 Nexora 中完成。
 
-## 源码仓库开发
+## 闭源交付边界
 
-仓库中提供同一条打包链路和真实示例：
+- **开发者自有内容**：`component.json`、Python/HTML/CSS/JavaScript、资源、测试、说明，以及自行编译的 EXE/DLL；可保存在你自己的目录或私有版本库。
+- **Nexora 安装版提供**：开发者工作台、组件校验器、开发目录信任、运行调试、日志、签名 `.pmc-pack`、组件安装和装配空间导入/导出。
+- **不向第三方开放**：Nexora 本体源码、内部 Rust/React 实现、构建脚本、内部 CLI、Tauri command、应用数据库和未文档化组件协议。
 
-```powershell
-# 生成发布者私钥，必须放在仓库外
-npm run component:keygen -- D:\Keys\my-publisher.json
+工作台创建的组件模板是学习和起步入口。本文档只承诺已列出的公开合同，不要求第三方从 Nexora 仓库复制示例或脚本。
 
-# 校验平台合同
-npm run check:platform-contracts
-
-# 生成签名组件包
-npm run component:pack -- D:\Work\my-component D:\Release\my-component.pmc-pack --key D:\Keys\my-publisher.json --publisher-id com.example --publisher-name "Example Studio" --license MIT
-```
-
-可先阅读：
-
-- `examples/script-automation-blend-audit/`：Python、BlenderIO 依赖、事件、组件状态和 Script Surface；
-- `examples/script-automation-acceptance-suite/`：自动化验收夹具；
-- `examples/presentation-template-studio/`：Shell 模板资料包；
-- `examples/native-library-echo/`：隔离 DLL ABI 示例。
+安装版同时提供两个最小案例：项目资料与组件存储，以及依赖 BlenderIO 的文件检查。它们分别对应本仓库的 `examples/script-project-storage` 和 `examples/script-automation-blend-audit` 内容。
 
 ## 公开边界
 

@@ -475,7 +475,7 @@ export function ComponentRuntimeDiagnosticsSection() {
         }}
         title="卸载组件"
         message={uninstallTarget
-          ? `确定卸载“${uninstallTarget.manifest.name}”吗？\n\n组件数据目录会按来源撤下；依赖它的模块和装配方案不会被删除，但在重新安装前无法运行。`
+          ? `确定卸载“${uninstallTarget.manifest.name}”吗？\n\n组件数据目录会按来源撤下；依赖它的其他组件和装配方案不会被删除，但在重新安装前无法运行。`
           : ''}
         confirmText="确认卸载"
         cancelText="取消"

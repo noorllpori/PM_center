@@ -105,7 +105,7 @@ export function ContributionDiagnosticsSurface({
             <div className="grid grid-cols-2 divide-x divide-y divide-gray-100 sm:grid-cols-4 sm:divide-y-0 dark:divide-gray-800">
               {[
                 ['前端定义', catalogReport.catalogDefinitionCount],
-                ['模块定义', catalogReport.moduleOwnedDefinitionCount],
+                ['内置组件定义', catalogReport.moduleOwnedDefinitionCount],
                 ['Manifest 声明', catalogReport.manifestClaimCount],
                 ['实现注册', catalogReport.rendererCount],
               ].map(([label, value]) => (

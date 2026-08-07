@@ -119,7 +119,7 @@ export function inspectContributionCatalog(
           issues,
           'FRONTEND_CONTRIBUTION_MODULE_MISSING',
           definition.id,
-          `所属模块未注册：${definition.moduleId}`,
+          `所属组件未注册：${definition.moduleId}`,
         );
         return;
       }
@@ -130,8 +130,8 @@ export function inspectContributionCatalog(
           'FRONTEND_MANIFEST_CLAIM_MISMATCH',
           definition.id,
           owner
-            ? `前端所属模块为 ${definition.moduleId}，manifest 所有者为 ${owner}`
-            : `模块 manifest 未声明该 ${kind} 贡献`,
+            ? `前端所属组件为 ${definition.moduleId}，manifest 所有者为 ${owner}`
+            : `组件 manifest 未声明该 ${kind} 贡献`,
         );
       }
     });
@@ -163,7 +163,7 @@ export function inspectContributionCatalog(
       issues,
       'RUNTIME_CONTRIBUTION_CONFLICT',
       conflict.contributionId,
-      `${conflict.kind} 被多个模块声明：${conflict.moduleIds.join('、')}`,
+      `${conflict.kind} 被多个组件声明：${conflict.moduleIds.join('、')}`,
     );
   });
 
@@ -177,7 +177,7 @@ export function inspectContributionCatalog(
       pushIssue(issues, 'WORKSPACE_SURFACE_HOST_MISMATCH', surface.id, `Surface 宿主为 ${surface.host}`);
     }
     if (surface.moduleId !== tab.moduleId) {
-      pushIssue(issues, 'WORKSPACE_SURFACE_OWNER_MISMATCH', surface.id, '工作区标签与 Surface 所属模块不一致');
+      pushIssue(issues, 'WORKSPACE_SURFACE_OWNER_MISMATCH', surface.id, '工作区标签与 Surface 所属组件不一致');
     }
     if (!workspaceRendererIds.has(surface.id)) {
       pushIssue(issues, 'WORKSPACE_SURFACE_RENDERER_MISSING', surface.id, '工作区 Surface 缺少渲染器');
@@ -194,7 +194,7 @@ export function inspectContributionCatalog(
       pushIssue(issues, 'SHELL_SURFACE_HOST_MISMATCH', surface.id, `Surface 宿主为 ${surface.host}`);
     }
     if (surface.moduleId !== tab.moduleId) {
-      pushIssue(issues, 'SHELL_SURFACE_OWNER_MISMATCH', surface.id, 'Shell 标签与 Surface 所属模块不一致');
+      pushIssue(issues, 'SHELL_SURFACE_OWNER_MISMATCH', surface.id, 'Shell 标签与 Surface 所属组件不一致');
     }
     if (!shellRendererIds.has(surface.id)) {
       pushIssue(issues, 'SHELL_SURFACE_RENDERER_MISSING', surface.id, 'Shell Surface 缺少渲染器');
@@ -236,7 +236,7 @@ export function inspectContributionCatalog(
       return;
     }
     if (dataSource.moduleId !== widget.moduleId) {
-      pushIssue(issues, 'WIDGET_DATA_SOURCE_OWNER_MISMATCH', widget.id, 'Widget 与 DataSource 所属模块不一致');
+      pushIssue(issues, 'WIDGET_DATA_SOURCE_OWNER_MISMATCH', widget.id, 'Widget 与 DataSource 所属组件不一致');
     }
   });
 

@@ -24,6 +24,9 @@ export type Capability =
   | 'project.files.write'
   | 'project.metadata.read'
   | 'project.metadata.write'
+  | 'project.storage.read'
+  | 'project.storage.write'
+  | 'project.storage.direct'
   | 'cache.inspect'
   | 'cache.maintain'
   | 'task.run'
@@ -129,6 +132,29 @@ export type ComponentRuntime =
   | 'builtin-rust';
 
 export type ComponentRole = 'service' | 'feature' | 'data';
+export type ComponentCategory =
+  | 'workspace'
+  | 'file-handler'
+  | 'service'
+  | 'automation'
+  | 'appearance'
+  | 'integration'
+  | 'data';
+
+export type UnifiedComponentOrigin = 'component' | 'legacy-module';
+
+export interface UnifiedComponentEntry {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  category: ComponentCategory;
+  tags: string[];
+  origin: UnifiedComponentOrigin;
+  installed: boolean;
+  explicitEnabled: boolean;
+  effectiveEnabled: boolean;
+}
 export type ComponentDistribution = 'bundled' | 'marketplace' | 'local';
 export type ComponentUiMode = 'none' | 'hosted' | 'contributed';
 
@@ -341,6 +367,8 @@ export interface ComponentManifestV1 {
   description?: string;
   version: string;
   apiVersion: string;
+  category?: ComponentCategory;
+  tags?: string[];
   runtime: ComponentRuntime;
   role?: ComponentRole;
   distribution?: ComponentDistribution;

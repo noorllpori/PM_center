@@ -212,11 +212,11 @@ export function WorkspaceProfileDiagnosticsSection() {
 
   const confirmationMessage = switchPreview
     ? [
-        `切换到“${switchPreview.targetProfileName}”后，将启用 ${switchPreview.modulesToEnable.length} 个模块、停止 ${switchPreview.modulesToDisable.length} 个模块。`,
+        `切换到“${switchPreview.targetProfileName}”后，将启用 ${switchPreview.modulesToEnable.length} 个组件、停止 ${switchPreview.modulesToDisable.length} 个组件。`,
         switchPreview.resourcesToRelease > 0
           ? `将释放 ${switchPreview.resourcesToRelease} 个后台资源，相关页面会自动撤下。`
           : '没有正在登记的后台资源需要释放。',
-        '模块切换或状态提交失败时会自动恢复原 Profile。',
+        '组件切换或状态提交失败时会自动恢复原方案。',
       ].join('\n')
     : '';
 
@@ -462,7 +462,7 @@ export function WorkspaceProfileDiagnosticsSection() {
           <div className="min-w-0">
             <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">装配方案运行时</h4>
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              Profile 统一管理模块与快捷栏；切换中断或运行时偏差会在启动时自动恢复。
+              方案统一管理组件、界面与快捷栏；切换中断或运行状态偏差会在启动时自动恢复。
             </p>
           </div>
         </div>
@@ -546,7 +546,7 @@ export function WorkspaceProfileDiagnosticsSection() {
       {snapshot?.pendingSwitch ? (
         <div className="mt-3 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>切换完成标记尚未落盘，重启后会继续恢复，不会重复切换模块。</span>
+          <span>切换完成标记尚未落盘，重启后会继续恢复，不会重复切换组件。</span>
         </div>
       ) : null}
 
@@ -555,8 +555,8 @@ export function WorkspaceProfileDiagnosticsSection() {
           <div className="mt-3 grid grid-cols-2 gap-px overflow-hidden rounded-md border border-gray-200 bg-gray-200 lg:grid-cols-5 dark:border-gray-700 dark:bg-gray-700">
             {[
               ['方案数量', snapshot.profiles.length],
-              ['当前模块', currentProfile.enabledModules?.length ?? 0],
-              ['有效组件', snapshot.components.filter((component) => component.effectiveEnabled).length],
+              ['当前组件', (currentProfile.enabledModules?.length ?? 0) + snapshot.components.filter((component) => component.effectiveEnabled).length],
+              ['扩展组件', snapshot.components.filter((component) => component.effectiveEnabled).length],
               ['固定工具', currentProfile.shellLayout?.pinnedTools?.length ?? 0],
               ['修订', currentProfile.revision ?? 0],
             ].map(([label, value]) => (
@@ -593,7 +593,7 @@ export function WorkspaceProfileDiagnosticsSection() {
                     </div>
                     <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{profile.description}</p>
                     <p className="mt-1 font-mono text-[11px] text-gray-400">
-                      {profile.enabledModuleCount} 模块 · {profile.effectiveComponentCount} 组件 · {profile.pinnedToolCount} 固定工具 · r{profile.revision}
+                      {profile.enabledModuleCount + profile.effectiveComponentCount} 组件 · {profile.pinnedToolCount} 固定工具 · r{profile.revision}
                     </p>
                     {profile.issues.map((issue) => (
                       <p key={issue} className="mt-1 text-xs text-amber-700 dark:text-amber-300">{issue}</p>
@@ -743,7 +743,7 @@ export function WorkspaceProfileDiagnosticsSection() {
                     </span>
                     {component.explicitEnabled ? (
                       <span className="rounded bg-indigo-100 px-1.5 py-0.5 text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300">
-                        Profile 显式选择
+                        方案显式选择
                       </span>
                     ) : null}
                     {component.requiredByModules.length > 0 ? (
@@ -751,7 +751,7 @@ export function WorkspaceProfileDiagnosticsSection() {
                         className="rounded bg-blue-100 px-1.5 py-0.5 text-blue-700 dark:bg-blue-950/50 dark:text-blue-300"
                         title={component.requiredByModules.join('、')}
                       >
-                        {component.requiredByModules.length} 个模块依赖
+                        {component.requiredByModules.length} 个内置组件依赖
                       </span>
                     ) : null}
                     {component.requiredByComponents.length > 0 ? (
@@ -826,7 +826,7 @@ export function WorkspaceProfileDiagnosticsSection() {
                   {switchPreview.noChanges ? '当前状态已经与目标一致。' : '以下内容只用于预览，尚未修改当前运行状态。'}
                 </p>
                 <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                  页面、模块和快捷栏只会在确认应用后发生变化。
+                  页面、组件和快捷栏只会在确认应用后发生变化。
                 </p>
               </div>
               <span className={`rounded px-2 py-1 text-xs font-medium ${
@@ -840,8 +840,8 @@ export function WorkspaceProfileDiagnosticsSection() {
 
             <div className="grid grid-cols-3 gap-px overflow-hidden rounded-md border border-gray-200 bg-gray-200 text-center dark:border-gray-700 dark:bg-gray-700">
               {[
-                ['启用模块', switchPreview.modulesToEnable.length, 'text-emerald-600'],
-                ['停止模块', switchPreview.modulesToDisable.length, 'text-amber-600'],
+                ['启用组件', switchPreview.modulesToEnable.length, 'text-emerald-600'],
+                ['停止组件', switchPreview.modulesToDisable.length, 'text-amber-600'],
                 ['释放资源', switchPreview.resourcesToRelease, 'text-gray-900 dark:text-gray-100'],
               ].map(([label, value, valueClass]) => (
                 <div key={String(label)} className="bg-white px-2 py-3 dark:bg-gray-900">
@@ -869,7 +869,7 @@ export function WorkspaceProfileDiagnosticsSection() {
                 && switchPreview.pinnedToolsAdded.length === 0
                 && switchPreview.pinnedToolsRemoved.length === 0
                 && switchPreview.contributionsToClose.length === 0 ? (
-                  <p className="text-gray-500 dark:text-gray-400">模块、页面和快捷栏没有需要调整的内容。</p>
+                  <p className="text-gray-500 dark:text-gray-400">组件、页面和快捷栏没有需要调整的内容。</p>
                 ) : null}
             </div>
 
@@ -1087,10 +1087,9 @@ export function WorkspaceProfileDiagnosticsSection() {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-gray-200 bg-gray-200 text-center sm:grid-cols-5 dark:border-gray-700 dark:bg-gray-700">
+            <div className="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-gray-200 bg-gray-200 text-center sm:grid-cols-4 dark:border-gray-700 dark:bg-gray-700">
               {[
-                ['模块', importPreview.moduleCount],
-                ['组件', importPreview.componentCount],
+                ['组件', importPreview.moduleCount + importPreview.componentCount],
                 ['页面', importPreview.surfaceCount],
                 ['Widget', importPreview.widgetCount],
                 ['固定工具', importPreview.pinnedToolCount],
@@ -1295,17 +1294,17 @@ export function WorkspaceProfileDiagnosticsSection() {
                 disabled={packageBusy === 'import'}
                 className="h-9 w-full rounded-md border border-gray-200 bg-white px-3 text-sm outline-none focus:border-indigo-400 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
               />
-              <span className="mt-1 block text-[11px] text-gray-500">导入只新增方案，不会切换当前运行状态，也不会安装缺失模块或组件；本机路径单独保存。</span>
+              <span className="mt-1 block text-[11px] text-gray-500">导入只新增方案，不会切换当前运行状态，也不会安装缺失组件；本机路径单独保存。</span>
             </label>
 
             {(importPreview.missingModuleIds.length > 0 || importPreview.missingComponentIds.length > 0) ? (
               <div className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">
-                {importPreview.missingModuleIds.length > 0 ? (
-                  <p className="break-all">缺失模块：{importPreview.missingModuleIds.join('、')}</p>
-                ) : null}
-                {importPreview.missingComponentIds.length > 0 ? (
-                  <p className="mt-1 break-all">缺失组件：{importPreview.missingComponentIds.join('、')}</p>
-                ) : null}
+                <p className="break-all">
+                  缺失组件：{Array.from(new Set([
+                    ...importPreview.missingModuleIds,
+                    ...importPreview.missingComponentIds,
+                  ])).join('、')}
+                </p>
               </div>
             ) : null}
 

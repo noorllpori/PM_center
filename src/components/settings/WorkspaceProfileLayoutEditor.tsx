@@ -263,7 +263,7 @@ export function WorkspaceProfileLayoutEditor({
                 {currentHomeContributionId
                   && !availableHomeSurfaces.some((definition) => definition.id === currentHomeContributionId) ? (
                     <option value={currentHomeContributionId} disabled>
-                      {contributionTitle(currentHomeContributionId)}（所属模块未选择）
+                      {contributionTitle(currentHomeContributionId)}（所属组件未选择）
                     </option>
                   ) : null}
               </select>
@@ -416,7 +416,7 @@ export function WorkspaceProfileLayoutEditor({
                     );
                   })}
                   {availableNavigationSurfaces.length === 0 ? (
-                    <p className="py-5 text-center text-xs text-gray-400">所选模块没有单例导航页面</p>
+                    <p className="py-5 text-center text-xs text-gray-400">所选组件没有单例导航页面</p>
                   ) : null}
                 </div>
               </div>

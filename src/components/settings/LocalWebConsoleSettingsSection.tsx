@@ -286,7 +286,7 @@ export function LocalWebConsoleSettingsSection() {
             checked={draft.allowExit}
             disabled={busy}
             label="允许退出 Nexora"
-            description="退出前会先停止模块和后台资源。"
+            description="退出前会先停止组件和后台资源。"
             onChange={(checked) => setDraft((current) => ({ ...current, allowExit: checked }))}
           />
         </div>

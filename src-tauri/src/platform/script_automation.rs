@@ -16,14 +16,16 @@ use pmc_platform::{
 };
 use regex::{Captures, Regex};
 use rusqlite::{params, Connection, OptionalExtension, Row};
+use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Listener};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
@@ -220,6 +222,29 @@ pub struct ScriptComponentValidation {
     pub errors: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DevelopmentComponentSnapshot {
+    pub source_path: String,
+    pub component_id: Option<String>,
+    pub component_name: Option<String>,
+    pub valid: bool,
+    pub trusted: bool,
+    pub installed: bool,
+    pub dirty: bool,
+    pub source_digest: Option<String>,
+    pub installed_digest: Option<String>,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DevelopmentReloadResult {
+    pub reloaded: Vec<String>,
+    pub skipped: Vec<String>,
+    pub errors: Vec<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateScriptComponentTemplateRequest {
@@ -313,6 +338,97 @@ struct AutomationBridgeRequest {
     operation: String,
     #[serde(default)]
     payload: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AutomationBridgeError {
+    code: String,
+    message: String,
+    details: Value,
+    retryable: bool,
+}
+
+impl AutomationBridgeError {
+    fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+            details: Value::Null,
+            retryable: false,
+        }
+    }
+
+    fn with_details(mut self, details: Value) -> Self {
+        self.details = details;
+        self
+    }
+
+    fn retryable(mut self, retryable: bool) -> Self {
+        self.retryable = retryable;
+        self
+    }
+}
+
+impl From<String> for AutomationBridgeError {
+    fn from(message: String) -> Self {
+        Self::new("bridge_request_failed", message)
+    }
+}
+
+impl From<&str> for AutomationBridgeError {
+    fn from(message: &str) -> Self {
+        Self::new("bridge_request_failed", message)
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectContextSnapshot {
+    pub project_id: String,
+    pub name: String,
+    pub root_path: String,
+    pub selected_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFileEntry {
+    pub relative_path: String,
+    pub name: String,
+    pub kind: String,
+    pub size_bytes: u64,
+    pub modified_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFileMutation {
+    pub kind: String,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub new_name: Option<String>,
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ComponentStorageKind {
+    State,
+    Cache,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComponentStorageHandle {
+    pub component_id: String,
+    pub scope: String,
+    pub kind: ComponentStorageKind,
+    pub path: String,
 }
 
 pub struct ScriptAutomationRuntime {
@@ -1148,18 +1264,37 @@ impl ScriptAutomationRuntime {
         )
         .await
         {
-            Err(_) => Err("SDK 桥请求读取超时".to_string()),
-            Ok(Err(error)) => Err(format!("读取 SDK 桥请求失败: {error}")),
-            Ok(Ok(0)) => Err("SDK 桥连接未发送请求".to_string()),
+            Err(_) => Err(AutomationBridgeError::new(
+                "bridge_timeout",
+                "SDK 桥请求读取超时",
+            )
+            .retryable(true)),
+            Ok(Err(error)) => Err(AutomationBridgeError::new(
+                "bridge_io_failed",
+                format!("读取 SDK 桥请求失败: {error}"),
+            )),
+            Ok(Ok(0)) => Err(AutomationBridgeError::new(
+                "bridge_request_empty",
+                "SDK 桥连接未发送请求",
+            )),
             Ok(Ok(_)) if line.len() > MAX_BRIDGE_REQUEST_BYTES => {
-                Err("SDK 桥请求超过 1 MiB 限制".to_string())
+                Err(AutomationBridgeError::new(
+                    "bridge_request_too_large",
+                    "SDK 桥请求超过 1 MiB 限制",
+                ))
             }
             Ok(Ok(_)) => match serde_json::from_str::<AutomationBridgeRequest>(line.trim()) {
-                Err(error) => Err(format!("SDK 桥请求不是有效 JSON: {error}")),
+                Err(error) => Err(AutomationBridgeError::new(
+                    "bridge_request_invalid",
+                    format!("SDK 桥请求不是有效 JSON: {error}"),
+                )),
                 Ok(request)
                     if request.protocol != BRIDGE_PROTOCOL || request.token != expected_token =>
                 {
-                    Err("SDK 桥协议或会话令牌无效".to_string())
+                    Err(AutomationBridgeError::new(
+                        "bridge_session_invalid",
+                        "SDK 桥协议或会话令牌无效",
+                    ))
                 }
                 Ok(request) => {
                     self.handle_bridge_request(
@@ -1191,8 +1326,8 @@ impl ScriptAutomationRuntime {
         root_operation_id: &str,
         granted_capability: Option<Capability>,
         request: AutomationBridgeRequest,
-    ) -> Result<Value, String> {
-        let current = self.get_run(&run.id)?;
+    ) -> Result<Value, AutomationBridgeError> {
+        let current = self.get_run(&run.id).map_err(AutomationBridgeError::from)?;
         if !matches!(
             current.status,
             AutomationRunStatus::Preparing | AutomationRunStatus::Running
@@ -1207,39 +1342,94 @@ impl ScriptAutomationRuntime {
                 if component_id == manifest.id {
                     return Err("SDK 依赖桥不能递归调用当前组件".into());
                 }
-                let declared = manifest
+                let dependency = manifest
                     .requires_components
                     .iter()
                     .chain(manifest.optional_components.iter())
-                    .any(|dependency| dependency.id == component_id);
-                if !declared {
-                    return Err(format!("组件未声明依赖: {component_id}"));
-                }
+                    .find(|dependency| dependency.id == component_id)
+                    .ok_or_else(|| {
+                        AutomationBridgeError::new(
+                            "dependency_not_declared",
+                            format!("组件未声明依赖: {component_id}"),
+                        )
+                    })?;
                 let (_, effective) = self.current_profile_and_components()?;
                 if !effective.contains(&component_id) {
-                    return Err(format!(
-                        "依赖组件未进入当前 Profile 有效闭包: {component_id}"
+                    return Err(AutomationBridgeError::new(
+                        "dependency_not_active",
+                        format!("依赖组件未进入当前方案有效闭包: {component_id}"),
                     ));
                 }
                 let target = self
                     .components
                     .manifest(&component_id)
-                    .ok_or_else(|| format!("依赖组件未安装: {component_id}"))?;
-                if !target.capabilities.is_empty() {
+                    .ok_or_else(|| {
+                        AutomationBridgeError::new(
+                            "component_not_installed",
+                            format!("依赖组件未安装: {component_id}"),
+                        )
+                    })?;
+                let requirement = VersionReq::parse(&dependency.version_requirement).map_err(|_| {
+                    AutomationBridgeError::new(
+                        "dependency_version_invalid",
+                        format!("依赖版本要求无效: {}", dependency.version_requirement),
+                    )
+                })?;
+                let target_version = Version::parse(&target.version).map_err(|_| {
+                    AutomationBridgeError::new(
+                        "component_version_invalid",
+                        format!("依赖组件版本无效: {}", target.version),
+                    )
+                })?;
+                if !requirement.matches(&target_version) {
+                    return Err(AutomationBridgeError::new(
+                        "dependency_version_mismatch",
+                        format!(
+                            "依赖组件版本不兼容: {component_id} {}，需要 {}",
+                            target.version, dependency.version_requirement
+                        ),
+                    ));
+                }
+                let target_command = target
+                    .contributes
+                    .automation_commands
+                    .iter()
+                    .find(|candidate| candidate.command == command)
+                    .ok_or_else(|| {
+                        AutomationBridgeError::new(
+                            "component_command_not_exported",
+                            format!("依赖组件未公开命令: {component_id}/{command}"),
+                        )
+                    })?;
+                if let Some(required_capability) = target_command.required_capability {
                     let capability = request
                         .payload
                         .get("capability")
                         .cloned()
-                        .ok_or("调用该依赖必须声明 capability")?;
+                        .ok_or_else(|| {
+                            AutomationBridgeError::new(
+                                "capability_required",
+                                format!(
+                                    "调用 {component_id}/{command} 需要 {}",
+                                    required_capability.as_str()
+                                ),
+                            )
+                        })?;
                     let capability = serde_json::from_value::<Capability>(capability)
-                        .map_err(|_| "依赖 capability 无效".to_string())?;
-                    if granted_capability != Some(capability) {
-                        return Err("依赖调用只能使用本次自动化运行已经授权的 capability".into());
+                        .map_err(|_| AutomationBridgeError::new("capability_invalid", "依赖 capability 无效"))?;
+                    if capability != required_capability || granted_capability != Some(capability) {
+                        return Err(AutomationBridgeError::new(
+                            "capability_not_granted",
+                            "依赖调用只能使用目标命令要求且已为本次运行授权的 Capability",
+                        ));
                     }
                     if !manifest.capabilities.contains(&capability)
                         || !target.capabilities.contains(&capability)
                     {
-                        return Err("调用方或依赖组件未在清单中声明该 capability".into());
+                        return Err(AutomationBridgeError::new(
+                            "capability_not_declared",
+                            "调用方或依赖组件未在清单中声明该 Capability",
+                        ));
                     }
                 }
                 let operation_id = format!("{root_operation_id}:dependency:{}", Uuid::new_v4());
@@ -1273,7 +1463,318 @@ impl ScriptAutomationRuntime {
                             "durationMs": result.duration_ms,
                         })
                     })
-                    .map_err(|error| format!("依赖组件调用失败: {}", error.message))
+                    .map_err(|error| {
+                        AutomationBridgeError::new(
+                            "component_invoke_failed",
+                            format!("依赖组件调用失败: {}", error.message),
+                        )
+                        .with_details(json!({
+                            "componentId": component_id,
+                            "command": command,
+                            "runtimeCode": format!("{:?}", error.code),
+                            "runtimeDetails": error.details,
+                        }))
+                    })
+            }
+            "project.context.get" => {
+                require_any_bridge_capability(
+                    manifest,
+                    granted_capability,
+                    &[
+                        Capability::ProjectFilesRead,
+                        Capability::ProjectFilesWrite,
+                        Capability::ProjectMetadataRead,
+                        Capability::ProjectMetadataWrite,
+                        Capability::ProjectStorageRead,
+                        Capability::ProjectStorageWrite,
+                        Capability::ProjectStorageDirect,
+                    ],
+                )?;
+                let root = bridge_project_root(run)?;
+                let normalized = root.to_string_lossy().replace('\\', "/");
+                let name = root
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("project")
+                    .to_string();
+                serde_json::to_value(ProjectContextSnapshot {
+                    project_id: blake3::hash(normalized.as_bytes()).to_hex()[..16].to_string(),
+                    name,
+                    root_path: root.to_string_lossy().into_owned(),
+                    selected_paths: Vec::new(),
+                })
+                .map_err(|error| AutomationBridgeError::new("bridge_response_failed", error.to_string()))
+            }
+            "project.files.list" => {
+                require_bridge_capability(
+                    manifest,
+                    granted_capability,
+                    Capability::ProjectFilesRead,
+                )?;
+                let root = bridge_project_root(run)?;
+                let relative = request
+                    .payload
+                    .get("relativePath")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let directory = resolve_project_relative(&root, relative, true)?;
+                if !directory.is_dir() {
+                    return Err(AutomationBridgeError::new(
+                        "project_path_not_directory",
+                        format!("项目路径不是目录: {relative}"),
+                    ));
+                }
+                let cursor = request
+                    .payload
+                    .get("cursor")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
+                let limit = request
+                    .payload
+                    .get("limit")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(100)
+                    .clamp(1, 500) as usize;
+                let mut paths = fs::read_dir(&directory)
+                    .map_err(|error| AutomationBridgeError::new("project_list_failed", error.to_string()))?
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.path())
+                    .filter(|path| path.file_name().and_then(|name| name.to_str()) != Some(".pm_center"))
+                    .collect::<Vec<_>>();
+                paths.sort_by(|left, right| {
+                    left.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_lowercase()
+                        .cmp(&right.file_name().unwrap_or_default().to_string_lossy().to_lowercase())
+                });
+                let entries = paths
+                    .iter()
+                    .skip(cursor)
+                    .take(limit)
+                    .map(|path| project_file_entry(&root, path))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(json!({
+                    "entries": entries,
+                    "nextCursor": if cursor + entries.len() < paths.len() {
+                        Some(cursor + entries.len())
+                    } else {
+                        None
+                    }
+                }))
+            }
+            "project.files.stat" => {
+                require_bridge_capability(
+                    manifest,
+                    granted_capability,
+                    Capability::ProjectFilesRead,
+                )?;
+                let root = bridge_project_root(run)?;
+                let relative = required_bridge_string(&request.payload, "relativePath")?;
+                let path = resolve_project_relative(&root, &relative, false)?;
+                serde_json::to_value(project_file_entry(&root, &path)?)
+                    .map_err(|error| AutomationBridgeError::new("bridge_response_failed", error.to_string()))
+            }
+            "project.files.resolve" => {
+                let access = request
+                    .payload
+                    .get("access")
+                    .and_then(Value::as_str)
+                    .unwrap_or("read");
+                let capability = if access == "write" {
+                    Capability::ProjectFilesWrite
+                } else {
+                    Capability::ProjectFilesRead
+                };
+                require_bridge_capability(manifest, granted_capability, capability)?;
+                let root = bridge_project_root(run)?;
+                let relative = required_bridge_string(&request.payload, "relativePath")?;
+                let path = resolve_project_relative(&root, &relative, access == "write")?;
+                Ok(json!({
+                    "relativePath": relative,
+                    "path": path.to_string_lossy(),
+                    "access": access,
+                }))
+            }
+            "project.files.mutate" => {
+                require_bridge_capability(
+                    manifest,
+                    granted_capability,
+                    Capability::ProjectFilesWrite,
+                )?;
+                let root = bridge_project_root(run)?;
+                let mutations = serde_json::from_value::<Vec<ProjectFileMutation>>(
+                    request
+                        .payload
+                        .get("mutations")
+                        .cloned()
+                        .unwrap_or_else(|| json!([])),
+                )
+                .map_err(|error| {
+                    AutomationBridgeError::new("project_mutation_invalid", error.to_string())
+                })?;
+                if mutations.is_empty() || mutations.len() > 100 {
+                    return Err(AutomationBridgeError::new(
+                        "project_mutation_invalid",
+                        "文件操作数量必须在 1 到 100 之间",
+                    ));
+                }
+                let results = apply_project_mutations(&self.app_handle, &root, mutations).await?;
+                crate::tree_cache::mark_project_tree_dirty(&root.to_string_lossy());
+                Ok(json!({"results": results}))
+            }
+            "project.metadata.get" => {
+                require_bridge_capability(
+                    manifest,
+                    granted_capability,
+                    Capability::ProjectMetadataRead,
+                )?;
+                let root = bridge_project_root(run)?;
+                let key = required_bridge_string(&request.payload, "key")?;
+                validate_state_key(&key)?;
+                let scope_key = project_scope_key(&root);
+                let value = read_component_state_value(
+                    &self.database,
+                    &run.component_id,
+                    &scope_key,
+                    &format!("metadata:{key}"),
+                )?;
+                Ok(value)
+            }
+            "project.metadata.set" => {
+                require_bridge_capability(
+                    manifest,
+                    granted_capability,
+                    Capability::ProjectMetadataWrite,
+                )?;
+                let root = bridge_project_root(run)?;
+                let key = required_bridge_string(&request.payload, "key")?;
+                validate_state_key(&key)?;
+                let value = request.payload.get("value").cloned().unwrap_or(Value::Null);
+                let scope_key = project_scope_key(&root);
+                write_component_state_value(
+                    &self.database,
+                    &run.component_id,
+                    &scope_key,
+                    &format!("metadata:{key}"),
+                    value.clone(),
+                )?;
+                Ok(value)
+            }
+            "storage.blob.put" => {
+                require_bridge_capability(
+                    manifest,
+                    granted_capability,
+                    Capability::ProjectStorageWrite,
+                )?;
+                let root = component_storage_root(
+                    &self.database_path,
+                    run,
+                    manifest,
+                    &request.payload,
+                )?;
+                let name = required_bridge_string(&request.payload, "name")?;
+                let path = resolve_storage_relative(&root, &name)?;
+                let encoded = required_bridge_string(&request.payload, "dataBase64")?;
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .map_err(|error| AutomationBridgeError::new("storage_blob_invalid", error.to_string()))?;
+                if bytes.len() > 512 * 1024 {
+                    return Err(AutomationBridgeError::new(
+                        "storage_blob_too_large",
+                        "Bridge Blob 单次写入不能超过 512 KiB；大文件请申请专属目录",
+                    ));
+                }
+                write_storage_blob(&path, &bytes)?;
+                Ok(storage_blob_result(&root, &path, bytes.len() as u64))
+            }
+            "storage.blob.open" => {
+                require_bridge_capability(
+                    manifest,
+                    granted_capability,
+                    Capability::ProjectStorageRead,
+                )?;
+                let root = component_storage_root(
+                    &self.database_path,
+                    run,
+                    manifest,
+                    &request.payload,
+                )?;
+                let name = required_bridge_string(&request.payload, "name")?;
+                let path = resolve_storage_relative(&root, &name)?;
+                let metadata = fs::metadata(&path).map_err(|error| {
+                    AutomationBridgeError::new("storage_blob_not_found", error.to_string())
+                })?;
+                Ok(storage_blob_result(&root, &path, metadata.len()))
+            }
+            "storage.blob.delete" => {
+                require_bridge_capability(
+                    manifest,
+                    granted_capability,
+                    Capability::ProjectStorageWrite,
+                )?;
+                let root = component_storage_root(
+                    &self.database_path,
+                    run,
+                    manifest,
+                    &request.payload,
+                )?;
+                let name = required_bridge_string(&request.payload, "name")?;
+                let path = resolve_storage_relative(&root, &name)?;
+                let removed = if path.is_file() {
+                    fs::remove_file(&path).map_err(|error| {
+                        AutomationBridgeError::new("storage_delete_failed", error.to_string())
+                    })?;
+                    true
+                } else {
+                    false
+                };
+                Ok(json!({"removed": removed, "name": name}))
+            }
+            "storage.blob.list" => {
+                require_bridge_capability(
+                    manifest,
+                    granted_capability,
+                    Capability::ProjectStorageRead,
+                )?;
+                let root = component_storage_root(
+                    &self.database_path,
+                    run,
+                    manifest,
+                    &request.payload,
+                )?;
+                let mut entries = Vec::new();
+                for item in WalkDir::new(&root).min_depth(1).max_depth(8).into_iter().filter_map(Result::ok) {
+                    if item.file_type().is_file() {
+                        let path = item.path();
+                        let size = item.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+                        entries.push(storage_blob_result(&root, path, size));
+                    }
+                }
+                entries.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
+                Ok(json!({"entries": entries}))
+            }
+            "storage.directory" => {
+                require_bridge_capability(
+                    manifest,
+                    granted_capability,
+                    Capability::ProjectStorageDirect,
+                )?;
+                let root = component_storage_root(
+                    &self.database_path,
+                    run,
+                    manifest,
+                    &request.payload,
+                )?;
+                let scope = request.payload.get("scope").and_then(Value::as_str).unwrap_or("global");
+                let kind = storage_kind(&request.payload)?;
+                serde_json::to_value(ComponentStorageHandle {
+                    component_id: manifest.id.clone(),
+                    scope: scope.to_string(),
+                    kind,
+                    path: root.to_string_lossy().into_owned(),
+                })
+                .map_err(|error| AutomationBridgeError::new("bridge_response_failed", error.to_string()))
             }
             "state.get" => {
                 let scope_key = bridge_scope_key(run, &request.payload)?;
@@ -1364,7 +1865,10 @@ impl ScriptAutomationRuntime {
                     .iter()
                     .any(|surface| surface.id == surface_id)
                 {
-                    return Err(format!("组件未声明页面: {surface_id}"));
+                    return Err(AutomationBridgeError::new(
+                        "surface_not_declared",
+                        format!("组件未声明页面: {surface_id}"),
+                    ));
                 }
                 let event = required_bridge_string(&request.payload, "event")?;
                 validate_bridge_command(&event)?;
@@ -1378,7 +1882,10 @@ impl ScriptAutomationRuntime {
                 let _ = self.app_handle.emit(SCRIPT_SURFACE_EVENT, &payload);
                 Ok(payload)
             }
-            _ => Err(format!("SDK 桥不支持操作: {}", request.operation)),
+            _ => Err(AutomationBridgeError::new(
+                "bridge_operation_unsupported",
+                format!("SDK 桥不支持操作: {}", request.operation),
+            )),
         }
     }
 
@@ -1939,6 +2446,85 @@ impl ScriptAutomationRuntime {
             .clone()
     }
 
+    pub fn development_component_snapshot(&self) -> Vec<DevelopmentComponentSnapshot> {
+        let mut snapshots = self
+            .trusted_directories()
+            .into_iter()
+            .map(|source_path| {
+                let validation = self.validate_development_component(&source_path);
+                let component_id = validation.manifest.as_ref().map(|manifest| manifest.id.clone());
+                let component_name = validation.manifest.as_ref().map(|manifest| manifest.name.clone());
+                let installed_root = component_id
+                    .as_deref()
+                    .and_then(|id| self.components.package_root(id));
+                let installed_digest = installed_root
+                    .as_deref()
+                    .and_then(|root| hash_directory(root).ok());
+                let installed = component_id
+                    .as_deref()
+                    .is_some_and(|id| self.components.manifest(id).is_some());
+                let dirty = validation.valid
+                    && (!installed
+                        || validation.content_digest.as_deref() != installed_digest.as_deref());
+                DevelopmentComponentSnapshot {
+                    source_path,
+                    component_id,
+                    component_name,
+                    valid: validation.valid,
+                    trusted: validation.trusted,
+                    installed,
+                    dirty,
+                    source_digest: validation.content_digest,
+                    installed_digest,
+                    errors: validation.errors,
+                }
+            })
+            .collect::<Vec<_>>();
+        snapshots.sort_by(|left, right| left.source_path.cmp(&right.source_path));
+        snapshots
+    }
+
+    pub fn ensure_development_reload_safe(&self, component_id: &str) -> Result<(), String> {
+        let connection = self
+            .database
+            .lock()
+            .expect("automation database mutex poisoned");
+        let mut statement = connection
+            .prepare(
+                "SELECT id FROM automation_runs
+                 WHERE component_id=?1
+                   AND status IN ('queued','preparing','running','waiting-permission','cancelling')
+                   AND semantics='non-idempotent'
+                 ORDER BY created_at DESC",
+            )
+            .map_err(|error| error.to_string())?;
+        let run_ids = statement
+            .query_map([component_id], |row| row.get::<_, String>(0))
+            .map_err(|error| error.to_string())?
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>();
+        drop(statement);
+        drop(connection);
+        if !run_ids.is_empty() {
+            return Err(format!(
+                "组件存在不可安全取消的非幂等运行: {}",
+                run_ids.join("、")
+            ));
+        }
+        let active = self
+            .components
+            .overview()
+            .active_operations
+            .into_iter()
+            .filter(|operation| operation.component_id == component_id)
+            .map(|operation| operation.operation_id)
+            .collect::<Vec<_>>();
+        if !active.is_empty() {
+            return Err(format!("组件仍有活动操作: {}", active.join("、")));
+        }
+        Ok(())
+    }
+
     pub fn is_trusted_directory(&self, source_path: &str) -> bool {
         let canonical = fs::canonicalize(source_path)
             .unwrap_or_else(|_| PathBuf::from(source_path))
@@ -2069,6 +2655,11 @@ impl ScriptAutomationRuntime {
             .map_err(|error| error.to_string())?;
         }
         Ok(root.to_string_lossy().into_owned())
+    }
+
+    pub fn open_development_directory_in_vscode(&self, source_path: &str) -> Result<(), String> {
+        let root = canonical_development_root(source_path)?;
+        open_in_vscode(&root)
     }
 
     pub fn list_development_files(
@@ -2752,6 +3343,452 @@ fn required_bridge_string(payload: &Value, key: &str) -> Result<String, String> 
         .ok_or_else(|| format!("SDK 桥请求缺少 {key}"))
 }
 
+fn require_bridge_capability(
+    manifest: &ComponentManifestV1,
+    granted: Option<Capability>,
+    expected: Capability,
+) -> Result<(), AutomationBridgeError> {
+    if !manifest.capabilities.contains(&expected) {
+        return Err(AutomationBridgeError::new(
+            "capability_not_declared",
+            format!("组件清单未声明 {}", expected.as_str()),
+        ));
+    }
+    if granted != Some(expected) {
+        return Err(AutomationBridgeError::new(
+            "capability_not_granted",
+            format!("本次运行未授权 {}", expected.as_str()),
+        ));
+    }
+    Ok(())
+}
+
+fn require_any_bridge_capability(
+    manifest: &ComponentManifestV1,
+    granted: Option<Capability>,
+    allowed: &[Capability],
+) -> Result<Capability, AutomationBridgeError> {
+    let Some(granted) = granted else {
+        return Err(AutomationBridgeError::new(
+            "capability_required",
+            "此操作需要项目读取 Capability",
+        ));
+    };
+    if !allowed.contains(&granted) || !manifest.capabilities.contains(&granted) {
+        return Err(AutomationBridgeError::new(
+            "capability_not_granted",
+            "本次运行的 Capability 不能执行该项目操作",
+        ));
+    }
+    Ok(granted)
+}
+
+fn bridge_project_root(run: &AutomationRun) -> Result<PathBuf, AutomationBridgeError> {
+    let project_path = run
+        .project_path
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            AutomationBridgeError::new("project_context_required", "此操作需要有效项目上下文")
+        })?;
+    let root = fs::canonicalize(project_path).map_err(|error| {
+        AutomationBridgeError::new(
+            "project_context_invalid",
+            format!("项目目录不可用: {error}"),
+        )
+    })?;
+    if !root.is_dir() {
+        return Err(AutomationBridgeError::new(
+            "project_context_invalid",
+            "项目根路径不是目录",
+        ));
+    }
+    Ok(root)
+}
+
+fn validate_relative_parts(value: &str, allow_empty: bool) -> Result<PathBuf, AutomationBridgeError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return if allow_empty {
+            Ok(PathBuf::new())
+        } else {
+            Err(AutomationBridgeError::new(
+                "path_invalid",
+                "相对路径不能为空",
+            ))
+        };
+    }
+    let path = Path::new(trimmed);
+    if path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(AutomationBridgeError::new(
+            "path_outside_project",
+            "路径必须是项目内相对路径且不能包含 ..",
+        ));
+    }
+    Ok(path.to_path_buf())
+}
+
+fn resolve_project_relative(
+    root: &Path,
+    relative: &str,
+    allow_missing: bool,
+) -> Result<PathBuf, AutomationBridgeError> {
+    let relative_path = validate_relative_parts(relative, true)?;
+    if relative_path
+        .components()
+        .next()
+        .is_some_and(|component| component.as_os_str().to_string_lossy().eq_ignore_ascii_case(".pm_center"))
+    {
+        return Err(AutomationBridgeError::new(
+            "project_internal_path_denied",
+            "项目内部 .pm_center 不能通过文件接口访问",
+        ));
+    }
+    let target = root.join(relative_path);
+    if target.exists() {
+        let canonical = fs::canonicalize(&target).map_err(|error| {
+            AutomationBridgeError::new("project_path_invalid", error.to_string())
+        })?;
+        if !canonical.starts_with(root) {
+            return Err(AutomationBridgeError::new(
+                "path_outside_project",
+                "路径越过项目根目录",
+            ));
+        }
+        return Ok(canonical);
+    }
+    if !allow_missing {
+        return Err(AutomationBridgeError::new(
+            "project_path_not_found",
+            format!("项目路径不存在: {relative}"),
+        ));
+    }
+    let parent = target.parent().unwrap_or(root);
+    let canonical_parent = fs::canonicalize(parent).map_err(|error| {
+        AutomationBridgeError::new("project_parent_invalid", error.to_string())
+    })?;
+    if !canonical_parent.starts_with(root) {
+        return Err(AutomationBridgeError::new(
+            "path_outside_project",
+            "目标路径越过项目根目录",
+        ));
+    }
+    Ok(target)
+}
+
+fn project_file_entry(root: &Path, path: &Path) -> Result<ProjectFileEntry, AutomationBridgeError> {
+    let metadata = fs::metadata(path)
+        .map_err(|error| AutomationBridgeError::new("project_stat_failed", error.to_string()))?;
+    let relative_path = path
+        .strip_prefix(root)
+        .map_err(|_| AutomationBridgeError::new("path_outside_project", "文件不在项目中"))?
+        .to_string_lossy()
+        .replace('\\', "/");
+    let modified_at = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64);
+    Ok(ProjectFileEntry {
+        relative_path,
+        name: path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("")
+            .to_string(),
+        kind: if metadata.is_dir() { "directory" } else { "file" }.into(),
+        size_bytes: if metadata.is_file() { metadata.len() } else { 0 },
+        modified_at,
+    })
+}
+
+async fn remove_existing_target(path: &Path, overwrite: bool) -> Result<(), AutomationBridgeError> {
+    if !path.exists() {
+        return Ok(());
+    }
+    if !overwrite {
+        return Err(AutomationBridgeError::new(
+            "project_file_conflict",
+            format!("目标已存在: {}", path.to_string_lossy()),
+        ));
+    }
+    crate::fs::delete_file(path.to_string_lossy().into_owned())
+        .await
+        .map_err(|error| AutomationBridgeError::new("project_delete_failed", error))
+}
+
+async fn apply_project_mutations(
+    app_handle: &AppHandle,
+    root: &Path,
+    mutations: Vec<ProjectFileMutation>,
+) -> Result<Vec<Value>, AutomationBridgeError> {
+    let mut results = Vec::with_capacity(mutations.len());
+    for mutation in mutations {
+        match mutation.kind.as_str() {
+            "create-directory" => {
+                let target_relative = mutation.target.as_deref().ok_or_else(|| {
+                    AutomationBridgeError::new("project_mutation_invalid", "create-directory 缺少 target")
+                })?;
+                let target = resolve_project_relative(root, target_relative, true)?;
+                if target.exists() && !target.is_dir() {
+                    return Err(AutomationBridgeError::new(
+                        "project_file_conflict",
+                        format!("目标已存在且不是目录: {target_relative}"),
+                    ));
+                }
+                crate::fs::create_directory(target.to_string_lossy().into_owned())
+                    .await
+                    .map_err(|error| AutomationBridgeError::new("project_create_failed", error))?;
+                results.push(json!({"kind": mutation.kind, "target": target_relative}));
+            }
+            "copy" | "move" => {
+                let source_relative = mutation.source.as_deref().ok_or_else(|| {
+                    AutomationBridgeError::new("project_mutation_invalid", "copy/move 缺少 source")
+                })?;
+                let target_relative = mutation.target.as_deref().ok_or_else(|| {
+                    AutomationBridgeError::new("project_mutation_invalid", "copy/move 缺少 target")
+                })?;
+                let source = resolve_project_relative(root, source_relative, false)?;
+                let target = resolve_project_relative(root, target_relative, true)?;
+                remove_existing_target(&target, mutation.overwrite).await?;
+                if let Some(parent) = target.parent() {
+                    tokio::fs::create_dir_all(parent)
+                        .await
+                        .map_err(|error| AutomationBridgeError::new("project_create_failed", error.to_string()))?;
+                }
+                if mutation.kind == "move" {
+                    if tokio::fs::rename(&source, &target).await.is_err() {
+                        crate::fs::copy_path_to_target(
+                            app_handle.clone(),
+                            source.to_string_lossy().into_owned(),
+                            target.to_string_lossy().into_owned(),
+                            None,
+                        )
+                        .await
+                        .map_err(|error| AutomationBridgeError::new("project_copy_failed", error))?;
+                        crate::fs::delete_file(source.to_string_lossy().into_owned())
+                            .await
+                            .map_err(|error| AutomationBridgeError::new("project_delete_failed", error))?;
+                    }
+                } else {
+                    crate::fs::copy_path_to_target(
+                        app_handle.clone(),
+                        source.to_string_lossy().into_owned(),
+                        target.to_string_lossy().into_owned(),
+                        None,
+                    )
+                    .await
+                    .map_err(|error| AutomationBridgeError::new("project_copy_failed", error))?;
+                }
+                results.push(json!({
+                    "kind": mutation.kind,
+                    "source": source_relative,
+                    "target": target_relative,
+                }));
+            }
+            "rename" => {
+                let source_relative = mutation.source.as_deref().ok_or_else(|| {
+                    AutomationBridgeError::new("project_mutation_invalid", "rename 缺少 source")
+                })?;
+                let new_name = mutation.new_name.as_deref().ok_or_else(|| {
+                    AutomationBridgeError::new("project_mutation_invalid", "rename 缺少 newName")
+                })?;
+                if new_name.trim().is_empty()
+                    || new_name.contains('/')
+                    || new_name.contains('\\')
+                    || matches!(new_name, "." | "..")
+                {
+                    return Err(AutomationBridgeError::new(
+                        "project_mutation_invalid",
+                        "newName 必须是单个有效文件名",
+                    ));
+                }
+                let source = resolve_project_relative(root, source_relative, false)?;
+                let target = source.parent().unwrap_or(root).join(new_name);
+                remove_existing_target(&target, mutation.overwrite).await?;
+                crate::fs::rename_file(source.to_string_lossy().into_owned(), new_name.to_string())
+                    .await
+                    .map_err(|error| AutomationBridgeError::new("project_rename_failed", error))?;
+                results.push(json!({"kind": mutation.kind, "source": source_relative, "newName": new_name}));
+            }
+            "delete" => {
+                let source_relative = mutation.source.as_deref().ok_or_else(|| {
+                    AutomationBridgeError::new("project_mutation_invalid", "delete 缺少 source")
+                })?;
+                let source = resolve_project_relative(root, source_relative, false)?;
+                crate::fs::delete_file(source.to_string_lossy().into_owned())
+                    .await
+                    .map_err(|error| AutomationBridgeError::new("project_delete_failed", error))?;
+                results.push(json!({"kind": mutation.kind, "source": source_relative}));
+            }
+            other => {
+                return Err(AutomationBridgeError::new(
+                    "project_mutation_invalid",
+                    format!("不支持的文件操作: {other}"),
+                ));
+            }
+        }
+    }
+    Ok(results)
+}
+
+fn project_scope_key(root: &Path) -> String {
+    let normalized = root.to_string_lossy().replace('\\', "/");
+    #[cfg(windows)]
+    let normalized = normalized.to_lowercase();
+    format!("project:{normalized}")
+}
+
+fn read_component_state_value(
+    database: &Mutex<Connection>,
+    component_id: &str,
+    scope_key: &str,
+    key: &str,
+) -> Result<Value, AutomationBridgeError> {
+    let connection = database.lock().expect("automation database mutex poisoned");
+    let state = connection
+        .query_row(
+            "SELECT state_json FROM automation_component_state WHERE component_id=?1 AND scope_key=?2",
+            params![component_id, scope_key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| AutomationBridgeError::new("storage_state_failed", error.to_string()))?
+        .and_then(|value| serde_json::from_str::<Value>(&value).ok())
+        .unwrap_or_else(|| json!({}));
+    Ok(state.get(key).cloned().unwrap_or(Value::Null))
+}
+
+fn write_component_state_value(
+    database: &Mutex<Connection>,
+    component_id: &str,
+    scope_key: &str,
+    key: &str,
+    value: Value,
+) -> Result<(), AutomationBridgeError> {
+    let connection = database.lock().expect("automation database mutex poisoned");
+    let mut state = connection
+        .query_row(
+            "SELECT state_json FROM automation_component_state WHERE component_id=?1 AND scope_key=?2",
+            params![component_id, scope_key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| AutomationBridgeError::new("storage_state_failed", error.to_string()))?
+        .and_then(|stored| serde_json::from_str::<Value>(&stored).ok())
+        .unwrap_or_else(|| json!({}));
+    let object = state.as_object_mut().ok_or_else(|| {
+        AutomationBridgeError::new("storage_state_corrupt", "组件状态根值损坏，必须是 JSON 对象")
+    })?;
+    object.insert(key.to_string(), value);
+    connection
+        .execute(
+            "INSERT INTO automation_component_state(component_id,scope_key,state_json,updated_at)
+             VALUES(?1,?2,?3,?4)
+             ON CONFLICT(component_id,scope_key) DO UPDATE SET state_json=excluded.state_json,updated_at=excluded.updated_at",
+            params![component_id, scope_key, state.to_string(), Utc::now().timestamp_millis()],
+        )
+        .map_err(|error| AutomationBridgeError::new("storage_state_failed", error.to_string()))?;
+    Ok(())
+}
+
+fn storage_kind(payload: &Value) -> Result<ComponentStorageKind, AutomationBridgeError> {
+    match payload.get("kind").and_then(Value::as_str).unwrap_or("state") {
+        "state" => Ok(ComponentStorageKind::State),
+        "cache" => Ok(ComponentStorageKind::Cache),
+        value => Err(AutomationBridgeError::new(
+            "storage_kind_invalid",
+            format!("不支持的组件存储类型: {value}"),
+        )),
+    }
+}
+
+fn component_storage_root(
+    database_path: &Path,
+    run: &AutomationRun,
+    manifest: &ComponentManifestV1,
+    payload: &Value,
+) -> Result<PathBuf, AutomationBridgeError> {
+    let scope = payload.get("scope").and_then(Value::as_str).unwrap_or("global");
+    let kind = storage_kind(payload)?;
+    let kind_name = match kind {
+        ComponentStorageKind::State => "state",
+        ComponentStorageKind::Cache => "cache",
+    };
+    let root = match scope {
+        "global" => database_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("component-storage")
+            .join(&manifest.id)
+            .join(kind_name),
+        "project" => bridge_project_root(run)?
+            .join(".pm_center")
+            .join("components")
+            .join(&manifest.id)
+            .join(kind_name),
+        value => {
+            return Err(AutomationBridgeError::new(
+                "storage_scope_invalid",
+                format!("不支持的组件存储作用域: {value}"),
+            ));
+        }
+    };
+    fs::create_dir_all(&root)
+        .map_err(|error| AutomationBridgeError::new("storage_create_failed", error.to_string()))?;
+    fs::canonicalize(&root)
+        .map_err(|error| AutomationBridgeError::new("storage_create_failed", error.to_string()))
+}
+
+fn resolve_storage_relative(root: &Path, name: &str) -> Result<PathBuf, AutomationBridgeError> {
+    let relative = validate_relative_parts(name, false)?;
+    let target = root.join(relative);
+    let parent = target.parent().unwrap_or(root);
+    fs::create_dir_all(parent)
+        .map_err(|error| AutomationBridgeError::new("storage_create_failed", error.to_string()))?;
+    let canonical_parent = fs::canonicalize(parent)
+        .map_err(|error| AutomationBridgeError::new("storage_path_invalid", error.to_string()))?;
+    if !canonical_parent.starts_with(root) {
+        return Err(AutomationBridgeError::new(
+            "storage_path_outside_scope",
+            "Blob 路径越过组件存储目录",
+        ));
+    }
+    Ok(target)
+}
+
+fn write_storage_blob(path: &Path, bytes: &[u8]) -> Result<(), AutomationBridgeError> {
+    let parent = path.parent().ok_or_else(|| {
+        AutomationBridgeError::new("storage_path_invalid", "Blob 缺少父目录")
+    })?;
+    fs::create_dir_all(parent)
+        .map_err(|error| AutomationBridgeError::new("storage_create_failed", error.to_string()))?;
+    let temporary = parent.join(format!(".nexora-{}.tmp", Uuid::new_v4()));
+    fs::write(&temporary, bytes)
+        .map_err(|error| AutomationBridgeError::new("storage_write_failed", error.to_string()))?;
+    if path.exists() {
+        fs::remove_file(path)
+            .map_err(|error| AutomationBridgeError::new("storage_replace_failed", error.to_string()))?;
+    }
+    fs::rename(&temporary, path)
+        .map_err(|error| AutomationBridgeError::new("storage_replace_failed", error.to_string()))
+}
+
+fn storage_blob_result(root: &Path, path: &Path, size_bytes: u64) -> Value {
+    json!({
+        "name": path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/"),
+        "path": path.to_string_lossy(),
+        "sizeBytes": size_bytes,
+    })
+}
+
 fn validate_bridge_command(value: &str) -> Result<(), String> {
     if value.len() > 128
         || !value
@@ -3116,6 +4153,17 @@ fn default_capability_scope(
     capability: Option<Capability>,
     project_path: Option<&str>,
 ) -> CapabilityScopeRequest {
+    if matches!(
+        capability,
+        Some(
+            Capability::ProjectStorageRead
+                | Capability::ProjectStorageWrite
+                | Capability::ProjectStorageDirect
+        )
+    ) && project_path.is_none()
+    {
+        return CapabilityScopeRequest::default();
+    }
     let project_scoped = matches!(
         capability,
         Some(
@@ -3123,6 +4171,9 @@ fn default_capability_scope(
                 | Capability::ProjectFilesWrite
                 | Capability::ProjectMetadataRead
                 | Capability::ProjectMetadataWrite
+                | Capability::ProjectStorageRead
+                | Capability::ProjectStorageWrite
+                | Capability::ProjectStorageDirect
                 | Capability::CacheInspect
                 | Capability::CacheMaintain
         )
@@ -3353,6 +4404,55 @@ fn canonical_development_root(source_path: &str) -> Result<PathBuf, String> {
     Ok(root)
 }
 
+fn open_in_vscode(root: &Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut candidates = Vec::new();
+        for variable in ["LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)"] {
+            if let Some(base) = std::env::var_os(variable) {
+                candidates.push(
+                    PathBuf::from(&base)
+                        .join("Programs")
+                        .join("Microsoft VS Code")
+                        .join("Code.exe"),
+                );
+                candidates.push(
+                    PathBuf::from(&base)
+                        .join("Microsoft VS Code")
+                        .join("Code.exe"),
+                );
+            }
+        }
+
+        for executable in candidates {
+            if executable.is_file() {
+                return Command::new(executable)
+                    .arg("--reuse-window")
+                    .arg(root)
+                    .spawn()
+                    .map(|_| ())
+                    .map_err(|error| format!("无法启动 VS Code：{error}"));
+            }
+        }
+
+        return Command::new("code")
+            .arg("--reuse-window")
+            .arg(root)
+            .spawn()
+            .map(|_| ())
+            .map_err(|_| {
+                "未检测到 Visual Studio Code。请安装 VS Code，或在安装时启用 code 命令后重试。"
+                    .into()
+            });
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = root;
+        Err("当前仅支持在 Windows 上用 VS Code 打开开发目录".into())
+    }
+}
+
 fn prepare_script_surface_source(root: &Path, source: &str, nonce: &str) -> Result<String, String> {
     let script_source = Regex::new(
         r#"(?is)<script(?P<before>[^>]*?)\s+src=[\"'](?P<src>[^\"']+)[\"'](?P<after>[^>]*)>\s*</script>"#,
@@ -3529,6 +4629,9 @@ pub fn all_script_capabilities() -> Vec<Capability> {
         Capability::ProjectFilesWrite,
         Capability::ProjectMetadataRead,
         Capability::ProjectMetadataWrite,
+        Capability::ProjectStorageRead,
+        Capability::ProjectStorageWrite,
+        Capability::ProjectStorageDirect,
         Capability::CacheInspect,
         Capability::CacheMaintain,
         Capability::TaskRun,
@@ -3703,6 +4806,24 @@ mod tests {
             updated_at: 0,
         };
         assert!(bridge_scope_key(&run, &json!({"scope":"project"})).is_err());
+    }
+
+    #[test]
+    fn project_and_component_storage_paths_remain_scoped() {
+        let root = std::env::temp_dir().join(format!("nexora-project-bridge-{}", Uuid::new_v4()));
+        fs::create_dir_all(root.join("assets")).unwrap();
+        fs::write(root.join("assets/scene.blend"), b"blend").unwrap();
+        let root = fs::canonicalize(root).unwrap();
+
+        assert!(resolve_project_relative(&root, "assets/scene.blend", false).is_ok());
+        assert!(resolve_project_relative(&root, "../outside.txt", true).is_err());
+        assert!(resolve_project_relative(&root, ".pm_center/data.db", true).is_err());
+
+        let storage = root.join(".pm_center/components/test.component/state");
+        let blob = resolve_storage_relative(&storage, "reports/result.json").unwrap();
+        assert!(blob.starts_with(&storage));
+        assert!(resolve_storage_relative(&storage, "../other/state.json").is_err());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

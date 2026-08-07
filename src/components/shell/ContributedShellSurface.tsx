@@ -53,7 +53,7 @@ export function ContributedShellSurface({
       <ContributionUnavailableState
         title={`${definition.title}缺少渲染器`}
         contributionId={definition.surfaceId}
-        message="模块已经声明 Surface，但前端没有注册对应的 Shell 渲染器。"
+        message="组件已经声明 Surface，但前端没有注册对应的 Shell 渲染器。"
       />
     );
   }

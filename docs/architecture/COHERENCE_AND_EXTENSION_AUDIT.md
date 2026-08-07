@@ -36,11 +36,12 @@ Nexora 的核心方向是自洽的：**Profile 选择功能闭包，Module 管�
 | EXE、Python Worker、DLL、资料包运行时 | 是，但需协议/平台测试 | DLL 仅 Windows 且隔离；优先 Python 或 EXE。 |
 | 文件处理器与用户文件关联 | 是 | 通过 `fileHandlers` 和文件路由，不直接拦截前端双击。 |
 | Schema 设置区、模板与主题 | 是 | 设置字段由宿主渲染；模板经静态净化和恢复容器托管。 |
-| Script Surface 的任意位置自动嵌入 | 尚未实现 | 当前从功能中心打开为对话框；`placements` 不会自动生成 Shell、工作区或 Widget 宿主。 |
+| Script Surface 的任意位置自动嵌入 | 尚未实现，规划 R17 | 当前从功能中心打开为对话框；`placements` 不会自动生成 Shell、工作区或 Widget 宿主。 |
 | 任意 React/DOM 注入、任意 Tauri command | 否 | 不公开，禁止依赖。Script Surface 运行在沙箱 iframe。 |
-| 任意宿主菜单、Widget、DataSource 的自定义渲染器 | 尚未形成独立第三方 UI ABI | Manifest 字段可被记录/诊断，但没有开放直接加载第三方 React 的宿主 ABI。新 UI 应优先走 `scriptSurfaces`。 |
-| 节点 DAG 执行器 | 否 | `workflowNodes` 是冻结兼容合同，R11 不执行节点图。 |
-| Marketplace/云端账户 | 规划 | 当前包、签名和依赖锁可作为基础，但服务端协议尚未定义。 |
+| 任意宿主菜单、Widget、DataSource 的自定义渲染器 | 尚未形成独立第三方 UI ABI，规划 R17 | Manifest 字段可被记录/诊断，但没有开放直接加载第三方 React 的宿主 ABI。新 UI 当前优先走 `scriptSurfaces`。 |
+| 节点 DAG 执行器 | 旧合同冻结；新合同规划 R18 | `workflowNodes` 继续兼容往返但不执行；R18 使用新的编排合同 v2，不复用旧字段语义。 |
+| Marketplace/云端账户 | 规划 R15 | 当前包、签名、依赖锁和回退是基础；账户、组件源、已购和更新渠道尚未实现。 |
+| 云设置/Profile/Workspace 同步 | 规划 R16 | 只同步明确白名单的可移植配置，不上传密钥、绝对路径、项目和业务数据。 |
 
 ## 5. 主要架构债务与建议
 
@@ -54,7 +55,7 @@ Nexora 的核心方向是自洽的：**Profile 选择功能闭包，Module 管�
 
 Component Manifest 已能表达多种贡献，但宿主并未开放任意 React 代码加载。若文档不说明，开发者会误以为声明 `widgets` 就能获得原生 Widget。
 
-建议：保持 Script Surface 为第三方 UI 的唯一公开路径；未来若开放 Widget/菜单，先设计独立 `hosted-ui.v1` 结构化协议和性能/权限模型，再宣布稳定。
+建议：R17 前保持 Script Surface 为第三方 UI 的唯一公开路径；R17 先设计独立 Hosted Surface、Project Context、菜单、Widget/DataSource、生命周期和性能/权限协议，再宣布稳定。即使 R17 完成也不开放第三方 React 直接注入宿主 DOM。
 
 ### P1：减少双份贡献目录的漂移风险
 

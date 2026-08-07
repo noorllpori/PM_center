@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "id": "nexora.example.project-storage",
+  "name": "项目资料与组件存储示例",
+  "description": "演示受控项目快照、分页文件列表、项目状态、Blob 与专属存储目录。",
+  "version": "0.1.0",
+  "apiVersion": "1",
+  "runtime": "python-action",
+  "role": "feature",
+  "category": "data",
+  "tags": ["example", "project", "storage"],
+  "distribution": "local",
+  "uiMode": "headless",
+  "platforms": ["windows-x64"],
+  "entry": "main.py",
+  "capabilities": [
+    "project.files.read",
+    "project.storage.read",
+    "project.storage.write",
+    "project.storage.direct"
+  ],
+  "requiresComponents": [],
+  "optionalComponents": [],
+  "contributes": {
+    "automationCommands": [
+      {
+        "id": "nexora.example.project-storage.inspect-project",
+        "command": "inspect-project",
+        "name": "读取项目资料",
+        "description": "读取项目快照和第一页文件，并保存一个项目级 JSON 状态。",
+        "contextRequirement": "project-required",
+        "executionSemantics": "pure",
+        "requiredCapability": "project.files.read",
+        "capabilityOperation": "read",
+        "maxAttempts": 1,
+        "maxParallelism": 1,
+        "timeoutMs": 30000,
+        "inputSchema": {"type": "object"},
+        "outputSchema": {"type": "object"}
+      },
+      {
+        "id": "nexora.example.project-storage.write-project-blob",
+        "command": "write-project-blob",
+        "name": "写入项目 Blob",
+        "description": "把 UTF-8 文本写入当前项目内该组件自己的 state 存储。",
+        "contextRequirement": "project-required",
+        "executionSemantics": "idempotent",
+        "requiredCapability": "project.storage.write",
+        "capabilityOperation": "write",
+        "maxAttempts": 2,
+        "maxParallelism": 1,
+        "timeoutMs": 30000,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "name": {"type": "string"},
+            "text": {"type": "string"}
+          },
+          "required": ["name", "text"]
+        },
+        "outputSchema": {"type": "object"}
+      },
+      {
+        "id": "nexora.example.project-storage.resolve-storage-directory",
+        "command": "resolve-storage-directory",
+        "name": "获取专属存储目录",
+        "description": "获取宿主批准的当前项目组件缓存目录。",
+        "contextRequirement": "project-required",
+        "executionSemantics": "pure",
+        "requiredCapability": "project.storage.direct",
+        "capabilityOperation": "read",
+        "maxAttempts": 1,
+        "maxParallelism": 1,
+        "timeoutMs": 30000,
+        "inputSchema": {"type": "object"},
+        "outputSchema": {"type": "object"}
+      }
+    ]
+  },
+  "resources": {
+    "maxMemoryMb": 128,
+    "maxParallelism": 1,
+    "timeoutMs": 30000
+  },
+  "publisher": "Nexora Examples"
+}

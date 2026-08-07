@@ -161,6 +161,25 @@ export interface ScriptComponentValidation {
   errors: string[];
 }
 
+export interface DevelopmentComponentSnapshot {
+  sourcePath: string;
+  componentId?: string | null;
+  componentName?: string | null;
+  valid: boolean;
+  trusted: boolean;
+  installed: boolean;
+  dirty: boolean;
+  sourceDigest?: string | null;
+  installedDigest?: string | null;
+  errors: string[];
+}
+
+export interface DevelopmentReloadResult {
+  reloaded: string[];
+  skipped: string[];
+  errors: string[];
+}
+
 export interface ScriptSurfaceDocument {
   componentId: string;
   surfaceId: string;

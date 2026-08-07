@@ -96,7 +96,7 @@ export function AutomationRunsPanel({ projectPath }: AutomationRunsPanelProps) {
           <div className="flex items-center justify-between gap-2">
             <div>
               <p className="text-sm font-medium text-gray-900 dark:text-gray-100">自动化运行</p>
-              <p className="text-xs text-gray-500">{snapshot?.running ? '调度器运行中' : '脚本自动化模块已停用'}</p>
+              <p className="text-xs text-gray-500">{snapshot?.running ? '调度器运行中' : '脚本自动化组件已停用'}</p>
             </div>
             <button type="button" onClick={() => void refresh()} className="rounded-md p-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800" title="刷新运行记录">
               <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />

@@ -157,6 +157,9 @@
         "project.files.write",
         "project.metadata.read",
         "project.metadata.write",
+        "project.storage.read",
+        "project.storage.write",
+        "project.storage.direct",
         "cache.inspect",
         "cache.maintain",
         "task.run",
@@ -174,6 +177,18 @@
         "render.queue.write",
         "render.worker.execute",
         "render.result.commit"
+      ],
+      "type": "string"
+    },
+    "ComponentCategory": {
+      "enum": [
+        "workspace",
+        "file-handler",
+        "service",
+        "automation",
+        "appearance",
+        "integration",
+        "data"
       ],
       "type": "string"
     },
@@ -781,6 +796,16 @@
       },
       "type": "array"
     },
+    "category": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ComponentCategory"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "contributes": {
       "allOf": [
         {
@@ -877,6 +902,13 @@
       "format": "uint16",
       "minimum": 0.0,
       "type": "integer"
+    },
+    "tags": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
     },
     "uiMode": {
       "allOf": [

@@ -503,6 +503,13 @@ pub fn validate_script_component(
 }
 
 #[tauri::command]
+pub fn get_development_component_snapshot(
+    runtime: State<'_, PlatformRuntime>,
+) -> Vec<script_automation::DevelopmentComponentSnapshot> {
+    runtime.script_automation.development_component_snapshot()
+}
+
+#[tauri::command]
 pub fn trust_script_development_directory(
     path: String,
     runtime: State<'_, PlatformRuntime>,
@@ -525,6 +532,15 @@ pub async fn reload_script_component(
     component_id: String,
     runtime: State<'_, PlatformRuntime>,
 ) -> Result<pmc_platform::ComponentManifestV1, ComponentRuntimeError> {
+    runtime
+        .script_automation
+        .ensure_development_reload_safe(&component_id)
+        .map_err(|message| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentOperationConflict,
+                message,
+            )
+        })?;
     let source = runtime
         .script_automation
         .trusted_directories()
@@ -553,11 +569,82 @@ pub async fn reload_script_component(
 }
 
 #[tauri::command]
+pub async fn reload_development_components(
+    only_dirty: bool,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<script_automation::DevelopmentReloadResult, String> {
+    let snapshots = runtime.script_automation.development_component_snapshot();
+    let mut result = script_automation::DevelopmentReloadResult {
+        reloaded: Vec::new(),
+        skipped: Vec::new(),
+        errors: Vec::new(),
+    };
+    for snapshot in snapshots {
+        let label = snapshot
+            .component_id
+            .clone()
+            .unwrap_or_else(|| snapshot.source_path.clone());
+        if !snapshot.valid || !snapshot.trusted {
+            result.errors.push(format!(
+                "{label}: {}",
+                if snapshot.errors.is_empty() {
+                    "开发目录无效或未受信任".into()
+                } else {
+                    snapshot.errors.join("；")
+                }
+            ));
+            continue;
+        }
+        if only_dirty && !snapshot.dirty {
+            result.skipped.push(label);
+            continue;
+        }
+        let Some(component_id) = snapshot.component_id else {
+            result.errors.push(format!("{}: 缺少组件 ID", snapshot.source_path));
+            continue;
+        };
+        if let Err(error) = runtime
+            .script_automation
+            .ensure_development_reload_safe(&component_id)
+        {
+            result.errors.push(format!("{component_id}: {error}"));
+            continue;
+        }
+        match runtime
+            .components
+            .install_from_directory(&InstallComponentRequest {
+                source_path: snapshot.source_path,
+            })
+            .await
+        {
+            Ok(_) => result.reloaded.push(component_id),
+            Err(error) => result
+                .errors
+                .push(format!("{component_id}: {}", error.message)),
+        }
+    }
+    if !result.reloaded.is_empty() {
+        sync_component_catalog(&runtime).map_err(|error| error.message)?;
+    }
+    Ok(result)
+}
+
+#[tauri::command]
 pub fn create_script_component_template(
     request: CreateScriptComponentTemplateRequest,
     runtime: State<'_, PlatformRuntime>,
 ) -> Result<String, String> {
     runtime.script_automation.create_template(request)
+}
+
+#[tauri::command]
+pub fn open_script_development_directory_in_vscode(
+    path: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<(), String> {
+    runtime
+        .script_automation
+        .open_development_directory_in_vscode(&path)
 }
 
 #[tauri::command]

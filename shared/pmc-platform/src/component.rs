@@ -31,6 +31,18 @@ pub enum ComponentRole {
     Data,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum ComponentCategory {
+    Workspace,
+    FileHandler,
+    Service,
+    Automation,
+    Appearance,
+    Integration,
+    Data,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum ComponentDistribution {
@@ -412,6 +424,10 @@ pub struct ComponentManifestV1 {
     pub description: String,
     pub version: String,
     pub api_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<ComponentCategory>,
+    #[serde(default)]
+    pub tags: Vec<String>,
     pub runtime: ComponentRuntime,
     #[serde(default)]
     pub role: ComponentRole,
@@ -490,6 +506,27 @@ impl ValidateContract for ComponentManifestV1 {
                 "$.name",
                 "组件名称不能为空",
             ));
+        }
+        let mut tags = BTreeSet::new();
+        for (index, tag) in self.tags.iter().enumerate() {
+            let normalized = tag.trim();
+            if normalized.is_empty()
+                || normalized.len() > 40
+                || normalized.chars().any(char::is_control)
+            {
+                return Err(ContractError::new(
+                    ContractErrorCode::MalformedDocument,
+                    format!("$.tags[{index}]"),
+                    "组件标签不能为空、不能包含控制字符且不能超过 40 字符",
+                ));
+            }
+            if !tags.insert(normalized.to_lowercase()) {
+                return Err(ContractError::new(
+                    ContractErrorCode::DuplicateId,
+                    format!("$.tags[{index}]"),
+                    format!("重复组件标签: {tag}"),
+                ));
+            }
         }
 
         let requires_entry = !matches!(self.runtime, ComponentRuntime::BuiltinRust);
@@ -1163,6 +1200,8 @@ mod tests {
             description: String::new(),
             version: "1.0.0".into(),
             api_version: "1".into(),
+            category: None,
+            tags: Vec::new(),
             runtime: ComponentRuntime::NativeProcess,
             role: ComponentRole::Service,
             distribution: ComponentDistribution::Local,

@@ -23,6 +23,7 @@ import {
   generateScriptSigningKey,
   listAutomationBindings,
   listScriptDevelopmentFiles,
+  openScriptDevelopmentDirectoryInVSCode,
   packageScriptComponent,
   readScriptDevelopmentFile,
   reloadScriptComponent,
@@ -282,6 +283,13 @@ export function ScriptDeveloperWorkbench({ isOpen, onClose, projectPath }: Scrip
     });
   };
 
+  const openSourceInVSCode = async () => {
+    await runAction(async () => {
+      await openScriptDevelopmentDirectoryInVSCode(sourcePath);
+      setMessage('已在 VS Code 中打开开发目录。');
+    });
+  };
+
   const runSelectedCommand = async () => {
     if (!selectedComponent || !selectedCommand) return;
     await runAction(async () => {
@@ -484,6 +492,7 @@ export function ScriptDeveloperWorkbench({ isOpen, onClose, projectPath }: Scrip
                       {!validation.trusted ? <button type="button" disabled={!validation.valid || busy} onClick={() => void trustSource()} className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-2.5 py-1.5 text-white disabled:opacity-50"><ShieldCheck className="h-3.5 w-3.5" />信任目录</button> : <button type="button" disabled={busy} onClick={() => void untrustSource()} className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-2.5 py-1.5 dark:border-gray-700"><ShieldOff className="h-3.5 w-3.5" />解除信任</button>}
                       <button type="button" disabled={!validation.valid || !validation.trusted || busy} onClick={() => void reloadSource()} className="rounded-md border border-gray-300 px-2.5 py-1.5 disabled:opacity-50 dark:border-gray-700">{sourceInstalled ? '热重载安装副本' : '安装开发组件'}</button>
                       <button type="button" disabled={!sourceInstalled || sourceEnabled || busy} onClick={() => void enableInProfile()} className="rounded-md border border-gray-300 px-2.5 py-1.5 disabled:opacity-50 dark:border-gray-700">加入当前装配</button>
+                      <button type="button" disabled={busy || !sourcePath} onClick={() => void openSourceInVSCode()} className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-2.5 py-1.5 disabled:opacity-50 dark:border-gray-700" title="用 Visual Studio Code 打开组件开发目录"><Code2 className="h-3.5 w-3.5" />VS Code</button>
                       <button type="button" onClick={() => void invoke('show_in_folder', { path: sourcePath })} className="rounded-md border border-gray-300 px-2.5 py-1.5 dark:border-gray-700">打开目录</button>
                     </div>
                   </div>
@@ -534,7 +543,7 @@ export function ScriptDeveloperWorkbench({ isOpen, onClose, projectPath }: Scrip
               {files.map((file) => <button key={file.path} type="button" onClick={() => void runAction(() => loadFile(sourcePath, file.path))} className={`block w-full border-b border-gray-100 px-3 py-2 text-left text-xs dark:border-gray-800 ${activeDocument?.path === file.path ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-300' : 'hover:bg-gray-50 dark:hover:bg-gray-800'}`}><span className="block truncate">{file.path}</span><span className="text-[10px] text-gray-400">{Math.ceil(file.sizeBytes / 1024)} KiB</span></button>)}
             </aside>
             <section className="flex min-w-0 flex-1 flex-col rounded-r-md border border-gray-200 dark:border-gray-700">
-              <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2 dark:border-gray-700"><span className="text-xs font-medium">{activeDocument?.path ?? '选择文件'}</span><button type="button" disabled={!editorDirty || busy} onClick={() => void saveFile()} className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-2.5 py-1.5 text-xs text-white disabled:opacity-40"><Save className="h-3.5 w-3.5" />保存</button></div>
+              <div className="flex items-center justify-between gap-3 border-b border-gray-200 px-3 py-2 dark:border-gray-700"><span className="truncate text-xs font-medium">{activeDocument?.path ?? '选择文件'}</span><div className="flex shrink-0 items-center gap-2"><button type="button" disabled={busy || !sourcePath} onClick={() => void openSourceInVSCode()} className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 px-2.5 py-1.5 text-xs disabled:opacity-40 dark:border-gray-700" title="建议使用 VS Code 进行完整编辑"><Code2 className="h-3.5 w-3.5" />VS Code</button><button type="button" disabled={!editorDirty || busy} onClick={() => void saveFile()} className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-2.5 py-1.5 text-xs text-white disabled:opacity-40"><Save className="h-3.5 w-3.5" />保存</button></div></div>
               {activeDocument ? <textarea value={editorContent} onChange={(event) => setEditorContent(event.target.value)} className="min-h-0 flex-1 resize-none bg-gray-950 p-4 font-mono text-xs leading-5 text-gray-100 outline-none" spellCheck={false} /> : <div className="flex flex-1 items-center justify-center text-sm text-gray-400">先在“组件与运行”中选择有效开发目录</div>}
             </section>
           </div>
