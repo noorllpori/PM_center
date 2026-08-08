@@ -386,6 +386,7 @@ export function LauncherButton({
         surfaceId: surface.id,
         title: surface.name,
         description: `${component.componentName} · 隔离组件页面`,
+        pinnable: surface.placements.includes('shell'),
         requiresProject: (surface.allowedCommands ?? []).some((commandName) => component.commands.some((command) => (
           (command.command === commandName || command.id === commandName)
           && command.contextRequirement === 'project-required'

@@ -4,8 +4,8 @@ use pmc_platform::{
     ComponentDistribution, ComponentManifestV1, ComponentRole, ComponentRuntime,
     ComponentSettingsSection, ComponentUiMode, ContractResult, DataSourceScope, ExtensionFields,
     ModuleManifestV1, ProfileCommandBinding, ProfileDataSource, ProfileModuleSelection,
-    ProfileShellLayout, ProfileSurface, ProfileWidget, SurfaceKind, SurfaceLayoutKind,
-    WorkspaceProfileV1, PLATFORM_SCHEMA_VERSION,
+    ProfileShellLayout, ProfileSurface, ProfileWidget, ScriptSurfacePlacement, SurfaceKind,
+    SurfaceLayoutKind, WorkspaceProfileV1, PLATFORM_SCHEMA_VERSION,
 };
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
@@ -1565,11 +1565,22 @@ impl WorkspaceProfileRuntime {
             ));
         }
 
-        let known_tools = request
+        let component_manifests = self.component_manifests_snapshot();
+        let effective_component_ids =
+            best_effort_effective_components(&target, &manifests, &component_manifests);
+        let mut known_tools = request
             .known_tool_contributions
             .iter()
             .cloned()
             .collect::<BTreeSet<_>>();
+        known_tools.extend(component_manifests.iter().flat_map(|component| {
+            component
+                .contributes
+                .script_surfaces
+                .iter()
+                .filter(|surface| surface.placements.contains(&ScriptSurfacePlacement::Shell))
+                .map(|surface| surface.id.clone())
+        }));
         let target_tools = manifests
             .iter()
             .filter(|manifest| target_module_ids.contains(&manifest.id))
@@ -1579,6 +1590,14 @@ impl WorkspaceProfileRuntime {
                     .iter()
                     .filter(|id| id.starts_with("core."))
                     .cloned(),
+            )
+            .chain(
+                component_manifests
+                    .iter()
+                    .filter(|component| effective_component_ids.contains(&component.id))
+                    .flat_map(|component| component.contributes.script_surfaces.iter())
+                    .filter(|surface| surface.placements.contains(&ScriptSurfacePlacement::Shell))
+                    .map(|surface| surface.id.clone()),
             )
             .collect::<BTreeSet<_>>();
         for contribution_id in &target.shell_layout.pinned_tools {
@@ -3385,6 +3404,18 @@ fn compatibility_issues(
         .iter()
         .map(|selection| selection.id.as_str())
         .collect::<BTreeSet<_>>();
+    let effective_components =
+        best_effort_effective_components(profile, manifests, component_manifests);
+    let component_surface_owners = component_manifests
+        .iter()
+        .flat_map(|component| {
+            component
+                .contributes
+                .script_surfaces
+                .iter()
+                .map(move |surface| (surface.id.as_str(), (component, surface)))
+        })
+        .collect::<BTreeMap<_, _>>();
     let contribution_owners = ModuleContributionOwners::from_manifests(manifests);
     let mut issues = Vec::new();
 
@@ -3594,6 +3625,34 @@ fn compatibility_issues(
                 Some(module_id.into()),
                 Some(contribution_id.clone()),
             ));
+        } else if let Some((component, surface)) =
+            component_surface_owners.get(contribution_id.as_str())
+        {
+            if !surface.placements.contains(&ScriptSurfacePlacement::Shell) {
+                issues.push(switch_issue(
+                    "PIN_PLACEMENT_UNSUPPORTED",
+                    WorkspaceProfileSwitchIssueSeverity::Error,
+                    "pin",
+                    format!(
+                        "组件页面 {} 未声明 shell 放置，不能固定到快捷栏",
+                        surface.name
+                    ),
+                    None,
+                    Some(contribution_id.clone()),
+                ));
+            } else if !effective_components.contains(&component.id) {
+                issues.push(switch_issue(
+                    "PIN_COMPONENT_PROVIDER_DISABLED",
+                    WorkspaceProfileSwitchIssueSeverity::Error,
+                    "pin",
+                    format!(
+                        "快捷栏组件页面 {} 的组件 {} 未在当前方案中启用",
+                        surface.name, component.name
+                    ),
+                    None,
+                    Some(contribution_id.clone()),
+                ));
+            }
         }
     }
 
@@ -4038,6 +4097,7 @@ mod tests {
         Capability, ComponentContributions, ComponentDependency, ComponentDistribution,
         ComponentResourceLimits, ComponentRole, ComponentRuntime, ComponentUiMode,
         ModuleContributions, ModuleDataPolicy, ModuleDependency, ModuleScope, PlatformTarget,
+        ScriptSurfaceContribution,
     };
 
     fn test_root(label: &str) -> PathBuf {
@@ -4187,6 +4247,36 @@ mod tests {
             "unexpected issues: {:?}",
             validation.issues
         );
+    }
+
+    #[test]
+    fn draft_validation_tracks_component_script_surface_pins() {
+        let mut component = component_manifest("test.music-player", "1.0.0");
+        component.contributes.script_surfaces = vec![ScriptSurfaceContribution {
+            id: "test.music-player.surface".into(),
+            name: "音乐播放器".into(),
+            entry: "ui/index.html".into(),
+            placements: vec![ScriptSurfacePlacement::Shell, ScriptSurfacePlacement::Dialog],
+            allowed_commands: Vec::new(),
+            extensions: ExtensionFields::new(),
+        }];
+        let mut profile = build_blank_profile();
+        profile.enabled_components.push(pmc_platform::ProfileComponentSelection {
+            id: component.id.clone(),
+            version_requirement: "^1.0".into(),
+            extensions: ExtensionFields::new(),
+        });
+        profile.shell_layout.pinned_tools = vec!["test.music-player.surface".into()];
+
+        let enabled = build_draft_validation(&profile, &[], &[component.clone()]);
+        assert!(enabled.valid, "unexpected issues: {:?}", enabled.issues);
+
+        profile.enabled_components.clear();
+        let disabled = build_draft_validation(&profile, &[], &[component]);
+        assert!(disabled
+            .issues
+            .iter()
+            .any(|issue| issue.code == "PIN_COMPONENT_PROVIDER_DISABLED"));
     }
 
     #[test]

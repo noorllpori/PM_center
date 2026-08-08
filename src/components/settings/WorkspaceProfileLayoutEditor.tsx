@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+  FileCode2,
   GripVertical,
   LayoutDashboard,
   Menu,
@@ -102,6 +103,37 @@ function selectComponent(profile: WorkspaceProfileV1, componentId: string, versi
   profile.enabledComponents = Array.from(enabled.values()).sort((left, right) => left.id.localeCompare(right.id));
 }
 
+function resolveEffectiveComponentIds(
+  profile: WorkspaceProfileV1,
+  modules: ModuleManifestV1[],
+  runtime: ComponentRuntimeOverview | null,
+) {
+  const manifests = new Map(
+    (runtime?.installedComponents ?? []).map((item) => [item.manifest.id, item.manifest] as const),
+  );
+  const enabledModules = new Set((profile.enabledModules ?? []).map((item) => item.id));
+  const roots = [
+    ...(profile.enabledComponents ?? []).map((item) => item.id),
+    ...modules
+      .filter((module) => enabledModules.has(module.id))
+      .flatMap((module) => [
+        ...(module.requiresComponents ?? []).map((item) => item.id),
+        ...(module.optionalComponents ?? []).map((item) => item.id),
+      ]),
+  ];
+  const effective = new Set<string>();
+  const add = (componentId: string) => {
+    if (effective.has(componentId)) return;
+    const manifest = manifests.get(componentId);
+    if (!manifest) return;
+    effective.add(componentId);
+    [...(manifest.requiresComponents ?? []), ...(manifest.optionalComponents ?? [])]
+      .forEach((dependency) => add(dependency.id));
+  };
+  roots.forEach(add);
+  return effective;
+}
+
 function contributionTitle(id: string) {
   return SURFACE_CONTRIBUTION_BY_ID.get(id)?.title
     || BUILTIN_TOOLS.find((tool) => tool.contribution.id === id)?.title
@@ -181,6 +213,27 @@ export function WorkspaceProfileLayoutEditor({
   const availableTools = useMemo(() => (
     BUILTIN_TOOLS.filter((tool) => tool.pinnable && selectedToolIds.has(tool.contribution.id))
   ), [selectedToolIds]);
+  const effectiveComponentIds = useMemo(
+    () => resolveEffectiveComponentIds(draft, modules, componentRuntime),
+    [componentRuntime, draft, modules],
+  );
+  const componentSurfaces = useMemo(() => (
+    (componentRuntime?.installedComponents ?? [])
+      .filter((item) => effectiveComponentIds.has(item.manifest.id))
+      .flatMap((item) => (item.manifest.contributes?.scriptSurfaces ?? []).map((surface) => ({
+        componentId: item.manifest.id,
+        componentName: item.manifest.name,
+        surfaceId: surface.id,
+        title: surface.name,
+        placements: surface.placements,
+        pinnable: surface.placements.includes('shell'),
+      })))
+      .sort((left, right) => left.title.localeCompare(right.title, 'zh-CN'))
+  ), [componentRuntime, effectiveComponentIds]);
+  const componentSurfaceById = useMemo(
+    () => new Map(componentSurfaces.map((surface) => [surface.surfaceId, surface] as const)),
+    [componentSurfaces],
+  );
 
   const currentHomeSurface = (draft.surfaces ?? []).find(
     (surface) => surface.id === draft.shellLayout?.home,
@@ -437,7 +490,8 @@ export function WorkspaceProfileLayoutEditor({
               >
                 {pinnedToolContributionIds.map((contributionId) => {
                   const tool = BUILTIN_TOOLS.find((candidate) => candidate.contribution.id === contributionId);
-                  const Icon = tool?.icon ?? Pin;
+                  const componentSurface = componentSurfaceById.get(contributionId);
+                  const Icon = tool?.icon ?? (componentSurface ? FileCode2 : Pin);
                   return (
                     <div
                       key={contributionId}
@@ -452,7 +506,7 @@ export function WorkspaceProfileLayoutEditor({
                     >
                       <GripVertical className="h-4 w-4 cursor-grab text-gray-400" />
                       <Icon className="h-4 w-4 text-violet-500" />
-                      <span className="min-w-0 flex-1 truncate">{tool?.title || contributionId}</span>
+                      <span className="min-w-0 flex-1 truncate">{tool?.title || componentSurface?.title || contributionId}</span>
                       <button
                         type="button"
                         onClick={() => mutate((profile) => setPinnedToolContribution(profile, contributionId, false))}
@@ -486,7 +540,25 @@ export function WorkspaceProfileLayoutEditor({
                       </button>
                     );
                   })}
-                {availableTools.every((tool) => pinnedToolContributionIds.includes(tool.contribution.id)) ? (
+                {componentSurfaces
+                  .filter((surface) => surface.pinnable && !pinnedToolContributionIds.includes(surface.surfaceId))
+                  .map((surface) => (
+                    <button
+                      key={surface.surfaceId}
+                      type="button"
+                      onClick={() => mutate((profile) => setPinnedToolContribution(profile, surface.surfaceId, true))}
+                      className="flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-800"
+                    >
+                      <Plus className="h-4 w-4 text-gray-400" />
+                      <FileCode2 className="h-4 w-4 text-violet-500" />
+                      <span className="min-w-0 flex-1 truncate">{surface.title}</span>
+                      <span className="max-w-32 truncate text-[10px] text-gray-400">{surface.componentName}</span>
+                    </button>
+                  ))}
+                {availableTools.every((tool) => pinnedToolContributionIds.includes(tool.contribution.id))
+                  && componentSurfaces.filter((surface) => surface.pinnable).every(
+                    (surface) => pinnedToolContributionIds.includes(surface.surfaceId),
+                  ) ? (
                   <p className="py-5 text-center text-xs text-gray-400">没有更多可固定工具</p>
                 ) : null}
               </div>
@@ -495,6 +567,46 @@ export function WorkspaceProfileLayoutEditor({
         </div>
 
         <div className="space-y-4">
+          <section className="rounded-md border border-gray-200 dark:border-gray-700">
+            <div className="flex items-center gap-2 border-b border-gray-200 px-3 py-2.5 dark:border-gray-700">
+              <FileCode2 className="h-4 w-4 text-violet-600" />
+              <h4 className="text-sm font-semibold">组件页面</h4>
+              <span className="ml-auto text-xs text-gray-500">{componentSurfaces.length} 项</span>
+            </div>
+            <div className="max-h-52 divide-y divide-gray-100 overflow-auto dark:divide-gray-800">
+              {componentSurfaces.map((surface) => (
+                <div key={`${surface.componentId}:${surface.surfaceId}`} className="flex items-center gap-3 px-3 py-2.5">
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-violet-100 text-violet-700 dark:bg-violet-950/50 dark:text-violet-300">
+                    <FileCode2 className="h-4 w-4" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-gray-900 dark:text-gray-100">{surface.title}</p>
+                    <p className="truncate text-[11px] text-gray-500">{surface.componentName} · {surface.placements.join(' / ')}</p>
+                  </div>
+                  {surface.pinnable ? (
+                    <button
+                      type="button"
+                      onClick={() => mutate((profile) => setPinnedToolContribution(
+                        profile,
+                        surface.surfaceId,
+                        !pinnedToolContributionIds.includes(surface.surfaceId),
+                      ))}
+                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md ${pinnedToolContributionIds.includes(surface.surfaceId) ? 'bg-violet-100 text-violet-700 dark:bg-violet-950/50 dark:text-violet-300' : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'}`}
+                      title={pinnedToolContributionIds.includes(surface.surfaceId) ? '从快捷栏移除' : '固定到快捷栏'}
+                    >
+                      <Pin className="h-4 w-4" />
+                    </button>
+                  ) : (
+                    <span className="text-[10px] text-gray-400">未声明 shell</span>
+                  )}
+                </div>
+              ))}
+              {componentSurfaces.length === 0 ? (
+                <p className="px-3 py-6 text-center text-xs text-gray-400">当前方案没有启用带页面的外部组件</p>
+              ) : null}
+            </div>
+          </section>
+
           <section className="rounded-md border border-gray-200 dark:border-gray-700">
             <div className="flex items-center gap-2 border-b border-gray-200 px-3 py-2.5 dark:border-gray-700">
               <LayoutDashboard className="h-4 w-4 text-orange-500" />

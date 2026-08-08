@@ -8,6 +8,7 @@ import { useWorkspaceTabStore } from '../../stores/workspaceTabStore';
 import { APP_VERSION } from '../../config/appMeta';
 import { buildPluginContextItems, getVisiblePluginActions } from '../../utils/pluginActions';
 import type { OpenBuiltinTool } from '../../features/builtinTools';
+import type { ScriptSurfaceTool } from '../BuiltinToolsCenter';
 import { PinnedToolsToolbar } from './PinnedToolsToolbar';
 import {
   List,
@@ -22,9 +23,10 @@ export const TOOLBAR_SEARCH_FOCUS_EVENT = 'pm-center:focus-toolbar-search';
 
 interface ToolbarProps {
   onOpenBuiltinTool: OpenBuiltinTool;
+  onOpenScriptSurface: (surface: ScriptSurfaceTool) => void;
 }
 
-export function Toolbar({ onOpenBuiltinTool }: ToolbarProps) {
+export function Toolbar({ onOpenBuiltinTool, onOpenScriptSurface }: ToolbarProps) {
   const {
     viewMode,
     setViewMode,
@@ -378,7 +380,11 @@ export function Toolbar({ onOpenBuiltinTool }: ToolbarProps) {
         )}
 
         {isInitialized && (
-          <PinnedToolsToolbar compact={isSearchOpen} onOpenTool={onOpenBuiltinTool} />
+          <PinnedToolsToolbar
+            compact={isSearchOpen}
+            onOpenTool={onOpenBuiltinTool}
+            onOpenScriptSurface={onOpenScriptSurface}
+          />
         )}
 
       </div>

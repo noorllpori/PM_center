@@ -23,7 +23,7 @@
         "id": "com.ninniku.music-player.surface",
         "name": "Ninniku 音乐播放器",
         "entry": "ui/index.html",
-        "placements": ["workspace", "dialog"],
+        "placements": ["shell", "workspace", "dialog"],
         "allowedCommands": []
       }
     ]

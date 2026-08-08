@@ -7,12 +7,18 @@ import {
   BUILTIN_TOOL_CATEGORY_LABELS,
   BUILTIN_TOOL_CATEGORY_ORDER,
   BUILTIN_TOOLS,
+  isBuiltinToolId,
+  type BuiltinToolDefinition,
   type BuiltinToolId,
   type OpenBuiltinTool,
 } from '../features/builtinTools';
-import { useBuiltinToolsStore } from '../stores/builtinToolsStore';
+import {
+  getPinnedToolContributionIds,
+  useBuiltinToolsStore,
+} from '../stores/builtinToolsStore';
 import { isContributionAvailable } from '../features/contributionRegistry';
 import { useContributionRegistryStore } from '../stores/contributionRegistryStore';
+import { useWorkspaceProfileStore } from '../stores/workspaceProfileStore';
 
 interface BuiltinToolsCenterProps {
   isOpen: boolean;
@@ -30,7 +36,12 @@ export interface ScriptSurfaceTool {
   title: string;
   description: string;
   requiresProject: boolean;
+  pinnable: boolean;
 }
+
+type PinnedToolItem =
+  | { id: BuiltinToolId; kind: 'builtin'; tool: BuiltinToolDefinition }
+  | { id: string; kind: 'surface'; surface: ScriptSurfaceTool };
 
 export function BuiltinToolsCenter({
   isOpen,
@@ -43,12 +54,16 @@ export function BuiltinToolsCenter({
 }: BuiltinToolsCenterProps) {
   const pinnedToolIds = useBuiltinToolsStore((state) => state.pinnedToolIds);
   const loadPreferences = useBuiltinToolsStore((state) => state.loadPreferences);
-  const togglePinned = useBuiltinToolsStore((state) => state.togglePinned);
-  const reorderPinned = useBuiltinToolsStore((state) => state.reorderPinned);
+  const replacePinnedByContributionIds = useBuiltinToolsStore(
+    (state) => state.replacePinnedByContributionIds,
+  );
+  const currentProfile = useWorkspaceProfileStore((state) => state.snapshot?.currentProfile ?? null);
+  const saveCurrentProfile = useWorkspaceProfileStore((state) => state.saveCurrentProfile);
   const contributionSnapshot = useContributionRegistryStore((state) => state.snapshot);
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [draggedToolId, setDraggedToolId] = useState<BuiltinToolId | null>(null);
+  const [draggedToolId, setDraggedToolId] = useState<string | null>(null);
+  const [pinError, setPinError] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -99,10 +114,51 @@ export function BuiltinToolsCenter({
     [groupedTools],
   );
 
-  const pinnedTools = pinnedToolIds.flatMap((toolId) => {
-    const tool = BUILTIN_TOOL_BY_ID.get(toolId);
-    return tool && isContributionAvailable(contributionSnapshot, tool.contribution) ? [tool] : [];
-  });
+  const scriptSurfaceById = useMemo(
+    () => new Map(scriptSurfaces.map((surface) => [surface.surfaceId, surface] as const)),
+    [scriptSurfaces],
+  );
+  const pinnedTools = pinnedToolIds.reduce<PinnedToolItem[]>((items, toolId) => {
+    if (isBuiltinToolId(toolId)) {
+      const tool = BUILTIN_TOOL_BY_ID.get(toolId);
+      if (tool && isContributionAvailable(contributionSnapshot, tool.contribution)) {
+        items.push({ id: tool.id, kind: 'builtin', tool });
+      }
+      return items;
+    }
+    const surface = scriptSurfaceById.get(toolId);
+    if (surface) items.push({ id: toolId, kind: 'surface', surface });
+    return items;
+  }, []);
+
+  const persistPinnedToolIds = async (nextIds: string[]) => {
+    setPinError(null);
+    const contributionIds = getPinnedToolContributionIds(nextIds);
+    if (!currentProfile) {
+      await replacePinnedByContributionIds(contributionIds);
+      return;
+    }
+    const nextProfile = JSON.parse(JSON.stringify(currentProfile)) as typeof currentProfile;
+    nextProfile.shellLayout = {
+      ...(nextProfile.shellLayout ?? {}),
+      pinnedTools: contributionIds,
+    };
+    try {
+      await saveCurrentProfile({
+        profile: nextProfile,
+        expectedRevision: currentProfile.revision ?? 1,
+      });
+    } catch (error) {
+      setPinError(String(error));
+    }
+  };
+
+  const togglePinnedTool = (toolId: string) => {
+    const next = pinnedToolIds.includes(toolId)
+      ? pinnedToolIds.filter((id) => id !== toolId)
+      : [...pinnedToolIds, toolId];
+    void persistPinnedToolIds(next);
+  };
 
   useEffect(() => {
     if (selectedIndex >= orderedFilteredTools.length) {
@@ -146,13 +202,16 @@ export function BuiltinToolsCenter({
 
   const handlePinnedDrop = (
     event: DragEvent<HTMLElement>,
-    beforeToolId: BuiltinToolId | null,
+    beforeToolId: string | null,
   ) => {
     event.preventDefault();
     if (!draggedToolId) {
       return;
     }
-    void reorderPinned(draggedToolId, beforeToolId);
+    const next = pinnedToolIds.filter((id) => id !== draggedToolId);
+    const targetIndex = beforeToolId ? next.indexOf(beforeToolId) : next.length;
+    next.splice(targetIndex < 0 ? next.length : targetIndex, 0, draggedToolId);
+    void persistPinnedToolIds(next);
     setDraggedToolId(null);
   };
 
@@ -179,6 +238,12 @@ export function BuiltinToolsCenter({
           </div>
         </div>
 
+        {pinError ? (
+          <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
+            快捷栏保存失败：{pinError}
+          </p>
+        ) : null}
+
         <section>
           <div className="mb-2 flex items-center justify-between gap-3">
             <div>
@@ -198,8 +263,10 @@ export function BuiltinToolsCenter({
                 尚未固定功能，可从下方列表添加。
               </div>
             ) : pinnedTools.map((tool) => {
-              const Icon = tool.icon;
-              const unavailable = tool.requiresProject && !hasActiveProject;
+              const Icon = tool.kind === 'builtin' ? tool.tool.icon : FileCode2;
+              const title = tool.kind === 'builtin' ? tool.tool.title : tool.surface.title;
+              const unavailable = (tool.kind === 'builtin' ? tool.tool.requiresProject : tool.surface.requiresProject)
+                && !hasActiveProject;
               return (
                 <div
                   key={tool.id}
@@ -216,23 +283,31 @@ export function BuiltinToolsCenter({
                   <GripVertical className="h-4 w-4 cursor-grab text-gray-300 active:cursor-grabbing dark:text-gray-600" />
                   <button
                     type="button"
-                    onClick={() => openTool(tool.id)}
+                    onClick={() => {
+                      if (tool.kind === 'builtin') openTool(tool.tool.id);
+                      else {
+                        onOpenScriptSurface?.(tool.surface);
+                        onClose();
+                      }
+                    }}
                     disabled={unavailable}
                     className="flex min-w-0 items-center gap-1.5 px-1 text-xs font-medium text-gray-700 disabled:cursor-not-allowed disabled:text-gray-400 dark:text-gray-200 dark:disabled:text-gray-600"
-                    title={unavailable ? '需要先打开项目' : `打开${tool.title}`}
+                    title={unavailable ? '需要先打开项目' : `打开${title}`}
                   >
                     <Icon className="h-4 w-4 shrink-0" />
-                    <span className="max-w-28 truncate">{tool.title}</span>
+                    <span className="max-w-28 truncate">{title}</span>
                   </button>
-                  <HelpAssistant
-                    title={tool.title}
-                    text={tool.help}
-                    placement="bottom-start"
-                    width={350}
-                  />
+                  {tool.kind === 'builtin' ? (
+                    <HelpAssistant
+                      title={tool.tool.title}
+                      text={tool.tool.help}
+                      placement="bottom-start"
+                      width={350}
+                    />
+                  ) : null}
                   <button
                     type="button"
-                    onClick={() => void togglePinned(tool.id)}
+                    onClick={() => togglePinnedTool(tool.id)}
                     className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-200"
                     title="取消固定"
                   >
@@ -290,7 +365,7 @@ export function BuiltinToolsCenter({
                         {tool.pinnable ? (
                           <button
                             type="button"
-                            onClick={() => void togglePinned(tool.id)}
+                            onClick={() => togglePinnedTool(tool.id)}
                             className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors ${pinned ? 'bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/40 dark:text-blue-300' : 'text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-200'}`}
                             title={pinned ? '取消固定' : '固定到快捷栏'}
                           >
@@ -314,25 +389,39 @@ export function BuiltinToolsCenter({
                 {filteredScriptSurfaces.map((surface) => {
                   const unavailable = surface.requiresProject && !hasActiveProject;
                   return (
-                    <button
+                    <div
                       key={`${surface.componentId}:${surface.surfaceId}`}
-                      type="button"
-                      disabled={unavailable}
-                      onClick={() => {
-                        if (unavailable) return;
-                        onOpenScriptSurface?.(surface);
-                        onClose();
-                      }}
-                      className="flex min-w-0 items-center gap-3 rounded-md border border-gray-200 bg-white p-2 text-left transition-colors hover:bg-gray-50 disabled:cursor-not-allowed dark:border-gray-700 dark:bg-gray-900 dark:hover:bg-gray-800/70"
+                      className="flex min-w-0 items-center gap-2 rounded-md border border-gray-200 bg-white p-2 text-left transition-colors hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:hover:bg-gray-800/70"
                     >
-                      <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md ${unavailable ? 'bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-600' : 'bg-violet-100 text-violet-700 dark:bg-violet-950/50 dark:text-violet-300'}`}>
-                        <FileCode2 className="h-5 w-5" />
-                      </span>
-                      <span className="min-w-0">
-                        <span className={`block truncate text-sm font-medium ${unavailable ? 'text-gray-400 dark:text-gray-600' : 'text-gray-900 dark:text-gray-100'}`}>{surface.title}</span>
-                        <span className="mt-0.5 block truncate text-xs text-gray-500 dark:text-gray-400">{unavailable ? '需要先打开项目' : surface.description}</span>
-                      </span>
-                    </button>
+                      <button
+                        type="button"
+                        disabled={unavailable}
+                        onClick={() => {
+                          if (unavailable) return;
+                          onOpenScriptSurface?.(surface);
+                          onClose();
+                        }}
+                        className="flex min-w-0 flex-1 items-center gap-3 text-left disabled:cursor-not-allowed"
+                      >
+                        <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md ${unavailable ? 'bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-600' : 'bg-violet-100 text-violet-700 dark:bg-violet-950/50 dark:text-violet-300'}`}>
+                          <FileCode2 className="h-5 w-5" />
+                        </span>
+                        <span className="min-w-0">
+                          <span className={`block truncate text-sm font-medium ${unavailable ? 'text-gray-400 dark:text-gray-600' : 'text-gray-900 dark:text-gray-100'}`}>{surface.title}</span>
+                          <span className="mt-0.5 block truncate text-xs text-gray-500 dark:text-gray-400">{unavailable ? '需要先打开项目' : surface.description}</span>
+                        </span>
+                      </button>
+                      {surface.pinnable ? (
+                        <button
+                          type="button"
+                          onClick={() => togglePinnedTool(surface.surfaceId)}
+                          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors ${pinnedToolIds.includes(surface.surfaceId) ? 'bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/40 dark:text-blue-300' : 'text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-200'}`}
+                          title={pinnedToolIds.includes(surface.surfaceId) ? '取消固定' : '固定到快捷栏'}
+                        >
+                          {pinnedToolIds.includes(surface.surfaceId) ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
+                        </button>
+                      ) : null}
+                    </div>
                   );
                 })}
               </div>

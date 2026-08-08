@@ -1,17 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { MoreHorizontal } from 'lucide-react';
-import { BUILTIN_TOOL_BY_ID, type BuiltinToolDefinition, type OpenBuiltinTool } from '../../features/builtinTools';
+import { FileCode2, MoreHorizontal } from 'lucide-react';
+import { BUILTIN_TOOL_BY_ID, isBuiltinToolId, type BuiltinToolDefinition, type OpenBuiltinTool } from '../../features/builtinTools';
 import { useBuiltinToolsStore } from '../../stores/builtinToolsStore';
 import { useLanCollaborationStore } from '../../stores/lanCollaborationStore';
 import { getActiveRenderCount, useRenderStore } from '../../stores/renderStore';
 import { useTaskStore } from '../../stores/taskStore';
 import { isContributionAvailable } from '../../features/contributionRegistry';
 import { useContributionRegistryStore } from '../../stores/contributionRegistryStore';
+import { useAutomationStore } from '../../stores/automationStore';
+import type { ScriptSurfaceTool } from '../BuiltinToolsCenter';
 
 interface PinnedToolsToolbarProps {
   compact?: boolean;
   onOpenTool: OpenBuiltinTool;
+  onOpenScriptSurface: (surface: ScriptSurfaceTool) => void;
 }
+
+type PinnedToolbarItem =
+  | { id: BuiltinToolDefinition['id']; kind: 'builtin'; tool: BuiltinToolDefinition }
+  | { id: string; kind: 'surface'; surface: ScriptSurfaceTool };
 
 function getVisibleCapacity(compact: boolean) {
   const width = window.innerWidth;
@@ -25,20 +32,26 @@ function badgeLabel(value: number) {
   return value > 99 ? '99+' : String(value);
 }
 
-export function PinnedToolsToolbar({ compact = false, onOpenTool }: PinnedToolsToolbarProps) {
+export function PinnedToolsToolbar({
+  compact = false,
+  onOpenTool,
+  onOpenScriptSurface,
+}: PinnedToolsToolbarProps) {
   const pinnedToolIds = useBuiltinToolsStore((state) => state.pinnedToolIds);
   const loadPreferences = useBuiltinToolsStore((state) => state.loadPreferences);
   const unreadCount = useLanCollaborationStore((state) => state.unreadCount);
   const runningTasks = useTaskStore((state) => state.stats.running);
   const renderCount = useRenderStore((state) => getActiveRenderCount(state.jobsByProject));
   const contributionSnapshot = useContributionRegistryStore((state) => state.snapshot);
+  const automationSnapshot = useAutomationStore((state) => state.snapshot);
+  const initializeAutomation = useAutomationStore((state) => state.initialize);
   const [visibleCapacity, setVisibleCapacity] = useState(() => getVisibleCapacity(compact));
   const [isOverflowOpen, setIsOverflowOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    void loadPreferences();
-  }, [loadPreferences]);
+    void Promise.all([loadPreferences(), initializeAutomation()]);
+  }, [initializeAutomation, loadPreferences]);
 
   useEffect(() => {
     const updateCapacity = () => setVisibleCapacity(getVisibleCapacity(compact));
@@ -68,10 +81,35 @@ export function PinnedToolsToolbar({ compact = false, onOpenTool }: PinnedToolsT
     };
   }, [isOverflowOpen]);
 
-  const tools = useMemo(() => pinnedToolIds.flatMap((toolId) => {
-    const tool = BUILTIN_TOOL_BY_ID.get(toolId);
-    return tool && isContributionAvailable(contributionSnapshot, tool.contribution) ? [tool] : [];
-  }), [contributionSnapshot, pinnedToolIds]);
+  const scriptSurfaceById = useMemo(() => new Map(
+    (automationSnapshot?.running ? automationSnapshot.availableComponents : [])
+      .flatMap((component) => component.surfaces
+        .filter((surface) => surface.placements.includes('shell'))
+        .map((surface): ScriptSurfaceTool => ({
+          componentId: component.componentId,
+          surfaceId: surface.id,
+          title: surface.name,
+          description: `${component.componentName} · 隔离组件页面`,
+          pinnable: true,
+          requiresProject: (surface.allowedCommands ?? []).some((commandName) => component.commands.some((command) => (
+            (command.command === commandName || command.id === commandName)
+            && command.contextRequirement === 'project-required'
+          ))),
+        })))
+      .map((surface) => [surface.surfaceId, surface] as const),
+  ), [automationSnapshot]);
+  const tools = useMemo(() => pinnedToolIds.reduce<PinnedToolbarItem[]>((items, toolId) => {
+    if (isBuiltinToolId(toolId)) {
+      const tool = BUILTIN_TOOL_BY_ID.get(toolId);
+      if (tool && isContributionAvailable(contributionSnapshot, tool.contribution)) {
+        items.push({ id: tool.id, kind: 'builtin', tool });
+      }
+      return items;
+    }
+    const surface = scriptSurfaceById.get(toolId);
+    if (surface) items.push({ id: toolId, kind: 'surface', surface });
+    return items;
+  }, []), [contributionSnapshot, pinnedToolIds, scriptSurfaceById]);
   const visibleTools = tools.slice(0, visibleCapacity);
   const overflowTools = tools.slice(visibleCapacity);
 
@@ -81,9 +119,10 @@ export function PinnedToolsToolbar({ compact = false, onOpenTool }: PinnedToolsT
     return 0;
   };
 
-  const openTool = (tool: BuiltinToolDefinition) => {
+  const openTool = (tool: (typeof tools)[number]) => {
     setIsOverflowOpen(false);
-    onOpenTool(tool.id);
+    if (tool.kind === 'builtin') onOpenTool(tool.tool.id);
+    else onOpenScriptSurface(tool.surface);
   };
 
   if (tools.length === 0) {
@@ -93,15 +132,16 @@ export function PinnedToolsToolbar({ compact = false, onOpenTool }: PinnedToolsT
   return (
     <div className="flex min-w-0 items-center gap-0.5 border-l border-gray-200 pl-1 dark:border-gray-700">
       {visibleTools.map((tool) => {
-        const Icon = tool.icon;
-        const badge = getBadge(tool);
+        const Icon = tool.kind === 'builtin' ? tool.tool.icon : FileCode2;
+        const title = tool.kind === 'builtin' ? tool.tool.title : tool.surface.title;
+        const badge = tool.kind === 'builtin' ? getBadge(tool.tool) : 0;
         return (
           <button
             key={tool.id}
             type="button"
             onClick={() => openTool(tool)}
             className="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-100"
-            title={tool.title}
+            title={title}
           >
             <Icon className="h-4 w-4" />
             {badge > 0 ? (
@@ -127,8 +167,9 @@ export function PinnedToolsToolbar({ compact = false, onOpenTool }: PinnedToolsT
           {isOverflowOpen ? (
             <div className="absolute right-0 top-full z-40 mt-2 w-64 overflow-hidden rounded-md border border-gray-200 bg-white py-1 shadow-xl dark:border-gray-700 dark:bg-gray-900">
               {overflowTools.map((tool) => {
-                const Icon = tool.icon;
-                const badge = getBadge(tool);
+                const Icon = tool.kind === 'builtin' ? tool.tool.icon : FileCode2;
+                const title = tool.kind === 'builtin' ? tool.tool.title : tool.surface.title;
+                const badge = tool.kind === 'builtin' ? getBadge(tool.tool) : 0;
                 return (
                   <button
                     key={tool.id}
@@ -137,7 +178,7 @@ export function PinnedToolsToolbar({ compact = false, onOpenTool }: PinnedToolsT
                     className="flex w-full items-center gap-3 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
                   >
                     <Icon className="h-4 w-4 shrink-0 text-gray-500" />
-                    <span className="min-w-0 flex-1 truncate">{tool.title}</span>
+                    <span className="min-w-0 flex-1 truncate">{title}</span>
                     {badge > 0 ? (
                       <span className="rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-semibold text-white">
                         {badgeLabel(badge)}

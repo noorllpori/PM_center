@@ -253,8 +253,10 @@ export function WorkspaceProfileEditorDialog({
     [validation],
   );
   const missingComponentSelections = useMemo(
-    () => (draft?.enabledComponents ?? []).filter((selection) => !knownComponentIds.has(selection.id)),
-    [draft, knownComponentIds],
+    () => validation
+      ? (draft?.enabledComponents ?? []).filter((selection) => !knownComponentIds.has(selection.id))
+      : [],
+    [draft, knownComponentIds, validation],
   );
   const installedComponentManifests = useMemo(
     () => new Map(

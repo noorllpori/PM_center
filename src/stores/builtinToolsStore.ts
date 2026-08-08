@@ -4,20 +4,19 @@ import {
   BUILTIN_TOOL_BY_ID,
   DEFAULT_PINNED_BUILTIN_TOOL_IDS,
   isBuiltinToolId,
-  type BuiltinToolId,
 } from '../features/builtinTools';
 
 export interface BuiltinToolPreferences {
-  version: 1;
-  pinnedToolIds: BuiltinToolId[];
+  version: 1 | 2;
+  pinnedToolIds: string[];
 }
 
 interface BuiltinToolsState {
-  pinnedToolIds: BuiltinToolId[];
+  pinnedToolIds: string[];
   isLoaded: boolean;
   loadPreferences: () => Promise<void>;
-  togglePinned: (toolId: BuiltinToolId) => Promise<void>;
-  reorderPinned: (toolId: BuiltinToolId, beforeToolId: BuiltinToolId | null) => Promise<void>;
+  togglePinned: (toolId: string) => Promise<void>;
+  reorderPinned: (toolId: string, beforeToolId: string | null) => Promise<void>;
   replacePinnedByContributionIds: (contributionIds: string[]) => Promise<void>;
 }
 
@@ -33,19 +32,31 @@ function getStore() {
   return storePromise;
 }
 
-function sanitizePinnedToolIds(values: unknown): BuiltinToolId[] {
+function isExternalToolContributionId(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length >= 2
+    && value.length <= 256
+    && value.includes('.')
+    && !value.includes('..');
+}
+
+function sanitizePinnedToolIds(values: unknown): string[] {
   if (!Array.isArray(values)) {
     return [...DEFAULT_PINNED_BUILTIN_TOOL_IDS];
   }
 
-  const seen = new Set<BuiltinToolId>();
+  const seen = new Set<string>();
   return values.flatMap((value) => {
-    if (!isBuiltinToolId(value) || seen.has(value)) {
+    if (typeof value !== 'string' || seen.has(value)) {
       return [];
     }
 
-    const definition = BUILTIN_TOOL_BY_ID.get(value);
-    if (!definition?.pinnable) {
+    if (isBuiltinToolId(value)) {
+      const definition = BUILTIN_TOOL_BY_ID.get(value);
+      if (!definition?.pinnable) {
+        return [];
+      }
+    } else if (!isExternalToolContributionId(value)) {
       return [];
     }
 
@@ -54,20 +65,22 @@ function sanitizePinnedToolIds(values: unknown): BuiltinToolId[] {
   });
 }
 
-async function persistPreferences(pinnedToolIds: BuiltinToolId[]) {
+async function persistPreferences(pinnedToolIds: string[]) {
   const store = await getStore();
   const preferences: BuiltinToolPreferences = {
-    version: 1,
+    version: 2,
     pinnedToolIds,
   };
   await store.set(STORE_KEY, preferences);
   await store.save();
 }
 
-export function getPinnedToolContributionIds(pinnedToolIds?: BuiltinToolId[]) {
+export function getPinnedToolContributionIds(pinnedToolIds?: string[]) {
   const values = pinnedToolIds ?? useBuiltinToolsStore.getState().pinnedToolIds;
   return values.flatMap((toolId) => {
-    const contributionId = BUILTIN_TOOL_BY_ID.get(toolId)?.contribution.id;
+    const contributionId = isBuiltinToolId(toolId)
+      ? BUILTIN_TOOL_BY_ID.get(toolId)?.contribution.id
+      : toolId;
     return contributionId ? [contributionId] : [];
   });
 }
@@ -76,21 +89,21 @@ export function getKnownToolContributionIds() {
   return Array.from(BUILTIN_TOOL_BY_ID.values(), (definition) => definition.contribution.id);
 }
 
-function resolvePinnedContributionIds(contributionIds: string[]): BuiltinToolId[] {
+function resolvePinnedContributionIds(contributionIds: string[]): string[] {
   const toolIdByContribution = new Map(
     Array.from(BUILTIN_TOOL_BY_ID.values(), (definition) => [
       definition.contribution.id,
       definition.id,
     ] as const),
   );
-  const seen = new Set<BuiltinToolId>();
+  const seen = new Set<string>();
   return contributionIds.map((contributionId) => {
     const toolId = toolIdByContribution.get(contributionId);
     const definition = toolId ? BUILTIN_TOOL_BY_ID.get(toolId) : null;
-    if (!toolId || !definition?.pinnable) {
-      throw new Error(`固定工具没有可用实现：${contributionId}`);
+    if (toolId && definition?.pinnable) {
+      return toolId;
     }
-    return toolId;
+    return contributionId;
   }).filter((toolId) => {
     if (seen.has(toolId)) {
       return false;
@@ -116,12 +129,12 @@ export const useBuiltinToolsStore = create<BuiltinToolsState>((set, get) => ({
       try {
         const store = await getStore();
         const stored = await store.get<BuiltinToolPreferences>(STORE_KEY);
-        const pinnedToolIds = stored?.version === 1
+        const pinnedToolIds = stored?.version === 2 || stored?.version === 1
           ? sanitizePinnedToolIds(stored.pinnedToolIds)
           : [...DEFAULT_PINNED_BUILTIN_TOOL_IDS];
         set({ pinnedToolIds, isLoaded: true });
 
-        if (!stored || stored.version !== 1) {
+        if (!stored || stored.version !== 2) {
           await persistPreferences(pinnedToolIds);
         }
       } catch (error) {
@@ -136,8 +149,10 @@ export const useBuiltinToolsStore = create<BuiltinToolsState>((set, get) => ({
   },
 
   togglePinned: async (toolId) => {
-    const definition = BUILTIN_TOOL_BY_ID.get(toolId);
-    if (!definition?.pinnable) {
+    if (isBuiltinToolId(toolId)) {
+      const definition = BUILTIN_TOOL_BY_ID.get(toolId);
+      if (!definition?.pinnable) return;
+    } else if (!isExternalToolContributionId(toolId)) {
       return;
     }
 

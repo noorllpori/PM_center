@@ -32,7 +32,10 @@ import { createWorkspaceTabStore, type WorkspaceTabStoreApi } from '../../stores
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useShellTabStore, normalizeProjectPath } from '../../stores/shellTabStore';
-import { useBuiltinToolsStore } from '../../stores/builtinToolsStore';
+import {
+  getPinnedToolContributionIds,
+  useBuiltinToolsStore,
+} from '../../stores/builtinToolsStore';
 import { useLanCollaborationStore } from '../../stores/lanCollaborationStore';
 import { useWorkspaceProfileStore } from '../../stores/workspaceProfileStore';
 import {
@@ -445,12 +448,7 @@ export function FileManager() {
 
     const initializeSettings = async () => {
       await Promise.all([loadSettings(), loadBuiltinToolsPreferences()]);
-      const legacyPinnedTools = useBuiltinToolsStore
-        .getState()
-        .pinnedToolIds.flatMap((toolId) => {
-          const contributionId = BUILTIN_TOOL_BY_ID.get(toolId)?.contribution.id;
-          return contributionId ? [contributionId] : [];
-        });
+      const legacyPinnedTools = getPinnedToolContributionIds();
       await initializeWorkspaceProfiles(legacyPinnedTools);
       const releaseRegistry = await initializeContributionRegistry();
       if (!isActive) {
@@ -1572,7 +1570,10 @@ export function FileManager() {
               projectStore={activeProjectSession.projectStore}
               workspaceTabStore={activeProjectSession.workspaceTabStore}
             >
-              <Toolbar onOpenBuiltinTool={openBuiltinTool} />
+              <Toolbar
+                onOpenBuiltinTool={openBuiltinTool}
+                onOpenScriptSurface={setActiveScriptSurface}
+              />
             </ProjectSessionProvider>
           ) : (
             <div className="h-full px-3 py-2" />
