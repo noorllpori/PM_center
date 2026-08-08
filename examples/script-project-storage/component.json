@@ -10,7 +10,7 @@
   "category": "data",
   "tags": ["example", "project", "storage"],
   "distribution": "local",
-  "uiMode": "headless",
+  "uiMode": "none",
   "platforms": ["windows-x64"],
   "entry": "main.py",
   "capabilities": [

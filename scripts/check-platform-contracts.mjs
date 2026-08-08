@@ -36,6 +36,21 @@ for (const [schemaName, fixtureName] of cases) {
   }
 }
 
+const componentExamplePaths = [
+  'examples/script-project-storage/component.json',
+  'examples/script-automation-blend-audit/component.json',
+  'examples/ninniku-music-player/component.json',
+];
+const validateComponentExample = validators.get('component-manifest.schema.json');
+for (const relativePath of componentExamplePaths) {
+  const example = readJson(path.join(root, relativePath));
+  if (!validateComponentExample(example)) {
+    throw new Error(
+      `${relativePath} does not match component-manifest.schema.json:\n${JSON.stringify(validateComponentExample.errors, null, 2)}`,
+    );
+  }
+}
+
 const unknownCapability = readJson(
   path.join(fixtureRoot, 'invalid', 'module-unknown-capability.json'),
 );
@@ -129,7 +144,7 @@ if (rustCheck.status !== 0) {
 }
 
 console.log('Nexora platform contract v1 checks passed.');
-console.log(`Validated ${cases.length} schemas, ${cases.length} fixtures, SDK docs, Capability parity, BlenderIO, and Rust semantic rules.`);
+console.log(`Validated ${cases.length} schemas, ${cases.length} fixtures, ${componentExamplePaths.length} component examples, SDK docs, Capability parity, BlenderIO, and Rust semantic rules.`);
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));

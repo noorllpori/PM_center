@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Ninniku 音乐播放器</title>
+    <link rel="stylesheet" href="style.css">
+  </head>
+  <body>
+    <main class="app-shell" id="drop-surface">
+      <header class="topbar">
+        <div class="brand-block">
+          <div class="brand-mark" aria-hidden="true">N</div>
+          <div class="brand-copy">
+            <h1>Ninniku Player</h1>
+            <p id="session-status">本机播放 · 0 首</p>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <button class="text-button" id="add-button" type="button">
+            <span aria-hidden="true">＋</span>
+            添加音乐
+          </button>
+          <button class="icon-button subtle" id="clear-button" type="button" title="清空播放列表" aria-label="清空播放列表" disabled>
+            ×
+          </button>
+          <input id="file-picker" type="file" accept="audio/*,.mp3,.wav,.flac,.m4a,.aac,.ogg,.opus,.wma" multiple hidden>
+        </div>
+      </header>
+
+      <div class="player-layout">
+        <section class="now-playing" aria-label="正在播放">
+          <div class="artwork" id="artwork" aria-hidden="true">
+            <span id="artwork-label">NP</span>
+            <i></i><i></i><i></i><i></i>
+          </div>
+
+          <div class="track-heading">
+            <p class="eyebrow">正在播放</p>
+            <h2 id="track-title">尚未选择音乐</h2>
+            <p id="track-artist">Ninniku Player</p>
+          </div>
+
+          <audio id="audio" preload="metadata"></audio>
+
+          <div class="timeline">
+            <span id="current-time">0:00</span>
+            <input id="progress" type="range" min="0" max="1000" value="0" aria-label="播放进度" disabled>
+            <span id="duration">0:00</span>
+          </div>
+
+          <div class="transport" aria-label="播放控制">
+            <button class="icon-button" id="shuffle-button" type="button" title="随机播放" aria-label="随机播放" aria-pressed="false">⇄</button>
+            <button class="icon-button" id="previous-button" type="button" title="上一首" aria-label="上一首" disabled>│◀</button>
+            <button class="play-button" id="play-button" type="button" title="播放" aria-label="播放">▶</button>
+            <button class="icon-button" id="next-button" type="button" title="下一首" aria-label="下一首" disabled>▶│</button>
+            <button class="icon-button" id="repeat-button" type="button" title="循环关闭" aria-label="循环关闭" data-mode="off">↻</button>
+          </div>
+
+          <div class="volume-row">
+            <button class="volume-button" id="mute-button" type="button" title="静音" aria-label="静音">音量</button>
+            <input id="volume" type="range" min="0" max="1" step="0.01" value="0.8" aria-label="音量">
+            <span id="volume-value">80%</span>
+          </div>
+
+          <p class="playback-status" id="playback-status" role="status">等待添加音乐</p>
+        </section>
+
+        <section class="queue-panel" aria-label="播放列表">
+          <div class="queue-header">
+            <div>
+              <p class="eyebrow">当前会话</p>
+              <h2>播放列表</h2>
+            </div>
+            <span class="queue-count" id="queue-count">0 首</span>
+          </div>
+          <div class="empty-state" id="empty-state">
+            <div class="empty-symbol" aria-hidden="true">♫</div>
+            <p>播放列表为空</p>
+            <button class="text-button compact" id="empty-add-button" type="button">添加音乐</button>
+          </div>
+          <ol class="track-list" id="track-list" aria-label="音乐列表"></ol>
+        </section>
+      </div>
+
+      <div class="drop-overlay" id="drop-overlay" aria-hidden="true">
+        <div>
+          <strong>添加到播放列表</strong>
+          <span>释放音频文件</span>
+        </div>
+      </div>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

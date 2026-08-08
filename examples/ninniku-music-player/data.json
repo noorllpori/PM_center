@@ -1,0 +1,7 @@
+{
+  "kind": "nexora-script-surface-example",
+  "name": "Ninniku Music Player",
+  "interfaceStatus": "stable-2.8.5",
+  "networkAccess": false,
+  "persistentPlaylist": false
+}

@@ -2337,10 +2337,7 @@ impl ScriptAutomationRuntime {
             trusted: self.is_trusted_directory(source_path),
             content_digest: None,
             manifest: None,
-            warnings: vec![
-                "Python 组件属于受信任代码，仍拥有当前 Windows 用户的系统权限。".into(),
-                "Capability 只约束 Nexora SDK 与宿主接口，不能沙箱 Python 标准库。".into(),
-            ],
+            warnings: Vec::new(),
             errors: Vec::new(),
         };
         let source = match fs::canonicalize(source_path) {
@@ -2372,6 +2369,17 @@ impl ScriptAutomationRuntime {
                 return report;
             }
         };
+        if matches!(
+            manifest.runtime,
+            ComponentRuntime::PythonAction | ComponentRuntime::PythonWorker
+        ) {
+            report
+                .warnings
+                .push("Python 组件属于受信任代码，仍拥有当前 Windows 用户的系统权限。".into());
+            report.warnings.push(
+                "Capability 只约束 Nexora SDK 与宿主接口，不能沙箱 Python 标准库。".into(),
+            );
+        }
         if manifest.contributes.automation_commands.is_empty()
             && manifest.contributes.script_surfaces.is_empty()
         {
@@ -2806,9 +2814,7 @@ window.nexora = Object.freeze({{
 }});
 </script>"#
         );
-        let csp = format!(
-            r#"<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; script-src 'nonce-{nonce}'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">"#
-        );
+        let csp = script_surface_csp(&nonce);
         let resource_root = entry.parent().ok_or("脚本页面入口缺少父目录")?;
         let source = prepare_script_surface_source(resource_root, &source, &nonce)?;
         let html = if let Some(index) = source.to_ascii_lowercase().find("</head>") {
@@ -3331,6 +3337,12 @@ window.nexora = Object.freeze({{
             ids.push(id);
         }
     }
+}
+
+fn script_surface_csp(nonce: &str) -> String {
+    format!(
+        r#"<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'nonce-{nonce}'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">"#
+    )
 }
 
 fn required_bridge_string(payload: &Value, key: &str) -> Result<String, String> {
@@ -4839,6 +4851,31 @@ mod tests {
         assert!(prepared.contains("<script nonce=\"nonce-1\">window.inlineReady = true;</script>"));
         assert!(!prepared.contains("src=\"app.js\""));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn script_surface_csp_allows_local_media_without_network_access() {
+        let csp = script_surface_csp("nonce-1");
+        assert!(csp.contains("media-src data: blob:"));
+        assert!(csp.contains("connect-src 'none'"));
+        assert!(csp.contains("script-src 'nonce-nonce-1'"));
+        assert!(!csp.contains("http:"));
+        assert!(!csp.contains("https:"));
+    }
+
+    #[test]
+    fn music_player_example_uses_a_valid_data_pack_surface_contract() {
+        let manifest = parse_component_manifest(include_str!(
+            "../../../examples/ninniku-music-player/component.json"
+        ))
+        .expect("music player example manifest should remain valid");
+        assert_eq!(manifest.id, "com.ninniku.music-player");
+        assert_eq!(manifest.runtime, ComponentRuntime::DataPack);
+        assert!(manifest.capabilities.is_empty());
+        assert_eq!(manifest.contributes.script_surfaces.len(), 1);
+        assert!(manifest.contributes.script_surfaces[0]
+            .allowed_commands
+            .is_empty());
     }
 
     #[test]

@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "com.ninniku.music-player",
+  "name": "Ninniku 音乐播放器",
+  "description": "在隔离组件页面中播放用户临时选择或拖入的本机音频文件。",
+  "version": "0.1.0",
+  "apiVersion": "1",
+  "runtime": "data-pack",
+  "role": "feature",
+  "category": "workspace",
+  "tags": ["music", "audio", "player", "example"],
+  "distribution": "local",
+  "uiMode": "contributed",
+  "platforms": ["windows-x64"],
+  "entry": "data.json",
+  "capabilities": [],
+  "requiresComponents": [],
+  "optionalComponents": [],
+  "contributes": {
+    "automationCommands": [],
+    "scriptSurfaces": [
+      {
+        "id": "com.ninniku.music-player.surface",
+        "name": "Ninniku 音乐播放器",
+        "entry": "ui/index.html",
+        "placements": ["workspace", "dialog"],
+        "allowedCommands": []
+      }
+    ]
+  },
+  "resources": {
+    "maxMemoryMb": 128,
+    "maxParallelism": 1,
+    "timeoutMs": 30000
+  },
+  "publisher": "章知涵@Ninniku"
+}
