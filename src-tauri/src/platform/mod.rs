@@ -191,11 +191,11 @@ impl PlatformRuntime {
                 error.to_string(),
             )
         })?;
-        let component_manifests = components.manifests();
-        gateway.sync_component_manifests(&component_manifests);
+        let active_component_manifests = components.manifests();
+        gateway.sync_component_manifests(&active_component_manifests);
         let profiles = Arc::new(WorkspaceProfileRuntime::new_with_components(
             app_data_dir,
-            component_manifests,
+            components.installed_manifests(),
         ));
         script_automation.attach_host(manager.clone(), profiles.clone(), gateway.clone());
         Ok(Self {
@@ -213,10 +213,11 @@ impl PlatformRuntime {
 }
 
 fn sync_component_catalog(runtime: &PlatformRuntime) -> Result<(), ComponentRuntimeError> {
-    let manifests = runtime.components.manifests();
+    let active_manifests = runtime.components.manifests();
+    let installed_manifests = runtime.components.installed_manifests();
     runtime
         .profiles
-        .replace_component_manifests(manifests.clone())
+        .replace_component_manifests(installed_manifests)
         .map_err(|error| {
             ComponentRuntimeError::new(
                 ComponentRuntimeErrorCode::ComponentDependencyConflict,
@@ -224,7 +225,7 @@ fn sync_component_catalog(runtime: &PlatformRuntime) -> Result<(), ComponentRunt
             )
             .with_details(error.details)
         })?;
-    runtime.gateway.sync_component_manifests(&manifests);
+    runtime.gateway.sync_component_manifests(&active_manifests);
     Ok(())
 }
 
@@ -364,10 +365,11 @@ pub async fn install_component_from_package(
 }
 
 #[tauri::command]
-pub async fn uninstall_component(
+pub async fn disable_component(
     component_id: String,
     runtime: State<'_, PlatformRuntime>,
 ) -> Result<pmc_platform::ComponentManifestV1, ComponentRuntimeError> {
+    let _profile_guard = runtime.profile_switch_lock.lock().await;
     runtime
         .script_automation
         .prepare_component_uninstall(&component_id)
@@ -378,52 +380,114 @@ pub async fn uninstall_component(
                 error,
             )
         })?;
-    let manifest = runtime.components.manifest(&component_id).ok_or_else(|| {
-        ComponentRuntimeError::new(
-            ComponentRuntimeErrorCode::ComponentNotInstalled,
-            format!("组件 {component_id} 未安装"),
-        )
-    })?;
-    let template_ids = manifest
-        .contributes
-        .shell_templates
-        .iter()
-        .map(|template| template.id.clone())
-        .chain(
-            manifest
-                .contributes
-                .page_templates
-                .iter()
-                .map(|template| template.id.clone()),
-        )
-        .chain(
-            manifest
-                .contributes
-                .theme_presets
-                .iter()
-                .map(|template| template.id.clone()),
-        )
-        .collect::<std::collections::BTreeSet<_>>();
-    let references = runtime
-        .profiles
-        .profiles_referencing_presentation_templates(&template_ids)
+    let manifest = runtime.components.disable(&component_id).await?;
+    sync_component_catalog(&runtime)?;
+    Ok(manifest)
+}
+
+#[tauri::command]
+pub async fn enable_component(
+    component_id: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<pmc_platform::ComponentManifestV1, ComponentRuntimeError> {
+    let _profile_guard = runtime.profile_switch_lock.lock().await;
+    let manifest = runtime.components.enable(&component_id).await?;
+    sync_component_catalog(&runtime)?;
+    Ok(manifest)
+}
+
+#[tauri::command]
+pub async fn delete_component(
+    component_id: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<pmc_platform::ComponentManifestV1, ComponentRuntimeError> {
+    let _profile_guard = runtime.profile_switch_lock.lock().await;
+    runtime
+        .script_automation
+        .prepare_component_uninstall(&component_id)
+        .await
         .map_err(|error| {
             ComponentRuntimeError::new(
                 ComponentRuntimeErrorCode::ComponentDependencyConflict,
-                format!("无法确认表现模板引用，已拒绝卸载: {}", error.message),
+                error,
+            )
+        })?;
+    let manifest = runtime
+        .components
+        .stored_manifest(&component_id)
+        .ok_or_else(|| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentNotInstalled,
+                format!("组件 {component_id} 未安装"),
+            )
+        })?;
+    let module_manifests = formal_module_manifests(&runtime);
+    let profile_rollback = runtime
+        .profiles
+        .remove_component_references(&manifest, &module_manifests)
+        .map_err(|error| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentDependencyConflict,
+                error.message,
             )
             .with_details(error.details)
         })?;
-    if !references.is_empty() {
-        return Err(ComponentRuntimeError::new(
-            ComponentRuntimeErrorCode::ComponentDependencyConflict,
-            "组件提供的表现模板仍被装配方案引用。请先切换到其他模板并保存方案后再卸载。",
-        )
-        .with_details(references));
+    let handler_ids = manifest
+        .contributes
+        .file_handlers
+        .iter()
+        .map(|handler| handler.id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let routing_rollback = match runtime.file_routing.remove_component_handlers(&handler_ids) {
+        Ok(rollback) => rollback,
+        Err(mut error) => {
+            if let Err(rollback_error) = runtime
+                .profiles
+                .rollback_component_reference_removal(profile_rollback)
+            {
+                error
+                    .details
+                    .push(format!("恢复装配方案失败：{}", rollback_error.message));
+                error.details.extend(rollback_error.details);
+            }
+            return Err(error);
+        }
+    };
+    if let Err(mut error) = runtime.components.delete(&component_id).await {
+        if let Err(rollback_error) = runtime
+            .file_routing
+            .rollback_component_handler_removal(routing_rollback)
+        {
+            error
+                .details
+                .push(format!("恢复文件打开绑定失败：{}", rollback_error.message));
+            error.details.extend(rollback_error.details);
+        }
+        if let Err(rollback_error) = runtime
+            .profiles
+            .rollback_component_reference_removal(profile_rollback)
+        {
+            error
+                .details
+                .push(format!("恢复装配方案失败：{}", rollback_error.message));
+            error.details.extend(rollback_error.details);
+        }
+        return Err(error);
     }
-    let manifest = runtime.components.uninstall(&component_id).await?;
     sync_component_catalog(&runtime)?;
     Ok(manifest)
+}
+
+#[tauri::command]
+pub async fn uninstall_component(
+    component_id: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<pmc_platform::ComponentManifestV1, ComponentRuntimeError> {
+    if runtime.components.is_bundled(&component_id) {
+        disable_component(component_id, runtime).await
+    } else {
+        delete_component(component_id, runtime).await
+    }
 }
 
 #[tauri::command]
@@ -431,9 +495,7 @@ pub async fn reinstall_bundled_component(
     component_id: String,
     runtime: State<'_, PlatformRuntime>,
 ) -> Result<pmc_platform::ComponentManifestV1, ComponentRuntimeError> {
-    let manifest = runtime.components.reinstall_bundled(&component_id).await?;
-    sync_component_catalog(&runtime)?;
-    Ok(manifest)
+    enable_component(component_id, runtime).await
 }
 
 #[tauri::command]
@@ -600,7 +662,9 @@ pub async fn reload_development_components(
             continue;
         }
         let Some(component_id) = snapshot.component_id else {
-            result.errors.push(format!("{}: 缺少组件 ID", snapshot.source_path));
+            result
+                .errors
+                .push(format!("{}: 缺少组件 ID", snapshot.source_path));
             continue;
         };
         if let Err(error) = runtime

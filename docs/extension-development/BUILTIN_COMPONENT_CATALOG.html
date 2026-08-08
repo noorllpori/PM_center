@@ -1,0 +1,972 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <link rel="icon" href="data:,">
+  <title>Nexora 内置组件与接口目录</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f6f8;
+      --panel: #ffffff;
+      --panel-muted: #f8fafb;
+      --text: #172033;
+      --muted: #667085;
+      --faint: #98a2b3;
+      --line: #dfe4ea;
+      --line-strong: #c9d1dc;
+      --accent: #0f766e;
+      --accent-soft: #e7f5f3;
+      --orange: #c25b1a;
+      --orange-soft: #fff1e7;
+      --blue: #2457a6;
+      --blue-soft: #eaf1fb;
+      --red: #b42318;
+      --red-soft: #fff0ee;
+      --purple: #6f42a5;
+      --purple-soft: #f3edfa;
+      --shadow: 0 10px 30px rgba(28, 39, 54, 0.07);
+      --radius: 8px;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --bg: #111418;
+        --panel: #191d23;
+        --panel-muted: #20252d;
+        --text: #edf1f6;
+        --muted: #aab3c0;
+        --faint: #7f8997;
+        --line: #303741;
+        --line-strong: #46505d;
+        --accent: #58c8bd;
+        --accent-soft: #183d3a;
+        --orange: #f2a66f;
+        --orange-soft: #44291b;
+        --blue: #89b4f4;
+        --blue-soft: #1c304d;
+        --red: #ff8f86;
+        --red-soft: #48211f;
+        --purple: #c5a1ec;
+        --purple-soft: #372648;
+        --shadow: 0 12px 36px rgba(0, 0, 0, 0.25);
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+      font-size: 14px;
+      line-height: 1.65;
+      letter-spacing: 0;
+    }
+    button, input { font: inherit; letter-spacing: 0; }
+    a { color: inherit; }
+    code, pre {
+      font-family: Consolas, "Cascadia Code", monospace;
+      letter-spacing: 0;
+    }
+
+    .app {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 286px minmax(0, 1fr);
+    }
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow: auto;
+      border-right: 1px solid var(--line);
+      background: var(--panel);
+      padding: 24px 18px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 0 8px 20px;
+      border-bottom: 1px solid var(--line);
+    }
+    .brand-mark {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 3px;
+      padding: 4px;
+      background: var(--orange-soft);
+      border: 1px solid color-mix(in srgb, var(--orange) 28%, transparent);
+      border-radius: 7px;
+    }
+    .brand-mark span { background: var(--orange); border-radius: 2px; }
+    .brand-mark span:last-child { opacity: 0.55; }
+    .brand strong { display: block; font-size: 15px; }
+    .brand small { display: block; color: var(--muted); font-size: 11px; }
+    .side-section { margin-top: 20px; }
+    .side-title {
+      margin: 0 8px 7px;
+      color: var(--faint);
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .side-link {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-height: 34px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 12px;
+    }
+    .side-link:hover, .side-link:focus-visible {
+      color: var(--text);
+      background: var(--panel-muted);
+      outline: none;
+    }
+    .side-link code {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .side-link span { color: var(--faint); font-size: 10px; }
+    .sidebar-note {
+      margin-top: 24px;
+      padding: 11px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel-muted);
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    main { min-width: 0; }
+    .hero {
+      padding: 48px clamp(24px, 5vw, 76px) 34px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .hero-inner, .content { max-width: 1280px; margin: 0 auto; }
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(29px, 4vw, 46px);
+      line-height: 1.15;
+      font-weight: 720;
+    }
+    .lead {
+      max-width: 860px;
+      margin: 16px 0 0;
+      color: var(--muted);
+      font-size: 16px;
+    }
+    .hero-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 18px;
+      margin-top: 22px;
+      color: var(--faint);
+      font-size: 12px;
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 28px;
+    }
+    .stat {
+      padding: 15px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel-muted);
+    }
+    .stat strong { display: block; font-size: 23px; line-height: 1.2; }
+    .stat span { color: var(--muted); font-size: 11px; }
+
+    .content { padding: 30px clamp(24px, 5vw, 76px) 80px; }
+    .section { scroll-margin-top: 18px; margin-top: 34px; }
+    .section:first-child { margin-top: 0; }
+    .section-heading {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 20px;
+      margin-bottom: 14px;
+    }
+    .section-heading h2 { margin: 0; font-size: 22px; }
+    .section-heading p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+
+    .call-flow {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+    .flow-step { min-width: 0; padding: 18px; border-right: 1px solid var(--line); }
+    .flow-step:last-child { border-right: 0; }
+    .flow-step b { display: block; margin-bottom: 4px; }
+    .flow-step p { margin: 0; color: var(--muted); font-size: 12px; }
+    .flow-step code { color: var(--accent); }
+
+    .notice {
+      margin-top: 14px;
+      padding: 13px 15px;
+      border: 1px solid color-mix(in srgb, var(--orange) 35%, var(--line));
+      border-left: 3px solid var(--orange);
+      border-radius: var(--radius);
+      background: var(--orange-soft);
+    }
+    .notice strong { color: var(--orange); }
+    .notice p { margin: 3px 0 0; color: var(--muted); }
+
+    .api-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .api-card {
+      padding: 17px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+    }
+    .api-card h3 { margin: 0 0 5px; font-size: 15px; }
+    .api-card p { margin: 0; color: var(--muted); font-size: 12px; }
+    .api-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+
+    .toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) auto;
+      gap: 12px;
+      padding: 12px 0;
+      background: color-mix(in srgb, var(--bg) 92%, transparent);
+      backdrop-filter: blur(10px);
+    }
+    .search {
+      width: 100%;
+      min-height: 40px;
+      border: 1px solid var(--line-strong);
+      border-radius: 7px;
+      padding: 8px 12px;
+      background: var(--panel);
+      color: var(--text);
+      outline: none;
+    }
+    .search:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+    .filters { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+    .filter {
+      min-height: 40px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 7px 11px;
+      background: var(--panel);
+      color: var(--muted);
+      cursor: pointer;
+    }
+    .filter:hover { color: var(--text); border-color: var(--line-strong); }
+    .filter.active { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+
+    .catalog-count { margin: 5px 0 12px; color: var(--muted); font-size: 12px; }
+    .catalog { display: grid; gap: 12px; }
+    .component {
+      scroll-margin-top: 74px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: 0 4px 14px rgba(22, 31, 45, 0.035);
+      overflow: hidden;
+    }
+    .component[hidden] { display: none; }
+    .component summary {
+      list-style: none;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 18px;
+      padding: 17px 18px;
+      cursor: pointer;
+    }
+    .component summary::-webkit-details-marker { display: none; }
+    .component summary:hover { background: var(--panel-muted); }
+    .component-title { min-width: 0; }
+    .component-title h3 { margin: 0; font-size: 16px; }
+    .component-title code {
+      display: block;
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 11px;
+      overflow-wrap: anywhere;
+    }
+    .component-title p { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
+    .summary-side { display: flex; align-items: flex-start; justify-content: flex-end; flex-wrap: wrap; gap: 6px; max-width: 360px; }
+    .component-body { padding: 0 18px 20px; border-top: 1px solid var(--line); }
+    .facts {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin: 15px 0;
+    }
+    .fact { padding: 10px; border-radius: 6px; background: var(--panel-muted); }
+    .fact span { display: block; color: var(--faint); font-size: 10px; }
+    .fact b, .fact code { display: block; margin-top: 2px; font-size: 11px; overflow-wrap: anywhere; }
+    .body-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px 22px; }
+    .body-block h4 { margin: 0 0 6px; font-size: 12px; }
+    .body-block ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 12px; }
+    .body-block li + li { margin-top: 3px; }
+    .full { grid-column: 1 / -1; }
+    .call-box {
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--panel-muted);
+    }
+    .call-box p { margin: 0; color: var(--muted); font-size: 12px; }
+    pre {
+      overflow: auto;
+      margin: 10px 0 0;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #111827;
+      color: #e5edf7;
+      font-size: 11px;
+      line-height: 1.55;
+      white-space: pre;
+    }
+
+    .badge, .chip {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 2px 8px;
+      background: var(--panel-muted);
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.25;
+    }
+    .badge.sdk { color: var(--blue); border-color: color-mix(in srgb, var(--blue) 30%, var(--line)); background: var(--blue-soft); }
+    .badge.call { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 34%, var(--line)); background: var(--accent-soft); }
+    .badge.internal { color: var(--muted); }
+    .badge.off { color: var(--orange); border-color: color-mix(in srgb, var(--orange) 32%, var(--line)); background: var(--orange-soft); }
+    .badge.file { color: var(--purple); border-color: color-mix(in srgb, var(--purple) 30%, var(--line)); background: var(--purple-soft); }
+    .badge.warn { color: var(--red); border-color: color-mix(in srgb, var(--red) 30%, var(--line)); background: var(--red-soft); }
+
+    .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+    table { width: 100%; border-collapse: collapse; min-width: 760px; }
+    th, td { padding: 11px 13px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; font-size: 12px; }
+    th { color: var(--muted); background: var(--panel-muted); font-weight: 700; }
+    tr:last-child td { border-bottom: 0; }
+    td code { overflow-wrap: anywhere; }
+    .empty { padding: 24px; text-align: center; color: var(--muted); border: 1px dashed var(--line-strong); border-radius: var(--radius); }
+    footer { margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--faint); font-size: 11px; }
+
+    @media (max-width: 980px) {
+      .app { grid-template-columns: 1fr; }
+      .sidebar { display: none; }
+      .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 700px) {
+      .hero { padding: 28px 18px 24px; }
+      .content { padding: 20px 18px 56px; }
+      .lead { font-size: 14px; }
+      .call-flow, .api-grid, .body-grid { grid-template-columns: 1fr; }
+      .flow-step { border-right: 0; border-bottom: 1px solid var(--line); }
+      .flow-step:last-child { border-bottom: 0; }
+      .toolbar { position: static; grid-template-columns: 1fr; }
+      .filters { justify-content: flex-start; overflow-x: auto; flex-wrap: nowrap; padding-bottom: 3px; }
+      .filter { white-space: nowrap; }
+      .component summary { grid-template-columns: 1fr; }
+      .summary-side { justify-content: flex-start; max-width: none; }
+      .full { grid-column: auto; }
+      .section-heading { align-items: flex-start; flex-direction: column; gap: 4px; }
+    }
+    @media (max-width: 420px) {
+      .stats, .facts { grid-template-columns: 1fr; }
+      h1 { font-size: 29px; }
+      .component summary, .component-body { padding-left: 14px; padding-right: 14px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar" aria-label="文档目录">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"><span></span><span></span></div>
+        <div><strong>Nexora</strong><small>内置组件接口目录</small></div>
+      </div>
+      <nav>
+        <div class="side-section">
+          <p class="side-title">概览</p>
+          <a class="side-link" href="#calling-model"><code>调用模型</code><span>3 层</span></a>
+          <a class="side-link" href="#stable-host-api"><code>宿主 SDK</code><span>v1</span></a>
+          <a class="side-link" href="#component-catalog"><code>组件目录</code><span id="side-count">21</span></a>
+          <a class="side-link" href="#events"><code>自动化事件</code><span>10</span></a>
+          <a class="side-link" href="#known-gaps"><code>当前边界</code><span>重要</span></a>
+        </div>
+        <div class="side-section" id="side-host"></div>
+        <div class="side-section" id="side-bundled"></div>
+      </nav>
+      <div class="sidebar-note">
+        文档以当前源码为准。显示名称不能用于调用；开发者应始终使用稳定组件 ID、命令名和 Capability。
+      </div>
+    </aside>
+
+    <main>
+      <header class="hero">
+        <div class="hero-inner">
+          <p class="eyebrow">NEXORA EXTENSION PLATFORM · CURRENT BASELINE</p>
+          <h1>内置组件、功能与调用范围</h1>
+          <p class="lead">面向只有 Nexora 安装版的组件开发者，说明当前内置能力能做什么、怎样调用、依赖哪些组件，以及哪些功能仍属于宿主内部实现。</p>
+          <div class="hero-meta">
+            <span>产品版本：2.8.5</span>
+            <span>接口基线：stable-2.8.5</span>
+            <span>文档日期：2026-08-09</span>
+            <span>事实来源：当前 Manifest 与贡献注册表</span>
+          </div>
+          <div class="stats" aria-label="目录统计">
+            <div class="stat"><strong>14</strong><span>宿主内置组件</span></div>
+            <div class="stat"><strong>7</strong><span>随安装包可管理组件</span></div>
+            <div class="stat"><strong>1</strong><span>稳定跨组件公开命令</span></div>
+            <div class="stat"><strong>10</strong><span>稳定自动化事件</span></div>
+          </div>
+        </div>
+      </header>
+
+      <div class="content">
+        <section class="section" id="calling-model">
+          <div class="section-heading">
+            <div><h2>三层调用模型</h2><p>不要把宿主 API、组件命令和页面消息桥混为一类。</p></div>
+          </div>
+          <div class="call-flow">
+            <div class="flow-step">
+              <b>1. 隔离页面</b>
+              <p><code>window.nexora.invoke()</code> 只能启动本组件在 <code>allowedCommands</code> 中允许的命令。</p>
+            </div>
+            <div class="flow-step">
+              <b>2. Python 组件命令</b>
+              <p>通过 <code>nexora_sdk</code> 读取项目、保存状态、调用依赖并上报日志与进度。</p>
+            </div>
+            <div class="flow-step">
+              <b>3. Component Bridge</b>
+              <p><code>call_component()</code> 只能调用 Manifest 已声明依赖且目标公开登记的命令。</p>
+            </div>
+          </div>
+          <div class="notice">
+            <strong>“项目资源”不是 call_component 目标。</strong>
+            <p>项目文件、元数据和组件项目存储通过宿主 <code>nexora_sdk</code> 调用。<code>builtin.project-resources</code> 与 <code>builtin.project-resources.service</code> 没有公开 <code>automationCommands</code>。</p>
+          </div>
+        </section>
+
+        <section class="section" id="stable-host-api">
+          <div class="section-heading">
+            <div><h2>稳定宿主 SDK</h2><p>这些是组件开发者当前可以依赖的公开 Python 接口。</p></div>
+          </div>
+          <div class="api-grid">
+            <article class="api-card">
+              <h3>运行协议</h3>
+              <p>读取请求、日志、进度、取消和结果。</p>
+              <div class="api-list"><span class="chip">read_request</span><span class="chip">log</span><span class="chip">progress</span><span class="chip">raise_if_cancelled</span><span class="chip">write_result</span></div>
+            </article>
+            <article class="api-card">
+              <h3>项目上下文与文件</h3>
+              <p>所有路径为项目相对路径；写操作经过冲突、Watcher 与 TreeCache 处理。</p>
+              <div class="api-list"><span class="chip">get_project_context</span><span class="chip">list_project_files</span><span class="chip">stat_project_file</span><span class="chip">resolve_project_file</span><span class="chip">mutate_project_files</span></div>
+            </article>
+            <article class="api-card">
+              <h3>元数据与组件存储</h3>
+              <p>状态自动按组件隔离；Blob 支持全局或项目级 state/cache。</p>
+              <div class="api-list"><span class="chip">get_state</span><span class="chip">set_state</span><span class="chip">get_project_metadata</span><span class="chip">put_blob</span><span class="chip">open_blob</span><span class="chip">get_storage_directory</span></div>
+            </article>
+            <article class="api-card">
+              <h3>组件与页面桥</h3>
+              <p>依赖命令调用与本组件页面事件；跨组件通用发布/订阅尚未开放。</p>
+              <div class="api-list"><span class="chip">call_component</span><span class="chip">emit_surface_event</span><span class="chip">window.nexora.invoke</span><span class="chip">window.nexora.onEvent</span></div>
+            </article>
+          </div>
+          <pre><code>from nexora_sdk import read_request, resolve_project_file, call_component, write_result
+
+request = read_request()
+resolved = resolve_project_file("scene.blend")
+result = call_component(
+    "pmc.blendio",
+    "inspect",
+    {"path": resolved["path"]},
+    capability="project.files.read",
+    timeout_ms=120000,
+)
+write_result(result)</code></pre>
+        </section>
+
+        <section class="section" id="component-catalog">
+          <div class="section-heading">
+            <div><h2>组件目录</h2><p>宿主内置能力与随安装包组件统一展示，但技术边界保持可见。</p></div>
+          </div>
+          <div class="toolbar">
+            <input class="search" id="search" type="search" placeholder="搜索名称、ID、能力、贡献或限制..." autocomplete="off">
+            <div class="filters" role="group" aria-label="组件筛选">
+              <button class="filter active" type="button" data-filter="all">全部</button>
+              <button class="filter" type="button" data-filter="host">宿主</button>
+              <button class="filter" type="button" data-filter="bundled">可安装</button>
+              <button class="filter" type="button" data-filter="public">可调用</button>
+              <button class="filter" type="button" data-filter="file-handler">文件处理</button>
+              <button class="filter" type="button" data-filter="default-off">默认关闭</button>
+            </div>
+          </div>
+          <p class="catalog-count" id="catalog-count"></p>
+          <div class="catalog" id="catalog"></div>
+          <div class="empty" id="empty" hidden>没有符合当前搜索与筛选条件的组件。</div>
+        </section>
+
+        <section class="section" id="events">
+          <div class="section-heading">
+            <div><h2>稳定自动化事件</h2><p>事件通过 Profile 的 automationBindings 绑定，不等同于任意组件发布/订阅总线。</p></div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>事件</th><th>来源</th><th>项目上下文</th><th>说明</th></tr></thead>
+              <tbody>
+                <tr><td><code>app.started</code></td><td>脚本自动化</td><td>按绑定</td><td>Profile、模块和会话恢复完成后触发。</td></tr>
+                <tr><td><code>project.opened</code></td><td>项目管理器</td><td>事件项目</td><td>项目成功打开后触发。</td></tr>
+                <tr><td><code>project.closed</code></td><td>项目管理器</td><td>事件项目</td><td>项目关闭与资源释放流程开始时触发。</td></tr>
+                <tr><td><code>file.changed</code></td><td>项目资源</td><td>事件项目</td><td>项目 Watcher 的文件变化。</td></tr>
+                <tr><td><code>lan.file-received</code></td><td>局域网协同</td><td>按事件数据</td><td>接收文件传输状态满足完成条件时转发。</td></tr>
+                <tr><td><code>render.batch-created</code></td><td>渲染中心</td><td>批次项目</td><td>新建渲染批次。</td></tr>
+                <tr><td><code>render.batch-completed</code></td><td>渲染中心</td><td>批次项目</td><td>批次完成。</td></tr>
+                <tr><td><code>render.job-completed</code></td><td>渲染中心</td><td>作业项目</td><td>作业进度事件达到完成状态时转发。</td></tr>
+                <tr><td><code>task.completed</code></td><td>任务中心</td><td>任务项目</td><td>普通任务成功结束。</td></tr>
+                <tr><td><code>task.failed</code></td><td>任务中心</td><td>任务项目</td><td>普通任务失败。</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="section" id="known-gaps">
+          <div class="section-heading">
+            <div><h2>当前公开边界</h2><p>这些限制应直接影响组件设计，不应通过内部命令名绕过。</p></div>
+          </div>
+          <div class="api-grid">
+            <article class="api-card"><h3>没有运行时接口发现</h3><p>当前应阅读目标组件 Manifest 与本目录；还没有面向第三方的“列出所有公开命令”SDK。</p></article>
+            <article class="api-card"><h3>没有通用跨组件事件总线</h3><p>组件命令可以互调，通用 publish/subscribe 仍为 reserved-r17；当前事件由宿主自动化白名单提供。</p></article>
+            <article class="api-card"><h3>项目接口尚不等于项目管理器</h3><p>集合、标签、最近项目、项目根目录扫描和项目主页命令尚未作为稳定第三方 SDK 开放。</p></article>
+            <article class="api-card"><h3>隔离页面不能直接访问宿主</h3><p>页面不能调用 Tauri、React Store、数据库、本机路径或其他组件，只能启动本组件允许的命令。</p></article>
+            <article class="api-card"><h3>一次命令只授予一个主 Capability</h3><p>2.8.5 中一个 automationCommand 至多一个 requiredCapability；权限差异较大的操作应拆分命令。</p></article>
+            <article class="api-card"><h3>宿主 React 页面仍不可替换</h3><p>第三方可以提供沙箱 HTML 页面、文件处理器和模板，但不能直接注入 Nexora React Store 或宿主 DOM。</p></article>
+          </div>
+        </section>
+
+        <section class="section" id="diagnostics">
+          <div class="section-heading">
+            <div><h2>隐藏诊断组件</h2><p>这些条目随开发构建注册，但被排除在普通 Profile 与第三方功能目录之外。</p></div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>ID</th><th>用途</th><th>公开调用</th></tr></thead>
+              <tbody>
+                <tr><td><code>diagnostic.runtime-base</code></td><td>模块生命周期和基础权限诊断。</td><td>不可用于产品组件。</td></tr>
+                <tr><td><code>diagnostic.runtime-worker</code></td><td>依赖、项目读取和工作进程诊断。</td><td>不可用于产品组件。</td></tr>
+                <tr><td><code>diagnostic.runtime-failing</code></td><td>启动失败、健康检查失败和回滚路径诊断。</td><td>不可用于产品组件。</td></tr>
+                <tr><td><code>diagnostic.runtime-slow-stop</code></td><td>超时停止与外部写入安全诊断。</td><td>不可用于产品组件。</td></tr>
+                <tr><td><code>diagnostic.contribution-sample</code></td><td>工具、页面、Widget、DataSource 和冻结工作流节点贡献测试。</td><td>仅内部验收。</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <footer>
+          本文件是当前构建的可读目录，不替代 JSON Schema。权威合同仍包括 Component Manifest Schema、Python SDK 实现和 Component Bridge 校验逻辑。
+        </footer>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    const components = [
+      {
+        id: 'builtin.settings-center', name: '设置中心', group: 'host', category: 'workspace', defaultEnabled: true,
+        technical: '宿主贡献组件（内部 Module 适配）', scope: 'global', callLevel: 'internal', callLabel: '仅装配贡献',
+        description: '提供普通设置窗口、分层导航、组件 Schema 设置宿主和关于页面。恢复设置由独立安全内核提供。',
+        dependencies: ['无必需依赖'], capabilities: ['app.profile.read', 'app.settings.read', 'app.settings.write'],
+        contributions: ['工具 core.settings.tool', '全局组件设置', '项目组件设置', '关于与退出'],
+        abilities: ['打开普通设置中心', '承载组件声明的 Schema 设置页', '按全局/项目范围显示设置贡献'],
+        limits: ['没有公开 automationCommands', '第三方不能读取设置中心 React Store', '恢复设置不归该组件所有，停用后仍保留安全恢复入口'],
+        publicText: '第三方组件不能 call_component 调用设置中心。设备设置与 Profile 操作尚无通用 Python SDK。',
+        source: 'src-tauri/src/platform/builtin_modules.rs:207'
+      },
+      {
+        id: 'builtin.session-runtime', name: '会话运行时', group: 'host', category: 'service', defaultEnabled: true,
+        technical: '宿主贡献组件（内部 Module 适配）', scope: 'global', callLevel: 'internal', callLabel: '内部设置能力',
+        description: '管理启动后恢复上次会话、项目/文件标签关闭确认等软件级会话偏好。',
+        dependencies: ['无必需依赖'], capabilities: ['app.settings.read', 'app.settings.write'],
+        contributions: ['设置区 builtin.session-runtime.settings-section'],
+        abilities: ['控制会话恢复偏好', '控制项目标签和文件标签关闭确认'],
+        limits: ['不负责实际项目数据或 watcher', '没有公开组件命令', '第三方不能直接修改会话 Store'],
+        publicText: '仅通过装配方案启停和设置页面使用；当前没有第三方 SDK。',
+        source: 'src-tauri/src/platform/builtin_modules.rs:230'
+      },
+      {
+        id: 'builtin.desktop-integration', name: '桌面集成', group: 'host', category: 'integration', defaultEnabled: true,
+        technical: '宿主贡献组件（内部 Module 适配）', scope: 'global', callLevel: 'internal', callLabel: '内部设置能力',
+        description: '管理 Windows 登录后自动启动等桌面环境集成功能。',
+        dependencies: ['无必需依赖'], capabilities: ['app.settings.read', 'app.settings.write'],
+        contributions: ['设置区 builtin.desktop-integration.settings-section'],
+        abilities: ['配置开机自动启动', '显示桌面集成设置'],
+        limits: ['没有公开组件命令', '不向组件开放注册表或启动项直接访问'],
+        publicText: '第三方组件当前不能直接调用；应由用户在设置页修改。',
+        source: 'src-tauri/src/platform/builtin_modules.rs:244'
+      },
+      {
+        id: 'builtin.external-tools', name: '外部工具', group: 'host', category: 'integration', defaultEnabled: true,
+        technical: '宿主贡献组件（内部 Module 适配）', scope: 'global', callLevel: 'internal', callLabel: '仅宿主入口',
+        description: '管理 Blender、FFmpeg、FFprobe 路径与版本检测，并提供 Blender 文件解析器入口。',
+        dependencies: ['无必需依赖'], capabilities: ['app.settings.read', 'app.settings.write', 'filesystem.external.read'],
+        contributions: ['工具 core.blender-file-parser.tool', '设置区 builtin.external-tools.settings-section'],
+        abilities: ['保存和检测外部程序路径', '打开 Blender 文件解析器弹窗', '为渲染中心提供工具路径'],
+        limits: ['路径设置没有公开 SDK', 'Blender 解析公开调用属于 pmc.blendio，不属于本组件', '不能用显示名称调用'],
+        publicText: '第三方若需要解析 .blend，应依赖 pmc.blendio；若需要启动进程，应声明 process.spawn 并使用受支持运行时。',
+        source: 'src-tauri/src/platform/builtin_modules.rs:258'
+      },
+      {
+        id: 'builtin.automation-runtime', name: '任务、Python 与旧插件', group: 'host', category: 'automation', defaultEnabled: true,
+        technical: '宿主后台运行时（内部 Module 适配）', scope: 'global', callLevel: 'internal', callLabel: '运行时基础设施',
+        description: '管理任务中心、Python 环境、venv、pip、旧插件动作与受控子进程生命周期。',
+        dependencies: ['可选 builtin.project-resources'], capabilities: ['app.settings.read', 'app.settings.write', 'filesystem.external.read', 'filesystem.external.write', 'project.files.read', 'project.files.write', 'task.run', 'task.cancel', 'python.execute', 'python.packages.manage', 'process.spawn', 'network.http.request'],
+        contributions: ['Python 环境工具与弹窗', '任务中心工具与弹窗', '脚本与插件设置', '项目插件设置', '旧插件右键动作'],
+        abilities: ['执行普通任务', '管理 Python 环境和依赖', '运行旧版插件动作', '统一取消和清理子进程'],
+        limits: ['没有公开 automationCommands', '普通组件不能直接领取内部 Task Store', '正式脚本组件应使用 builtin.script-automation'],
+        publicText: '它为脚本自动化提供底层进程能力，但不是 call_component 目标。任务完成和失败可作为自动化事件。',
+        source: 'src-tauri/src/platform/builtin_modules.rs:354'
+      },
+      {
+        id: 'builtin.script-automation', name: '脚本自动化', group: 'host', category: 'automation', defaultEnabled: true,
+        technical: '宿主脚本平台（内部 Module 适配）', scope: 'global', callLevel: 'sdk', callLabel: '提供宿主 SDK',
+        description: '运行可安装 Python 脚本组件、手动命令、事件触发、五段式 cron、隔离页面和开发目录热重载。',
+        dependencies: ['必需 builtin.automation-runtime', '可选 builtin.project-resources'], capabilities: ['按脚本 Manifest 与当前命令授权'],
+        contributions: ['工具 builtin.script-automation.studio-tool', '脚本开发者工作台', '调度器', '事件转发器', '运行恢复'],
+        abilities: ['提供 nexora_sdk', '承载 automationCommands', '运行 scriptSurfaces', '持久化运行、日志、重试和 attention'],
+        limits: ['自身不是 call_component 命令目标', 'Python 属于受信任代码，不是完整 OS 沙箱', '通用跨组件事件总线尚未开放'],
+        publicText: '自定义 Python 组件通过 nexora_sdk 调用宿主与依赖。页面只能使用 window.nexora.invoke 启动本组件允许的命令。',
+        code: "// 页面\nconst run = await window.nexora.invoke('scan-project', {});\n\n# Python\nrequest = read_request()\ncontext = get_project_context()",
+        source: 'src-tauri/src/platform/script_automation.rs'
+      },
+      {
+        id: 'builtin.project-resources', name: '项目资源', group: 'host', category: 'data', defaultEnabled: true,
+        technical: '项目级宿主服务（内部 Module 适配）', scope: 'project', callLevel: 'sdk', callLabel: '宿主项目 SDK',
+        description: '管理项目数据库注册表、TreeCache、目录索引、文件监听、脏目录修复和项目关闭后的资源释放。',
+        dependencies: ['可选 pmc.blendio ^1.0'], capabilities: ['project.open', 'project.files.read', 'project.files.write', 'project.metadata.read', 'project.metadata.write'],
+        contributions: ['缓存管理工具/工作区', 'MDT 项目概览', '排除规则设置', '项目规则设置', '项目集合右键命令'],
+        abilities: ['为运行中的脚本提供项目上下文', '分页读取和检查项目文件', '受控创建/复制/移动/重命名/删除文件', '项目元数据与组件隔离存储'],
+        limits: ['不能通过 call_component("builtin.project-resources") 调用', '不开放 data.db、TreeCache 或内部 Store', '当前 SDK 不开放集合、标签与完整当前选择'],
+        publicText: '使用 nexora_sdk.get_project_context、list_project_files、stat_project_file、resolve_project_file、mutate_project_files、项目元数据与存储函数。',
+        code: "context = get_project_context()\npage = list_project_files('textures', limit=100)\ninfo = stat_project_file('scene.blend')\nresolved = resolve_project_file('scene.blend')",
+        source: 'src-tauri/src/platform/builtin_modules.rs:1021'
+      },
+      {
+        id: 'builtin.project-manager', name: '项目管理器', group: 'host', category: 'workspace', defaultEnabled: true,
+        technical: '完整宿主页面组件（内部 Module 适配）', scope: 'global', callLevel: 'internal', callLabel: '宿主 UI 命令',
+        description: '提供项目主页、项目目录扫描、最近项目、创建/导入、项目 Shell 标签和文件工作区。',
+        dependencies: ['必需 builtin.project-resources ^1.0'], capabilities: ['project.open', 'project.files.read', 'project.files.write', 'project.metadata.read', 'project.metadata.write'],
+        contributions: ['项目主页与项目工作区', '每项目单例 Shell 标签', '4 个主页 Widget', '4 个 DataSource', '9 个宿主命令', '历史记录设置'],
+        abilities: ['创建、导入和打开项目', '管理项目根目录与忽略列表', '显示最近项目和项目目录', '恢复项目标签会话'],
+        limits: ['9 个 COMMAND_CONTRIBUTIONS 是宿主 UI 命令，不是 automationCommands', '第三方不能 call_component 打开项目或读取最近项目', '不能复用内部 React Store、TreeCache 或项目数据库'],
+        publicText: '第三方当前只能获得已注入的活动项目上下文。项目根目录扫描、最近项目和主页 Widget 数据尚未开放为稳定 SDK。',
+        source: 'src-tauri/src/platform/builtin_modules.rs:1117'
+      },
+      {
+        id: 'builtin.render-center', name: '渲染中心', group: 'host', category: 'service', defaultEnabled: true,
+        technical: '宿主渲染调度组件（内部 Module 适配）', scope: 'global', callLevel: 'internal', callLabel: '事件可订阅',
+        description: '管理渲染队列、Blender Worker、渲染脚本、性能采样、并发预算和序列帧视频打包。',
+        dependencies: ['必需 builtin.external-tools ^1.0', '必需 pmc.blendio ^1.0'], capabilities: ['app.settings.read', 'app.settings.write', 'project.files.read', 'project.files.write', 'filesystem.external.read', 'filesystem.external.write', 'render.inspect', 'render.queue.read', 'render.queue.write', 'render.worker.execute', 'render.result.commit', 'python.execute', 'process.spawn'],
+        contributions: ['渲染与批处理工作区', '外部 Blender 渲染器 Shell 页面', '两个工具入口', '渲染调度与 Worker 后台服务'],
+        abilities: ['本地批量渲染', '作业与帧并发控制', 'Blender Worker 生命周期', '前后置脚本', 'FFmpeg 视频打包'],
+        limits: ['没有公开 automationCommands', '第三方不能直接写渲染队列数据库', 'render.* Capability 不等于已公开调用接口'],
+        publicText: '当前可绑定 render.batch-created、render.batch-completed、render.job-completed 自动化事件，但不能 call_component 创建作业。',
+        source: 'src-tauri/src/platform/builtin_modules.rs:593'
+      },
+      {
+        id: 'builtin.render-farm', name: 'Blender 渲染农场', group: 'host', category: 'service', defaultEnabled: false,
+        technical: '宿主分布式渲染基础组件（内部 Module 适配）', scope: 'global', callLevel: 'internal', callLabel: '基础设施未开放',
+        description: '提供受信任设备配对、节点能力预检、不可变渲染包、加密传输合同和控制端帧租约基础。',
+        dependencies: ['必需 builtin.lan-collaboration ^1.0', '必需 builtin.render-center ^1.0', '必需 pmc.blendio ^1.0'], capabilities: ['app.settings.read', 'app.settings.write', 'filesystem.external.read', 'filesystem.external.write', 'network.lan.discover', 'network.lan.transfer', 'render.queue.read', 'render.queue.write', 'render.result.commit'],
+        contributions: ['当前无用户页面贡献', 'render_farm.db', '设备身份与租约运行时'],
+        abilities: ['可信节点和能力合同基础', '渲染包与帧租约基础', '控制端恢复与清理'],
+        limits: ['默认停用', '当前没有用户界面', '没有公开命令或第三方节点 SDK', '不能视为已完成的生产渲染农场'],
+        publicText: '当前仅为宿主基础设施，不向第三方组件开放。',
+        source: 'src-tauri/src/platform/builtin_modules.rs:734'
+      },
+      {
+        id: 'builtin.media-library', name: '媒体资料库', group: 'host', category: 'data', defaultEnabled: false,
+        technical: '独立资料库宿主页面（内部 Module 适配）', scope: 'global', callLevel: 'internal', callLabel: '仅宿主页面',
+        description: '收集、归类和归档图片、视频、音频与参考文件；每个资料库拥有独立媒体目录和索引。',
+        dependencies: ['无必需依赖'], capabilities: ['filesystem.external.read', 'filesystem.external.write', 'filesystem.dialog.open'],
+        contributions: ['媒体资料库 Shell 标签', '媒体资料库工具', '媒体资料库页面'],
+        abilities: ['选择独立资料目录', '建立媒体索引', '基础归类、筛选和备注界面'],
+        limits: ['不依赖项目资源，也不会启动项目 watcher', '没有公开媒体查询命令', '第三方不能直接读取资料库索引'],
+        publicText: '当前只能作为装配页面使用；项目媒体关联和公开索引 API 尚未开放。',
+        source: 'src-tauri/src/platform/builtin_modules.rs:837'
+      },
+      {
+        id: 'builtin.lan-collaboration', name: '局域网协同', group: 'host', category: 'integration', defaultEnabled: true,
+        technical: '宿主网络服务与页面（内部 Module 适配）', scope: 'global', callLevel: 'internal', callLabel: '事件可订阅',
+        description: '管理联系人发现、局域网大厅与私聊、头像、消息历史、文件/目录传输和可选服务器连接。',
+        dependencies: ['无必需依赖'], capabilities: ['app.profile.read', 'app.profile.write', 'app.settings.read', 'app.settings.write', 'notification.send', 'filesystem.external.read', 'filesystem.external.write', 'network.http.request', 'network.lan.discover', 'network.lan.message', 'network.lan.transfer', 'network.server.connect'],
+        contributions: ['设备协作 Shell 标签', '局域网项目工作区占位页', '两个工具入口', 'UDP/TCP 发现与传输服务'],
+        abilities: ['联系人与在线状态', '大厅和私聊', '文件、目录、图片传输', 'Windows 通知、提示音和消息定位', '多标签全局同步'],
+        limits: ['没有公开 send-message 或 transfer automationCommand', '第三方不能直接访问 lan_collaboration.db', '通用 LAN SDK 与跨组件事件总线尚未开放'],
+        publicText: '当前只公开 lan.file-received 自动化事件；不能用 call_component 发送消息或文件。',
+        source: 'src-tauri/src/platform/builtin_modules.rs:1283'
+      },
+      {
+        id: 'builtin.smart-clipboard', name: '智能剪贴板', group: 'host', category: 'integration', defaultEnabled: true,
+        technical: 'Windows 原生宿主组件（内部 Module 适配）', scope: 'global', callLevel: 'internal', callLabel: '原生入口',
+        description: '记录软件级剪贴板历史，提供原生检索窗口和 Ctrl+` 全局快捷键。',
+        dependencies: ['Windows 平台'], capabilities: ['clipboard.read', 'clipboard.write'],
+        contributions: ['工具 builtin.smart-clipboard.tool', '原生窗口 surface', '剪贴板监听器', '全局快捷键'],
+        abilities: ['捕获剪贴板历史', '搜索并重新写回剪贴板', '独立原生窗口'],
+        limits: ['没有公开剪贴板 SDK 或组件命令', '第三方不能读取历史数据库', '非 Windows 构建默认不启用'],
+        publicText: '当前仅由宿主 UI 使用；Capability 声明本身不会提供剪贴板方法。',
+        source: 'src-tauri/src/platform/builtin_modules.rs:1411'
+      },
+      {
+        id: 'builtin.local-web-console', name: '本机网页控制台', group: 'host', category: 'integration', defaultEnabled: false,
+        technical: 'localhost HTTP 服务（内部 Module 适配）', scope: 'global', callLevel: 'internal', callLabel: '受限浏览器控制台',
+        description: '通过真实浏览器查看 Nexora 状态、修改部分设置并执行受限的重启与关闭控制。',
+        dependencies: ['无必需依赖'], capabilities: ['app.profile.read', 'app.settings.read', 'app.settings.write', 'network.server.connect'],
+        contributions: ['网页控制台工具', '网页控制台设置', 'localhost HTTP 服务'],
+        abilities: ['浏览器查看状态', '修改少量设置', '受限程序控制'],
+        limits: ['仅 localhost，不是远程管理服务器', '不是组件 HTTP API', '不开放项目、聊天、渲染等完整功能'],
+        publicText: '第三方组件不应把该网页端点当作稳定接口；应使用 nexora_sdk。',
+        source: 'src-tauri/src/platform/builtin_modules.rs:1547'
+      },
+
+      {
+        id: 'pmc.blendio', name: 'BlenderIO 文件服务', group: 'bundled', category: 'service', defaultEnabled: true,
+        technical: 'native-process · 随安装包 · 可卸载', scope: 'global/either', callLevel: 'call', callLabel: '公开命令 inspect',
+        description: '高效读取、诊断和受控编辑 .blend 文件，并向宿主与第三方组件提供结构化场景结果。',
+        dependencies: ['无必需依赖'], capabilities: ['project.files.read', 'project.files.write', 'filesystem.external.read', 'filesystem.external.write'],
+        contributions: ['automationCommand pmc.blendio.inspect', '工具动作 blender.inspect-file', '数据源 blender.file-summary', '冻结工作流节点 blender.inspect'],
+        abilities: ['解析场景、对象、集合、网格、材质、贴图、动作和外部依赖', '供渲染中心和 Blender 工作区复用', '最多 4 路并行，单次最长 600 秒'],
+        limits: ['稳定公开命令当前只有 inspect', 'Manifest 描述中的受控编辑尚未形成稳定第三方命令', '工作流节点合同冻结，不会执行'],
+        publicText: '调用方必须在 requiresComponents/optionalComponents 中声明 pmc.blendio，并以 command="inspect" 调用。项目文件应先 resolve_project_file。',
+        code: "result = call_component(\n    'pmc.blendio',\n    'inspect',\n    {'path': resolved['path']},\n    capability='project.files.read',\n    timeout_ms=120000,\n)",
+        source: 'src-tauri/src/platform/builtin_components.rs:32'
+      },
+      {
+        id: 'nexora.blender.workspace', name: 'Nexora Blender 工作区', group: 'bundled', category: 'file-handler', defaultEnabled: false,
+        technical: 'builtin-rust · 随安装包 · 可卸载', scope: 'file', callLevel: 'file', callLabel: '文件处理贡献',
+        description: '为 .blend 文件提供 Nexora 内部工作区页面，并复用 BlenderIO 读取结构化数据。',
+        dependencies: ['必需 pmc.blendio *'], capabilities: ['无额外 Capability'],
+        contributions: ['文件处理器 nexora.blender.open-workspace', '扩展名 blend', 'intent: open/open-internal/preview', '优先级 200'],
+        abilities: ['双击 .blend 时打开内部标签', '显示 Blender 文件详情与结构化摘要', '参与文件路由与装配绑定'],
+        limits: ['没有公开 automationCommands', '未安装时 .blend 回退到其他绑定或系统打开', '不能通过 call_component 打开 React 工作区'],
+        publicText: '通过文件路由器使用，不是组件命令。第三方若要解析文件，应调用 pmc.blendio。',
+        source: 'src-tauri/src/platform/builtin_components.rs:123'
+      },
+      {
+        id: 'nexora.file-handler.image', name: 'Nexora 图像预览', group: 'bundled', category: 'file-handler', defaultEnabled: true,
+        technical: 'builtin-rust · 随安装包 · 可卸载', scope: 'file', callLevel: 'file', callLabel: '文件处理贡献',
+        description: '提供可替换的图像工作区、预览和缩略图处理器。',
+        dependencies: ['无必需依赖'], capabilities: ['无额外 Capability'],
+        contributions: ['handler nexora.file-handler.image.open', 'intent: open/open-internal/preview/thumbnail', 'png jpg jpeg gif webp bmp tif tiff svg ico avif', 'MIME image/*'],
+        abilities: ['内部图像查看', '工作区预览', '缩略图路由'],
+        limits: ['没有图片编辑公开命令', '不能 call_component 获取像素或缩略图', '卸载后按文件路由规则回退'],
+        publicText: '通过文件处理器绑定选择；第三方可安装更高优先级或用户可重新绑定后缀。',
+        source: 'src-tauri/src/platform/builtin_components.rs:168'
+      },
+      {
+        id: 'nexora.file-handler.video', name: 'Nexora 视频播放器', group: 'bundled', category: 'file-handler', defaultEnabled: true,
+        technical: 'builtin-rust · 随安装包 · 可卸载', scope: 'file', callLevel: 'file', callLabel: '文件处理贡献',
+        description: '提供可替换的视频播放工作区页面。',
+        dependencies: ['无必需依赖'], capabilities: ['无额外 Capability'],
+        contributions: ['handler nexora.file-handler.video.open', 'intent: open/open-internal/preview', 'mp4 m4v mov avi mkv webm wmv flv mpeg mpg m2ts', 'MIME video/*'],
+        abilities: ['内部视频播放', '工作区预览', '按后缀与 MIME 参与路由'],
+        limits: ['没有转码或媒体信息公开命令', '浏览器解码能力决定实际格式兼容性', '卸载后回退到其他处理器或系统'],
+        publicText: '仅作为文件路由贡献，不是 Component Bridge 服务。',
+        source: 'src-tauri/src/platform/builtin_components.rs:182'
+      },
+      {
+        id: 'nexora.file-handler.text', name: 'Nexora 文本编辑器', group: 'bundled', category: 'file-handler', defaultEnabled: true,
+        technical: 'builtin-rust · 随安装包 · 可卸载', scope: 'file', callLevel: 'file', callLabel: '文件处理贡献',
+        description: '提供可替换的文本、代码和 Markdown 工作区页面。',
+        dependencies: ['无必需依赖'], capabilities: ['无额外 Capability'],
+        contributions: ['handler nexora.file-handler.text.open', 'intent: open/open-internal/preview/edit', 'txt/md/json/js/ts/html/css/py/rs/c/cpp/xml/yaml/toml/ini/log/csv 等'],
+        abilities: ['文本和代码查看编辑', 'Markdown 工作区', '作为文件编辑路由目标'],
+        limits: ['没有语言服务或编译器接口', '没有公开 read/write component command', '组件脚本应使用 project.files SDK 读写项目文件'],
+        publicText: '仅通过文件路由打开。第三方编辑器可以贡献相同后缀并由用户在方案中绑定。',
+        source: 'src-tauri/src/platform/builtin_components.rs:196'
+      },
+      {
+        id: 'nexora.file-handler.directory', name: 'Nexora 目录工作区', group: 'bundled', category: 'file-handler', defaultEnabled: true,
+        technical: 'builtin-rust · 随安装包 · 可卸载', scope: 'directory', callLevel: 'file', callLabel: '目录处理贡献',
+        description: '为文件夹提供可替换的 Nexora 内部目录浏览工作区。',
+        dependencies: ['无必需依赖'], capabilities: ['无额外 Capability'],
+        contributions: ['handler nexora.file-handler.directory.open', 'fileKind: directory', 'MIME inode/directory', 'intent: open/open-internal'],
+        abilities: ['文件夹内部工作区', '覆盖文件夹双击的内部打开行为', '参与目录路由绑定'],
+        limits: ['不是项目管理器', '不建立项目数据库或 watcher', '卸载或取消绑定后文件夹通常由系统资源管理器打开'],
+        publicText: '通过目录文件路由使用，不公开目录枚举命令。项目组件应使用 list_project_files。',
+        source: 'src-tauri/src/platform/builtin_components.rs:212'
+      },
+      {
+        id: 'nexora.presentation.templates', name: 'Nexora 内置表现模板', group: 'bundled', category: 'appearance', defaultEnabled: true,
+        technical: 'data-pack · 随安装包 · 可卸载', scope: 'profile', callLevel: 'internal', callLabel: '装配模板贡献',
+        description: '提供 Shell、页面布局和主题预设，供界面装配方案引用。',
+        dependencies: ['无必需依赖'], capabilities: ['无 Capability'],
+        contributions: ['Shell: nexora.shell.top-bar/side-bar/minimal', '页面: dashboard-grid/list-detail/workspace', '主题: system/light/dark'],
+        abilities: ['选择顶部、侧边或紧凑导航', '为主页和工作区提供区域模板', '提供跟随系统、浅色和深色预设'],
+        limits: ['没有运行时代码或公开命令', '当前模板不等于任意 HTML 完整覆盖宿主', '卸载前必须清理或替换 Profile 中的模板引用'],
+        publicText: '只在装配编辑器中通过稳定模板 ID 引用，不能 call_component。',
+        source: 'src-tauri/src/platform/builtin_components.rs:319'
+      }
+    ];
+
+    const catalog = document.querySelector('#catalog');
+    const search = document.querySelector('#search');
+    const count = document.querySelector('#catalog-count');
+    const empty = document.querySelector('#empty');
+    const filterButtons = [...document.querySelectorAll('.filter')];
+    let activeFilter = 'all';
+
+    const escapeHtml = (value) => String(value)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#039;');
+
+    function badgeClass(component) {
+      if (component.callLevel === 'call') return 'call';
+      if (component.callLevel === 'sdk') return 'sdk';
+      if (component.callLevel === 'file') return 'file';
+      return 'internal';
+    }
+
+    function list(items) {
+      return `<ul>${items.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`;
+    }
+
+    function renderComponent(component) {
+      const badges = [
+        `<span class="badge ${badgeClass(component)}">${escapeHtml(component.callLabel)}</span>`,
+        `<span class="badge">${component.group === 'host' ? '宿主' : '可安装'}</span>`,
+        !component.defaultEnabled ? '<span class="badge off">默认关闭</span>' : '',
+        component.category === 'file-handler' ? '<span class="badge file">文件处理</span>' : ''
+      ].filter(Boolean).join('');
+      const code = component.code ? `<pre><code>${escapeHtml(component.code)}</code></pre>` : '';
+      const element = document.createElement('details');
+      element.className = 'component';
+      element.id = `component-${component.id.replaceAll('.', '-')}`;
+      element.dataset.group = component.group;
+      element.dataset.category = component.category;
+      element.dataset.defaultEnabled = String(component.defaultEnabled);
+      element.dataset.public = String(component.callLevel === 'call' || component.callLevel === 'sdk');
+      element.dataset.search = JSON.stringify(component).toLowerCase();
+      element.innerHTML = `
+        <summary>
+          <div class="component-title">
+            <h3>${escapeHtml(component.name)}</h3>
+            <code>${escapeHtml(component.id)}</code>
+            <p>${escapeHtml(component.description)}</p>
+          </div>
+          <div class="summary-side">${badges}</div>
+        </summary>
+        <div class="component-body">
+          <div class="facts">
+            <div class="fact"><span>技术形态</span><b>${escapeHtml(component.technical)}</b></div>
+            <div class="fact"><span>范围</span><code>${escapeHtml(component.scope)}</code></div>
+            <div class="fact"><span>默认状态</span><b>${component.defaultEnabled ? '启用' : '关闭 / 未自动安装'}</b></div>
+            <div class="fact"><span>源码事实位置</span><code>${escapeHtml(component.source)}</code></div>
+          </div>
+          <div class="body-grid">
+            <div class="body-block"><h4>依赖</h4>${list(component.dependencies)}</div>
+            <div class="body-block"><h4>Capability</h4>${list(component.capabilities)}</div>
+            <div class="body-block"><h4>贡献与入口</h4>${list(component.contributions)}</div>
+            <div class="body-block"><h4>可以做到</h4>${list(component.abilities)}</div>
+            <div class="body-block full"><h4>当前不能做到 / 不应依赖</h4>${list(component.limits)}</div>
+            <div class="body-block full">
+              <h4>第三方调用方式</h4>
+              <div class="call-box"><p>${escapeHtml(component.publicText)}</p>${code}</div>
+            </div>
+          </div>
+        </div>`;
+      return element;
+    }
+
+    components.forEach(component => catalog.append(renderComponent(component)));
+
+    function renderSidebar(group, targetId, title) {
+      const target = document.querySelector(targetId);
+      target.innerHTML = `<p class="side-title">${title}</p>` + components
+        .filter(component => component.group === group)
+        .map(component => `<a class="side-link" href="#component-${component.id.replaceAll('.', '-')}"><code>${escapeHtml(component.name)}</code></a>`)
+        .join('');
+    }
+    renderSidebar('host', '#side-host', '宿主组件');
+    renderSidebar('bundled', '#side-bundled', '可安装组件');
+
+    function matchesFilter(component, filter) {
+      if (filter === 'all') return true;
+      if (filter === 'host' || filter === 'bundled') return component.group === filter;
+      if (filter === 'public') return component.callLevel === 'call' || component.callLevel === 'sdk';
+      if (filter === 'file-handler') return component.category === 'file-handler';
+      if (filter === 'default-off') return !component.defaultEnabled;
+      return true;
+    }
+
+    function applyFilters() {
+      const query = search.value.trim().toLowerCase();
+      let visible = 0;
+      [...catalog.children].forEach((element, index) => {
+        const component = components[index];
+        const matches = matchesFilter(component, activeFilter)
+          && (!query || element.dataset.search.includes(query));
+        element.hidden = !matches;
+        if (matches) visible += 1;
+      });
+      count.textContent = `显示 ${visible} / ${components.length} 个组件`;
+      empty.hidden = visible !== 0;
+    }
+
+    search.addEventListener('input', applyFilters);
+    filterButtons.forEach(button => {
+      button.addEventListener('click', () => {
+        activeFilter = button.dataset.filter;
+        filterButtons.forEach(candidate => candidate.classList.toggle('active', candidate === button));
+        applyFilters();
+      });
+    });
+
+    document.querySelectorAll('.side-link[href^="#component-"]').forEach(link => {
+      link.addEventListener('click', () => {
+        const target = document.querySelector(link.getAttribute('href'));
+        if (target) target.open = true;
+      });
+    });
+
+    applyFilters();
+  </script>
+</body>
+</html>

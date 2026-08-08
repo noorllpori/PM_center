@@ -74,6 +74,7 @@ export interface ComponentRuntimeOverview {
   rootPath: string;
   statePath: string;
   installedComponents: InstalledComponentSummary[];
+  disabledComponents: InstalledComponentSummary[];
   availableBundledComponents: ComponentManifestV1[];
   activeOperations: ComponentOperationSummary[];
   recentOperations: ComponentOperationSummary[];

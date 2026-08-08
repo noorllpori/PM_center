@@ -206,7 +206,7 @@ write_result({"ok": True})
 
 `scope` 为 `global` 或 `project`，`kind` 为 `state` 或 `cache`。Bridge Blob 单次写入上限 512 KiB。`open_blob()` 返回包含 Base64 数据和元数据的对象。
 
-- `state`：停用、卸载和普通缓存清理时保留；删除需要单独确认。
+- `state`：停用、删除组件安装副本和普通缓存清理时保留；删除持久状态需要单独确认。
 - `cache`：可被缓存中心删除，组件必须能够重建。
 - `direct`：只返回本组件自己的专属目录，禁止拼接或探测其他组件目录。
 
@@ -275,7 +275,10 @@ Script Surface 使用 CSP 和会话 nonce，不能访问宿主 DOM、Tauri IPC�
 ## 11. 兼容与禁止事项
 
 - 未安装或未进入当前方案有效闭包的组件不贡献功能，也不能被调用。
-- 卸载和停用不删除组件 `state`；清理缓存只删除 `cache`。
+- 禁用只撤下运行时、页面和贡献，保留组件安装文件、方案引用、`state` 与 `cache`，之后可直接重新启用。
+- 随安装包组件只能禁用，不能从 MSI 安装内容中物理删除；本地目录和 `.pmc-pack` 组件可以执行“删除”，移除 Nexora 安装副本及缓存归档。
+- 删除第三方组件会从所有方案中原子清理组件选择、页面、Pin、模板、自动化和文件处理绑定；任一步失败时恢复原方案，不能留下半失效 Profile。
+- 删除组件默认仍保留组件 `state`；清理缓存只删除 `cache`。删除持久状态必须使用单独的显式确认流程。重新安装同一组件不会自动恢复已清理的方案入口，需要用户重新加入当前方案。
 - 新组件不得写 `enabledModules`、`moduleSettings` 或 Module Manifest。
 - 不得调用任意 Tauri command、React Store、内部事件名、数据库表或 TreeCache。
 - 不得依赖 `.pm_center`、应用数据目录和安装目录的物理结构。

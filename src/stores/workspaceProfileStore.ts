@@ -118,6 +118,12 @@ export const useWorkspaceProfileStore = create<WorkspaceProfileState>((set, get)
       set({ isLoading: true, error: null });
       try {
         const snapshot = await getWorkspaceProfileRuntime();
+        const currentSummary = snapshot.profiles.find((profile) => profile.current);
+        if (currentSummary?.status === 'ready') {
+          await useBuiltinToolsStore
+            .getState()
+            .replacePinnedByContributionIds(snapshot.currentProfile.shellLayout?.pinnedTools ?? []);
+        }
         set({ snapshot, isInitialized: true, error: null });
       } catch (error) {
         set({ error: formatRuntimeError(error) });

@@ -36,6 +36,15 @@ export const trustComponentPackagePublisher = (packagePath: string) =>
 export const uninstallComponent = (componentId: string) =>
   invoke<ComponentManifestV1>('uninstall_component', { componentId });
 
+export const disableComponent = (componentId: string) =>
+  invoke<ComponentManifestV1>('disable_component', { componentId });
+
+export const enableComponent = (componentId: string) =>
+  invoke<ComponentManifestV1>('enable_component', { componentId });
+
+export const deleteComponent = (componentId: string) =>
+  invoke<ComponentManifestV1>('delete_component', { componentId });
+
 export const invokeComponentCommand = (request: {
   componentId: string;
   moduleId: string;

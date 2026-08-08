@@ -8,7 +8,8 @@ import {
   FolderPlus,
   Loader2,
   PackageCheck,
-  PackagePlus,
+  Power,
+  PowerOff,
   RefreshCw,
   Square,
   Trash2,
@@ -16,6 +17,9 @@ import {
 import {
   COMPONENT_OPERATION_EVENT,
   cancelComponentOperation,
+  deleteComponent,
+  disableComponent,
+  enableComponent,
   getComponentRuntimeOverview,
   inspectComponentPackage,
   installComponentFromPackage,
@@ -23,8 +27,6 @@ import {
   getPresentationTemplatePreview,
   invokeComponentCommand,
   trustComponentPackagePublisher,
-  reinstallBundledComponent,
-  uninstallComponent,
 } from '../../api/componentRuntime';
 import type {
   ComponentPackageInspection,
@@ -35,6 +37,8 @@ import type {
   InstalledComponentSummary,
   PresentationTemplatePreview,
 } from '../../types/componentRuntime';
+import { PLATFORM_MODULE_RUNTIME_CHANGED_EVENT } from '../../api/platformModules';
+import { useWorkspaceProfileStore } from '../../stores/workspaceProfileStore';
 import { ConfirmDialog, Dialog } from '../Dialog';
 
 const SOURCE_LABEL = {
@@ -98,7 +102,8 @@ export function ComponentRuntimeDiagnosticsSection() {
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [uninstallTarget, setUninstallTarget] = useState<InstalledComponentSummary | null>(null);
+  const [disableTarget, setDisableTarget] = useState<InstalledComponentSummary | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<InstalledComponentSummary | null>(null);
   const [packageInspection, setPackageInspection] = useState<ComponentPackageInspection | null>(null);
   const [templatePreview, setTemplatePreview] = useState<PresentationTemplatePreview | null>(null);
   const [nativeHealthResult, setNativeHealthResult] = useState<ComponentInvocationResult | null>(null);
@@ -134,6 +139,8 @@ export function ComponentRuntimeDiagnosticsSection() {
     setNotice(null);
     try {
       await action();
+      await useWorkspaceProfileStore.getState().refresh();
+      window.dispatchEvent(new Event(PLATFORM_MODULE_RUNTIME_CHANGED_EVENT));
       setNotice(message);
     } catch (nextError) {
       setError(errorMessage(nextError));
@@ -280,8 +287,8 @@ export function ComponentRuntimeDiagnosticsSection() {
 
         {overview ? (
           <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 border-y border-gray-100 py-2 text-xs text-gray-500 dark:border-gray-800 dark:text-gray-400">
-            <span>{overview.installedComponents.length} 个已安装</span>
-            <span>{overview.availableBundledComponents.length} 个可重新安装</span>
+            <span>{overview.installedComponents.length} 个已启用</span>
+            <span>{overview.disabledComponents.length} 个已禁用</span>
             <span>{overview.activeOperations.length} 个活动操作</span>
             <span>{templateCount} 个表现模板</span>
             <span>{overview.legacyPythonActionCompatible ? '兼容旧 Python 动作' : '旧 Python 动作不可用'}</span>
@@ -318,7 +325,6 @@ export function ComponentRuntimeDiagnosticsSection() {
         <div className="mt-3 divide-y divide-gray-100 border-y border-gray-100 dark:divide-gray-800 dark:border-gray-800">
           {overview?.installedComponents.map((component) => {
             const id = component.manifest.id;
-            const busy = pending === `uninstall:${id}`;
             const healthCommand = (component.manifest as Record<string, unknown>).healthCommand;
             const templates = [
               ...(component.manifest.contributes?.shellTemplates ?? []).map((template) => ({ id: template.id, name: template.name, kind: 'Shell' })),
@@ -373,43 +379,73 @@ export function ComponentRuntimeDiagnosticsSection() {
                     ) : null}
                     <button
                       type="button"
-                      onClick={() => setUninstallTarget(component)}
+                      onClick={() => setDisableTarget(component)}
                       disabled={!component.removable || component.activeOperationCount > 0 || pending !== null}
-                      title={component.activeOperationCount > 0 ? '组件仍有运行中的操作' : '卸载组件'}
-                      className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-red-600 hover:bg-red-50 disabled:opacity-40 dark:text-red-300 dark:hover:bg-red-950/30"
+                      title={component.activeOperationCount > 0 ? '组件仍有运行中的操作' : '禁用组件并保留安装文件'}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-amber-700 hover:bg-amber-50 disabled:opacity-40 dark:text-amber-300 dark:hover:bg-amber-950/30"
                     >
-                      {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                      卸载
+                      {pending === `disable:${id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PowerOff className="h-3.5 w-3.5" />}
+                      禁用
                     </button>
+                    {component.source !== 'bundled' ? (
+                      <button
+                        type="button"
+                        onClick={() => setDeleteTarget(component)}
+                        disabled={!component.removable || component.activeOperationCount > 0 || pending !== null}
+                        title="删除第三方组件安装副本"
+                        className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-red-600 hover:bg-red-50 disabled:opacity-40 dark:text-red-300 dark:hover:bg-red-950/30"
+                      >
+                        {pending === `delete:${id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                        删除
+                      </button>
+                    ) : null}
                   </div>
                 </div>
               </div>
             );
           })}
           {!overview?.installedComponents.length ? (
-            <p className="py-4 text-xs text-gray-500 dark:text-gray-400">当前没有已安装组件。</p>
+            <p className="py-4 text-xs text-gray-500 dark:text-gray-400">当前没有已启用组件。</p>
           ) : null}
         </div>
 
-        {overview?.availableBundledComponents.length ? (
+        {overview?.disabledComponents.length ? (
           <div className="mt-4">
-            <p className="text-xs font-medium text-gray-700 dark:text-gray-300">安装器随附但已卸载</p>
+            <p className="text-xs font-medium text-gray-700 dark:text-gray-300">已禁用组件</p>
             <div className="mt-2 divide-y divide-gray-100 rounded-md border border-gray-200 dark:divide-gray-800 dark:border-gray-700">
-              {overview.availableBundledComponents.map((manifest) => (
-                <div key={manifest.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
+              {overview.disabledComponents.map((component) => (
+                <div key={component.manifest.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
                   <div className="min-w-0">
-                    <p className="truncate text-xs font-medium text-gray-800 dark:text-gray-200">{manifest.name}</p>
-                    <p className="truncate font-mono text-[10px] text-gray-400">{manifest.id} · {manifest.version}</p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="truncate text-xs font-medium text-gray-800 dark:text-gray-200">{component.manifest.name}</p>
+                      <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500 dark:bg-gray-800 dark:text-gray-400">{SOURCE_LABEL[component.source]}</span>
+                    </div>
+                    <p className="mt-0.5 truncate font-mono text-[10px] text-gray-400">{component.manifest.id} · {component.manifest.version} · {component.manifest.runtime}</p>
+                    {component.packagePath ? <p className="mt-0.5 truncate text-[10px] text-gray-400">{component.packagePath}</p> : null}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => void runAction(`reinstall:${manifest.id}`, () => reinstallBundledComponent(manifest.id), `已重新安装“${manifest.name}”。`)}
-                    disabled={pending !== null}
-                    className="inline-flex shrink-0 items-center gap-1 rounded-md bg-blue-600 px-2.5 py-1.5 text-xs text-white hover:bg-blue-700 disabled:opacity-50"
-                  >
-                    {pending === `reinstall:${manifest.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PackagePlus className="h-3.5 w-3.5" />}
-                    重新安装
-                  </button>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => void runAction(`enable:${component.manifest.id}`, () => enableComponent(component.manifest.id), `已启用“${component.manifest.name}”。`)}
+                      disabled={pending !== null}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-md bg-blue-600 px-2.5 text-xs text-white hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {pending === `enable:${component.manifest.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Power className="h-3.5 w-3.5" />}
+                      启用
+                    </button>
+                    {component.source !== 'bundled' ? (
+                      <button
+                        type="button"
+                        onClick={() => setDeleteTarget(component)}
+                        disabled={pending !== null}
+                        title="删除第三方组件安装副本"
+                        className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-red-600 hover:bg-red-50 disabled:opacity-40 dark:text-red-300 dark:hover:bg-red-950/30"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        删除
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
               ))}
             </div>
@@ -460,24 +496,47 @@ export function ComponentRuntimeDiagnosticsSection() {
       </section>
 
       <ConfirmDialog
-        isOpen={Boolean(uninstallTarget)}
-        onClose={() => setUninstallTarget(null)}
+        isOpen={Boolean(disableTarget)}
+        onClose={() => setDisableTarget(null)}
         onConfirm={() => {
-          const target = uninstallTarget;
-          setUninstallTarget(null);
+          const target = disableTarget;
+          setDisableTarget(null);
           if (target) {
             void runAction(
-              `uninstall:${target.manifest.id}`,
-              () => uninstallComponent(target.manifest.id),
-              `已卸载“${target.manifest.name}”。依赖它的 Profile 会显示为缺失，重新安装后可恢复。`,
+              `disable:${target.manifest.id}`,
+              () => disableComponent(target.manifest.id),
+              `已禁用“${target.manifest.name}”。安装文件和持久状态均已保留。`,
             );
           }
         }}
-        title="卸载组件"
-        message={uninstallTarget
-          ? `确定卸载“${uninstallTarget.manifest.name}”吗？\n\n组件数据目录会按来源撤下；依赖它的其他组件和装配方案不会被删除，但在重新安装前无法运行。`
+        title="禁用组件"
+        message={disableTarget
+          ? `确定禁用“${disableTarget.manifest.name}”吗？\n\n组件会停止运行并撤下页面、菜单和文件处理入口，但安装文件、装配引用和持久状态都会保留，可随时重新启用。`
           : ''}
-        confirmText="确认卸载"
+        confirmText="确认禁用"
+        cancelText="取消"
+        type="warning"
+      />
+
+      <ConfirmDialog
+        isOpen={Boolean(deleteTarget)}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => {
+          const target = deleteTarget;
+          setDeleteTarget(null);
+          if (target) {
+            void runAction(
+              `delete:${target.manifest.id}`,
+              () => deleteComponent(target.manifest.id),
+              `已删除“${target.manifest.name}”的安装副本，并清理相关装配入口。持久状态仍保留。`,
+            );
+          }
+        }}
+        title="删除组件"
+        message={deleteTarget
+          ? `确定删除“${deleteTarget.manifest.name}”吗？\n\n将删除 Nexora 中的组件安装副本和已缓存安装包，并从所有装配方案中清理该组件的页面、快捷栏、自动化与文件处理引用。组件持久状态仍会保留；开发源目录和你保存的原始 .pmc-pack 不受影响。`
+          : ''}
+        confirmText="确认删除"
         cancelText="取消"
         type="danger"
       />

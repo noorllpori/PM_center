@@ -174,6 +174,10 @@ pub struct FileRoutingStore {
     route_history: Mutex<VecDeque<FileRoutePlan>>,
 }
 
+pub(crate) struct FileRoutingCleanupRollback {
+    backups: Vec<(PathBuf, Vec<FileAssociationBinding>)>,
+}
+
 impl FileRoutingStore {
     pub fn new(app_data_dir: &Path) -> Self {
         let global_path = app_data_dir
@@ -266,6 +270,80 @@ impl FileRoutingStore {
             ));
         }
         Ok(())
+    }
+
+    pub(crate) fn remove_component_handlers(
+        &self,
+        handler_ids: &BTreeSet<String>,
+    ) -> Result<FileRoutingCleanupRollback, ComponentRuntimeError> {
+        if handler_ids.is_empty() {
+            return Ok(FileRoutingCleanupRollback {
+                backups: Vec::new(),
+            });
+        }
+        let mut locations = vec![self.global_path.clone()];
+        let profile_bindings_root = self.app_data_dir.join("profiles").join("local-bindings");
+        if profile_bindings_root.is_dir() {
+            for entry in fs::read_dir(&profile_bindings_root)
+                .map_err(|error| io_error("读取装配方案文件绑定目录失败", error))?
+            {
+                let entry = entry.map_err(|error| io_error("读取文件绑定目录项失败", error))?;
+                let path = entry.path();
+                if path.extension().and_then(|value| value.to_str()) == Some("json") {
+                    locations.push(path);
+                }
+            }
+        }
+        locations.sort();
+        locations.dedup();
+
+        let mut changes = Vec::new();
+        for path in locations {
+            let original = if path == self.global_path {
+                self.global_bindings
+                    .lock()
+                    .expect("file routing mutex poisoned")
+                    .clone()
+            } else {
+                read_bindings(&path)?
+            };
+            let filtered = original
+                .iter()
+                .filter(|binding| !handler_ids.contains(&binding.handler))
+                .cloned()
+                .collect::<Vec<_>>();
+            if filtered.len() != original.len() {
+                changes.push((path, original, filtered));
+            }
+        }
+
+        let mut backups = Vec::new();
+        for (path, original, filtered) in changes {
+            if let Err(mut error) = persist_bindings(&path, &filtered) {
+                if let Err(rollback_error) =
+                    restore_routing_files(&backups, &self.global_path, &self.global_bindings)
+                {
+                    error.details.push(rollback_error.message);
+                    error.details.extend(rollback_error.details);
+                }
+                return Err(error);
+            }
+            if path == self.global_path {
+                *self
+                    .global_bindings
+                    .lock()
+                    .expect("file routing mutex poisoned") = filtered;
+            }
+            backups.push((path, original));
+        }
+        Ok(FileRoutingCleanupRollback { backups })
+    }
+
+    pub(crate) fn rollback_component_handler_removal(
+        &self,
+        rollback: FileRoutingCleanupRollback,
+    ) -> Result<(), ComponentRuntimeError> {
+        restore_routing_files(&rollback.backups, &self.global_path, &self.global_bindings)
     }
 
     pub fn find(
@@ -1056,12 +1134,53 @@ fn persist_bindings(
         )
     })?;
     let temporary = path.with_extension(format!("tmp-{}", Uuid::new_v4().simple()));
+    let backup = path.with_extension(format!("bak-{}", Uuid::new_v4().simple()));
     fs::write(&temporary, value).map_err(|error| io_error("保存文件绑定失败", error))?;
+    if path.exists() {
+        if let Err(error) = fs::rename(path, &backup) {
+            let _ = fs::remove_file(&temporary);
+            return Err(io_error("暂存旧文件绑定失败", error));
+        }
+    }
     if let Err(error) = fs::rename(&temporary, path) {
+        if backup.exists() {
+            let _ = fs::rename(&backup, path);
+        }
         let _ = fs::remove_file(&temporary);
         return Err(io_error("提交文件绑定失败", error));
     }
+    if backup.exists() {
+        fs::remove_file(&backup).map_err(|error| io_error("清理旧文件绑定失败", error))?;
+    }
     Ok(())
+}
+
+fn restore_routing_files(
+    backups: &[(PathBuf, Vec<FileAssociationBinding>)],
+    global_path: &Path,
+    global_bindings: &Mutex<Vec<FileAssociationBinding>>,
+) -> Result<(), ComponentRuntimeError> {
+    let mut failures = Vec::new();
+    for (path, bindings) in backups.iter().rev() {
+        match persist_bindings(path, bindings) {
+            Ok(()) => {
+                if path == global_path {
+                    *global_bindings.lock().expect("file routing mutex poisoned") =
+                        bindings.clone();
+                }
+            }
+            Err(error) => failures.push(format!("{}: {}", path.to_string_lossy(), error.message)),
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(ComponentRuntimeError::new(
+            ComponentRuntimeErrorCode::ComponentIoError,
+            "部分文件打开绑定未能恢复",
+        )
+        .with_details(failures))
+    }
 }
 
 fn sort_bindings(bindings: &mut [FileAssociationBinding]) {
@@ -1139,6 +1258,30 @@ mod tests {
         assert!(normalize_binding(&mut value).is_err());
         let mut extension = binding("valid", "global", Some(".tar.gz"), None);
         assert!(normalize_binding(&mut extension).is_err());
+    }
+
+    #[test]
+    fn component_handler_cleanup_removes_and_restores_bindings() {
+        let root = std::env::temp_dir().join(format!("nexora-routing-{}", Uuid::new_v4()));
+        let store = FileRoutingStore::new(&root);
+        store
+            .set(binding("text", "global", Some("txt"), None))
+            .unwrap();
+        let mut image = binding("image", "global", Some("png"), None);
+        image.handler = "nexora.file-handler.image".into();
+        store.set(image).unwrap();
+
+        let rollback = store
+            .remove_component_handlers(&BTreeSet::from(["nexora.file-handler.text".to_string()]))
+            .unwrap();
+        let cleaned = store.snapshot(FileRoutingScopeContext::default()).unwrap();
+        assert_eq!(cleaned.bindings.len(), 1);
+        assert_eq!(cleaned.bindings[0].handler, "nexora.file-handler.image");
+
+        store.rollback_component_handler_removal(rollback).unwrap();
+        let restored = store.snapshot(FileRoutingScopeContext::default()).unwrap();
+        assert_eq!(restored.bindings.len(), 2);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

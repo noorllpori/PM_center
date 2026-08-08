@@ -407,6 +407,10 @@ pub(crate) struct PreparedCurrentProfileUpdate {
     pub expected_revision: u64,
 }
 
+pub(crate) struct ComponentProfileCleanupRollback {
+    backups: Vec<(PathBuf, Vec<u8>)>,
+}
+
 pub struct WorkspaceProfileRuntime {
     repository_path: PathBuf,
     state_path: PathBuf,
@@ -638,6 +642,89 @@ impl WorkspaceProfileRuntime {
             )
         })? = manifests;
         Ok(())
+    }
+
+    pub(crate) fn remove_component_references(
+        &self,
+        manifest: &ComponentManifestV1,
+        module_manifests: &[ModuleManifestV1],
+    ) -> Result<ComponentProfileCleanupRollback, WorkspaceProfileRuntimeError> {
+        let _guard = self.operation_lock.lock().map_err(|_| {
+            WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileLockPoisoned,
+                "装配方案运行时锁已损坏",
+                None,
+            )
+        })?;
+        self.ensure_edit_repository_ready_locked()?;
+        let component_manifests = self
+            .component_manifests_snapshot()
+            .into_iter()
+            .filter(|candidate| candidate.id != manifest.id)
+            .collect::<Vec<_>>();
+        let mut changes = Vec::<(PathBuf, Vec<u8>, WorkspaceProfileV1)>::new();
+        let entries = fs::read_dir(&self.repository_path)
+            .map_err(|error| io_error("读取装配方案目录失败", &self.repository_path, error))?;
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                io_error("读取装配方案目录项失败", &self.repository_path, error)
+            })?;
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let original =
+                fs::read(&path).map_err(|error| io_error("读取装配方案失败", &path, error))?;
+            let mut profile = self.read_profile(&path)?;
+            let changed = remove_component_owned_profile_references(&mut profile, manifest);
+            if changed {
+                profile.revision = profile.revision.saturating_add(1);
+            }
+            validate_profile_with_catalogs(&profile, module_manifests, &component_manifests)
+                .map_err(|error| {
+                    WorkspaceProfileRuntimeError::new(
+                        WorkspaceProfileRuntimeErrorCode::ProfileDocumentInvalid,
+                        format!(
+                            "删除组件后装配方案无法保持有效：{}（{}）",
+                            error.message, error.path
+                        ),
+                        Some(&path),
+                    )
+                })?;
+            if changed {
+                changes.push((path, original, profile));
+            }
+        }
+
+        let mut backups = Vec::new();
+        for (path, original, profile) in changes {
+            if let Err(mut error) = replace_json(&path, &profile) {
+                if let Err(rollback_error) = restore_profile_files(&backups) {
+                    error.details.push(format!(
+                        "恢复已修改装配方案失败：{}",
+                        rollback_error.message
+                    ));
+                    error.details.extend(rollback_error.details);
+                }
+                return Err(error);
+            }
+            backups.push((path, original));
+        }
+        Ok(ComponentProfileCleanupRollback { backups })
+    }
+
+    pub(crate) fn rollback_component_reference_removal(
+        &self,
+        rollback: ComponentProfileCleanupRollback,
+    ) -> Result<(), WorkspaceProfileRuntimeError> {
+        let _guard = self.operation_lock.lock().map_err(|_| {
+            WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileLockPoisoned,
+                "装配方案运行时锁已损坏",
+                None,
+            )
+        })?;
+        restore_profile_files(&rollback.backups)
     }
 
     fn component_manifests_snapshot(&self) -> Vec<ComponentManifestV1> {
@@ -2415,46 +2502,6 @@ impl WorkspaceProfileRuntime {
         Ok(summaries)
     }
 
-    pub fn profiles_referencing_presentation_templates(
-        &self,
-        template_ids: &BTreeSet<String>,
-    ) -> Result<Vec<String>, WorkspaceProfileRuntimeError> {
-        if template_ids.is_empty() || !self.repository_path.exists() {
-            return Ok(Vec::new());
-        }
-        let _guard = self.operation_lock.lock().map_err(|_| {
-            WorkspaceProfileRuntimeError::new(
-                WorkspaceProfileRuntimeErrorCode::ProfileLockPoisoned,
-                "装配方案运行时锁已损坏",
-                None,
-            )
-        })?;
-        let mut references = Vec::new();
-        for entry in fs::read_dir(&self.repository_path)
-            .map_err(|error| io_error("读取装配方案目录失败", &self.repository_path, error))?
-        {
-            let entry = entry.map_err(|error| {
-                io_error("读取装配方案目录项失败", &self.repository_path, error)
-            })?;
-            let path = entry.path();
-            if path.extension().and_then(|value| value.to_str()) != Some("json") {
-                continue;
-            }
-            let profile = self.read_profile(&path)?;
-            if profile_presentation_template_ids(&profile)
-                .iter()
-                .any(|id| {
-                    template_ids.contains(*id)
-                        || template_ids.contains(presentation_template_id_alias(id))
-                })
-            {
-                references.push(format!("{} ({})", profile.name, profile.id));
-            }
-        }
-        references.sort();
-        Ok(references)
-    }
-
     fn profile_path(&self, profile_id: &str) -> PathBuf {
         self.repository_path.join(format!("{profile_id}.json"))
     }
@@ -2466,23 +2513,226 @@ impl WorkspaceProfileRuntime {
     }
 }
 
-fn profile_presentation_template_ids(profile: &WorkspaceProfileV1) -> Vec<&str> {
-    let mut ids = Vec::new();
-    if let Some(binding) = profile.shell_layout.shell_template.as_ref() {
-        ids.push(binding.id.as_str());
-    }
-    if let Some(binding) = profile.shell_layout.theme_preset.as_ref() {
-        ids.push(binding.id.as_str());
-    }
-    for surface in &profile.surfaces {
-        if let Some(binding) = surface.template.as_ref() {
-            ids.push(binding.id.as_str());
+fn remove_component_owned_profile_references(
+    profile: &mut WorkspaceProfileV1,
+    manifest: &ComponentManifestV1,
+) -> bool {
+    let before = serde_json::to_value(&*profile).ok();
+    let script_surface_ids = manifest
+        .contributes
+        .script_surfaces
+        .iter()
+        .map(|surface| surface.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut tool_ids = manifest
+        .contributes
+        .tool_actions
+        .iter()
+        .map(|tool| tool.id.as_str())
+        .collect::<BTreeSet<_>>();
+    tool_ids.extend(script_surface_ids.iter().copied());
+    let mut widget_ids = manifest
+        .contributes
+        .widgets
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    widget_ids.extend(
+        manifest
+            .contributes
+            .script_surfaces
+            .iter()
+            .filter(|surface| surface.placements.contains(&ScriptSurfacePlacement::Widget))
+            .map(|surface| surface.id.as_str()),
+    );
+    let data_source_ids = manifest
+        .contributes
+        .data_sources
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let command_ids = manifest
+        .contributes
+        .automation_commands
+        .iter()
+        .map(|command| command.id.as_str())
+        .chain(
+            manifest
+                .contributes
+                .tool_actions
+                .iter()
+                .map(|tool| tool.id.as_str()),
+        )
+        .chain(
+            manifest
+                .contributes
+                .workflow_nodes
+                .iter()
+                .map(|node| node.id.as_str()),
+        )
+        .collect::<BTreeSet<_>>();
+    let workflow_ids = manifest
+        .contributes
+        .workflow_nodes
+        .iter()
+        .map(|node| node.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let shell_template_ids = manifest
+        .contributes
+        .shell_templates
+        .iter()
+        .map(|template| template.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let page_template_ids = manifest
+        .contributes
+        .page_templates
+        .iter()
+        .map(|template| template.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let theme_preset_ids = manifest
+        .contributes
+        .theme_presets
+        .iter()
+        .map(|preset| preset.id.as_str())
+        .collect::<BTreeSet<_>>();
+
+    profile
+        .enabled_components
+        .retain(|selection| selection.id != manifest.id);
+    profile.component_settings.remove(&manifest.id);
+    profile
+        .automation_bindings
+        .retain(|binding| binding.component_id != manifest.id);
+    profile
+        .workflow_bindings
+        .retain(|binding| !workflow_ids.contains(binding.workflow.as_str()));
+    profile
+        .tool_aliases
+        .retain(|alias| !tool_ids.contains(alias.tool.as_str()));
+
+    let removed_surface_ids = profile
+        .surfaces
+        .iter()
+        .filter(|surface| {
+            surface
+                .contribution
+                .as_deref()
+                .is_some_and(|id| script_surface_ids.contains(id))
+        })
+        .map(|surface| surface.id.clone())
+        .collect::<BTreeSet<_>>();
+    profile
+        .surfaces
+        .retain(|surface| !removed_surface_ids.contains(&surface.id));
+
+    let removed_data_source_local_ids = profile
+        .data_sources
+        .iter()
+        .filter(|source| data_source_ids.contains(source.source.as_str()))
+        .map(|source| source.id.clone())
+        .collect::<BTreeSet<_>>();
+    profile
+        .data_sources
+        .retain(|source| !data_source_ids.contains(source.source.as_str()));
+
+    for surface in &mut profile.surfaces {
+        surface
+            .widgets
+            .retain(|widget| !widget_ids.contains(widget.widget.as_str()));
+        for widget in &mut surface.widgets {
+            if widget
+                .data_source
+                .as_ref()
+                .is_some_and(|id| removed_data_source_local_ids.contains(id))
+            {
+                widget.data_source = None;
+            }
         }
-        if let Some(binding) = surface.theme_preset.as_ref() {
-            ids.push(binding.id.as_str());
+        if surface
+            .template
+            .as_ref()
+            .is_some_and(|binding| presentation_id_is_owned(&page_template_ids, &binding.id))
+        {
+            surface.template = None;
+        }
+        if surface
+            .theme_preset
+            .as_ref()
+            .is_some_and(|binding| presentation_id_is_owned(&theme_preset_ids, &binding.id))
+        {
+            surface.theme_preset = None;
         }
     }
-    ids
+
+    profile.command_bindings.retain(|binding| {
+        !command_ids.contains(binding.command.as_str())
+            && !binding
+                .surface
+                .as_ref()
+                .is_some_and(|surface| removed_surface_ids.contains(surface))
+            && !binding.target.as_ref().is_some_and(|target| {
+                removed_surface_ids.contains(target) || script_surface_ids.contains(target.as_str())
+            })
+    });
+    profile
+        .shell_layout
+        .pinned_tools
+        .retain(|id| !tool_ids.contains(id.as_str()) && !script_surface_ids.contains(id.as_str()));
+    profile
+        .shell_layout
+        .navigation
+        .retain(|id| !removed_surface_ids.contains(id));
+    if profile
+        .shell_layout
+        .home
+        .as_ref()
+        .is_some_and(|id| removed_surface_ids.contains(id))
+    {
+        profile.shell_layout.home = None;
+    }
+    if profile
+        .shell_layout
+        .shell_template
+        .as_ref()
+        .is_some_and(|binding| presentation_id_is_owned(&shell_template_ids, &binding.id))
+    {
+        profile.shell_layout.shell_template = None;
+    }
+    if profile
+        .shell_layout
+        .theme_preset
+        .as_ref()
+        .is_some_and(|binding| presentation_id_is_owned(&theme_preset_ids, &binding.id))
+    {
+        profile.shell_layout.theme_preset = None;
+    }
+
+    before != serde_json::to_value(&*profile).ok()
+}
+
+fn presentation_id_is_owned(ids: &BTreeSet<&str>, candidate: &str) -> bool {
+    ids.contains(candidate) || ids.contains(presentation_template_id_alias(candidate))
+}
+
+fn restore_profile_files(
+    backups: &[(PathBuf, Vec<u8>)],
+) -> Result<(), WorkspaceProfileRuntimeError> {
+    let mut failures = Vec::new();
+    for (path, bytes) in backups.iter().rev() {
+        if let Err(error) = replace_file_bytes(path, bytes) {
+            failures.push(format!("{}: {}", path.to_string_lossy(), error.message));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(WorkspaceProfileRuntimeError::new(
+            WorkspaceProfileRuntimeErrorCode::ProfileRollbackFailed,
+            "部分装配方案文件未能恢复",
+            None,
+        )
+        .with_details(failures))
+    }
 }
 
 fn build_migrated_profile(
@@ -4082,6 +4332,53 @@ fn replace_json<T: Serialize>(path: &Path, value: &T) -> Result<(), WorkspacePro
     result
 }
 
+fn replace_file_bytes(path: &Path, bytes: &[u8]) -> Result<(), WorkspaceProfileRuntimeError> {
+    let parent = path.parent().ok_or_else(|| {
+        WorkspaceProfileRuntimeError::new(
+            WorkspaceProfileRuntimeErrorCode::ProfileIoError,
+            "装配方案路径缺少父目录",
+            Some(path),
+        )
+    })?;
+    fs::create_dir_all(parent).map_err(|error| io_error("创建装配方案目录失败", parent, error))?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("profile.json");
+    let temporary = parent.join(format!(".{file_name}.{}.restore.tmp", Uuid::new_v4()));
+    let backup = parent.join(format!(".{file_name}.{}.restore.bak", Uuid::new_v4()));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| io_error("创建装配方案恢复文件失败", &temporary, error))?;
+        file.write_all(bytes)
+            .map_err(|error| io_error("写入装配方案恢复文件失败", &temporary, error))?;
+        file.sync_all()
+            .map_err(|error| io_error("同步装配方案恢复文件失败", &temporary, error))?;
+        if path.exists() {
+            fs::rename(path, &backup)
+                .map_err(|error| io_error("暂存待恢复装配方案失败", path, error))?;
+        }
+        if let Err(error) = fs::rename(&temporary, path) {
+            if backup.exists() {
+                let _ = fs::rename(&backup, path);
+            }
+            return Err(io_error("提交装配方案恢复失败", path, error));
+        }
+        if backup.exists() {
+            fs::remove_file(&backup)
+                .map_err(|error| io_error("清理装配方案恢复备份失败", &backup, error))?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
 fn io_error(context: &str, path: &Path, error: std::io::Error) -> WorkspaceProfileRuntimeError {
     WorkspaceProfileRuntimeError::new(
         WorkspaceProfileRuntimeErrorCode::ProfileIoError,
@@ -4256,16 +4553,21 @@ mod tests {
             id: "test.music-player.surface".into(),
             name: "音乐播放器".into(),
             entry: "ui/index.html".into(),
-            placements: vec![ScriptSurfacePlacement::Shell, ScriptSurfacePlacement::Dialog],
+            placements: vec![
+                ScriptSurfacePlacement::Shell,
+                ScriptSurfacePlacement::Dialog,
+            ],
             allowed_commands: Vec::new(),
             extensions: ExtensionFields::new(),
         }];
         let mut profile = build_blank_profile();
-        profile.enabled_components.push(pmc_platform::ProfileComponentSelection {
-            id: component.id.clone(),
-            version_requirement: "^1.0".into(),
-            extensions: ExtensionFields::new(),
-        });
+        profile
+            .enabled_components
+            .push(pmc_platform::ProfileComponentSelection {
+                id: component.id.clone(),
+                version_requirement: "^1.0".into(),
+                extensions: ExtensionFields::new(),
+            });
         profile.shell_layout.pinned_tools = vec!["test.music-player.surface".into()];
 
         let enabled = build_draft_validation(&profile, &[], &[component.clone()]);
@@ -4277,6 +4579,118 @@ mod tests {
             .issues
             .iter()
             .any(|issue| issue.code == "PIN_COMPONENT_PROVIDER_DISABLED"));
+    }
+
+    #[test]
+    fn component_removal_cleans_every_profile_and_can_roll_back() {
+        let root = test_root("component-removal-cleanup");
+        let mut component = component_manifest("test.music-player", "1.0.0");
+        component.contributes.script_surfaces = vec![ScriptSurfaceContribution {
+            id: "test.music-player.surface".into(),
+            name: "音乐播放器".into(),
+            entry: "ui/index.html".into(),
+            placements: vec![
+                ScriptSurfacePlacement::Shell,
+                ScriptSurfacePlacement::Workspace,
+            ],
+            allowed_commands: Vec::new(),
+            extensions: ExtensionFields::new(),
+        }];
+        let runtime = WorkspaceProfileRuntime::new_with_components(&root, vec![component.clone()]);
+        let snapshot = runtime
+            .initialize_from_current_configuration(&[], &BTreeSet::new(), &[])
+            .unwrap();
+        let mut current = snapshot.current_profile;
+        current
+            .enabled_components
+            .push(pmc_platform::ProfileComponentSelection {
+                id: component.id.clone(),
+                version_requirement: "^1.0".into(),
+                extensions: ExtensionFields::new(),
+            });
+        current
+            .component_settings
+            .insert(component.id.clone(), json!({ "volume": 75 }));
+        current.shell_layout.pinned_tools = vec!["test.music-player.surface".into()];
+        current.shell_layout.home = Some("music-page".into());
+        current.shell_layout.navigation = vec!["music-page".into()];
+        current.surfaces.push(ProfileSurface {
+            id: "music-page".into(),
+            title: Some("音乐播放器".into()),
+            kind: SurfaceKind::ShellPage,
+            layout: SurfaceLayoutKind::ContributionDefined,
+            contribution: Some("test.music-player.surface".into()),
+            template: None,
+            theme_preset: None,
+            widgets: Vec::new(),
+            settings: BTreeMap::new(),
+            extensions: ExtensionFields::new(),
+        });
+        let current_path = runtime.profile_path(&current.id);
+        replace_json(&current_path, &current).unwrap();
+
+        let mut second = current.clone();
+        second.id = "local.music-copy".into();
+        second.name = "Music copy".into();
+        let second_path = runtime.profile_path(&second.id);
+        write_new_json(&second_path, &second).unwrap();
+        let current_before = fs::read(&current_path).unwrap();
+        let second_before = fs::read(&second_path).unwrap();
+
+        let rollback = runtime
+            .remove_component_references(&component, &[])
+            .unwrap();
+        for profile_id in [&current.id, &second.id] {
+            let cleaned = runtime.profile_document(profile_id).unwrap();
+            assert!(cleaned
+                .enabled_components
+                .iter()
+                .all(|selection| selection.id != component.id));
+            assert!(!cleaned.component_settings.contains_key(&component.id));
+            assert!(!cleaned
+                .shell_layout
+                .pinned_tools
+                .contains(&"test.music-player.surface".to_string()));
+            assert!(cleaned.shell_layout.home.is_none());
+            assert!(cleaned.shell_layout.navigation.is_empty());
+            assert!(cleaned.surfaces.iter().all(
+                |surface| surface.contribution.as_deref() != Some("test.music-player.surface")
+            ));
+        }
+
+        runtime
+            .rollback_component_reference_removal(rollback)
+            .unwrap();
+        assert_eq!(fs::read(&current_path).unwrap(), current_before);
+        assert_eq!(fs::read(&second_path).unwrap(), second_before);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn component_removal_rejects_required_module_dependency_without_writing() {
+        let root = test_root("component-removal-dependency");
+        let component = component_manifest("test.reader", "1.0.0");
+        let runtime = WorkspaceProfileRuntime::new_with_components(&root, vec![component.clone()]);
+        let mut viewer = manifest("test.viewer", "1.0.0");
+        viewer.requires_components.push(ComponentDependency {
+            id: component.id.clone(),
+            version_requirement: "^1.0".into(),
+        });
+        let snapshot = runtime
+            .initialize_from_current_configuration(
+                &[viewer.clone()],
+                &BTreeSet::from([viewer.id.clone()]),
+                &[],
+            )
+            .unwrap();
+        let path = runtime.profile_path(&snapshot.current_profile.id);
+        let before = fs::read(&path).unwrap();
+
+        assert!(runtime
+            .remove_component_references(&component, &[viewer])
+            .is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

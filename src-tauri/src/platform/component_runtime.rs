@@ -194,6 +194,7 @@ pub struct ComponentRuntimeOverview {
     pub root_path: String,
     pub state_path: String,
     pub installed_components: Vec<InstalledComponentSummary>,
+    pub disabled_components: Vec<InstalledComponentSummary>,
     pub available_bundled_components: Vec<ComponentManifestV1>,
     pub active_operations: Vec<ComponentOperationSummary>,
     pub recent_operations: Vec<ComponentOperationSummary>,
@@ -317,6 +318,8 @@ struct StoredComponentRuntimeState {
     schema_version: u16,
     #[serde(default)]
     removed_bundled: BTreeSet<String>,
+    #[serde(default)]
+    disabled_components: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -349,6 +352,7 @@ impl Default for StoredComponentRuntimeState {
         Self {
             schema_version: COMPONENT_STATE_SCHEMA_VERSION,
             removed_bundled: BTreeSet::new(),
+            disabled_components: BTreeSet::new(),
         }
     }
 }
@@ -474,12 +478,50 @@ impl ComponentRuntimeManager {
             .collect()
     }
 
+    /// Manifests that still have an installation on disk, including globally
+    /// disabled components. Profiles use this catalog for contract validation
+    /// so disabling a component does not turn a valid profile into a missing-
+    /// component recovery failure on the next launch.
+    pub fn installed_manifests(&self) -> Vec<ComponentManifestV1> {
+        let mut manifests = self
+            .manifests()
+            .into_iter()
+            .map(|manifest| (manifest.id.clone(), manifest))
+            .collect::<BTreeMap<_, _>>();
+        let disabled = self
+            .state
+            .lock()
+            .expect("component state mutex poisoned")
+            .disabled_components
+            .clone();
+        for component_id in disabled {
+            if let Some(manifest) = self.stored_manifest(&component_id) {
+                manifests.insert(component_id, manifest);
+            }
+        }
+        manifests.into_values().collect()
+    }
+
     pub fn manifest(&self, component_id: &str) -> Option<ComponentManifestV1> {
         self.catalog
             .lock()
             .expect("component catalog mutex poisoned")
             .get(component_id)
             .map(|component| component.manifest.clone())
+    }
+
+    pub fn stored_manifest(&self, component_id: &str) -> Option<ComponentManifestV1> {
+        self.manifest(component_id)
+            .or_else(|| self.bundled.get(component_id).cloned())
+            .or_else(|| {
+                read_component_manifest(
+                    &self
+                        .packages_path
+                        .join(component_id)
+                        .join(COMPONENT_MANIFEST_FILE),
+                )
+                .ok()
+            })
     }
 
     pub fn install_source(&self, component_id: &str) -> Option<ComponentInstallSource> {
@@ -610,6 +652,54 @@ impl ComponentRuntimeManager {
         let templates = template_catalog(catalog.values());
         drop(catalog);
 
+        let state = self
+            .state
+            .lock()
+            .expect("component state mutex poisoned")
+            .clone();
+        let mut disabled_ids = state.disabled_components.clone();
+        disabled_ids.extend(state.removed_bundled.iter().cloned());
+        disabled_ids.extend(
+            self.bundled
+                .keys()
+                .filter(|component_id| !installed_ids.contains(*component_id))
+                .cloned(),
+        );
+        let mut disabled_components = disabled_ids
+            .iter()
+            .filter_map(|component_id| {
+                let (manifest, source, package_root) =
+                    if let Some(manifest) = self.bundled.get(component_id) {
+                        (manifest.clone(), ComponentInstallSource::Bundled, None)
+                    } else {
+                        let package_root = self.packages_path.join(component_id);
+                        let manifest =
+                            read_component_manifest(&package_root.join(COMPONENT_MANIFEST_FILE))
+                                .ok()?;
+                        let source = if self.archive_path_for(&manifest).is_file() {
+                            ComponentInstallSource::Marketplace
+                        } else {
+                            ComponentInstallSource::Local
+                        };
+                        (manifest, source, Some(package_root))
+                    };
+                Some(InstalledComponentSummary {
+                    removable: manifest
+                        .extensions
+                        .get("removable")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true),
+                    host_adapter: host_adapter(&manifest).map(str::to_string),
+                    manifest,
+                    source,
+                    package_path: package_root.map(|path| path.to_string_lossy().into_owned()),
+                    active_operation_count: 0,
+                    worker: None,
+                })
+            })
+            .collect::<Vec<_>>();
+        disabled_components.sort_by(|left, right| left.manifest.name.cmp(&right.manifest.name));
+
         let mut available_bundled_components = self
             .bundled
             .values()
@@ -623,6 +713,7 @@ impl ComponentRuntimeManager {
             root_path: self.root_path.to_string_lossy().into_owned(),
             state_path: self.state_path.to_string_lossy().into_owned(),
             installed_components,
+            disabled_components,
             available_bundled_components,
             active_operations,
             recent_operations: self
@@ -718,9 +809,12 @@ impl ComponentRuntimeManager {
                     package_root: Some(target),
                 },
             );
-        if self.bundled.contains_key(&staged_manifest.id) {
+        {
             let mut state = self.state.lock().expect("component state mutex poisoned");
-            state.removed_bundled.remove(&staged_manifest.id);
+            state.disabled_components.remove(&staged_manifest.id);
+            if self.bundled.contains_key(&staged_manifest.id) {
+                state.removed_bundled.remove(&staged_manifest.id);
+            }
             persist_state(&self.state_path, &state)?;
         }
         Ok(staged_manifest)
@@ -1188,7 +1282,7 @@ impl ComponentRuntimeManager {
         Ok(installed)
     }
 
-    pub async fn uninstall(
+    pub async fn disable(
         &self,
         component_id: &str,
     ) -> Result<ComponentManifestV1, ComponentRuntimeError> {
@@ -1214,7 +1308,7 @@ impl ComponentRuntimeManager {
         if !dependent_components.is_empty() {
             return Err(ComponentRuntimeError::new(
                 ComponentRuntimeErrorCode::ComponentDependencyConflict,
-                "仍有已安装组件依赖此组件，不能卸载",
+                "仍有已启用组件依赖此组件，不能禁用",
             )
             .with_details(dependent_components));
         }
@@ -1228,22 +1322,17 @@ impl ComponentRuntimeManager {
             .ok_or_else(|| {
                 ComponentRuntimeError::new(
                     ComponentRuntimeErrorCode::ComponentNotInstalled,
-                    format!("组件 {component_id} 未安装"),
+                    format!("组件 {component_id} 未启用"),
                 )
             })?;
 
-        if installed.source == ComponentInstallSource::Bundled {
+        {
             let mut state = self.state.lock().expect("component state mutex poisoned");
-            state.removed_bundled.insert(component_id.to_string());
+            state.disabled_components.insert(component_id.to_string());
+            if installed.source == ComponentInstallSource::Bundled {
+                state.removed_bundled.insert(component_id.to_string());
+            }
             persist_state(&self.state_path, &state)?;
-        } else if let Some(package_root) = &installed.package_root {
-            let trash_root = self.root_path.join(".trash");
-            fs::create_dir_all(&trash_root)
-                .map_err(|error| io_error("创建组件卸载暂存目录失败", error))?;
-            let trash = trash_root.join(format!("{}-{}", component_id, Uuid::new_v4().simple()));
-            fs::rename(package_root, &trash)
-                .map_err(|error| io_error("撤下组件目录失败", error))?;
-            let _ = fs::remove_dir_all(trash);
         }
         self.catalog
             .lock()
@@ -1252,38 +1341,156 @@ impl ComponentRuntimeManager {
         Ok(installed.manifest)
     }
 
-    pub async fn reinstall_bundled(
+    pub async fn enable(
         &self,
         component_id: &str,
     ) -> Result<ComponentManifestV1, ComponentRuntimeError> {
         let _guard = self.mutation_lock.lock().await;
-        let manifest = self.bundled.get(component_id).cloned().ok_or_else(|| {
-            ComponentRuntimeError::new(
+        if self.manifest(component_id).is_some() {
+            return Err(ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentAlreadyInstalled,
+                format!("组件 {component_id} 已启用"),
+            ));
+        }
+        let package_root = self.packages_path.join(component_id);
+        let manifest_path = package_root.join(COMPONENT_MANIFEST_FILE);
+        let installed = if manifest_path.is_file() {
+            let manifest = read_component_manifest(&manifest_path)?;
+            validate_entry(&package_root, &manifest)?;
+            validate_platform_compatibility(&manifest)?;
+            validate_native_library_entry(&package_root, &manifest)?;
+            validate_presentation_component(&package_root, &manifest)?;
+            let source = if self.archive_path_for(&manifest).is_file() {
+                ComponentInstallSource::Marketplace
+            } else {
+                ComponentInstallSource::Local
+            };
+            InstalledComponent {
+                manifest,
+                source,
+                package_root: Some(package_root),
+            }
+        } else if let Some(manifest) = self.bundled.get(component_id).cloned() {
+            InstalledComponent {
+                manifest,
+                source: ComponentInstallSource::Bundled,
+                package_root: None,
+            }
+        } else {
+            return Err(ComponentRuntimeError::new(
                 ComponentRuntimeErrorCode::ComponentNotInstalled,
-                format!("{component_id} 不是安装器随附组件"),
-            )
-        })?;
+                format!("组件 {component_id} 的安装文件不存在"),
+            ));
+        };
         let mut next_manifests = self.manifests();
         next_manifests.retain(|item| item.id != component_id);
-        next_manifests.push(manifest.clone());
+        next_manifests.push(installed.manifest.clone());
         validate_component_graph(&next_manifests).map_err(contract_error)?;
         {
             let mut state = self.state.lock().expect("component state mutex poisoned");
+            state.disabled_components.remove(component_id);
             state.removed_bundled.remove(component_id);
             persist_state(&self.state_path, &state)?;
         }
+        let manifest = installed.manifest.clone();
         self.catalog
             .lock()
             .expect("component catalog mutex poisoned")
-            .insert(
-                component_id.into(),
-                InstalledComponent {
-                    manifest: manifest.clone(),
-                    source: ComponentInstallSource::Bundled,
-                    package_root: None,
-                },
-            );
+            .insert(component_id.into(), installed);
         Ok(manifest)
+    }
+
+    pub async fn delete(
+        &self,
+        component_id: &str,
+    ) -> Result<ComponentManifestV1, ComponentRuntimeError> {
+        let _guard = self.mutation_lock.lock().await;
+        if self.active_operation_count(component_id) > 0 {
+            return Err(ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentOperationConflict,
+                "组件仍有运行中的操作，请先取消或等待完成",
+            ));
+        }
+        let dependent_components = self
+            .installed_manifests()
+            .into_iter()
+            .filter(|manifest| manifest.id != component_id)
+            .filter(|manifest| {
+                manifest
+                    .requires_components
+                    .iter()
+                    .any(|dependency| dependency.id == component_id)
+            })
+            .map(|manifest| manifest.id)
+            .collect::<Vec<_>>();
+        if !dependent_components.is_empty() {
+            return Err(ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentDependencyConflict,
+                "仍有已安装组件依赖此组件，不能删除",
+            )
+            .with_details(dependent_components));
+        }
+        self.shutdown_worker(component_id).await;
+        let installed = self
+            .catalog
+            .lock()
+            .expect("component catalog mutex poisoned")
+            .get(component_id)
+            .cloned()
+            .or_else(|| {
+                let package_root = self.packages_path.join(component_id);
+                let manifest =
+                    read_component_manifest(&package_root.join(COMPONENT_MANIFEST_FILE)).ok()?;
+                Some(InstalledComponent {
+                    source: if self.archive_path_for(&manifest).is_file() {
+                        ComponentInstallSource::Marketplace
+                    } else {
+                        ComponentInstallSource::Local
+                    },
+                    manifest,
+                    package_root: Some(package_root),
+                })
+            })
+            .ok_or_else(|| {
+                ComponentRuntimeError::new(
+                    ComponentRuntimeErrorCode::ComponentNotInstalled,
+                    format!("组件 {component_id} 未安装"),
+                )
+            })?;
+        if installed.source == ComponentInstallSource::Bundled || installed.package_root.is_none() {
+            return Err(ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentDependencyConflict,
+                "随安装包组件不能删除，请改用禁用",
+            ));
+        }
+        if let Some(package_root) = &installed.package_root {
+            let trash_root = self.root_path.join(".trash");
+            fs::create_dir_all(&trash_root)
+                .map_err(|error| io_error("创建组件删除暂存目录失败", error))?;
+            let trash = trash_root.join(format!("{}-{}", component_id, Uuid::new_v4().simple()));
+            fs::rename(package_root, &trash)
+                .map_err(|error| io_error("撤下组件目录失败", error))?;
+            let _ = fs::remove_dir_all(trash);
+        }
+        let _ = fs::remove_file(self.archive_path_for(&installed.manifest));
+        self.catalog
+            .lock()
+            .expect("component catalog mutex poisoned")
+            .remove(component_id);
+        {
+            let mut state = self.state.lock().expect("component state mutex poisoned");
+            state.disabled_components.remove(component_id);
+            if self.bundled.contains_key(component_id) {
+                state.disabled_components.insert(component_id.to_string());
+                state.removed_bundled.insert(component_id.to_string());
+            }
+            persist_state(&self.state_path, &state)?;
+        }
+        Ok(installed.manifest)
+    }
+
+    pub fn is_bundled(&self, component_id: &str) -> bool {
+        self.bundled.contains_key(component_id)
     }
 
     pub async fn invoke(
@@ -2423,6 +2630,7 @@ fn load_catalog(
     let mut catalog = bundled
         .values()
         .filter(|manifest| !state.removed_bundled.contains(&manifest.id))
+        .filter(|manifest| !state.disabled_components.contains(&manifest.id))
         .filter(|manifest| {
             manifest
                 .extensions
@@ -2456,6 +2664,9 @@ fn load_catalog(
             continue;
         }
         let manifest = read_component_manifest(&manifest_path)?;
+        if state.disabled_components.contains(&manifest.id) {
+            continue;
+        }
         validate_entry(&path, &manifest)?;
         validate_platform_compatibility(&manifest)?;
         validate_native_library_entry(&path, &manifest)?;
@@ -3749,6 +3960,39 @@ mod tests {
             assert!(validate_archive_entry_name(path).is_err(), "{path}");
         }
         assert!(validate_archive_entry_name("bin/tool.exe").is_ok());
+    }
+
+    #[test]
+    fn legacy_runtime_state_defaults_to_no_disabled_components() {
+        let state: StoredComponentRuntimeState =
+            serde_json::from_str(r#"{"schemaVersion":1,"removedBundled":["nexora.example"]}"#)
+                .unwrap();
+        assert!(state.disabled_components.is_empty());
+        assert!(state.removed_bundled.contains("nexora.example"));
+    }
+
+    #[test]
+    fn disabled_bundled_component_stays_out_of_active_catalog() {
+        let manifest = parse_component_manifest(
+            r#"{
+              "schemaVersion": 1,
+              "id": "nexora.test.disabled",
+              "name": "Disabled test",
+              "version": "1.0.0",
+              "apiVersion": "1",
+              "runtime": "builtin-rust",
+              "platforms": ["any"]
+            }"#,
+        )
+        .unwrap();
+        let bundled = BTreeMap::from([(manifest.id.clone(), manifest)]);
+        let mut state = StoredComponentRuntimeState::default();
+        state
+            .disabled_components
+            .insert("nexora.test.disabled".into());
+        let packages = std::env::temp_dir().join(format!("nexora-empty-{}", Uuid::new_v4()));
+        let catalog = load_catalog(&packages, &bundled, &state).unwrap();
+        assert!(!catalog.contains_key("nexora.test.disabled"));
     }
 
     #[test]
