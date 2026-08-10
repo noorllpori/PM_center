@@ -487,6 +487,32 @@
       ],
       "type": "object"
     },
+    "ProfileUiExtensionBinding": {
+      "additionalProperties": true,
+      "description": "Profile-owned presentation choice for an extension contributed by an installed component. The manifest remains the source of its target slot; a profile only decides whether it participates and where it is ordered.",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "extensionId": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "order": {
+          "default": 0,
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "extensionId",
+        "id"
+      ],
+      "type": "object"
+    },
     "ProfileWidget": {
       "additionalProperties": true,
       "properties": {
@@ -806,6 +832,13 @@
           "default": [],
           "items": {
             "$ref": "#/definitions/ProfileToolAlias"
+          },
+          "type": "array"
+        },
+        "uiExtensionBindings": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ProfileUiExtensionBinding"
           },
           "type": "array"
         },

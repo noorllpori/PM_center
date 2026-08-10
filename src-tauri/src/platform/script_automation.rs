@@ -446,6 +446,7 @@ pub struct ScriptAutomationRuntime {
     scheduler: Mutex<Option<JoinHandle<()>>>,
     listeners: Mutex<Vec<tauri::EventId>>,
     bridged_operations: Mutex<BTreeMap<String, BTreeSet<String>>>,
+    pending_capability_tokens: Mutex<BTreeMap<String, Vec<(CapabilityTokenRequest, String)>>>,
 }
 
 pub struct AutomationTriggerIntakeGuard {
@@ -488,6 +489,7 @@ impl ScriptAutomationRuntime {
             scheduler: Mutex::new(None),
             listeners: Mutex::new(Vec::new()),
             bridged_operations: Mutex::new(BTreeMap::new()),
+            pending_capability_tokens: Mutex::new(BTreeMap::new()),
         }))
     }
 
@@ -790,6 +792,7 @@ impl ScriptAutomationRuntime {
             .ok_or_else(|| format!("组件未安装: {}", request.component_id))?;
         self.ensure_component_execution_trusted(&manifest)?;
         let command = automation_command(&manifest, &request.command)?;
+        let required_capabilities = command_required_capabilities(&manifest, &command, &request.input)?;
         let mut request = request;
         if command.context_requirement == AutomationContextRequirement::Global {
             request.project_path = None;
@@ -818,7 +821,10 @@ impl ScriptAutomationRuntime {
             .content_digest(&manifest.id)
             .unwrap_or_else(|| blake3::hash(manifest.id.as_bytes()).to_hex().to_string());
         let capability_scope = request.capability_scope.unwrap_or_else(|| {
-            default_capability_scope(command.required_capability, request.project_path.as_deref())
+            default_capability_scope(
+                required_capabilities.first().copied(),
+                request.project_path.as_deref(),
+            )
         });
         let connection = self
             .database
@@ -872,14 +878,14 @@ impl ScriptAutomationRuntime {
         drop(connection);
         let run = self.get_run(&run_id)?;
         self.emit_run(&run);
-        self.spawn_prepare(run_id.clone(), None);
+        self.spawn_prepare(run_id.clone(), Vec::new());
         Ok(run)
     }
 
     fn spawn_prepare(
         self: &Arc<Self>,
         run_id: String,
-        granted: Option<(CapabilityTokenRequest, String)>,
+        granted: Vec<(CapabilityTokenRequest, String)>,
     ) {
         let runtime = self.clone();
         tokio::spawn(async move {
@@ -890,7 +896,7 @@ impl ScriptAutomationRuntime {
     async fn prepare_and_execute(
         self: &Arc<Self>,
         run_id: &str,
-        granted: Option<(CapabilityTokenRequest, String)>,
+        granted: Vec<(CapabilityTokenRequest, String)>,
     ) {
         if !self.is_running() {
             let _ = self.update_terminal(
@@ -902,7 +908,7 @@ impl ScriptAutomationRuntime {
             );
             return;
         }
-        if granted.is_none() {
+        if granted.is_empty() {
             if let Err(error) = self.update_status(run_id, "preparing", None, None) {
                 eprintln!("[script-automation] prepare {run_id}: {error}");
                 return;
@@ -949,37 +955,41 @@ impl ScriptAutomationRuntime {
                 return;
             }
         };
-        let (capability_request, capability_token) = match granted {
-            Some((request, token)) => (Some(request), Some(token)),
-            None => match self.request_capability(&run, &command) {
-                Ok(Some((request, token))) => (Some(request), Some(token)),
-                Ok(None) if command.required_capability.is_some() => return,
-                Ok(None) => (None, None),
-                Err(error) => {
-                    let _ = self.update_terminal(run_id, "failed", None, Some(error), Vec::new());
-                    return;
-                }
-            },
+        let required_capabilities = match command_required_capabilities(&manifest, &command, &run.input) {
+            Ok(capabilities) => capabilities,
+            Err(error) => {
+                let _ = self.update_terminal(run_id, "failed", None, Some(error), Vec::new());
+                return;
+            }
+        };
+        let granted = match self.request_capabilities(&run, &command, &required_capabilities, granted) {
+            Ok(Some(granted)) => granted,
+            Ok(None) => return,
+            Err(error) => {
+                let _ = self.update_terminal(run_id, "failed", None, Some(error), Vec::new());
+                return;
+            }
         };
         self.execute_component(
             run_id,
             &run,
             &manifest,
             &command,
-            capability_request,
-            capability_token,
+            granted,
         )
         .await;
     }
 
-    fn request_capability(
+    fn request_capabilities(
         &self,
         run: &AutomationRun,
         command: &AutomationCommandContribution,
-    ) -> Result<Option<(CapabilityTokenRequest, String)>, String> {
-        let Some(capability) = command.required_capability else {
-            return Ok(None);
-        };
+        capabilities: &[Capability],
+        mut granted: Vec<(CapabilityTokenRequest, String)>,
+    ) -> Result<Option<Vec<(CapabilityTokenRequest, String)>>, String> {
+        if capabilities.is_empty() {
+            return Ok(Some(granted));
+        }
         let host = self.host.lock().expect("automation host mutex poisoned");
         let host = host.as_ref().ok_or("脚本自动化宿主尚未初始化")?;
         let scope = self
@@ -992,41 +1002,70 @@ impl ScriptAutomationRuntime {
                 |row| row.get::<_, String>(0),
             )
             .map_err(|error| error.to_string())?;
-        let request = CapabilityTokenRequest {
-            subject_kind: CapabilitySubjectKind::Component,
-            module_id: SCRIPT_AUTOMATION_MODULE_ID.into(),
-            component_id: Some(run.component_id.clone()),
-            capability,
-            operation: capability_operation(command.capability_operation),
-            reason: format!("自动化脚本“{}”执行 {}", run.command_name, run.command),
-            scope: serde_json::from_str(&scope).unwrap_or_default(),
-        };
-        let response = host
-            .gateway
-            .request_token(request.clone())
-            .map_err(|error| error.message)?;
-        match response.status {
-            CapabilityRequestStatus::Granted => {
-                Ok(response.token.map(|token| (request, token.value)))
+        let scope: CapabilityScopeRequest = serde_json::from_str(&scope).unwrap_or_default();
+        for (capability_index, capability) in capabilities.iter().copied().enumerate() {
+            if granted.iter().any(|(request, _)| request.capability == capability) {
+                continue;
             }
-            CapabilityRequestStatus::ApprovalRequired => {
-                let approval =
-                    serde_json::to_value(response.approval).map_err(|error| error.to_string())?;
-                self.database
-                    .lock()
-                    .expect("automation database mutex poisoned")
-                    .execute(
-                        "UPDATE automation_runs SET status='waiting-permission', permission_request_json=?2, updated_at=?3 WHERE id=?1",
-                        params![run.id, approval.to_string(), Utc::now().timestamp_millis()],
-                    )
-                    .map_err(|error| error.to_string())?;
-                let updated = self.get_run(&run.id)?;
-                self.emit_run(&updated);
-                let _ = self.app_handle.emit(PERMISSION_EVENT, &updated);
-                Ok(None)
+            let request = CapabilityTokenRequest {
+                subject_kind: CapabilitySubjectKind::Component,
+                module_id: SCRIPT_AUTOMATION_MODULE_ID.into(),
+                component_id: Some(run.component_id.clone()),
+                capability,
+                operation: capability_operation(command.capability_operation),
+                reason: format!("自动化脚本“{}”执行 {}", run.command_name, run.command),
+                scope: scope.clone(),
+            };
+            let response = host
+                .gateway
+                .request_token(request.clone())
+                .map_err(|error| error.message)?;
+            match response.status {
+                CapabilityRequestStatus::Granted => {
+                    let token = response.token.ok_or("权限网关未返回令牌")?.value;
+                    granted.push((request, token));
+                }
+                CapabilityRequestStatus::ApprovalRequired => {
+                    let approval = response.approval.ok_or("权限网关未返回批准请求")?;
+                    let mut pending = serde_json::to_value(approval)
+                        .map_err(|error| error.to_string())?;
+                    if let Some(object) = pending.as_object_mut() {
+                        object.insert(
+                            "requiredCapabilities".into(),
+                            json!(capabilities
+                                .iter()
+                                .map(|capability| capability.as_str())
+                                .collect::<Vec<_>>()),
+                        );
+                        object.insert(
+                            "approvedCapabilities".into(),
+                            json!(granted.iter()
+                                .map(|(request, _)| request.capability.as_str())
+                                .collect::<Vec<_>>()),
+                        );
+                        object.insert("pendingCapabilityIndex".into(), json!(capability_index));
+                    }
+                    self.pending_capability_tokens
+                        .lock()
+                        .expect("automation pending capability token mutex poisoned")
+                        .insert(run.id.clone(), granted);
+                    self.database
+                        .lock()
+                        .expect("automation database mutex poisoned")
+                        .execute(
+                            "UPDATE automation_runs SET status='waiting-permission', permission_request_json=?2, updated_at=?3 WHERE id=?1",
+                            params![run.id, pending.to_string(), Utc::now().timestamp_millis()],
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let updated = self.get_run(&run.id)?;
+                    self.emit_run(&updated);
+                    let _ = self.app_handle.emit(PERMISSION_EVENT, &updated);
+                    return Ok(None);
+                }
+                CapabilityRequestStatus::Denied => return Err(response.message),
             }
-            CapabilityRequestStatus::Denied => Err(response.message),
         }
+        Ok(Some(granted))
     }
 
     async fn execute_component(
@@ -1035,12 +1074,9 @@ impl ScriptAutomationRuntime {
         run: &AutomationRun,
         manifest: &ComponentManifestV1,
         command: &AutomationCommandContribution,
-        capability_request: Option<CapabilityTokenRequest>,
-        capability_token: Option<String>,
+        capability_grants: Vec<(CapabilityTokenRequest, String)>,
     ) {
-        if let (Some(request), Some(token)) =
-            (capability_request.as_ref(), capability_token.as_deref())
-        {
+        for (request, token) in &capability_grants {
             let consume_result = {
                 let host = self.host.lock().expect("automation host mutex poisoned");
                 let Some(host) = host.as_ref() else {
@@ -1069,10 +1105,13 @@ impl ScriptAutomationRuntime {
         }
         let (bridge_endpoint, bridge_token, bridge_shutdown, bridge_handle) = match self
             .start_bridge(
-                run.clone(),
-                manifest.clone(),
-                operation_id.clone(),
-                command.required_capability,
+            run.clone(),
+            manifest.clone(),
+            operation_id.clone(),
+            capability_grants
+                .iter()
+                .map(|(request, _)| request.capability)
+                .collect(),
             )
             .await
         {
@@ -1116,8 +1155,8 @@ impl ScriptAutomationRuntime {
                 input: payload,
                 operation_id: Some(operation_id.clone()),
                 timeout_ms: command.timeout_ms,
-                capability_request,
-                capability_token,
+                capability_request: None,
+                capability_token: None,
             })
             .await;
         let _ = bridge_shutdown.send(());
@@ -1185,7 +1224,7 @@ impl ScriptAutomationRuntime {
                     let id = run_id.to_string();
                     tokio::spawn(async move {
                         tokio::time::sleep(Duration::from_secs(delay)).await;
-                        runtime.spawn_prepare(id, None);
+                        runtime.spawn_prepare(id, Vec::new());
                     });
                 } else {
                     let _ = self.update_terminal(
@@ -1205,7 +1244,7 @@ impl ScriptAutomationRuntime {
         run: AutomationRun,
         manifest: ComponentManifestV1,
         root_operation_id: String,
-        granted_capability: Option<Capability>,
+        granted_capabilities: Vec<Capability>,
     ) -> Result<(String, String, oneshot::Sender<()>, JoinHandle<()>), String> {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .await
@@ -1226,6 +1265,7 @@ impl ScriptAutomationRuntime {
                         let run = run.clone();
                         let manifest = manifest.clone();
                         let root_operation_id = root_operation_id.clone();
+                        let granted_capabilities = granted_capabilities.clone();
                         let expected_token = expected_token.clone();
                         tokio::spawn(async move {
                             runtime
@@ -1234,7 +1274,7 @@ impl ScriptAutomationRuntime {
                                     &run,
                                     &manifest,
                                     &root_operation_id,
-                                    granted_capability,
+                                    &granted_capabilities,
                                     &expected_token,
                                 )
                                 .await;
@@ -1252,7 +1292,7 @@ impl ScriptAutomationRuntime {
         run: &AutomationRun,
         manifest: &ComponentManifestV1,
         root_operation_id: &str,
-        granted_capability: Option<Capability>,
+        granted_capabilities: &[Capability],
         expected_token: &str,
     ) {
         let (reader, mut writer) = stream.into_split();
@@ -1301,7 +1341,7 @@ impl ScriptAutomationRuntime {
                         run,
                         manifest,
                         root_operation_id,
-                        granted_capability,
+                        granted_capabilities,
                         request,
                     )
                     .await
@@ -1324,7 +1364,7 @@ impl ScriptAutomationRuntime {
         run: &AutomationRun,
         manifest: &ComponentManifestV1,
         root_operation_id: &str,
-        granted_capability: Option<Capability>,
+        granted_capabilities: &[Capability],
         request: AutomationBridgeRequest,
     ) -> Result<Value, AutomationBridgeError> {
         let current = self.get_run(&run.id).map_err(AutomationBridgeError::from)?;
@@ -1401,31 +1441,27 @@ impl ScriptAutomationRuntime {
                             format!("依赖组件未公开命令: {component_id}/{command}"),
                         )
                     })?;
-                if let Some(required_capability) = target_command.required_capability {
-                    let capability = request
-                        .payload
-                        .get("capability")
-                        .cloned()
-                        .ok_or_else(|| {
-                            AutomationBridgeError::new(
-                                "capability_required",
-                                format!(
-                                    "调用 {component_id}/{command} 需要 {}",
-                                    required_capability.as_str()
-                                ),
-                            )
-                        })?;
-                    let capability = serde_json::from_value::<Capability>(capability)
-                        .map_err(|_| AutomationBridgeError::new("capability_invalid", "依赖 capability 无效"))?;
-                    if capability != required_capability || granted_capability != Some(capability) {
+                let target_input = request.payload.get("input").cloned().unwrap_or(Value::Null);
+                let target_capabilities = if component_id == super::file_operations::FILE_OPERATIONS_COMPONENT_ID {
+                    super::file_operations::required_capabilities_for_command(&command, &target_input)
+                        .map_err(|message| AutomationBridgeError::new("file_operation_request_invalid", message))?
+                } else {
+                    target_command.effective_required_capabilities()
+                };
+                if !target_capabilities.is_empty() {
+                    let requested_capabilities = bridge_requested_capabilities(&request.payload)?;
+                    if target_capabilities.iter().any(|capability| !requested_capabilities.contains(capability))
+                        || target_capabilities.iter().any(|capability| !granted_capabilities.contains(capability))
+                    {
                         return Err(AutomationBridgeError::new(
                             "capability_not_granted",
-                            "依赖调用只能使用目标命令要求且已为本次运行授权的 Capability",
+                            "依赖调用缺少目标命令所需且已为本次运行授权的 Capability",
                         ));
                     }
-                    if !manifest.capabilities.contains(&capability)
-                        || !target.capabilities.contains(&capability)
-                    {
+                    if target_capabilities.iter().any(|capability| {
+                        !manifest.capabilities.contains(capability)
+                            || !target.capabilities.contains(capability)
+                    }) {
                         return Err(AutomationBridgeError::new(
                             "capability_not_declared",
                             "调用方或依赖组件未在清单中声明该 Capability",
@@ -1434,13 +1470,25 @@ impl ScriptAutomationRuntime {
                 }
                 let operation_id = format!("{root_operation_id}:dependency:{}", Uuid::new_v4());
                 self.register_bridged_operation(root_operation_id, &operation_id);
+                let target_input = if component_id == super::file_operations::FILE_OPERATIONS_COMPONENT_ID {
+                    json!({
+                        "request": target_input,
+                        "nexora": {
+                            "projectPath": run.project_path,
+                            "callerComponentId": manifest.id,
+                            "rootOperationId": root_operation_id,
+                        },
+                    })
+                } else {
+                    request.payload.get("input").cloned().unwrap_or(Value::Null)
+                };
                 let result = self
                     .components
                     .invoke(ComponentInvocationRequest {
                         component_id: component_id.clone(),
                         module_id: SCRIPT_AUTOMATION_MODULE_ID.into(),
                         command: command.clone(),
-                        input: request.payload.get("input").cloned().unwrap_or(Value::Null),
+                        input: target_input,
                         operation_id: Some(operation_id.clone()),
                         timeout_ms: request
                             .payload
@@ -1479,7 +1527,7 @@ impl ScriptAutomationRuntime {
             "project.context.get" => {
                 require_any_bridge_capability(
                     manifest,
-                    granted_capability,
+                    granted_capabilities,
                     &[
                         Capability::ProjectFilesRead,
                         Capability::ProjectFilesWrite,
@@ -1508,7 +1556,7 @@ impl ScriptAutomationRuntime {
             "project.files.list" => {
                 require_bridge_capability(
                     manifest,
-                    granted_capability,
+                    granted_capabilities,
                     Capability::ProjectFilesRead,
                 )?;
                 let root = bridge_project_root(run)?;
@@ -1566,7 +1614,7 @@ impl ScriptAutomationRuntime {
             "project.files.stat" => {
                 require_bridge_capability(
                     manifest,
-                    granted_capability,
+                    granted_capabilities,
                     Capability::ProjectFilesRead,
                 )?;
                 let root = bridge_project_root(run)?;
@@ -1586,7 +1634,7 @@ impl ScriptAutomationRuntime {
                 } else {
                     Capability::ProjectFilesRead
                 };
-                require_bridge_capability(manifest, granted_capability, capability)?;
+                require_bridge_capability(manifest, granted_capabilities, capability)?;
                 let root = bridge_project_root(run)?;
                 let relative = required_bridge_string(&request.payload, "relativePath")?;
                 let path = resolve_project_relative(&root, &relative, access == "write")?;
@@ -1599,7 +1647,7 @@ impl ScriptAutomationRuntime {
             "project.files.mutate" => {
                 require_bridge_capability(
                     manifest,
-                    granted_capability,
+                    granted_capabilities,
                     Capability::ProjectFilesWrite,
                 )?;
                 let root = bridge_project_root(run)?;
@@ -1626,7 +1674,7 @@ impl ScriptAutomationRuntime {
             "project.metadata.get" => {
                 require_bridge_capability(
                     manifest,
-                    granted_capability,
+                    granted_capabilities,
                     Capability::ProjectMetadataRead,
                 )?;
                 let root = bridge_project_root(run)?;
@@ -1644,7 +1692,7 @@ impl ScriptAutomationRuntime {
             "project.metadata.set" => {
                 require_bridge_capability(
                     manifest,
-                    granted_capability,
+                    granted_capabilities,
                     Capability::ProjectMetadataWrite,
                 )?;
                 let root = bridge_project_root(run)?;
@@ -1664,7 +1712,7 @@ impl ScriptAutomationRuntime {
             "storage.blob.put" => {
                 require_bridge_capability(
                     manifest,
-                    granted_capability,
+                    granted_capabilities,
                     Capability::ProjectStorageWrite,
                 )?;
                 let root = component_storage_root(
@@ -1691,7 +1739,7 @@ impl ScriptAutomationRuntime {
             "storage.blob.open" => {
                 require_bridge_capability(
                     manifest,
-                    granted_capability,
+                    granted_capabilities,
                     Capability::ProjectStorageRead,
                 )?;
                 let root = component_storage_root(
@@ -1710,7 +1758,7 @@ impl ScriptAutomationRuntime {
             "storage.blob.delete" => {
                 require_bridge_capability(
                     manifest,
-                    granted_capability,
+                    granted_capabilities,
                     Capability::ProjectStorageWrite,
                 )?;
                 let root = component_storage_root(
@@ -1734,7 +1782,7 @@ impl ScriptAutomationRuntime {
             "storage.blob.list" => {
                 require_bridge_capability(
                     manifest,
-                    granted_capability,
+                    granted_capabilities,
                     Capability::ProjectStorageRead,
                 )?;
                 let root = component_storage_root(
@@ -1757,7 +1805,7 @@ impl ScriptAutomationRuntime {
             "storage.directory" => {
                 require_bridge_capability(
                     manifest,
-                    granted_capability,
+                    granted_capabilities,
                     Capability::ProjectStorageDirect,
                 )?;
                 let root = component_storage_root(
@@ -1984,7 +2032,11 @@ impl ScriptAutomationRuntime {
                 params![run_id, Utc::now().timestamp_millis()],
             )
             .map_err(|error| error.to_string())?;
-        self.spawn_prepare(run_id.to_string(), None);
+        self.pending_capability_tokens
+            .lock()
+            .expect("automation pending capability token mutex poisoned")
+            .remove(run_id);
+        self.spawn_prepare(run_id.to_string(), Vec::new());
         self.get_run(run_id)
     }
 
@@ -1994,7 +2046,7 @@ impl ScriptAutomationRuntime {
     ) -> Result<AutomationRun, String> {
         let run = self.get_run(&request.run_id)?;
         match request.action.as_str() {
-            "allowOnce" | "allowAlways" | "deny" => {
+            "allowOnce" | "allowSession" | "allowAlways" | "deny" => {
                 if run.status != AutomationRunStatus::WaitingPermission {
                     return Err("该运行当前没有等待权限请求".into());
                 }
@@ -2006,6 +2058,7 @@ impl ScriptAutomationRuntime {
                     .ok_or("权限请求缺少 requestId")?;
                 let decision = match request.action.as_str() {
                     "allowOnce" => CapabilityDecision::AllowOnce,
+                    "allowSession" => CapabilityDecision::AllowSession,
                     "allowAlways" => CapabilityDecision::AllowAlways,
                     _ => CapabilityDecision::Deny,
                 };
@@ -2033,7 +2086,13 @@ impl ScriptAutomationRuntime {
                         .manifest(&run.component_id)
                         .ok_or("组件已卸载")?;
                     let command = automation_command(&manifest, &run.command)?;
-                    let capability = command.required_capability.ok_or("命令未声明权限")?;
+                    let capability = run
+                        .permission_request
+                        .as_ref()
+                        .and_then(|value| value.get("capability"))
+                        .cloned()
+                        .ok_or_else(|| "权限请求缺少 capability".to_string())
+                        .and_then(|value| serde_json::from_value::<Capability>(value).map_err(|_| "权限请求 capability 无效".to_string()))?;
                     let scope_json = self
                         .database
                         .lock()
@@ -2053,11 +2112,18 @@ impl ScriptAutomationRuntime {
                         reason: format!("自动化脚本“{}”执行 {}", run.command_name, run.command),
                         scope: serde_json::from_str(&scope_json).unwrap_or_default(),
                     };
+                    let mut granted = self
+                        .pending_capability_tokens
+                        .lock()
+                        .expect("automation pending capability token mutex poisoned")
+                        .remove(&run.id)
+                        .unwrap_or_default();
+                    granted.push((capability_request, token));
                     self.database.lock().expect("automation database mutex poisoned").execute(
                         "UPDATE automation_runs SET status='queued', permission_request_json=NULL, updated_at=?2 WHERE id=?1",
                         params![run.id, Utc::now().timestamp_millis()],
                     ).map_err(|error| error.to_string())?;
-                    self.spawn_prepare(run.id.clone(), Some((capability_request, token)));
+                    self.spawn_prepare(run.id.clone(), granted);
                 }
             }
             "retrySafe" => return self.retry_run(&request.run_id),
@@ -3098,6 +3164,10 @@ window.nexora = Object.freeze({{
         error: Option<String>,
         logs: Vec<String>,
     ) -> Result<(), String> {
+        self.pending_capability_tokens
+            .lock()
+            .expect("automation pending capability token mutex poisoned")
+            .remove(run_id);
         let now = Utc::now().timestamp_millis();
         let connection = self
             .database
@@ -3250,7 +3320,7 @@ window.nexora = Object.freeze({{
                 .collect::<Vec<_>>()
         };
         for run_id in run_ids {
-            self.spawn_prepare(run_id, None);
+            self.spawn_prepare(run_id, Vec::new());
         }
     }
 
@@ -3355,9 +3425,37 @@ fn required_bridge_string(payload: &Value, key: &str) -> Result<String, String> 
         .ok_or_else(|| format!("SDK 桥请求缺少 {key}"))
 }
 
+fn bridge_requested_capabilities(payload: &Value) -> Result<Vec<Capability>, AutomationBridgeError> {
+    let values = if let Some(values) = payload.get("capabilities").and_then(Value::as_array) {
+        values.clone()
+    } else if let Some(value) = payload.get("capability") {
+        vec![value.clone()]
+    } else {
+        return Err(AutomationBridgeError::new(
+            "capability_required",
+            "调用依赖命令时必须传入 capability 或 capabilities",
+        ));
+    };
+    let mut capabilities = Vec::new();
+    for value in values {
+        let capability = serde_json::from_value::<Capability>(value)
+            .map_err(|_| AutomationBridgeError::new("capability_invalid", "依赖 capability 无效"))?;
+        if !capabilities.contains(&capability) {
+            capabilities.push(capability);
+        }
+    }
+    if capabilities.is_empty() {
+        return Err(AutomationBridgeError::new(
+            "capability_required",
+            "调用依赖命令时至少需要一个 capability",
+        ));
+    }
+    Ok(capabilities)
+}
+
 fn require_bridge_capability(
     manifest: &ComponentManifestV1,
-    granted: Option<Capability>,
+    granted: &[Capability],
     expected: Capability,
 ) -> Result<(), AutomationBridgeError> {
     if !manifest.capabilities.contains(&expected) {
@@ -3366,7 +3464,7 @@ fn require_bridge_capability(
             format!("组件清单未声明 {}", expected.as_str()),
         ));
     }
-    if granted != Some(expected) {
+    if !granted.contains(&expected) {
         return Err(AutomationBridgeError::new(
             "capability_not_granted",
             format!("本次运行未授权 {}", expected.as_str()),
@@ -3377,22 +3475,17 @@ fn require_bridge_capability(
 
 fn require_any_bridge_capability(
     manifest: &ComponentManifestV1,
-    granted: Option<Capability>,
+    granted: &[Capability],
     allowed: &[Capability],
 ) -> Result<Capability, AutomationBridgeError> {
-    let Some(granted) = granted else {
-        return Err(AutomationBridgeError::new(
-            "capability_required",
-            "此操作需要项目读取 Capability",
-        ));
-    };
-    if !allowed.contains(&granted) || !manifest.capabilities.contains(&granted) {
-        return Err(AutomationBridgeError::new(
+    allowed
+        .iter()
+        .copied()
+        .find(|capability| granted.contains(capability) && manifest.capabilities.contains(capability))
+        .ok_or_else(|| AutomationBridgeError::new(
             "capability_not_granted",
             "本次运行的 Capability 不能执行该项目操作",
-        ));
-    }
-    Ok(granted)
+        ))
 }
 
 fn bridge_project_root(run: &AutomationRun) -> Result<PathBuf, AutomationBridgeError> {
@@ -4132,6 +4225,17 @@ fn automation_command(
         .find(|candidate| candidate.command == command || candidate.id == command)
         .cloned()
         .ok_or_else(|| format!("组件 {} 未声明自动化命令 {command}", manifest.id))
+}
+
+fn command_required_capabilities(
+    manifest: &ComponentManifestV1,
+    command: &AutomationCommandContribution,
+    input: &Value,
+) -> Result<Vec<Capability>, String> {
+    if manifest.id == super::file_operations::FILE_OPERATIONS_COMPONENT_ID {
+        return super::file_operations::required_capabilities_for_command(&command.command, input);
+    }
+    Ok(command.effective_required_capabilities())
 }
 
 fn semantics_name(value: AutomationExecutionSemantics) -> &'static str {

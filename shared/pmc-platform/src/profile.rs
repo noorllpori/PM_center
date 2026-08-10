@@ -339,6 +339,22 @@ pub struct ProfileAutomationBinding {
     pub extensions: ExtensionFields,
 }
 
+/// Profile-owned presentation choice for an extension contributed by an
+/// installed component. The manifest remains the source of its target slot;
+/// a profile only decides whether it participates and where it is ordered.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileUiExtensionBinding {
+    pub id: String,
+    pub extension_id: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub order: i32,
+    #[serde(flatten)]
+    pub extensions: ExtensionFields,
+}
+
 const fn default_true() -> bool {
     true
 }
@@ -377,6 +393,8 @@ pub struct WorkspaceProfileV1 {
     pub workflow_bindings: Vec<ProfileWorkflowBinding>,
     #[serde(default)]
     pub automation_bindings: Vec<ProfileAutomationBinding>,
+    #[serde(default)]
+    pub ui_extension_bindings: Vec<ProfileUiExtensionBinding>,
     #[serde(default)]
     pub variables: BTreeMap<String, String>,
     #[serde(flatten)]
@@ -623,6 +641,23 @@ impl ValidateContract for WorkspaceProfileV1 {
                     ContractErrorCode::InvalidRuntimeConfiguration,
                     format!("{path}.projectVariable"),
                     "仅 profile-variable 项目上下文可以声明 projectVariable",
+                ));
+            }
+        }
+        let mut ui_extension_binding_ids = BTreeSet::new();
+        let mut ui_extension_ids = BTreeSet::new();
+        for (index, binding) in self.ui_extension_bindings.iter().enumerate() {
+            let path = format!("$.uiExtensionBindings[{index}]");
+            validate_local_id(&binding.id, &format!("{path}.id"))?;
+            validate_stable_id(&binding.extension_id, &format!("{path}.extensionId"))?;
+            if !ui_extension_binding_ids.insert(binding.id.as_str()) {
+                return duplicate(format!("{path}.id"), &binding.id);
+            }
+            if !ui_extension_ids.insert(binding.extension_id.as_str()) {
+                return Err(ContractError::new(
+                    ContractErrorCode::DuplicateId,
+                    format!("{path}.extensionId"),
+                    format!("重复 UI 扩展绑定: {}", binding.extension_id),
                 ));
             }
         }

@@ -84,7 +84,7 @@
   "name": "检查文件",
   "contextRequirement": "project-required",
   "executionSemantics": "pure",
-  "requiredCapability": "project.files.read",
+  "requiredCapabilities": ["project.files.read"],
   "capabilityOperation": "read",
   "inputSchema": {"type": "object"},
   "outputSchema": {"type": "object"},
@@ -106,6 +106,8 @@ result = call_component(
 )
 ```
 
+`call_component(..., capability="...")` 用于单项权限；跨空间调用可使用 `capabilities=["...", "..."]`。调用方必须传入目标本次操作实际需要的完整集合，宿主会检查每一项是否同时由调用方、目标组件和本次运行批准。
+
 宿主依次验证：
 
 1. 目标在调用方 `requiresComponents` 或 `optionalComponents` 中声明。
@@ -113,6 +115,8 @@ result = call_component(
 3. 目标 Manifest 的 `automationCommands` 公开了该 `command`。
 4. 当前运行获得目标命令要求的 Capability。
 5. 项目上下文、超时、取消和调用链合法。
+
+`requiredCapability` 是兼容字段，等价于单元素 `requiredCapabilities`。跨项目/外部空间的命令可声明多项 Capability；运行时只会针对本次源、目标与操作实际需要的范围申请授权，调用方和目标组件都必须在 Manifest 中声明它们。
 
 自调用、未声明依赖、失效依赖和递归调用会被拒绝。通用组件发布/订阅总线是 `reserved-r17`；R14.5 继续使用宿主事件与自动化绑定。
 
@@ -145,7 +149,68 @@ Python SDK 抛出 `NexoraBridgeError`，字段为 `code`、`details` 和 `retrya
 
 项目内文件应先通过 `resolve_project_file()` 得到受控绝对路径。外部文件不是项目接口的一部分，需要单独的外部文件 Capability 和用户选择流程。
 
-## 6. Python SDK v1
+## 6. 文件操作公共服务
+
+状态：`stable-2.8.5`。
+
+- 组件 ID：`nexora.file-operations`
+- 依赖版本建议：`^1.0`
+- 不依赖 BlenderIO。需要解析 `.blend` 的组件应同时声明 `pmc.blendio`。
+- 所有调用都使用 `call_component()`；调用方不得读取项目数据库、TreeCache 或拼接 Nexora 内部目录。
+
+### 6.1 路径与授权
+
+```python
+from nexora_sdk import call_file_operation, external_location, project_location
+
+project_file = project_location("assets/a.png")
+external_file = external_location(r"D:\\Media\\a.png", grant_id)
+```
+
+`project` 路径必须为相对路径，默认使用运行、页面或事件携带的项目。多项目组件可以通过 `project.describe` 获取稳定 `projectId`，再在 `project_location(..., project_id=...)` 中指定一个仍处于打开状态的项目。
+
+`external` 路径必须同时提供同一组件获得的 `grantId`。`external.select` 创建单次授权；`external.grant-directory` 创建 `once`、`session` 或 `persistent` 目录授权；`external.list-grants` 与 `external.revoke-grant` 管理当前组件自己的授权。授权属于设备级数据，不随 Profile、项目或 `.pmc-workspace` 导出。`access` 只能为 `read`、`write` 或 `read-write`。
+
+`external.select` 会打开 Windows 目录选择器，并强制签发 `once` 授权；`external.grant-directory` 也会打开选择器，并按请求创建 `once`、`session` 或 `persistent` 授权。组件不能通过提交一个任意 `rootPath` 绕过选择器。每个 `grantId` 只能由取得它的组件使用，撤销和过期后所有对应位置立即失效。
+
+### 6.2 命令目录
+
+| 命令 | 上下文 | Capability | 输出 |
+| --- | --- | --- | --- |
+| `project.describe` | 项目 | `project.files.read` | 项目 ID、名称和当前根目录快照。 |
+| `directory.list`、`entry.stat`、`entry.exists`、`entry.search` | 项目或外部 | 对应读取 Capability | 分页条目、元数据、存在状态或搜索结果。 |
+| `file.read`、`file.hash` | 项目或外部 | 对应读取 Capability | UTF-8/Base64 数据或 BLAKE3 摘要。 |
+| `file.write`、`directory.create` | 项目或外部 | 对应写入 Capability | 写入/目录的元数据。 |
+| `entry.copy`、`entry.move`、`entry.rename`、`entry.delete`、`batch.execute` | 项目、外部或跨空间 | 源读取及目标写入 | 完成项与逐项结果。 |
+| `stream.open-read`、`stream.read`、`stream.open-write`、`stream.write`、`stream.commit`、`stream.abort` | 项目或外部 | 对应读写 Capability | 绑定组件、授权与调用链的短期流句柄。 |
+| `external.import`、`external.export` | 项目与外部 | 项目和外部的对应读写 | 复制后的目标元数据。 |
+| `cache.status`、`cache.query`、`cache.invalidate`、`cache.refresh-directory`、`cache.rebuild-project`、`watcher.status` | 项目 | `cache.inspect` 或 `cache.maintain` | 缓存快照、维护结果或监听状态。 |
+
+`file.write` 会先写入同目录临时文件再替换目标；`expectedHash` 可拒绝并发覆盖。所有变更命令均支持冲突策略 `error`、`overwrite`、`rename`、`skip`。默认删除请求回收站，只有 `permanent=true` 才会永久删除。项目和外部空间的移动跨卷时按复制、校验、删除执行。
+
+```python
+page = call_file_operation(
+    "directory.list",
+    {"location": project_location("assets"), "source": "auto", "limit": 100},
+    capability="project.files.read",
+)
+```
+
+项目导出到已授权外部目录的最小调用：
+
+```python
+result = call_file_operation(
+    "external.export",
+    {
+        "source": project_location("deliver/final.mp4"),
+        "target": external_location(r"D:\\Exports\\final.mp4", grant_id),
+        "conflict": "rename",
+    },
+    capabilities=["project.files.read", "filesystem.external.write"],
+)
+```
+
+## 7. Python SDK v1
 
 状态：`stable-2.8.5`。SDK 位于 Nexora 随组件运行时提供的 `nexora_sdk` 包中。
 
@@ -167,6 +232,7 @@ write_result({"ok": True})
 | `is_cancelled(context)`、`raise_if_cancelled(context)` | `stable-2.8.5` | 响应取消。 |
 | `write_result(value)`、`write_error(message)` | `stable-2.8.5` | 输出最终协议结果。 |
 | `call_component(...)` | `stable-2.8.5` | 调用已声明依赖的公开命令。 |
+| `project_location(...)`、`external_location(...)`、`call_file_operation(...)` | `stable-2.8.5` | 创建结构化文件位置并调用文件操作服务。 |
 | `emit_surface_event(...)` | `stable-2.8.5` | 向组件自己的沙箱页面发送受控事件。 |
 
 ### 6.2 项目接口
@@ -212,7 +278,7 @@ write_result({"ok": True})
 
 项目存储当前物理上位于 `.pm_center/components/<component-id>/`，但该路径不是公开合同；只通过 SDK 获取句柄或目录。
 
-## 7. Capability
+## 8. Capability
 
 状态：全部 `stable-2.8.5`。Manifest 只能声明实际使用的最小集合。
 
@@ -239,22 +305,27 @@ render.result.commit
 
 Python 是受信任代码模型。Capability 约束 Nexora Bridge 与宿主接口，不承诺限制 Python 标准库在当前 Windows 用户权限下能做的事情。生产环境只能运行可信签名包；开发目录必须由用户显式信任。
 
-## 8. 页面、文件处理和设置贡献
+批准方式为 `allowOnce`、`allowSession` 和 `allowAlways`。多 Capability 命令会在同一自动化运行中按需逐项等待批准；任一项被拒绝则整个运行不执行。
+
+## 9. 页面、文件处理和设置贡献
 
 | Contribution | 状态 | 边界 |
 | --- | --- | --- |
 | `scriptSurfaces` | `stable-2.8.5` | 沙箱 HTML/CSS/JS；只能调用 `allowedCommands`。 |
 | `fileHandlers` | `stable-2.8.5` | 声明扩展名、MIME、意图、优先级和工作区目标。 |
 | `settingsSections` | `stable-2.8.5` | 由 Nexora 按 Schema 渲染；停用后表单撤下，数据保留。 |
+| `uiExtensionPoints`、`uiExtensions`、`uiExtensionBindings` | `stable-2.8.5` | 目标组件发布命名插槽/整页替换点；扩展必须声明目标依赖与自身隔离页面，Profile 决定启用和顺序。 |
 | `shellTemplates`、`pageTemplates`、`themePresets` | `stable-2.8.5` | 静态模板，经净化和恢复 Shell 承载。 |
 | `toolActions` | `experimental` | 可登记和诊断，不保证任意宿主工具栏位置。 |
 | `widgets`、`dataSources` | `experimental` | 无第三方 React ABI。 |
 | `workflowNodes`、`workflowBindings` | 兼容冻结 | 可往返保存，但不执行。 |
 | Hosted Surface、项目管理器级 ABI | `reserved-r17` | 当前不得生成或伪造。 |
 
-Script Surface 使用 CSP 和会话 nonce，不能访问宿主 DOM、Tauri IPC、本机 URL 或任意远程脚本。页面崩溃只撤下自身。
+Script Surface 使用 CSP 和会话 nonce，不能访问宿主 DOM、Tauri IPC、本机 URL 或任意远程脚本。插槽页面会收到受控 `ui-extension-context` 事件（项目 ID、项目路径、相对选择、主题、语言和尺寸）；页面崩溃只撤下自身，整页替换会回退默认项目工作区。
 
-## 9. 开发目录与安全重载
+首批稳定项目管理器插槽：`nexora.project-manager.project-toolbar`、`project-sidebar`、`file-details`、`file-context-menu`、`project-home-widgets`、`project-status-bar` 和 `project-workspace`。最后一个是 `surface` 类型，且只接受一项 `mode: "replace"` 绑定；其他插槽按 Profile `order` 排列。
+
+## 10. 开发目录与安全重载
 
 状态：`experimental`。
 
@@ -262,7 +333,7 @@ Script Surface 使用 CSP 和会话 nonce，不能访问宿主 DOM、Tauri IPC�
 
 重载会拒绝有不可安全取消的非幂等运行或活动原生操作的组件，并返回运行/操作 ID。安装采用暂存与备份替换，校验或安装失败时保留旧版本。Python Worker、EXE 和隔离 DLL 由运行时重新创建，贡献目录重新同步。
 
-## 10. 包、签名和方案
+## 11. 包、签名和方案
 
 | 文件 | 状态 | 内容 |
 | --- | --- | --- |
@@ -272,7 +343,7 @@ Script Surface 使用 CSP 和会话 nonce，不能访问宿主 DOM、Tauri IPC�
 
 正式可执行组件需要受信任发布者签名。使用安装版开发者工作台创建模板、校验、信任开发目录、调试、生成密钥并打包；不要手工伪造 ZIP 或包头。
 
-## 11. 兼容与禁止事项
+## 12. 兼容与禁止事项
 
 - 未安装或未进入当前方案有效闭包的组件不贡献功能，也不能被调用。
 - 禁用只撤下运行时、页面和贡献，保留组件安装文件、方案引用、`state` 与 `cache`，之后可直接重新启用。

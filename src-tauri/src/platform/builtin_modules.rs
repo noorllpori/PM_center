@@ -1,4 +1,5 @@
-use super::builtin_components::PM_BLENDIO_COMPONENT_ID;
+use super::builtin_components::{PM_BLENDIO_COMPONENT_ID, PROJECT_MANAGER_COMPONENT_ID};
+use super::file_operations::FILE_OPERATIONS_COMPONENT_ID;
 use super::capability_gateway::CapabilityComponentRegistration;
 use super::module_manager::{
     LifecycleFuture, ModuleContext, ModuleHealth, ModuleHealthLevel, ModuleLifecycle,
@@ -1024,8 +1025,8 @@ pub(crate) fn project_resources_manifest() -> ModuleManifestV1 {
     ModuleManifestV1 {
         schema_version: 1,
         id: PROJECT_RESOURCES_MODULE_ID.into(),
-        name: "项目资源".into(),
-        description: "管理项目数据库、目录索引、文件监听和项目关闭后的资源释放。".into(),
+        name: "文件操作".into(),
+        description: "兼容运行时：管理项目数据库、目录索引、文件监听和文件操作组件所需的资源释放。".into(),
         version: "1.0.0".into(),
         api_version: "1".into(),
         scope: ModuleScope::Project,
@@ -1033,10 +1034,7 @@ pub(crate) fn project_resources_manifest() -> ModuleManifestV1 {
         requires_modules: Vec::new(),
         optional_modules: Vec::new(),
         requires_components: Vec::new(),
-        optional_components: vec![ComponentDependency {
-            id: PM_BLENDIO_COMPONENT_ID.into(),
-            version_requirement: "^1.0".into(),
-        }],
+        optional_components: Vec::new(),
         conflicts: Vec::new(),
         capabilities: project_resource_capabilities(),
         background_services: vec![
@@ -1077,7 +1075,7 @@ pub fn project_resources_module(
 pub fn project_resources_component() -> CapabilityComponentRegistration {
     CapabilityComponentRegistration {
         id: "builtin.project-resources.service".into(),
-        name: "项目资源协调组件".into(),
+        name: "文件操作兼容协调器".into(),
         version: "1.0.0".into(),
         module_id: PROJECT_RESOURCES_MODULE_ID.into(),
         capabilities: project_resource_capabilities(),
@@ -1132,7 +1130,16 @@ pub fn project_manager_module() -> RegisteredModule {
                 version_requirement: "^1.0".into(),
             }],
             optional_modules: Vec::new(),
-            requires_components: Vec::new(),
+            requires_components: vec![
+                ComponentDependency {
+                    id: PROJECT_MANAGER_COMPONENT_ID.into(),
+                    version_requirement: "^1.0".into(),
+                },
+                ComponentDependency {
+                    id: FILE_OPERATIONS_COMPONENT_ID.into(),
+                    version_requirement: "^1.0".into(),
+                },
+            ],
             optional_components: Vec::new(),
             conflicts: Vec::new(),
             capabilities: project_manager_capabilities(),

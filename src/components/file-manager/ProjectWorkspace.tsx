@@ -50,6 +50,7 @@ import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceTabStore, useWorkspaceTabStoreApi, type WorkspaceTab } from '../../stores/workspaceTabStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { isVirtualFile } from '../../utils/collections';
+import { UiExtensionSlot } from '../automation/UiExtensionSlot';
 
 const FILE_TREE_PANEL_WIDTH_KEY = 'pm-center:file-tree-panel-width';
 const FILE_TREE_PANEL_MIN_WIDTH = 220;
@@ -241,6 +242,7 @@ export function ProjectWorkspace() {
   const [fileDetailsPanelWidth, setFileDetailsPanelWidth] = useState(getInitialFileDetailsPanelWidth);
   const [isResizingFileDetails, setIsResizingFileDetails] = useState(false);
   const [isMdtOverviewOpen, setIsMdtOverviewOpen] = useState(false);
+  const [workspaceReplacementActive, setWorkspaceReplacementActive] = useState(false);
   const [pendingWorkspaceTabClose, setPendingWorkspaceTabClose] = useState<WorkspaceTab | null>(null);
   const externalDragDepthRef = useRef(0);
   const externalDropConflictResolverRef = useRef<((choice: ConflictResolution) => void) | null>(null);
@@ -1315,6 +1317,13 @@ export function ProjectWorkspace() {
         onDetachTab={handleDetachTab}
       />
 
+      <UiExtensionSlot
+        targetComponentId="nexora.project-manager"
+        pointId="nexora.project-manager.project-toolbar"
+        projectPath={projectPath}
+        relativeSelection={currentPath ? [currentPath] : []}
+      />
+
       <div
         className="relative flex-1 min-h-0 overflow-hidden"
         onDragEnter={handleExternalDragEnter}
@@ -1322,7 +1331,15 @@ export function ProjectWorkspace() {
         onDragLeave={handleExternalDragLeave}
         onDrop={handleExternalDrop}
       >
-        <div className="h-full min-h-0 overflow-hidden">
+        <UiExtensionSlot
+          targetComponentId="nexora.project-manager"
+          pointId="nexora.project-manager.project-workspace"
+          projectPath={projectPath}
+          relativeSelection={currentPath ? [currentPath] : []}
+          onReplacementChange={setWorkspaceReplacementActive}
+          className={workspaceReplacementActive ? 'h-full' : 'hidden'}
+        />
+        {!workspaceReplacementActive && <div className="h-full min-h-0 overflow-hidden">
           {tabs.map((tab) => {
             const isActive = tab.id === activeTabId;
 
@@ -1468,7 +1485,7 @@ export function ProjectWorkspace() {
               </div>
             );
           })}
-        </div>
+        </div>}
 
         <MoveConflictDialog
           isOpen={externalDropConflictState.isOpen}
@@ -1510,6 +1527,12 @@ export function ProjectWorkspace() {
           </div>
         )}
       </div>
+      <UiExtensionSlot
+        targetComponentId="nexora.project-manager"
+        pointId="nexora.project-manager.project-status-bar"
+        projectPath={projectPath}
+        relativeSelection={currentPath ? [currentPath] : []}
+      />
 
       {isFilesWorkspaceActive && <ColumnSettings />}
       <MdtOverviewPanel

@@ -169,6 +169,10 @@ pub struct AutomationCommandContribution {
     pub execution_semantics: AutomationExecutionSemantics,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub required_capability: Option<Capability>,
+    /// V2-compatible capability set. `required_capability` remains accepted
+    /// for existing component packages and is treated as a single entry.
+    #[serde(default)]
+    pub required_capabilities: Vec<Capability>,
     #[serde(default)]
     pub capability_operation: AutomationCapabilityOperation,
     #[serde(default)]
@@ -183,6 +187,20 @@ pub struct AutomationCommandContribution {
     pub timeout_ms: Option<u64>,
     #[serde(flatten)]
     pub extensions: ExtensionFields,
+}
+
+impl AutomationCommandContribution {
+    /// Returns the deduplicated capability set while preserving compatibility
+    /// with manifests written before `requiredCapabilities` existed.
+    pub fn effective_required_capabilities(&self) -> Vec<Capability> {
+        let mut capabilities = self.required_capabilities.clone();
+        if let Some(capability) = self.required_capability {
+            if !capabilities.contains(&capability) {
+                capabilities.push(capability);
+            }
+        }
+        capabilities
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -216,6 +234,68 @@ pub struct ScriptSurfaceContribution {
     pub placements: Vec<ScriptSurfacePlacement>,
     #[serde(default)]
     pub allowed_commands: Vec<String>,
+    #[serde(flatten)]
+    pub extensions: ExtensionFields,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum UiExtensionPointKind {
+    #[default]
+    Slot,
+    Surface,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum UiExtensionMultiplicity {
+    One,
+    #[default]
+    Many,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum UiExtensionMode {
+    #[default]
+    Insert,
+    Replace,
+}
+
+/// A host-owned, versioned place where an isolated component surface may be
+/// rendered. The target component keeps ownership of layout and context.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UiExtensionPointContribution {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub kind: UiExtensionPointKind,
+    #[serde(default)]
+    pub multiplicity: UiExtensionMultiplicity,
+    #[serde(default)]
+    pub context_schema: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_height: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_height: Option<u16>,
+    #[serde(flatten)]
+    pub extensions: ExtensionFields,
+}
+
+/// Binds a component-owned script surface into an extension point published by
+/// one of its declared component dependencies.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UiExtensionContribution {
+    pub id: String,
+    pub target_component_id: String,
+    pub target_point_id: String,
+    pub surface_id: String,
+    #[serde(default)]
+    pub mode: UiExtensionMode,
+    #[serde(default)]
+    pub order: i32,
     #[serde(flatten)]
     pub extensions: ExtensionFields,
 }
@@ -381,6 +461,10 @@ pub struct ComponentContributions {
     pub automation_events: Vec<AutomationEventContribution>,
     #[serde(default)]
     pub script_surfaces: Vec<ScriptSurfaceContribution>,
+    #[serde(default)]
+    pub ui_extension_points: Vec<UiExtensionPointContribution>,
+    #[serde(default)]
+    pub ui_extensions: Vec<UiExtensionContribution>,
     #[serde(default)]
     pub tool_actions: Vec<ToolActionContribution>,
     #[serde(default)]
@@ -643,7 +727,7 @@ impl ValidateContract for ComponentManifestV1 {
         for (index, command) in self.contributes.automation_commands.iter().enumerate() {
             let path = format!("$.contributes.automationCommands[{index}]");
             validate_stable_id(&command.id, &format!("{path}.id"))?;
-            validate_local_id(&command.command, &format!("{path}.command"))?;
+            validate_component_command(&command.command, &format!("{path}.command"))?;
             validate_named_contribution(&command.name, &path)?;
             if !automation_command_ids.insert(command.id.as_str()) {
                 return Err(duplicate_contribution(&path, &command.id));
@@ -679,22 +763,33 @@ impl ValidateContract for ComponentManifestV1 {
                     "自动化命令超时必须大于 0",
                 ));
             }
-            if let Some(capability) = command.required_capability {
-                if !self.capabilities.contains(&capability) {
+            let mut command_capabilities = BTreeSet::new();
+            for (capability_index, capability) in
+                command.effective_required_capabilities().iter().enumerate()
+            {
+                if !command_capabilities.insert(capability.as_str()) {
+                    return Err(ContractError::new(
+                        ContractErrorCode::DuplicateId,
+                        format!("{path}.requiredCapabilities[{capability_index}]"),
+                        format!("重复命令 Capability: {}", capability.as_str()),
+                    ));
+                }
+                if !self.capabilities.contains(capability) {
                     return Err(ContractError::new(
                         ContractErrorCode::InvalidReference,
-                        format!("{path}.requiredCapability"),
+                        format!("{path}.requiredCapabilities"),
                         format!(
                             "自动化命令引用了组件未声明的 Capability: {}",
                             capability.as_str()
                         ),
                     ));
                 }
-            } else if !self.capabilities.is_empty() {
+            }
+            if command_capabilities.is_empty() && !self.capabilities.is_empty() {
                 return Err(ContractError::new(
                     ContractErrorCode::InvalidRuntimeConfiguration,
-                    format!("{path}.requiredCapability"),
-                    "带权限组件的自动化命令必须声明 requiredCapability",
+                    format!("{path}.requiredCapabilities"),
+                    "带权限组件的自动化命令必须声明 requiredCapability 或 requiredCapabilities",
                 ));
             }
         }
@@ -707,6 +802,7 @@ impl ValidateContract for ComponentManifestV1 {
                 return Err(duplicate_contribution(&path, &event.id));
             }
         }
+        let mut script_surface_ids = BTreeSet::new();
         for (index, surface) in self.contributes.script_surfaces.iter().enumerate() {
             let path = format!("$.contributes.scriptSurfaces[{index}]");
             validate_stable_id(&surface.id, &format!("{path}.id"))?;
@@ -721,7 +817,7 @@ impl ValidateContract for ComponentManifestV1 {
             }
             let mut allowed_commands = BTreeSet::new();
             for (command_index, command) in surface.allowed_commands.iter().enumerate() {
-                validate_local_id(command, &format!("{path}.allowedCommands[{command_index}]"))?;
+                validate_component_command(command, &format!("{path}.allowedCommands[{command_index}]"))?;
                 if !automation_runtime_commands.contains(command.as_str()) {
                     return Err(ContractError::new(
                         ContractErrorCode::InvalidReference,
@@ -739,6 +835,62 @@ impl ValidateContract for ComponentManifestV1 {
             }
             if !contribution_ids.insert(surface.id.as_str()) {
                 return Err(duplicate_contribution(&path, &surface.id));
+            }
+            script_surface_ids.insert(surface.id.as_str());
+        }
+        let mut extension_point_ids = BTreeSet::new();
+        for (index, point) in self.contributes.ui_extension_points.iter().enumerate() {
+            let path = format!("$.contributes.uiExtensionPoints[{index}]");
+            validate_stable_id(&point.id, &format!("{path}.id"))?;
+            validate_named_contribution(&point.name, &path)?;
+            if point.min_height.is_some_and(|value| value == 0)
+                || point.max_height.is_some_and(|value| value == 0)
+                || point
+                    .min_height
+                    .zip(point.max_height)
+                    .is_some_and(|(minimum, maximum)| minimum > maximum)
+            {
+                return Err(ContractError::new(
+                    ContractErrorCode::InvalidRuntimeConfiguration,
+                    format!("{path}.minHeight"),
+                    "UI 扩展点高度范围无效",
+                ));
+            }
+            if !extension_point_ids.insert(point.id.as_str()) || !contribution_ids.insert(point.id.as_str()) {
+                return Err(duplicate_contribution(&path, &point.id));
+            }
+        }
+        for (index, extension) in self.contributes.ui_extensions.iter().enumerate() {
+            let path = format!("$.contributes.uiExtensions[{index}]");
+            validate_stable_id(&extension.id, &format!("{path}.id"))?;
+            validate_stable_id(
+                &extension.target_component_id,
+                &format!("{path}.targetComponentId"),
+            )?;
+            validate_stable_id(&extension.target_point_id, &format!("{path}.targetPointId"))?;
+            validate_stable_id(&extension.surface_id, &format!("{path}.surfaceId"))?;
+            if extension.target_component_id == self.id
+                || !self
+                    .requires_components
+                    .iter()
+                    .chain(self.optional_components.iter())
+                    .any(|dependency| dependency.id == extension.target_component_id)
+            {
+                return Err(ContractError::new(
+                    ContractErrorCode::InvalidReference,
+                    format!("{path}.targetComponentId"),
+                    "UI 扩展必须指向清单中声明的其他组件依赖",
+                ));
+            }
+            if !script_surface_ids.contains(extension.surface_id.as_str()) {
+                return Err(ContractError::new(
+                    ContractErrorCode::InvalidReference,
+                    format!("{path}.surfaceId"),
+                    "UI 扩展引用的脚本页面不存在",
+                ));
+            }
+            if !contribution_ids.insert(extension.id.as_str()) {
+                return Err(duplicate_contribution(&path, &extension.id));
             }
         }
         for (index, action) in self.contributes.tool_actions.iter().enumerate() {
@@ -882,6 +1034,35 @@ fn validate_named_contribution(name: &str, path: &str) -> ContractResult<()> {
             format!("{path}.name"),
             "贡献名称不能为空",
         ));
+    }
+    Ok(())
+}
+
+fn validate_component_command(value: &str, path: &str) -> ContractResult<()> {
+    if value.len() < 2 || value.len() > 128 {
+        return Err(ContractError::new(
+            ContractErrorCode::InvalidLocalId,
+            path,
+            format!("无效组件命令: {value}"),
+        ));
+    }
+    for segment in value.split('.') {
+        if segment.len() < 2
+            || !segment
+                .bytes()
+                .next()
+                .is_some_and(|byte| byte.is_ascii_lowercase())
+            || !segment
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+            || segment.ends_with('-')
+        {
+            return Err(ContractError::new(
+                ContractErrorCode::InvalidLocalId,
+                path,
+                format!("无效组件命令: {value}"),
+            ));
+        }
     }
     Ok(())
 }

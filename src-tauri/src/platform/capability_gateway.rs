@@ -3,7 +3,7 @@ use chrono::Utc;
 use pmc_platform::{Capability, CapabilityRisk, ComponentManifestV1};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -83,6 +83,7 @@ impl CapabilityScopeKind {
 #[serde(rename_all = "camelCase")]
 pub enum CapabilityDecision {
     AllowOnce,
+    AllowSession,
     AllowAlways,
     Deny,
 }
@@ -348,6 +349,10 @@ pub struct CapabilityGateway {
     database_path: PathBuf,
     pending: Mutex<HashMap<String, PendingCapabilityRequest>>,
     tokens: Mutex<HashMap<String, ActiveCapabilityToken>>,
+    /// Session grants intentionally stay in memory. They are useful for a
+    /// selected external directory without silently turning that choice into a
+    /// device-persistent permission.
+    session_grants: Mutex<HashSet<String>>,
     diagnostic_root: PathBuf,
 }
 
@@ -427,6 +432,7 @@ impl CapabilityGateway {
             database_path,
             pending: Mutex::new(HashMap::new()),
             tokens: Mutex::new(HashMap::new()),
+            session_grants: Mutex::new(HashSet::new()),
             diagnostic_root,
         }))
     }
@@ -489,6 +495,23 @@ impl CapabilityGateway {
         validate_scope_kind(request.capability, scope.kind)
             .map_err(|error| self.record_error(None, &request, error))?;
         let scope_hash = hash_scope(&scope);
+        if self.has_matching_session_grant(&request, &identity, &scope_hash) {
+            self.audit(
+                None,
+                &request,
+                "granted",
+                "SESSION_GRANT",
+                "匹配到本次 Nexora 会话的授权",
+                None,
+            )?;
+            let token = self.issue_token(None, request.clone(), scope_hash);
+            return Ok(CapabilityTokenResponse {
+                status: CapabilityRequestStatus::Granted,
+                token: Some(token),
+                approval: None,
+                message: "已根据本次会话授权签发一次性令牌".into(),
+            });
+        }
         if self.has_matching_grant(&request, &identity, &scope_hash)? {
             self.audit(
                 None,
@@ -597,17 +620,40 @@ impl CapabilityGateway {
             });
         }
 
-        if decision.decision == CapabilityDecision::AllowAlways {
-            self.persist_grant_and_audit(&pending, &decision.request_id)?;
-        } else {
-            self.audit(
-                Some(&decision.request_id),
-                &pending.request,
-                "granted",
-                "USER_ALLOWED_ONCE",
-                "用户仅批准本次操作",
-                None,
-            )?;
+        match decision.decision {
+            CapabilityDecision::AllowAlways => {
+                self.persist_grant_and_audit(&pending, &decision.request_id)?;
+            }
+            CapabilityDecision::AllowSession => {
+                let session_key = capability_grant_key(
+                    &pending.request,
+                    &pending.approval,
+                    &pending.scope_hash,
+                );
+                self.session_grants
+                    .lock()
+                    .expect("capability session grant mutex poisoned")
+                    .insert(session_key);
+                self.audit(
+                    Some(&decision.request_id),
+                    &pending.request,
+                    "granted",
+                    "USER_ALLOWED_SESSION",
+                    "用户批准至本次 Nexora 会话结束",
+                    None,
+                )?;
+            }
+            CapabilityDecision::AllowOnce => {
+                self.audit(
+                    Some(&decision.request_id),
+                    &pending.request,
+                    "granted",
+                    "USER_ALLOWED_ONCE",
+                    "用户仅批准本次操作",
+                    None,
+                )?;
+            }
+            CapabilityDecision::Deny => unreachable!("deny is handled above"),
         }
         let token = self.issue_token(
             Some(decision.request_id.clone()),
@@ -1030,6 +1076,40 @@ impl CapabilityGateway {
             .optional()
             .map(|value| value.unwrap_or(false))
             .map_err(persistence_error)
+    }
+
+    fn has_matching_session_grant(
+        &self,
+        request: &CapabilityTokenRequest,
+        identity: &ValidatedIdentity,
+        scope_hash: &str,
+    ) -> bool {
+        let approval = CapabilityApprovalRequest {
+            request_id: String::new(),
+            subject_kind: request.subject_kind,
+            subject_id: identity.subject_id.clone(),
+            subject_name: identity.subject_name.clone(),
+            subject_version: identity.subject_version.clone(),
+            module_id: request.module_id.clone(),
+            module_name: identity.module_name.clone(),
+            module_version: identity.module_version.clone(),
+            capability: request.capability,
+            risk: request.capability.risk(),
+            operation: request.operation,
+            reason: String::new(),
+            scope: ResolvedCapabilityScope {
+                kind: request.scope.kind,
+                root_path: request.scope.root_path.clone(),
+                relative_path: request.scope.relative_path.clone(),
+                resolved_path: None,
+            },
+            created_at: 0,
+            expires_at: 0,
+        };
+        self.session_grants
+            .lock()
+            .expect("capability session grant mutex poisoned")
+            .contains(&capability_grant_key(request, &approval, scope_hash))
     }
 
     fn persist_grant_and_audit(
@@ -1684,6 +1764,29 @@ fn hash_scope(scope: &ResolvedCapabilityScope) -> String {
         scope.relative_path.as_deref().unwrap_or("")
     );
     blake3::hash(material.as_bytes()).to_hex().to_string()
+}
+
+fn capability_grant_key(
+    request: &CapabilityTokenRequest,
+    approval: &CapabilityApprovalRequest,
+    scope_hash: &str,
+) -> String {
+    let component_version = if request.subject_kind == CapabilitySubjectKind::Component {
+        approval.subject_version.as_str()
+    } else {
+        ""
+    };
+    format!(
+        "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
+        request.subject_kind.as_str(),
+        request.module_id,
+        approval.module_version,
+        request.component_id.as_deref().unwrap_or(""),
+        component_version,
+        request.capability.as_str(),
+        request.operation.as_str(),
+        scope_hash,
+    )
 }
 
 fn token_id(value: &str) -> String {

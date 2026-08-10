@@ -91,6 +91,10 @@ const aiReference = fs.readFileSync(
   path.join(root, 'docs', 'extension-development', 'AI_COMPONENT_AUTHORING_REFERENCE.md'),
   'utf8',
 );
+const componentCatalog = fs.readFileSync(
+  path.join(root, 'docs', 'extension-development', 'BUILTIN_COMPONENT_CATALOG.html'),
+  'utf8',
+);
 const documentedSdkFunctions = [
   'get_project_context',
   'list_project_files',
@@ -124,6 +128,54 @@ for (const requiredFragment of ['pmc.blendio.inspect', 'command: "inspect"', 'Ca
   if (!builtinComponents.includes(requiredFragment)) {
     throw new Error(`BlenderIO public contract drifted: missing ${requiredFragment}`);
   }
+}
+const fileOperationCommands = [
+  'project.describe', 'directory.list', 'entry.stat', 'entry.exists', 'entry.search',
+  'file.read', 'file.write', 'file.hash', 'directory.create', 'entry.copy', 'entry.move',
+  'entry.rename', 'entry.delete', 'batch.execute', 'stream.open-read', 'stream.read',
+  'stream.open-write', 'stream.write', 'stream.commit', 'stream.abort', 'external.select',
+  'external.grant-directory', 'external.list-grants', 'external.revoke-grant', 'external.import',
+  'external.export', 'cache.status', 'cache.query', 'cache.invalidate',
+  'cache.refresh-directory', 'cache.rebuild-project', 'watcher.status',
+];
+for (const command of fileOperationCommands) {
+  if (!builtinComponents.includes(`"${command}"`)) {
+    throw new Error(`File Operations public contract drifted: missing command ${command}`);
+  }
+  if (!interfaceReference.includes(`\`${command}\``) || !componentCatalog.includes(command)) {
+    throw new Error(`File Operations documentation is missing command ${command}`);
+  }
+}
+for (const requiredFragment of [
+  'FILE_OPERATIONS_COMPONENT_ID: &str = "nexora.file-operations"',
+  'required_capabilities_for_command',
+  'UiExtensionPointContribution',
+  'nexora.project-manager.project-workspace',
+]) {
+  if (!builtinComponents.includes(requiredFragment) && !fs.readFileSync(path.join(root, 'src-tauri', 'src', 'platform', 'file_operations.rs'), 'utf8').includes(requiredFragment)) {
+    throw new Error(`R14.5 component contract is missing ${requiredFragment}`);
+  }
+}
+for (const capability of [
+  'project.files.read', 'project.files.write', 'filesystem.external.read',
+  'filesystem.external.write', 'filesystem.dialog.open', 'cache.inspect', 'cache.maintain',
+]) {
+  if (!interfaceReference.includes(capability) || !componentCatalog.includes(capability)) {
+    throw new Error(`File Operations documentation is missing Capability ${capability}`);
+  }
+}
+for (const requiredText of [
+  'requiredCapabilities', 'capabilities=[', 'external.select', 'uiExtensions', 'allowSession',
+]) {
+  if (!aiReference.includes(requiredText)) {
+    throw new Error(`AI authoring reference is missing ${requiredText}`);
+  }
+}
+if (aiReference.includes('One command has at most one `requiredCapability`')) {
+  throw new Error('AI authoring reference still documents the obsolete single-Capability rule');
+}
+if (componentCatalog.includes('合同状态 / 来源') || componentCatalog.includes('${escapeHtml(component.source)}')) {
+  throw new Error('Component catalog must not render internal source paths');
 }
 for (const requiredStatus of ['stable-2.8.5', 'experimental', 'planned-r14.5', 'reserved-r17']) {
   if (!interfaceReference.includes(requiredStatus) || !aiReference.includes(requiredStatus)) {

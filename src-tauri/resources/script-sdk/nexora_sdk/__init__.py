@@ -159,9 +159,12 @@ def call_component(
     payload: Any = None,
     *,
     capability: str | None = None,
+    capabilities: list[str] | None = None,
     timeout_ms: int | None = None,
 ) -> Any:
     """Call a command on a dependency declared by this component's manifest."""
+    if capability and capabilities:
+        raise ValueError("pass capability or capabilities, not both")
     request: Dict[str, Any] = {
         "componentId": component_id,
         "command": command,
@@ -169,6 +172,8 @@ def call_component(
     }
     if capability:
         request["capability"] = capability
+    elif capabilities:
+        request["capabilities"] = list(dict.fromkeys(str(value) for value in capabilities if value))
     if timeout_ms is not None:
         request["timeoutMs"] = max(100, int(timeout_ms))
     response = _bridge_request(
@@ -177,6 +182,45 @@ def call_component(
         timeout=(request.get("timeoutMs", 30000) / 1000.0) + 5.0,
     )
     return response.get("output") if isinstance(response, dict) else response
+
+
+FILE_OPERATIONS_COMPONENT_ID = "nexora.file-operations"
+
+
+def project_location(path: str, *, project_id: str | None = None) -> Dict[str, Any]:
+    """Build a project-relative file location for nexora.file-operations."""
+    location: Dict[str, Any] = {"space": "project", "path": path}
+    if project_id:
+        location["projectId"] = project_id
+    return location
+
+
+def external_location(path: str, grant_id: str) -> Dict[str, Any]:
+    """Build an external absolute location scoped by a host-issued grant."""
+    return {"space": "external", "path": path, "grantId": grant_id}
+
+
+def call_file_operation(
+    command: str,
+    payload: Dict[str, Any] | None = None,
+    *,
+    capability: str | None = None,
+    capabilities: list[str] | None = None,
+    timeout_ms: int | None = None,
+) -> Any:
+    """Call a declared nexora.file-operations dependency command.
+
+    The host injects the current project context. External locations must use a
+    grant returned by the file-operation selection or directory-grant flow.
+    """
+    return call_component(
+        FILE_OPERATIONS_COMPONENT_ID,
+        command,
+        payload or {},
+        capability=capability,
+        capabilities=capabilities,
+        timeout_ms=timeout_ms,
+    )
 
 
 def get_state(key: str, default: Any = None, *, scope: str = "global") -> Any:

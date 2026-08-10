@@ -27,6 +27,7 @@ import { useClipboardStore } from '../../stores/clipboardStore';
 import { useContributionRegistryStore } from '../../stores/contributionRegistryStore';
 import { useUiStore } from '../../stores/uiStore';
 import { routeFileIntent, type FileRouteCandidate } from '../../api/fileRouter';
+import { UiExtensionSlot } from '../automation/UiExtensionSlot';
 import {
   CONTEXT_COMMAND_CONTRIBUTIONS,
   getContributionUnavailableReason,
@@ -1037,6 +1038,14 @@ export function FileContextMenu({
             />
           </>
         )}
+
+        <UiExtensionSlot
+          targetComponentId="nexora.project-manager"
+          pointId="nexora.project-manager.file-context-menu"
+          projectPath={projectPath}
+          relativeSelection={[file.path]}
+          className="mt-1"
+        />
       </div>
 
       <PluginSubmenuPanel

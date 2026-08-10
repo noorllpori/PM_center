@@ -57,9 +57,10 @@
     }
 
     * { box-sizing: border-box; }
-    html { scroll-behavior: smooth; }
+    html { scroll-behavior: smooth; overflow-x: hidden; }
     body {
       margin: 0;
+      overflow-x: hidden;
       background: var(--bg);
       color: var(--text);
       font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
@@ -238,6 +239,10 @@
     }
     .notice strong { color: var(--orange); }
     .notice p { margin: 3px 0 0; color: var(--muted); }
+    .notice code, .body-block code, .call-box code, .api-card code {
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
 
     .api-grid {
       display: grid;
@@ -332,6 +337,7 @@
     .fact span { display: block; color: var(--faint); font-size: 10px; }
     .fact b, .fact code { display: block; margin-top: 2px; font-size: 11px; overflow-wrap: anywhere; }
     .body-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px 22px; }
+    .body-block { min-width: 0; }
     .body-block h4 { margin: 0 0 6px; font-size: 12px; }
     .body-block ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 12px; }
     .body-block li + li { margin-top: 3px; }
@@ -344,6 +350,8 @@
     }
     .call-box p { margin: 0; color: var(--muted); font-size: 12px; }
     pre {
+      min-width: 0;
+      max-width: 100%;
       overflow: auto;
       margin: 10px 0 0;
       padding: 12px;
@@ -424,7 +432,7 @@
           <p class="side-title">概览</p>
           <a class="side-link" href="#calling-model"><code>调用模型</code><span>3 层</span></a>
           <a class="side-link" href="#stable-host-api"><code>宿主 SDK</code><span>v1</span></a>
-          <a class="side-link" href="#component-catalog"><code>组件目录</code><span id="side-count">21</span></a>
+          <a class="side-link" href="#component-catalog"><code>组件目录</code><span id="side-count">-</span></a>
           <a class="side-link" href="#events"><code>自动化事件</code><span>10</span></a>
           <a class="side-link" href="#known-gaps"><code>当前边界</code><span>重要</span></a>
         </div>
@@ -449,9 +457,9 @@
             <span>事实来源：当前 Manifest 与贡献注册表</span>
           </div>
           <div class="stats" aria-label="目录统计">
-            <div class="stat"><strong>14</strong><span>宿主内置组件</span></div>
-            <div class="stat"><strong>7</strong><span>随安装包可管理组件</span></div>
-            <div class="stat"><strong>1</strong><span>稳定跨组件公开命令</span></div>
+            <div class="stat"><strong id="stat-host-count">-</strong><span>内置组件与宿主适配</span></div>
+            <div class="stat"><strong id="stat-bundled-count">-</strong><span>随安装包可管理组件</span></div>
+            <div class="stat"><strong id="stat-command-count">-</strong><span>稳定跨组件公开命令</span></div>
             <div class="stat"><strong>10</strong><span>稳定自动化事件</span></div>
           </div>
         </div>
@@ -477,8 +485,8 @@
             </div>
           </div>
           <div class="notice">
-            <strong>“项目资源”不是 call_component 目标。</strong>
-            <p>项目文件、元数据和组件项目存储通过宿主 <code>nexora_sdk</code> 调用。<code>builtin.project-resources</code> 与 <code>builtin.project-resources.service</code> 没有公开 <code>automationCommands</code>。</p>
+            <strong>文件操作是唯一公开文件服务。</strong>
+            <p>新组件应声明 <code>nexora.file-operations</code> 依赖并通过 <code>call_component()</code> 调用。旧 <code>builtin.project-resources</code> 只是已安装方案的内部兼容标识，不是新的调用目标，也不会出现在普通组件目录。</p>
           </div>
         </section>
 
@@ -533,6 +541,8 @@ write_result(result)</code></pre>
               <button class="filter" type="button" data-filter="host">宿主</button>
               <button class="filter" type="button" data-filter="bundled">可安装</button>
               <button class="filter" type="button" data-filter="public">可调用</button>
+              <button class="filter" type="button" data-filter="ui-extension">可插入 UI</button>
+              <button class="filter" type="button" data-filter="page-replace">可替换页面</button>
               <button class="filter" type="button" data-filter="file-handler">文件处理</button>
               <button class="filter" type="button" data-filter="default-off">默认关闭</button>
             </div>
@@ -540,6 +550,30 @@ write_result(result)</code></pre>
           <p class="catalog-count" id="catalog-count"></p>
           <div class="catalog" id="catalog"></div>
           <div class="empty" id="empty" hidden>没有符合当前搜索与筛选条件的组件。</div>
+        </section>
+
+        <section class="section" id="file-operations">
+          <div class="section-heading"><div><h2>文件操作组件</h2><p><code>nexora.file-operations</code> 是项目文件、受授权外部目录、缓存与 Watcher 的稳定公共服务。</p></div></div>
+          <div class="notice"><strong>路径不是裸字符串。</strong><p>项目文件使用 <code>{"space":"project","path":"assets/a.png"}</code>；外部文件使用 <code>{"space":"external","grantId":"…","path":"D:\\Media\\a.png"}</code>。项目路径拒绝绝对路径、<code>..</code>、<code>.pm_center</code>、符号链接与 Junction 越界。外部路径必须位于同一组件获得的目录授权内。</p></div>
+          <div class="table-wrap"><table><thead><tr><th>命令组</th><th>公开命令</th><th>所需能力</th><th>语义</th></tr></thead><tbody>
+            <tr><td>项目与目录</td><td><code>project.describe</code> · <code>directory.list</code> · <code>entry.stat</code> · <code>entry.exists</code> · <code>entry.search</code></td><td><code>project.files.read</code> 或 <code>filesystem.external.read</code></td><td>分页、排序、名称/路径/扩展名/类型搜索；<code>source=auto|cache|disk</code>。</td></tr>
+            <tr><td>读取与写入</td><td><code>file.read</code> · <code>file.write</code> · <code>file.hash</code> · <code>directory.create</code></td><td>项目或外部读取/写入</td><td>单次读写最大 4 MiB；写入使用临时文件与原子替换；<code>expectedHash</code> 防止覆盖并发修改。</td></tr>
+            <tr><td>变更</td><td><code>entry.copy</code> · <code>entry.move</code> · <code>entry.rename</code> · <code>entry.delete</code> · <code>batch.execute</code></td><td>由源和目标空间分别计算</td><td>冲突策略 <code>error</code>、<code>overwrite</code>、<code>rename</code>、<code>skip</code>；默认删除进回收站，永久删除必须显式 <code>permanent=true</code>。</td></tr>
+            <tr><td>流</td><td><code>stream.open-read</code> · <code>stream.read</code> · <code>stream.open-write</code> · <code>stream.write</code> · <code>stream.commit</code> · <code>stream.abort</code></td><td>项目或外部读取/写入</td><td>分块最大 1 MiB，句柄绑定组件与授权，15 分钟超时；停用组件时写入临时文件被清理。</td></tr>
+            <tr><td>授权与跨空间</td><td><code>external.select</code> · <code>external.grant-directory</code> · <code>external.list-grants</code> · <code>external.revoke-grant</code> · <code>external.import</code> · <code>external.export</code></td><td><code>filesystem.dialog.open</code>、外部读写、项目读写</td><td>授权可为 <code>once</code>、<code>session</code> 或 <code>persistent</code>；授权属于设备，不写入方案。导入/导出使用同一复制合同。</td></tr>
+            <tr><td>缓存与监听</td><td><code>cache.status</code> · <code>cache.query</code> · <code>cache.invalidate</code> · <code>cache.refresh-directory</code> · <code>cache.rebuild-project</code> · <code>watcher.status</code></td><td><code>cache.inspect</code> 或 <code>cache.maintain</code></td><td>不暴露 TreeCache SQL 或文件；写入立即失效受影响缓存，重建作为受监督组件操作记录，不改变项目数据库。</td></tr>
+          </tbody></table></div>
+          <pre><code>from nexora_sdk import call_file_operation, project_location
+
+location = project_location("assets/notes.txt")
+result = call_file_operation(
+    "file.write",
+    {"location": location, "encoding": "text", "data": "hello", "expectedHash": None},
+    capability="project.files.write",
+)
+
+# 外部目录必须先由 external.select 或 external.grant-directory 获得 grantId。
+# external_location(r"D:\\Media\\ref.png", grant_id) 不能越过该授权目录。</code></pre>
         </section>
 
         <section class="section" id="events">
@@ -553,7 +587,7 @@ write_result(result)</code></pre>
                 <tr><td><code>app.started</code></td><td>脚本自动化</td><td>按绑定</td><td>Profile、模块和会话恢复完成后触发。</td></tr>
                 <tr><td><code>project.opened</code></td><td>项目管理器</td><td>事件项目</td><td>项目成功打开后触发。</td></tr>
                 <tr><td><code>project.closed</code></td><td>项目管理器</td><td>事件项目</td><td>项目关闭与资源释放流程开始时触发。</td></tr>
-                <tr><td><code>file.changed</code></td><td>项目资源</td><td>事件项目</td><td>项目 Watcher 的文件变化。</td></tr>
+                <tr><td><code>file.changed</code></td><td>文件操作</td><td>事件项目</td><td>文件操作服务协调 Watcher 后的文件变化。</td></tr>
                 <tr><td><code>lan.file-received</code></td><td>局域网协同</td><td>按事件数据</td><td>接收文件传输状态满足完成条件时转发。</td></tr>
                 <tr><td><code>render.batch-created</code></td><td>渲染中心</td><td>批次项目</td><td>新建渲染批次。</td></tr>
                 <tr><td><code>render.batch-completed</code></td><td>渲染中心</td><td>批次项目</td><td>批次完成。</td></tr>
@@ -574,8 +608,8 @@ write_result(result)</code></pre>
             <article class="api-card"><h3>没有通用跨组件事件总线</h3><p>组件命令可以互调，通用 publish/subscribe 仍为 reserved-r17；当前事件由宿主自动化白名单提供。</p></article>
             <article class="api-card"><h3>项目接口尚不等于项目管理器</h3><p>集合、标签、最近项目、项目根目录扫描和项目主页命令尚未作为稳定第三方 SDK 开放。</p></article>
             <article class="api-card"><h3>隔离页面不能直接访问宿主</h3><p>页面不能调用 Tauri、React Store、数据库、本机路径或其他组件，只能启动本组件允许的命令。</p></article>
-            <article class="api-card"><h3>一次命令只授予一个主 Capability</h3><p>2.8.5 中一个 automationCommand 至多一个 requiredCapability；权限差异较大的操作应拆分命令。</p></article>
-            <article class="api-card"><h3>宿主 React 页面仍不可替换</h3><p>第三方可以提供沙箱 HTML 页面、文件处理器和模板，但不能直接注入 Nexora React Store 或宿主 DOM。</p></article>
+            <article class="api-card"><h3>命令可声明多项 Capability</h3><p><code>requiredCapabilities</code> 可表达跨空间操作所需的权限集合；旧 <code>requiredCapability</code> 仍兼容为单元素数组。调用方和目标组件都必须声明对应 Capability。</p></article>
+            <article class="api-card"><h3>受控 UI 扩展</h3><p>目标组件通过 <code>uiExtensionPoints</code> 发布命名插槽或整页替换点。扩展组件必须声明目标依赖和自身 <code>scriptSurface</code>；页面仍不能注入 React Store、宿主 DOM 或 Tauri API。</p></article>
           </div>
         </section>
 
@@ -615,7 +649,6 @@ write_result(result)</code></pre>
         abilities: ['打开普通设置中心', '承载组件声明的 Schema 设置页', '按全局/项目范围显示设置贡献'],
         limits: ['没有公开 automationCommands', '第三方不能读取设置中心 React Store', '恢复设置不归该组件所有，停用后仍保留安全恢复入口'],
         publicText: '第三方组件不能 call_component 调用设置中心。设备设置与 Profile 操作尚无通用 Python SDK。',
-        source: 'src-tauri/src/platform/builtin_modules.rs:207'
       },
       {
         id: 'builtin.session-runtime', name: '会话运行时', group: 'host', category: 'service', defaultEnabled: true,
@@ -626,7 +659,6 @@ write_result(result)</code></pre>
         abilities: ['控制会话恢复偏好', '控制项目标签和文件标签关闭确认'],
         limits: ['不负责实际项目数据或 watcher', '没有公开组件命令', '第三方不能直接修改会话 Store'],
         publicText: '仅通过装配方案启停和设置页面使用；当前没有第三方 SDK。',
-        source: 'src-tauri/src/platform/builtin_modules.rs:230'
       },
       {
         id: 'builtin.desktop-integration', name: '桌面集成', group: 'host', category: 'integration', defaultEnabled: true,
@@ -637,7 +669,6 @@ write_result(result)</code></pre>
         abilities: ['配置开机自动启动', '显示桌面集成设置'],
         limits: ['没有公开组件命令', '不向组件开放注册表或启动项直接访问'],
         publicText: '第三方组件当前不能直接调用；应由用户在设置页修改。',
-        source: 'src-tauri/src/platform/builtin_modules.rs:244'
       },
       {
         id: 'builtin.external-tools', name: '外部工具', group: 'host', category: 'integration', defaultEnabled: true,
@@ -648,53 +679,48 @@ write_result(result)</code></pre>
         abilities: ['保存和检测外部程序路径', '打开 Blender 文件解析器弹窗', '为渲染中心提供工具路径'],
         limits: ['路径设置没有公开 SDK', 'Blender 解析公开调用属于 pmc.blendio，不属于本组件', '不能用显示名称调用'],
         publicText: '第三方若需要解析 .blend，应依赖 pmc.blendio；若需要启动进程，应声明 process.spawn 并使用受支持运行时。',
-        source: 'src-tauri/src/platform/builtin_modules.rs:258'
       },
       {
         id: 'builtin.automation-runtime', name: '任务、Python 与旧插件', group: 'host', category: 'automation', defaultEnabled: true,
         technical: '宿主后台运行时（内部 Module 适配）', scope: 'global', callLevel: 'internal', callLabel: '运行时基础设施',
         description: '管理任务中心、Python 环境、venv、pip、旧插件动作与受控子进程生命周期。',
-        dependencies: ['可选 builtin.project-resources'], capabilities: ['app.settings.read', 'app.settings.write', 'filesystem.external.read', 'filesystem.external.write', 'project.files.read', 'project.files.write', 'task.run', 'task.cancel', 'python.execute', 'python.packages.manage', 'process.spawn', 'network.http.request'],
+        dependencies: ['可选文件操作服务（旧方案兼容映射）'], capabilities: ['app.settings.read', 'app.settings.write', 'filesystem.external.read', 'filesystem.external.write', 'project.files.read', 'project.files.write', 'task.run', 'task.cancel', 'python.execute', 'python.packages.manage', 'process.spawn', 'network.http.request'],
         contributions: ['Python 环境工具与弹窗', '任务中心工具与弹窗', '脚本与插件设置', '项目插件设置', '旧插件右键动作'],
         abilities: ['执行普通任务', '管理 Python 环境和依赖', '运行旧版插件动作', '统一取消和清理子进程'],
         limits: ['没有公开 automationCommands', '普通组件不能直接领取内部 Task Store', '正式脚本组件应使用 builtin.script-automation'],
         publicText: '它为脚本自动化提供底层进程能力，但不是 call_component 目标。任务完成和失败可作为自动化事件。',
-        source: 'src-tauri/src/platform/builtin_modules.rs:354'
       },
       {
         id: 'builtin.script-automation', name: '脚本自动化', group: 'host', category: 'automation', defaultEnabled: true,
         technical: '宿主脚本平台（内部 Module 适配）', scope: 'global', callLevel: 'sdk', callLabel: '提供宿主 SDK',
         description: '运行可安装 Python 脚本组件、手动命令、事件触发、五段式 cron、隔离页面和开发目录热重载。',
-        dependencies: ['必需 builtin.automation-runtime', '可选 builtin.project-resources'], capabilities: ['按脚本 Manifest 与当前命令授权'],
+        dependencies: ['必需任务与 Python 运行时', '可选文件操作服务'], capabilities: ['按脚本 Manifest 与当前命令授权'],
         contributions: ['工具 builtin.script-automation.studio-tool', '脚本开发者工作台', '调度器', '事件转发器', '运行恢复'],
         abilities: ['提供 nexora_sdk', '承载 automationCommands', '运行 scriptSurfaces', '持久化运行、日志、重试和 attention'],
         limits: ['自身不是 call_component 命令目标', 'Python 属于受信任代码，不是完整 OS 沙箱', '通用跨组件事件总线尚未开放'],
         publicText: '自定义 Python 组件通过 nexora_sdk 调用宿主与依赖。页面只能使用 window.nexora.invoke 启动本组件允许的命令。',
         code: "// 页面\nconst run = await window.nexora.invoke('scan-project', {});\n\n# Python\nrequest = read_request()\ncontext = get_project_context()",
-        source: 'src-tauri/src/platform/script_automation.rs'
       },
       {
-        id: 'builtin.project-resources', name: '项目资源', group: 'host', category: 'data', defaultEnabled: true,
-        technical: '项目级宿主服务（内部 Module 适配）', scope: 'project', callLevel: 'sdk', callLabel: '宿主项目 SDK',
-        description: '管理项目数据库注册表、TreeCache、目录索引、文件监听、脏目录修复和项目关闭后的资源释放。',
-        dependencies: ['可选 pmc.blendio ^1.0'], capabilities: ['project.open', 'project.files.read', 'project.files.write', 'project.metadata.read', 'project.metadata.write'],
-        contributions: ['缓存管理工具/工作区', 'MDT 项目概览', '排除规则设置', '项目规则设置', '项目集合右键命令'],
-        abilities: ['为运行中的脚本提供项目上下文', '分页读取和检查项目文件', '受控创建/复制/移动/重命名/删除文件', '项目元数据与组件隔离存储'],
-        limits: ['不能通过 call_component("builtin.project-resources") 调用', '不开放 data.db、TreeCache 或内部 Store', '当前 SDK 不开放集合、标签与完整当前选择'],
-        publicText: '使用 nexora_sdk.get_project_context、list_project_files、stat_project_file、resolve_project_file、mutate_project_files、项目元数据与存储函数。',
-        code: "context = get_project_context()\npage = list_project_files('textures', limit=100)\ninfo = stat_project_file('scene.blend')\nresolved = resolve_project_file('scene.blend')",
-        source: 'src-tauri/src/platform/builtin_modules.rs:1021'
+        id: 'nexora.file-operations', name: '文件操作', group: 'bundled', category: 'service', defaultEnabled: true,
+        technical: 'builtin-rust · 随安装包 · 可禁用', scope: 'project/external', callLevel: 'call', callLabel: '32 项公开命令', publicCommandCount: 32,
+        description: '项目文件、受授权外部目录、导入导出、流、缓存与 Watcher 的统一公共服务。',
+        dependencies: ['无必需依赖', '不依赖 BlenderIO；解析 .blend 时另行声明 pmc.blendio'], capabilities: ['project.files.read', 'project.files.write', 'filesystem.external.read', 'filesystem.external.write', 'filesystem.dialog.open', 'cache.inspect', 'cache.maintain'],
+        contributions: ['automationCommands: project.describe、directory.list、entry.*、file.*、stream.*、external.*、cache.*、watcher.status', '旧 builtin.project-resources 运行时兼容映射'],
+        abilities: ['使用结构化项目相对路径或授权外部绝对路径', '跨项目/外部空间复制、移动、导入和导出', '执行原子写入、哈希冲突保护、回收站删除和可流式大文件传输', '查询与维护目录缓存和文件监听状态'],
+        limits: ['不公开 TreeCache、data.db、内部 Store 或真实项目根目录伪造入口', '外部路径不能越过 grantId 的根目录', 'Python 受信任代码模型不等于 Windows OS 沙箱'],
+        publicText: '调用方必须在 requiresComponents/optionalComponents 中声明 nexora.file-operations，并按实际操作声明项目、外部或缓存 Capability。详见上方“文件操作组件”。',
+        code: "from nexora_sdk import call_file_operation, project_location\n\npage = call_file_operation(\n    'directory.list',\n    {'location': project_location('assets'), 'source': 'auto'},\n    capability='project.files.read',\n)",
       },
       {
-        id: 'builtin.project-manager', name: '项目管理器', group: 'host', category: 'workspace', defaultEnabled: true,
-        technical: '完整宿主页面组件（内部 Module 适配）', scope: 'global', callLevel: 'internal', callLabel: '宿主 UI 命令',
+        id: 'nexora.project-manager', name: 'Nexora 项目管理器', group: 'bundled', category: 'workspace', defaultEnabled: true,
+        technical: 'builtin-rust · 随安装包 · 可禁用', scope: 'global/project', callLevel: 'internal', callLabel: 'UI 扩展目标',
         description: '提供项目主页、项目目录扫描、最近项目、创建/导入、项目 Shell 标签和文件工作区。',
-        dependencies: ['必需 builtin.project-resources ^1.0'], capabilities: ['project.open', 'project.files.read', 'project.files.write', 'project.metadata.read', 'project.metadata.write'],
-        contributions: ['项目主页与项目工作区', '每项目单例 Shell 标签', '4 个主页 Widget', '4 个 DataSource', '9 个宿主命令', '历史记录设置'],
-        abilities: ['创建、导入和打开项目', '管理项目根目录与忽略列表', '显示最近项目和项目目录', '恢复项目标签会话'],
-        limits: ['9 个 COMMAND_CONTRIBUTIONS 是宿主 UI 命令，不是 automationCommands', '第三方不能 call_component 打开项目或读取最近项目', '不能复用内部 React Store、TreeCache 或项目数据库'],
-        publicText: '第三方当前只能获得已注入的活动项目上下文。项目根目录扫描、最近项目和主页 Widget 数据尚未开放为稳定 SDK。',
-        source: 'src-tauri/src/platform/builtin_modules.rs:1117'
+        dependencies: ['必需 nexora.file-operations ^1.0'], capabilities: ['宿主内部 project.open、project.files.*、project.metadata.*'],
+        contributions: ['项目主页与项目工作区', '每项目单例 Shell 标签', '7 个 uiExtensionPoints：工具栏、侧栏、文件详情、右键菜单、主页 Widget、状态栏、工作区整页替换'],
+        abilities: ['创建、导入和打开项目', '管理项目根目录与忽略列表', '显示最近项目和项目目录', '作为第三方隔离页面的受控 UI 插入目标'],
+        limits: ['没有公开 automationCommands', '第三方不能 call_component 打开项目或读取最近项目', '不能复用内部 React Store、TreeCache 或项目数据库'],
+        publicText: '第三方通过 uiExtensions 声明依赖 nexora.project-manager 并绑定自身 scriptSurface；方案的“界面扩展”决定启用与排序。',
       },
       {
         id: 'builtin.render-center', name: '渲染中心', group: 'host', category: 'service', defaultEnabled: true,
@@ -705,7 +731,6 @@ write_result(result)</code></pre>
         abilities: ['本地批量渲染', '作业与帧并发控制', 'Blender Worker 生命周期', '前后置脚本', 'FFmpeg 视频打包'],
         limits: ['没有公开 automationCommands', '第三方不能直接写渲染队列数据库', 'render.* Capability 不等于已公开调用接口'],
         publicText: '当前可绑定 render.batch-created、render.batch-completed、render.job-completed 自动化事件，但不能 call_component 创建作业。',
-        source: 'src-tauri/src/platform/builtin_modules.rs:593'
       },
       {
         id: 'builtin.render-farm', name: 'Blender 渲染农场', group: 'host', category: 'service', defaultEnabled: false,
@@ -716,7 +741,6 @@ write_result(result)</code></pre>
         abilities: ['可信节点和能力合同基础', '渲染包与帧租约基础', '控制端恢复与清理'],
         limits: ['默认停用', '当前没有用户界面', '没有公开命令或第三方节点 SDK', '不能视为已完成的生产渲染农场'],
         publicText: '当前仅为宿主基础设施，不向第三方组件开放。',
-        source: 'src-tauri/src/platform/builtin_modules.rs:734'
       },
       {
         id: 'builtin.media-library', name: '媒体资料库', group: 'host', category: 'data', defaultEnabled: false,
@@ -727,7 +751,6 @@ write_result(result)</code></pre>
         abilities: ['选择独立资料目录', '建立媒体索引', '基础归类、筛选和备注界面'],
         limits: ['不依赖项目资源，也不会启动项目 watcher', '没有公开媒体查询命令', '第三方不能直接读取资料库索引'],
         publicText: '当前只能作为装配页面使用；项目媒体关联和公开索引 API 尚未开放。',
-        source: 'src-tauri/src/platform/builtin_modules.rs:837'
       },
       {
         id: 'builtin.lan-collaboration', name: '局域网协同', group: 'host', category: 'integration', defaultEnabled: true,
@@ -738,7 +761,6 @@ write_result(result)</code></pre>
         abilities: ['联系人与在线状态', '大厅和私聊', '文件、目录、图片传输', 'Windows 通知、提示音和消息定位', '多标签全局同步'],
         limits: ['没有公开 send-message 或 transfer automationCommand', '第三方不能直接访问 lan_collaboration.db', '通用 LAN SDK 与跨组件事件总线尚未开放'],
         publicText: '当前只公开 lan.file-received 自动化事件；不能用 call_component 发送消息或文件。',
-        source: 'src-tauri/src/platform/builtin_modules.rs:1283'
       },
       {
         id: 'builtin.smart-clipboard', name: '智能剪贴板', group: 'host', category: 'integration', defaultEnabled: true,
@@ -749,7 +771,6 @@ write_result(result)</code></pre>
         abilities: ['捕获剪贴板历史', '搜索并重新写回剪贴板', '独立原生窗口'],
         limits: ['没有公开剪贴板 SDK 或组件命令', '第三方不能读取历史数据库', '非 Windows 构建默认不启用'],
         publicText: '当前仅由宿主 UI 使用；Capability 声明本身不会提供剪贴板方法。',
-        source: 'src-tauri/src/platform/builtin_modules.rs:1411'
       },
       {
         id: 'builtin.local-web-console', name: '本机网页控制台', group: 'host', category: 'integration', defaultEnabled: false,
@@ -760,12 +781,11 @@ write_result(result)</code></pre>
         abilities: ['浏览器查看状态', '修改少量设置', '受限程序控制'],
         limits: ['仅 localhost，不是远程管理服务器', '不是组件 HTTP API', '不开放项目、聊天、渲染等完整功能'],
         publicText: '第三方组件不应把该网页端点当作稳定接口；应使用 nexora_sdk。',
-        source: 'src-tauri/src/platform/builtin_modules.rs:1547'
       },
 
       {
         id: 'pmc.blendio', name: 'BlenderIO 文件服务', group: 'bundled', category: 'service', defaultEnabled: true,
-        technical: 'native-process · 随安装包 · 可卸载', scope: 'global/either', callLevel: 'call', callLabel: '公开命令 inspect',
+        technical: 'native-process · 随安装包 · 可卸载', scope: 'global/either', callLevel: 'call', callLabel: '公开命令 inspect', publicCommandCount: 1,
         description: '高效读取、诊断和受控编辑 .blend 文件，并向宿主与第三方组件提供结构化场景结果。',
         dependencies: ['无必需依赖'], capabilities: ['project.files.read', 'project.files.write', 'filesystem.external.read', 'filesystem.external.write'],
         contributions: ['automationCommand pmc.blendio.inspect', '工具动作 blender.inspect-file', '数据源 blender.file-summary', '冻结工作流节点 blender.inspect'],
@@ -773,7 +793,6 @@ write_result(result)</code></pre>
         limits: ['稳定公开命令当前只有 inspect', 'Manifest 描述中的受控编辑尚未形成稳定第三方命令', '工作流节点合同冻结，不会执行'],
         publicText: '调用方必须在 requiresComponents/optionalComponents 中声明 pmc.blendio，并以 command="inspect" 调用。项目文件应先 resolve_project_file。',
         code: "result = call_component(\n    'pmc.blendio',\n    'inspect',\n    {'path': resolved['path']},\n    capability='project.files.read',\n    timeout_ms=120000,\n)",
-        source: 'src-tauri/src/platform/builtin_components.rs:32'
       },
       {
         id: 'nexora.blender.workspace', name: 'Nexora Blender 工作区', group: 'bundled', category: 'file-handler', defaultEnabled: false,
@@ -784,7 +803,6 @@ write_result(result)</code></pre>
         abilities: ['双击 .blend 时打开内部标签', '显示 Blender 文件详情与结构化摘要', '参与文件路由与装配绑定'],
         limits: ['没有公开 automationCommands', '未安装时 .blend 回退到其他绑定或系统打开', '不能通过 call_component 打开 React 工作区'],
         publicText: '通过文件路由器使用，不是组件命令。第三方若要解析文件，应调用 pmc.blendio。',
-        source: 'src-tauri/src/platform/builtin_components.rs:123'
       },
       {
         id: 'nexora.file-handler.image', name: 'Nexora 图像预览', group: 'bundled', category: 'file-handler', defaultEnabled: true,
@@ -795,7 +813,6 @@ write_result(result)</code></pre>
         abilities: ['内部图像查看', '工作区预览', '缩略图路由'],
         limits: ['没有图片编辑公开命令', '不能 call_component 获取像素或缩略图', '卸载后按文件路由规则回退'],
         publicText: '通过文件处理器绑定选择；第三方可安装更高优先级或用户可重新绑定后缀。',
-        source: 'src-tauri/src/platform/builtin_components.rs:168'
       },
       {
         id: 'nexora.file-handler.video', name: 'Nexora 视频播放器', group: 'bundled', category: 'file-handler', defaultEnabled: true,
@@ -806,7 +823,6 @@ write_result(result)</code></pre>
         abilities: ['内部视频播放', '工作区预览', '按后缀与 MIME 参与路由'],
         limits: ['没有转码或媒体信息公开命令', '浏览器解码能力决定实际格式兼容性', '卸载后回退到其他处理器或系统'],
         publicText: '仅作为文件路由贡献，不是 Component Bridge 服务。',
-        source: 'src-tauri/src/platform/builtin_components.rs:182'
       },
       {
         id: 'nexora.file-handler.text', name: 'Nexora 文本编辑器', group: 'bundled', category: 'file-handler', defaultEnabled: true,
@@ -817,7 +833,6 @@ write_result(result)</code></pre>
         abilities: ['文本和代码查看编辑', 'Markdown 工作区', '作为文件编辑路由目标'],
         limits: ['没有语言服务或编译器接口', '没有公开 read/write component command', '组件脚本应使用 project.files SDK 读写项目文件'],
         publicText: '仅通过文件路由打开。第三方编辑器可以贡献相同后缀并由用户在方案中绑定。',
-        source: 'src-tauri/src/platform/builtin_components.rs:196'
       },
       {
         id: 'nexora.file-handler.directory', name: 'Nexora 目录工作区', group: 'bundled', category: 'file-handler', defaultEnabled: true,
@@ -828,7 +843,6 @@ write_result(result)</code></pre>
         abilities: ['文件夹内部工作区', '覆盖文件夹双击的内部打开行为', '参与目录路由绑定'],
         limits: ['不是项目管理器', '不建立项目数据库或 watcher', '卸载或取消绑定后文件夹通常由系统资源管理器打开'],
         publicText: '通过目录文件路由使用，不公开目录枚举命令。项目组件应使用 list_project_files。',
-        source: 'src-tauri/src/platform/builtin_components.rs:212'
       },
       {
         id: 'nexora.presentation.templates', name: 'Nexora 内置表现模板', group: 'bundled', category: 'appearance', defaultEnabled: true,
@@ -839,7 +853,6 @@ write_result(result)</code></pre>
         abilities: ['选择顶部、侧边或紧凑导航', '为主页和工作区提供区域模板', '提供跟随系统、浅色和深色预设'],
         limits: ['没有运行时代码或公开命令', '当前模板不等于任意 HTML 完整覆盖宿主', '卸载前必须清理或替换 Profile 中的模板引用'],
         publicText: '只在装配编辑器中通过稳定模板 ID 引用，不能 call_component。',
-        source: 'src-tauri/src/platform/builtin_components.rs:319'
       }
     ];
 
@@ -883,6 +896,8 @@ write_result(result)</code></pre>
       element.dataset.category = component.category;
       element.dataset.defaultEnabled = String(component.defaultEnabled);
       element.dataset.public = String(component.callLevel === 'call' || component.callLevel === 'sdk');
+      element.dataset.uiExtension = String(component.contributions.some(item => item.includes('uiExtension')));
+      element.dataset.pageReplace = String(component.contributions.some(item => item.includes('整页替换')));
       element.dataset.search = JSON.stringify(component).toLowerCase();
       element.innerHTML = `
         <summary>
@@ -895,10 +910,10 @@ write_result(result)</code></pre>
         </summary>
         <div class="component-body">
           <div class="facts">
-            <div class="fact"><span>技术形态</span><b>${escapeHtml(component.technical)}</b></div>
+            <div class="fact"><span>技术形态</span><b>${escapeHtml(component.technical.replace(/Module/g, '兼容适配'))}</b></div>
             <div class="fact"><span>范围</span><code>${escapeHtml(component.scope)}</code></div>
             <div class="fact"><span>默认状态</span><b>${component.defaultEnabled ? '启用' : '关闭 / 未自动安装'}</b></div>
-            <div class="fact"><span>源码事实位置</span><code>${escapeHtml(component.source)}</code></div>
+            <div class="fact"><span>接口状态</span><code>${escapeHtml(component.contractStatus || (component.callLevel === 'call' || component.callLevel === 'sdk' ? 'stable-2.8.5' : '宿主内部 · 不可调用'))}</code></div>
           </div>
           <div class="body-grid">
             <div class="body-block"><h4>依赖</h4>${list(component.dependencies)}</div>
@@ -915,6 +930,10 @@ write_result(result)</code></pre>
       return element;
     }
 
+    document.querySelector('#side-count').textContent = String(components.length);
+    document.querySelector('#stat-host-count').textContent = String(components.filter(component => component.group === 'host').length);
+    document.querySelector('#stat-bundled-count').textContent = String(components.filter(component => component.group === 'bundled').length);
+    document.querySelector('#stat-command-count').textContent = String(components.reduce((total, component) => total + (component.publicCommandCount || 0), 0));
     components.forEach(component => catalog.append(renderComponent(component)));
 
     function renderSidebar(group, targetId, title) {
@@ -931,6 +950,8 @@ write_result(result)</code></pre>
       if (filter === 'all') return true;
       if (filter === 'host' || filter === 'bundled') return component.group === filter;
       if (filter === 'public') return component.callLevel === 'call' || component.callLevel === 'sdk';
+      if (filter === 'ui-extension') return component.contributions.some(item => item.includes('uiExtension'));
+      if (filter === 'page-replace') return component.contributions.some(item => item.includes('整页替换'));
       if (filter === 'file-handler') return component.category === 'file-handler';
       if (filter === 'default-off') return !component.defaultEnabled;
       return true;

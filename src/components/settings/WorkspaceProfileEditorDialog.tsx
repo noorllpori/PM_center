@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
   Bot,
   Boxes,
   CheckCircle2,
@@ -9,6 +11,7 @@ import {
   Layers3,
   Loader2,
   Package,
+  PanelsTopLeft,
   Redo2,
   RefreshCw,
   Save,
@@ -156,7 +159,8 @@ export function WorkspaceProfileEditorDialog({
   const [error, setError] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [activeEditorSection, setActiveEditorSection] = useState<
-    'components' | 'layout' | 'file-handlers' | 'automation' | 'settings'
+  'components' | 'layout' | 'file-handlers' | 'automation' | 'settings'
+    | 'ui-extensions'
   >('components');
   const [closeConfirmationOpen, setCloseConfirmationOpen] = useState(false);
   const originalDocumentRef = useRef('');
@@ -274,6 +278,26 @@ export function WorkspaceProfileEditorDialog({
       }))),
     [installedComponentManifests, validation?.components],
   );
+  const effectiveUiExtensions = useMemo(() => (
+    (componentRuntime?.installedComponents ?? [])
+      .filter((component) => (validation?.components ?? []).some(
+        (summary) => summary.id === component.manifest.id && summary.effectiveEnabled,
+      ))
+      .flatMap((component) => (component.manifest.contributes?.uiExtensions ?? []).map((extension) => ({
+        componentId: component.manifest.id,
+        componentName: component.manifest.name,
+        extension,
+        surface: component.manifest.contributes?.scriptSurfaces?.find(
+          (surface) => surface.id === extension.surfaceId,
+        ),
+        target: (componentRuntime?.installedComponents ?? [])
+          .find((candidate) => candidate.manifest.id === extension.targetComponentId)?.manifest
+          .contributes?.uiExtensionPoints?.find((point) => point.id === extension.targetPointId),
+      })))
+      .sort((left, right) => left.componentName.localeCompare(right.componentName, 'zh-CN')
+        || (left.extension.order ?? 0) - (right.extension.order ?? 0)
+        || left.extension.id.localeCompare(right.extension.id))
+  ), [componentRuntime, validation?.components]);
   const dirty = Boolean(draft) && JSON.stringify(draft) !== originalDocumentRef.current;
   const editingCurrentProfile = Boolean(profileId) && profileId === currentProfileId;
 
@@ -545,6 +569,18 @@ export function WorkspaceProfileEditorDialog({
               </button>
               <button
                 type="button"
+                onClick={() => setActiveEditorSection('ui-extensions')}
+                className={`inline-flex h-9 items-center gap-1.5 border-r border-gray-200 px-3 text-sm dark:border-gray-700 ${
+                  activeEditorSection === 'ui-extensions'
+                    ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300'
+                    : 'text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800'
+                }`}
+              >
+                <PanelsTopLeft className="h-4 w-4" />
+                界面扩展
+              </button>
+              <button
+                type="button"
                 onClick={() => setActiveEditorSection('file-handlers')}
                 className={`inline-flex h-9 items-center gap-1.5 border-r border-gray-200 px-3 text-sm dark:border-gray-700 ${
                   activeEditorSection === 'file-handlers'
@@ -796,6 +832,93 @@ export function WorkspaceProfileEditorDialog({
               modules={modules.map((module) => module.manifest)}
               onChange={updateDraft}
             />
+          ) : activeEditorSection === 'ui-extensions' ? (
+            <section className="rounded-md border border-gray-200 dark:border-gray-700">
+              <div className="border-b border-gray-200 px-4 py-3 dark:border-gray-700">
+                <h4 className="text-sm font-semibold">组件界面扩展</h4>
+                <p className="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">
+                  扩展由组件声明目标和隔离页面，方案只决定是否启用及顺序。目标组件或扩展停用时，保存前会显示阻塞原因。
+                </p>
+              </div>
+              <div className="max-h-[470px] divide-y divide-gray-100 overflow-auto dark:divide-gray-800">
+                {effectiveUiExtensions.map((item) => {
+                  const binding = (draft.uiExtensionBindings ?? []).find(
+                    (candidate) => candidate.extensionId === item.extension.id,
+                  );
+                  const enabled = binding?.enabled === true;
+                  return (
+                    <div key={item.extension.id} className="flex items-start gap-3 px-4 py-3">
+                      <input
+                        type="checkbox"
+                        checked={enabled}
+                        onChange={(event) => updateDraft((current) => {
+                          const bindings = (current.uiExtensionBindings ?? []).filter(
+                            (candidate) => candidate.extensionId !== item.extension.id,
+                          );
+                          if (event.target.checked) {
+                            bindings.push({
+                              id: `ui-${item.extension.id.replace(/\./g, '-').replace(/[^a-z0-9-]/g, '')}`,
+                              extensionId: item.extension.id,
+                              enabled: true,
+                              order: item.extension.order ?? 0,
+                            });
+                          }
+                          return { ...current, uiExtensionBindings: bindings };
+                        })}
+                        className="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-sm font-medium text-gray-900 dark:text-gray-100">{item.extension.id}</span>
+                          <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                            {item.extension.mode === 'replace' ? '整页替换' : '插入'}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                          {item.componentName} · {item.target?.name || item.extension.targetPointId} · {item.surface?.name || item.extension.surfaceId}
+                        </p>
+                        <p className="mt-1 break-all font-mono text-[11px] text-gray-400">
+                          {item.componentId} → {item.extension.targetComponentId}
+                        </p>
+                      </div>
+                      {enabled ? <div className="flex shrink-0 items-center gap-1">
+                        <button
+                          type="button"
+                          title="向前排序"
+                          onClick={() => updateDraft((current) => ({
+                            ...current,
+                            uiExtensionBindings: (current.uiExtensionBindings ?? []).map((candidate) => (
+                              candidate.extensionId === item.extension.id
+                                ? { ...candidate, order: (candidate.order ?? 0) - 10 }
+                                : candidate
+                            )),
+                          }))}
+                          className="h-7 w-7 rounded-md text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"
+                        ><ArrowUp className="mx-auto h-3.5 w-3.5" /></button>
+                        <button
+                          type="button"
+                          title="向后排序"
+                          onClick={() => updateDraft((current) => ({
+                            ...current,
+                            uiExtensionBindings: (current.uiExtensionBindings ?? []).map((candidate) => (
+                              candidate.extensionId === item.extension.id
+                                ? { ...candidate, order: (candidate.order ?? 0) + 10 }
+                                : candidate
+                            )),
+                          }))}
+                          className="h-7 w-7 rounded-md text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"
+                        ><ArrowDown className="mx-auto h-3.5 w-3.5" /></button>
+                      </div> : null}
+                    </div>
+                  );
+                })}
+                {!effectiveUiExtensions.length ? (
+                  <div className="flex min-h-40 items-center justify-center gap-2 px-4 text-sm text-gray-500">
+                    <PanelsTopLeft className="h-4 w-4" />当前方案没有组件声明可用界面扩展
+                  </div>
+                ) : null}
+              </div>
+            </section>
           ) : activeEditorSection === 'file-handlers' ? (
             <section className="rounded-md border border-gray-200 dark:border-gray-700">
               <div className="border-b border-gray-200 px-4 py-3 dark:border-gray-700">

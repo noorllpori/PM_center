@@ -385,9 +385,9 @@ enum WorkerMessage {
     Shutdown,
 }
 
-struct ProcessResponse {
-    output: Value,
-    logs: Vec<String>,
+pub(crate) struct ProcessResponse {
+    pub(crate) output: Value,
+    pub(crate) logs: Vec<String>,
 }
 
 pub struct ComponentRuntimeManager {
@@ -1313,6 +1313,7 @@ impl ComponentRuntimeManager {
             .with_details(dependent_components));
         }
         self.shutdown_worker(component_id).await;
+        super::file_operations::release_component_streams(component_id);
         let installed = self
             .catalog
             .lock()
@@ -1431,6 +1432,7 @@ impl ComponentRuntimeManager {
             .with_details(dependent_components));
         }
         self.shutdown_worker(component_id).await;
+        super::file_operations::release_component_streams(component_id);
         let installed = self
             .catalog
             .lock()
@@ -1758,6 +1760,14 @@ impl ComponentRuntimeManager {
         payload: Value,
     ) -> Result<ProcessResponse, ComponentRuntimeError> {
         match host_adapter(&installed.manifest) {
+            Some("nexora-file-operations") => {
+                super::file_operations::invoke(
+                    &self.app_handle,
+                    &self.root_path,
+                    payload,
+                )
+                .await
+            }
             Some("bundled-resource-process") => {
                 self.invoke_bundled_resource_process(installed, control, payload)
                     .await

@@ -74,6 +74,14 @@
         "outputSchema": {
           "default": null
         },
+        "requiredCapabilities": {
+          "default": [],
+          "description": "V2-compatible capability set. `required_capability` remains accepted for existing component packages and is treated as a single entry.",
+          "items": {
+            "$ref": "#/definitions/Capability"
+          },
+          "type": "array"
+        },
         "requiredCapability": {
           "anyOf": [
             {
@@ -262,6 +270,20 @@
           "default": [],
           "items": {
             "$ref": "#/definitions/ToolActionContribution"
+          },
+          "type": "array"
+        },
+        "uiExtensionPoints": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/UiExtensionPointContribution"
+          },
+          "type": "array"
+        },
+        "uiExtensions": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/UiExtensionContribution"
           },
           "type": "array"
         },
@@ -750,6 +772,117 @@
       ],
       "type": "object"
     },
+    "UiExtensionContribution": {
+      "additionalProperties": true,
+      "description": "Binds a component-owned script surface into an extension point published by one of its declared component dependencies.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/UiExtensionMode"
+            }
+          ],
+          "default": "insert"
+        },
+        "order": {
+          "default": 0,
+          "format": "int32",
+          "type": "integer"
+        },
+        "surfaceId": {
+          "type": "string"
+        },
+        "targetComponentId": {
+          "type": "string"
+        },
+        "targetPointId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "surfaceId",
+        "targetComponentId",
+        "targetPointId"
+      ],
+      "type": "object"
+    },
+    "UiExtensionMode": {
+      "enum": [
+        "insert",
+        "replace"
+      ],
+      "type": "string"
+    },
+    "UiExtensionMultiplicity": {
+      "enum": [
+        "one",
+        "many"
+      ],
+      "type": "string"
+    },
+    "UiExtensionPointContribution": {
+      "additionalProperties": true,
+      "description": "A host-owned, versioned place where an isolated component surface may be rendered. The target component keeps ownership of layout and context.",
+      "properties": {
+        "contextSchema": {
+          "default": null
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/UiExtensionPointKind"
+            }
+          ],
+          "default": "slot"
+        },
+        "maxHeight": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "minHeight": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "multiplicity": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/UiExtensionMultiplicity"
+            }
+          ],
+          "default": "many"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "type": "object"
+    },
+    "UiExtensionPointKind": {
+      "enum": [
+        "slot",
+        "surface"
+      ],
+      "type": "string"
+    },
     "WorkflowNodeContribution": {
       "additionalProperties": true,
       "properties": {
@@ -823,6 +956,8 @@
         "shellTemplates": [],
         "themePresets": [],
         "toolActions": [],
+        "uiExtensionPoints": [],
+        "uiExtensions": [],
         "widgets": [],
         "workflowNodes": []
       }

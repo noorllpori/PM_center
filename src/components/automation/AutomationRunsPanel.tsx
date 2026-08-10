@@ -165,6 +165,7 @@ export function AutomationRunsPanel({ projectPath }: AutomationRunsPanelProps) {
                 {selectedRun.status === 'waiting-permission' ? (
                   <>
                     <button type="button" onClick={() => void perform(() => resolveAttention(selectedRun.id, 'allowOnce'))} className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-2.5 py-1.5 text-xs text-white hover:bg-blue-700"><Play className="h-3.5 w-3.5" />允许一次</button>
+                    <button type="button" onClick={() => void perform(() => resolveAttention(selectedRun.id, 'allowSession'))} className="rounded-md border border-gray-300 px-2.5 py-1.5 text-xs text-gray-700 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800">本次会话</button>
                     <button type="button" onClick={() => void perform(() => resolveAttention(selectedRun.id, 'allowAlways'))} className="rounded-md border border-gray-300 px-2.5 py-1.5 text-xs text-gray-700 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800">始终允许</button>
                     <button type="button" onClick={() => void perform(() => resolveAttention(selectedRun.id, 'deny'))} className="inline-flex items-center gap-1.5 rounded-md border border-red-200 px-2.5 py-1.5 text-xs text-red-600"><Ban className="h-3.5 w-3.5" />拒绝</button>
                   </>

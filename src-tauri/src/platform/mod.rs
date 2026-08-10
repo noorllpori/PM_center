@@ -4,6 +4,7 @@ mod capability_gateway;
 mod component_runtime;
 mod component_settings;
 mod file_router;
+pub(crate) mod file_operations;
 mod module_manager;
 mod presentation_templates;
 mod profile_package;

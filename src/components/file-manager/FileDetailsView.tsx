@@ -20,6 +20,7 @@ import { useWorkspaceTabStore } from '../../stores/workspaceTabStore';
 import { getMdtRelativePath, type MdtReferenceEntry } from '../../utils/mdt';
 import { cacheResolvedPreviewThumbnail } from './thumbnailCache';
 import { isVirtualFile } from '../../utils/collections';
+import { UiExtensionSlot } from '../automation/UiExtensionSlot';
 
 interface FileDetailsContentProps {
   file: FileInfo | null;
@@ -972,6 +973,13 @@ function FileDetailsContent({
           </button>
           {actionButton}
         </div>
+
+        <UiExtensionSlot
+          targetComponentId="nexora.project-manager"
+          pointId="nexora.project-manager.file-details"
+          projectPath={projectPath}
+          relativeSelection={[file.path]}
+        />
       </div>
 
       <DetailsModal

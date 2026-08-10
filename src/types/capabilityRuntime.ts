@@ -3,7 +3,7 @@ import type { Capability, CapabilityRisk } from './platform';
 export type CapabilitySubjectKind = 'module' | 'component';
 export type CapabilityOperation = 'read' | 'write' | 'delete' | 'execute' | 'connect' | 'notify';
 export type CapabilityScopeKind = 'none' | 'project' | 'library' | 'cache' | 'receive' | 'staging' | 'external';
-export type CapabilityDecision = 'allowOnce' | 'allowAlways' | 'deny';
+export type CapabilityDecision = 'allowOnce' | 'allowSession' | 'allowAlways' | 'deny';
 export type CapabilityRequestStatus = 'granted' | 'approval-required' | 'denied';
 
 export interface CapabilityScopeRequest {

@@ -31,6 +31,7 @@ import { ExternalDragHandle } from "./ExternalDragHandle";
 import { InputDialog } from "../Dialog";
 import { FileDetailsDialog } from "./FileDetailsView";
 import { FileContextMenu } from "./FileContextMenu";
+import { UiExtensionSlot } from "../automation/UiExtensionSlot";
 import { useFileDropMove } from "./useFileDropMove";
 import { useInternalFileDrag } from "./useInternalFileDrag";
 import {
@@ -954,6 +955,13 @@ export function FileTree({ onOpenDirectoryTab, rootPath, rootTitle }: FileTreePr
           showExcludedFiles={showExcludedFiles}
         />
       </div>
+
+      <UiExtensionSlot
+        targetComponentId="nexora.project-manager"
+        pointId="nexora.project-manager.project-sidebar"
+        projectPath={projectPath}
+        relativeSelection={currentPath ? [currentPath] : []}
+      />
 
       {contextMenu && (
         <FileContextMenu

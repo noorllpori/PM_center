@@ -2603,6 +2603,15 @@ fn remove_component_owned_profile_references(
     profile
         .automation_bindings
         .retain(|binding| binding.component_id != manifest.id);
+    let ui_extension_ids = manifest
+        .contributes
+        .ui_extensions
+        .iter()
+        .map(|extension| extension.id.as_str())
+        .collect::<BTreeSet<_>>();
+    profile
+        .ui_extension_bindings
+        .retain(|binding| !ui_extension_ids.contains(binding.extension_id.as_str()));
     profile
         .workflow_bindings
         .retain(|binding| !workflow_ids.contains(binding.workflow.as_str()));
@@ -2799,6 +2808,7 @@ fn build_migrated_profile(
         command_bindings: project_home_command_bindings(),
         workflow_bindings: Vec::new(),
         automation_bindings: Vec::new(),
+        ui_extension_bindings: Vec::new(),
         variables: BTreeMap::new(),
         extensions,
     }
@@ -3021,6 +3031,7 @@ fn build_blank_profile() -> WorkspaceProfileV1 {
         command_bindings: Vec::new(),
         workflow_bindings: Vec::new(),
         automation_bindings: Vec::new(),
+        ui_extension_bindings: Vec::new(),
         variables: BTreeMap::new(),
         extensions,
     }
@@ -3058,6 +3069,7 @@ pub(crate) fn build_project_manager_reference_profile(
         command_bindings: project_home_command_bindings(),
         workflow_bindings: Vec::new(),
         automation_bindings: Vec::new(),
+        ui_extension_bindings: Vec::new(),
         variables: BTreeMap::new(),
         extensions,
     })
@@ -3094,6 +3106,7 @@ pub(crate) fn build_lan_communications_reference_profile(
         command_bindings: Vec::new(),
         workflow_bindings: Vec::new(),
         automation_bindings: Vec::new(),
+        ui_extension_bindings: Vec::new(),
         variables: BTreeMap::new(),
         extensions,
     })
@@ -3130,6 +3143,7 @@ pub(crate) fn build_external_blender_renderer_reference_profile(
         command_bindings: Vec::new(),
         workflow_bindings: Vec::new(),
         automation_bindings: Vec::new(),
+        ui_extension_bindings: Vec::new(),
         variables: BTreeMap::new(),
         extensions,
     })
@@ -3166,6 +3180,7 @@ pub(crate) fn build_media_library_reference_profile(
         command_bindings: Vec::new(),
         workflow_bindings: Vec::new(),
         automation_bindings: Vec::new(),
+        ui_extension_bindings: Vec::new(),
         variables: BTreeMap::new(),
         extensions,
     })
@@ -3357,6 +3372,7 @@ pub(crate) fn build_default_profile(manifests: &[ModuleManifestV1]) -> Workspace
         },
         workflow_bindings: Vec::new(),
         automation_bindings: Vec::new(),
+        ui_extension_bindings: Vec::new(),
         variables: BTreeMap::new(),
         extensions,
     }
@@ -3947,6 +3963,13 @@ fn compatibility_issues(
         }
     }
 
+    validate_ui_extension_bindings(
+        profile,
+        component_manifests,
+        &effective_components,
+        &mut issues,
+    );
+
     if let Err(error) = validate_profile_with_catalogs(profile, manifests, component_manifests) {
         if issues.is_empty() {
             issues.push(switch_issue(
@@ -3960,6 +3983,133 @@ fn compatibility_issues(
         }
     }
     issues
+}
+
+fn validate_ui_extension_bindings(
+    profile: &WorkspaceProfileV1,
+    component_manifests: &[ComponentManifestV1],
+    effective_components: &BTreeSet<String>,
+    issues: &mut Vec<WorkspaceProfileSwitchIssue>,
+) {
+    let mut points_with_single_replacement = BTreeSet::new();
+    for binding in &profile.ui_extension_bindings {
+        if !binding.enabled {
+            continue;
+        }
+        let owner = component_manifests.iter().find(|manifest| {
+            manifest
+                .contributes
+                .ui_extensions
+                .iter()
+                .any(|extension| extension.id == binding.extension_id)
+        });
+        let Some(owner) = owner else {
+            issues.push(switch_issue(
+                "UI_EXTENSION_MISSING",
+                WorkspaceProfileSwitchIssueSeverity::Error,
+                "ui-extension",
+                format!("界面扩展 {} 未安装", binding.extension_id),
+                None,
+                Some(binding.extension_id.clone()),
+            ));
+            continue;
+        };
+        let extension = owner
+            .contributes
+            .ui_extensions
+            .iter()
+            .find(|extension| extension.id == binding.extension_id)
+            .expect("extension owner checked");
+        if !effective_components.contains(&owner.id) {
+            issues.push(switch_issue(
+                "UI_EXTENSION_PROVIDER_DISABLED",
+                WorkspaceProfileSwitchIssueSeverity::Error,
+                "ui-extension",
+                format!("界面扩展 {} 的组件 {} 未在当前方案中启用", binding.extension_id, owner.name),
+                Some(owner.id.clone()),
+                Some(binding.extension_id.clone()),
+            ));
+        }
+        let target = component_manifests
+            .iter()
+            .find(|manifest| manifest.id == extension.target_component_id);
+        let Some(target) = target else {
+            issues.push(switch_issue(
+                "UI_EXTENSION_TARGET_MISSING",
+                WorkspaceProfileSwitchIssueSeverity::Error,
+                "ui-extension",
+                format!("界面扩展 {} 的目标组件 {} 未安装", binding.extension_id, extension.target_component_id),
+                Some(owner.id.clone()),
+                Some(binding.extension_id.clone()),
+            ));
+            continue;
+        };
+        if !effective_components.contains(&target.id) {
+            issues.push(switch_issue(
+                "UI_EXTENSION_TARGET_DISABLED",
+                WorkspaceProfileSwitchIssueSeverity::Error,
+                "ui-extension",
+                format!("界面扩展 {} 的目标组件 {} 未在当前方案中启用", binding.extension_id, target.name),
+                Some(target.id.clone()),
+                Some(binding.extension_id.clone()),
+            ));
+        }
+        let point = target
+            .contributes
+            .ui_extension_points
+            .iter()
+            .find(|point| point.id == extension.target_point_id);
+        let Some(point) = point else {
+            issues.push(switch_issue(
+                "UI_EXTENSION_POINT_MISSING",
+                WorkspaceProfileSwitchIssueSeverity::Error,
+                "ui-extension",
+                format!("界面扩展 {} 指向不存在的扩展点 {}", binding.extension_id, extension.target_point_id),
+                Some(target.id.clone()),
+                Some(binding.extension_id.clone()),
+            ));
+            continue;
+        };
+        if !owner
+            .contributes
+            .script_surfaces
+            .iter()
+            .any(|surface| surface.id == extension.surface_id)
+        {
+            issues.push(switch_issue(
+                "UI_EXTENSION_SURFACE_MISSING",
+                WorkspaceProfileSwitchIssueSeverity::Error,
+                "ui-extension",
+                format!("界面扩展 {} 的隔离页面 {} 不可用", binding.extension_id, extension.surface_id),
+                Some(owner.id.clone()),
+                Some(binding.extension_id.clone()),
+            ));
+        }
+        if extension.mode == pmc_platform::UiExtensionMode::Replace
+            && point.kind != pmc_platform::UiExtensionPointKind::Surface
+        {
+            issues.push(switch_issue(
+                "UI_EXTENSION_REPLACE_UNSUPPORTED",
+                WorkspaceProfileSwitchIssueSeverity::Error,
+                "ui-extension",
+                format!("插槽 {} 不支持整页替换", point.name),
+                Some(target.id.clone()),
+                Some(binding.extension_id.clone()),
+            ));
+        }
+        if point.multiplicity == pmc_platform::UiExtensionMultiplicity::One
+            && !points_with_single_replacement.insert(point.id.clone())
+        {
+            issues.push(switch_issue(
+                "UI_EXTENSION_POINT_CONFLICT",
+                WorkspaceProfileSwitchIssueSeverity::Error,
+                "ui-extension",
+                format!("扩展点 {} 只能启用一个界面扩展", point.name),
+                Some(target.id.clone()),
+                Some(binding.extension_id.clone()),
+            ));
+        }
+    }
 }
 
 fn validate_presentation_bindings(

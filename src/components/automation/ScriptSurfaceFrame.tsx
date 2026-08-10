@@ -10,6 +10,7 @@ interface ScriptSurfaceFrameProps {
   componentId: string;
   surfaceId: string;
   projectPath?: string | null;
+  extensionContext?: JsonValue;
 }
 
 interface SurfaceInvokeMessage {
@@ -28,7 +29,12 @@ interface ScriptSurfaceEventPayload {
   runId?: string;
 }
 
-export function ScriptSurfaceFrame({ componentId, surfaceId, projectPath }: ScriptSurfaceFrameProps) {
+export function ScriptSurfaceFrame({
+  componentId,
+  surfaceId,
+  projectPath,
+  extensionContext,
+}: ScriptSurfaceFrameProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [document, setDocument] = useState<ScriptSurfaceDocument | null>(null);
   const [loading, setLoading] = useState(false);
@@ -105,6 +111,15 @@ export function ScriptSurfaceFrame({ componentId, surfaceId, projectPath }: Scri
   }, [componentId, document, runs, surfaceId]);
 
   useEffect(() => {
+    if (!document || !extensionContext) return;
+    iframeRef.current?.contentWindow?.postMessage({
+      type: 'nexora-script-event',
+      nonce: document.nonce,
+      event: { type: 'ui-extension-context', payload: extensionContext },
+    }, '*');
+  }, [document, extensionContext]);
+
+  useEffect(() => {
     if (!document) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
@@ -159,6 +174,14 @@ export function ScriptSurfaceFrame({ componentId, surfaceId, projectPath }: Scri
       title={document.title}
       sandbox="allow-scripts"
       srcDoc={document.html}
+      onLoad={() => {
+        if (!extensionContext) return;
+        iframeRef.current?.contentWindow?.postMessage({
+          type: 'nexora-script-event',
+          nonce: document.nonce,
+          event: { type: 'ui-extension-context', payload: extensionContext },
+        }, '*');
+      }}
       className="h-full w-full border-0 bg-white"
     />
   );

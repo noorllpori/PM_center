@@ -207,6 +207,8 @@ export interface AutomationCommandContribution {
   contextRequirement?: AutomationContextRequirement;
   executionSemantics?: AutomationExecutionSemantics;
   requiredCapability?: Capability;
+  /** Backward compatible replacement for requiredCapability. */
+  requiredCapabilities?: Capability[];
   capabilityOperation?: AutomationCapabilityOperation;
   inputSchema?: JsonValue;
   outputSchema?: JsonValue;
@@ -232,6 +234,31 @@ export interface ScriptSurfaceContribution {
   entry: string;
   placements: ScriptSurfacePlacement[];
   allowedCommands?: string[];
+  [key: string]: unknown;
+}
+
+export type UiExtensionPointKind = 'slot' | 'surface';
+export type UiExtensionMultiplicity = 'one' | 'many';
+export type UiExtensionMode = 'insert' | 'replace';
+
+export interface UiExtensionPointContribution {
+  id: string;
+  name: string;
+  kind?: UiExtensionPointKind;
+  multiplicity?: UiExtensionMultiplicity;
+  contextSchema?: JsonValue;
+  minHeight?: number;
+  maxHeight?: number;
+  [key: string]: unknown;
+}
+
+export interface UiExtensionContribution {
+  id: string;
+  targetComponentId: string;
+  targetPointId: string;
+  surfaceId: string;
+  mode?: UiExtensionMode;
+  order?: number;
   [key: string]: unknown;
 }
 
@@ -342,6 +369,8 @@ export interface ComponentContributions {
   automationCommands?: AutomationCommandContribution[];
   automationEvents?: AutomationEventContribution[];
   scriptSurfaces?: ScriptSurfaceContribution[];
+  uiExtensionPoints?: UiExtensionPointContribution[];
+  uiExtensions?: UiExtensionContribution[];
   toolActions?: ToolActionContribution[];
   widgets?: string[];
   dataSources?: string[];
@@ -554,6 +583,14 @@ export interface ProfileAutomationBinding {
   [key: string]: unknown;
 }
 
+export interface ProfileUiExtensionBinding {
+  id: string;
+  extensionId: string;
+  enabled?: boolean;
+  order?: number;
+  [key: string]: unknown;
+}
+
 export interface WorkspaceProfileV1 {
   schemaVersion: typeof PLATFORM_SCHEMA_VERSION;
   id: string;
@@ -572,6 +609,7 @@ export interface WorkspaceProfileV1 {
   commandBindings?: ProfileCommandBinding[];
   workflowBindings?: ProfileWorkflowBinding[];
   automationBindings?: ProfileAutomationBinding[];
+  uiExtensionBindings?: ProfileUiExtensionBinding[];
   variables?: Record<string, string>;
   [key: string]: unknown;
 }

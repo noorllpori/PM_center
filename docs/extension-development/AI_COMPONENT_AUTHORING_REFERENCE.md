@@ -58,7 +58,7 @@ Allowed categories: `workspace`, `file-handler`, `service`, `automation`, `appea
   "description": "What it does.",
   "contextRequirement": "project-required",
   "executionSemantics": "pure",
-  "requiredCapability": "project.files.read",
+  "requiredCapabilities": ["project.files.read"],
   "capabilityOperation": "read",
   "inputSchema": {"type": "object"},
   "outputSchema": {"type": "object"},
@@ -70,7 +70,8 @@ Allowed categories: `workspace`, `file-handler`, `service`, `automation`, `appea
 
 Rules:
 
-- One command has at most one `requiredCapability` in 2.8.5. Split workflows into multiple commands when permissions differ.
+- Use `requiredCapabilities` for every Capability the command can require. `requiredCapability` is accepted only as a compatibility alias for a one-item list.
+- Nexora requests only the Capability entries actually needed by the concrete file-operation source, target and action. Do not omit a possible Capability from the Manifest merely because a particular run might not use it.
 - `pure` may be retried safely; `idempotent` requires a stable idempotency strategy; `non-idempotent` must not be automatically replayed.
 - Use JSON Schema for every public input and output.
 - Only commands listed in `automationCommands` are callable through Component Bridge.
@@ -86,7 +87,10 @@ raise_if_cancelled(context: Context) -> None
 write_result(value) -> None
 write_error(message) -> None
 
-call_component(component_id, command, payload=None, *, capability=None, timeout_ms=None)
+call_component(component_id, command, payload=None, *, capability=None, capabilities=None, timeout_ms=None)
+project_location(path, *, project_id=None) -> dict
+external_location(path, grant_id) -> dict
+call_file_operation(command, payload=None, *, capability=None, capabilities=None, timeout_ms=None)
 get_state(key, default=None, *, scope="global")
 set_state(key, value, *, scope="global")
 delete_state(key, *, scope="global")
@@ -123,7 +127,15 @@ Always call `read_request()` before any Bridge function. Always handle `NexoraBr
 | Start a process | `process.spawn` |
 | HTTP request | `network.http.request` |
 
+For project-to-external export, pass both `project.files.read` and `filesystem.external.write`. A component must first request a user-selected directory through `external.select` or `external.grant-directory`; it may only use the returned `grantId` for its own external locations.
+
 Do not request a broad Capability for convenience.
+
+When Nexora presents a Capability request, the user may choose `allowOnce`,
+`allowSession`, `allowAlways`, or deny it. A command that needs multiple
+Capabilities waits for each required approval in the same run. Components must
+handle a denial or cancellation as a normal outcome; they must not retry a
+non-idempotent operation solely to ask again.
 
 ## 6. Project And Storage Rules
 
@@ -141,7 +153,7 @@ Before generating `call_component()`:
 
 1. Add the target to `requiresComponents` or `optionalComponents` with a SemVer requirement.
 2. Confirm the target command is documented as public.
-3. Pass the exact Capability required by the target command.
+3. Pass `capability` for one permission, or `capabilities` for every permission the concrete target call needs.
 4. Handle `component_not_installed`, `dependency_not_active`, `dependency_version_mismatch`, `component_command_not_exported`, `capability_required`, timeout and cancellation errors.
 
 Stable BlenderIO call:
@@ -163,6 +175,33 @@ result = call_component(
 
 No other BlenderIO command is stable unless added to the human interface reference.
 
+### File Operations With Multiple Capabilities
+
+Use the structured `FileLocation` payload. Project paths stay relative; an external
+path must include a grant returned by `external.select` or
+`external.grant-directory`. The following exports a project file to an already
+authorized external directory. The explicit list is required because one operation
+reads the project and writes outside it.
+
+```python
+result = call_file_operation(
+    "external.export",
+    {
+        "source": {"space": "project", "path": "assets/shot.png"},
+        "target": {
+            "space": "external",
+            "grantId": selected_directory["grantId"],
+            "path": r"D:\\Media\\shot.png",
+        },
+        "conflict": "rename",
+    },
+    capabilities=["project.files.read", "filesystem.external.write"],
+)
+```
+
+Do not request broad external access pre-emptively. Ask for the directory through
+`external.select`, then pass only the concrete capabilities needed by that command.
+
 ## 8. UI And Runtime Matrix
 
 | Need | Stable choice |
@@ -174,8 +213,31 @@ No other BlenderIO command is stable unless added to the human interface referen
 | Custom HTML/CSS/JS page | `scriptSurfaces` sandbox |
 | Open a file extension | `fileHandlers` |
 | User-editable settings | `settingsSections` |
+| Insert an isolated page into a supported host location | `uiExtensions` plus a `scriptSurfaces` entry and a dependency on that host |
+| Replace a supported workspace page | `uiExtensions` with `mode: "replace"` on a declared surface point |
 
 Sandbox JavaScript cannot access host DOM, Tauri IPC, local files or undeclared network resources. Hosted React surfaces and project-manager-level ABI are `reserved-r17`.
+
+### UI Extension Contract
+
+`nexora.project-manager` publishes stable points for `project-toolbar`, `project-sidebar`, `file-details`, `file-context-menu`, `project-home-widgets`, `project-status-bar`, and `project-workspace`. The component that contributes an extension must declare `nexora.project-manager` in `requiresComponents` or `optionalComponents`, own the referenced script surface, and use the point ID exactly as documented. The Profile controls enablement and order. A surface receives only project context, relative selection, theme, language and dimensions through the nonce bridge; it cannot receive a Store, DOM element or Tauri API.
+
+```json
+{
+  "requiresComponents": [{"id": "nexora.project-manager", "versionRequirement": "^1.0"}],
+  "contributes": {
+    "scriptSurfaces": [{"id": "com.example.note.panel", "name": "Note panel", "entry": "ui/index.html", "allowedCommands": ["save-note"]}],
+    "uiExtensions": [{
+      "id": "com.example.note.file-details",
+      "targetComponentId": "nexora.project-manager",
+      "targetPointId": "nexora.project-manager.file-details",
+      "surfaceId": "com.example.note.panel",
+      "mode": "insert",
+      "order": 100
+    }]
+  }
+}
+```
 
 ## 9. Forbidden Output
 
@@ -194,7 +256,7 @@ Reject or rewrite any design that:
 
 1. Restate target Nexora status and runtime.
 2. Choose a stable component ID and SemVer.
-3. List commands and assign one Capability to each.
+3. List commands and declare every Capability each command may require.
 4. Declare dependencies and compatible versions.
 5. Write `component.json` with input/output Schema.
 6. Write the runtime entry using only SDK calls above.
@@ -210,6 +272,8 @@ Reject or rewrite any design that:
 - [ ] Uses only `stable-2.8.5` unless an explicit target says otherwise.
 - [ ] Contains no Module Manifest or internal API.
 - [ ] Every command has Schema, semantics, timeout and minimal Capability.
+- [ ] Cross-space file calls use `FileLocation`, user-selected `grantId`, and the complete `capabilities` list.
+- [ ] UI extensions name a stable target point, own their surface and have a target component dependency.
 - [ ] Every component call has a declared dependency.
 - [ ] Project files are accessed through SDK paths and mutations.
 - [ ] Durable data and cache are separated.

@@ -29,6 +29,7 @@ import {
   ContributedWidget,
   type ContributedWidgetRuntime,
 } from '../workspace/ContributedWidget';
+import { UiExtensionSlot } from '../automation/UiExtensionSlot';
 
 interface ProjectHomeCompositionProps {
   onOpenProject: (path: string) => Promise<void> | void;
@@ -438,6 +439,11 @@ export function ProjectHomeComposition({
             </main>
           )}
         </div>
+        <UiExtensionSlot
+          targetComponentId="nexora.project-manager"
+          pointId="nexora.project-manager.project-home-widgets"
+          className="mt-6"
+        />
       </div>
 
       <ConfirmDialog

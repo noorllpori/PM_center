@@ -202,7 +202,7 @@ export function CapabilityDiagnosticsSection() {
               title="能力权限"
               text={[
                 '组件必须先在 manifest 中声明能力，运行时再由网关签发短期令牌。',
-                '仅本次：批准一次操作；始终允许：绑定当前组件版本、操作和路径范围。',
+                '仅本次：批准一次操作；本次会话：关闭 Nexora 前有效；始终允许：绑定当前组件版本、操作和路径范围。',
                 '令牌默认 60 秒有效且只能使用一次，不能跨组件或路径复用。',
               ]}
               placement="bottom-start"
@@ -294,6 +294,7 @@ export function CapabilityDiagnosticsSection() {
           <div className="flex flex-wrap justify-end gap-2 border-t border-amber-200 px-3 py-2.5 dark:border-amber-900/60">
             <button type="button" onClick={() => void decide('deny')} disabled={pending !== null} className="h-8 rounded-md px-3 text-xs text-gray-600 hover:bg-white/70 disabled:opacity-50 dark:text-gray-300 dark:hover:bg-gray-900">拒绝</button>
             <button type="button" onClick={() => void decide('allowOnce')} disabled={pending !== null} className="h-8 rounded-md border border-amber-300 bg-white px-3 text-xs font-medium text-gray-700 disabled:opacity-50 dark:border-amber-800 dark:bg-gray-900 dark:text-gray-200">仅本次</button>
+            <button type="button" onClick={() => void decide('allowSession')} disabled={pending !== null} className="h-8 rounded-md border border-amber-300 bg-white px-3 text-xs font-medium text-gray-700 disabled:opacity-50 dark:border-amber-800 dark:bg-gray-900 dark:text-gray-200">本次会话</button>
             <button type="button" onClick={() => void decide('allowAlways')} disabled={pending !== null} className="h-8 rounded-md bg-amber-600 px-3 text-xs font-medium text-white disabled:opacity-50">始终允许</button>
           </div>
         </div>

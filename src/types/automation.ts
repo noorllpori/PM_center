@@ -145,6 +145,7 @@ export interface AutomationRunFilter {
 
 export type AutomationAttentionAction =
   | 'allowOnce'
+  | 'allowSession'
   | 'allowAlways'
   | 'deny'
   | 'retrySafe'

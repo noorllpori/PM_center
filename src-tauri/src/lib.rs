@@ -161,6 +161,7 @@ async fn release_project_resources(
     // Revoke the project lease before dropping handles so late async work cannot
     // recreate the SQLite connections after the outer project tab has closed.
     project_resources::unregister_project(&project_path);
+    platform::file_operations::release_project_streams(&project_path);
     project_resources::release_project_handles(db_state.inner(), &project_path).await
 }
 
