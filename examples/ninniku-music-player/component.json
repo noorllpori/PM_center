@@ -2,36 +2,124 @@
   "schemaVersion": 1,
   "id": "com.ninniku.music-player",
   "name": "Ninniku 音乐播放器",
-  "description": "在隔离组件页面中播放用户临时选择或拖入的本机音频文件。",
-  "version": "0.1.0",
+  "description": "在隔离组件页面中播放本机文件，并从用户授权的音乐目录读取曲目。",
+  "version": "0.1.2",
   "apiVersion": "1",
-  "runtime": "data-pack",
+  "runtime": "python-action",
   "role": "feature",
   "category": "workspace",
   "tags": ["music", "audio", "player", "example"],
   "distribution": "local",
   "uiMode": "contributed",
   "platforms": ["windows-x64"],
-  "entry": "data.json",
-  "capabilities": [],
-  "requiresComponents": [],
+  "entry": "main.py",
+  "capabilities": [
+    "filesystem.dialog.open",
+    "filesystem.external.read"
+  ],
+  "requiresComponents": [
+    {
+      "id": "nexora.file-operations",
+      "versionRequirement": "^1.0"
+    }
+  ],
   "optionalComponents": [],
   "contributes": {
-    "automationCommands": [],
+    "automationCommands": [
+      {
+        "id": "com.ninniku.music-player.restore-libraries",
+        "command": "restore-libraries",
+        "name": "恢复音乐目录",
+        "description": "读取已保存的音乐目录和上次扫描结果。",
+        "contextRequirement": "global",
+        "executionSemantics": "pure",
+        "inputSchema": {"type": "object", "additionalProperties": false},
+        "outputSchema": {"type": "object"},
+        "maxAttempts": 1,
+        "maxParallelism": 4,
+        "timeoutMs": 30000
+      },
+      {
+        "id": "com.ninniku.music-player.add-library-folder",
+        "command": "add-library-folder",
+        "name": "添加音乐文件夹",
+        "description": "打开系统目录选择器，建立持久只读授权并扫描音频文件。",
+        "contextRequirement": "global",
+        "executionSemantics": "non-idempotent",
+        "requiredCapabilities": ["filesystem.dialog.open"],
+        "capabilityOperation": "execute",
+        "inputSchema": {"type": "object", "additionalProperties": false},
+        "outputSchema": {"type": "object"},
+        "maxAttempts": 1,
+        "maxParallelism": 1,
+        "timeoutMs": 120000
+      },
+      {
+        "id": "com.ninniku.music-player.refresh-libraries",
+        "command": "refresh-libraries",
+        "name": "刷新音乐文件夹",
+        "description": "重新扫描一个或全部已授权音乐目录。",
+        "contextRequirement": "global",
+        "executionSemantics": "idempotent",
+        "requiredCapabilities": ["filesystem.external.read"],
+        "capabilityOperation": "read",
+        "inputSchema": {"type": "object", "required": ["externalRootPath"], "properties": {"grantId": {"type": "string"}, "externalRootPath": {"type": "string", "minLength": 1}}, "additionalProperties": false},
+        "outputSchema": {"type": "object"},
+        "maxAttempts": 1,
+        "maxParallelism": 4,
+        "timeoutMs": 120000
+      },
+      {
+        "id": "com.ninniku.music-player.remove-library-folder",
+        "command": "remove-library-folder",
+        "name": "移除音乐文件夹",
+        "description": "移除目录并撤销该组件持有的目录授权。",
+        "contextRequirement": "global",
+        "executionSemantics": "idempotent",
+        "requiredCapabilities": ["filesystem.external.read"],
+        "capabilityOperation": "read",
+        "inputSchema": {"type": "object", "required": ["grantId", "externalRootPath"], "properties": {"grantId": {"type": "string"}, "externalRootPath": {"type": "string", "minLength": 1}}, "additionalProperties": false},
+        "outputSchema": {"type": "object"},
+        "maxAttempts": 1,
+        "maxParallelism": 1,
+        "timeoutMs": 30000
+      },
+      {
+        "id": "com.ninniku.music-player.load-library-track",
+        "command": "load-library-track",
+        "name": "读取音乐文件",
+        "description": "从已授权目录读取可内联播放的单个音频文件。",
+        "contextRequirement": "global",
+        "executionSemantics": "pure",
+        "requiredCapabilities": ["filesystem.external.read"],
+        "capabilityOperation": "read",
+        "inputSchema": {"type": "object", "required": ["trackId", "externalRootPath"], "properties": {"trackId": {"type": "string"}, "externalRootPath": {"type": "string", "minLength": 1}}, "additionalProperties": false},
+        "outputSchema": {"type": "object"},
+        "maxAttempts": 1,
+        "maxParallelism": 1,
+        "timeoutMs": 60000
+      }
+    ],
     "scriptSurfaces": [
       {
         "id": "com.ninniku.music-player.surface",
         "name": "Ninniku 音乐播放器",
         "entry": "ui/index.html",
         "placements": ["shell", "workspace", "dialog"],
-        "allowedCommands": []
+        "allowedCommands": [
+          "restore-libraries",
+          "add-library-folder",
+          "refresh-libraries",
+          "remove-library-folder",
+          "load-library-track"
+        ]
       }
     ]
   },
   "resources": {
     "maxMemoryMb": 128,
-    "maxParallelism": 1,
-    "timeoutMs": 30000
+    "maxParallelism": 4,
+    "timeoutMs": 120000
   },
   "publisher": "章知涵@Ninniku"
 }

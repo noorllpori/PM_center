@@ -3,6 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" href="data:,">
     <title>Ninniku 音乐播放器</title>
     <link rel="stylesheet" href="style.css">
   </head>
@@ -17,9 +18,13 @@
           </div>
         </div>
         <div class="topbar-actions">
-          <button class="text-button" id="add-button" type="button">
+          <button class="text-button" id="add-folder-button" type="button">
             <span aria-hidden="true">＋</span>
-            添加音乐
+            添加文件夹
+          </button>
+          <button class="text-button secondary" id="add-button" type="button">
+            <span aria-hidden="true">♫</span>
+            添加文件
           </button>
           <button class="icon-button subtle" id="clear-button" type="button" title="清空播放列表" aria-label="清空播放列表" disabled>
             ×
@@ -74,10 +79,22 @@
             </div>
             <span class="queue-count" id="queue-count">0 首</span>
           </div>
+          <section class="library-section" aria-label="音乐文件夹">
+            <div class="library-heading">
+              <div>
+                <p class="eyebrow">已授权目录</p>
+                <h3>音乐文件夹</h3>
+              </div>
+              <button class="library-refresh" id="refresh-libraries-button" type="button" title="重新扫描所有音乐文件夹">刷新</button>
+            </div>
+            <div class="library-list" id="library-list">
+              <p class="library-empty">尚未添加音乐文件夹</p>
+            </div>
+          </section>
           <div class="empty-state" id="empty-state">
             <div class="empty-symbol" aria-hidden="true">♫</div>
             <p>播放列表为空</p>
-            <button class="text-button compact" id="empty-add-button" type="button">添加音乐</button>
+            <button class="text-button compact" id="empty-add-button" type="button">添加文件</button>
           </div>
           <ol class="track-list" id="track-list" aria-label="音乐列表"></ol>
         </section>

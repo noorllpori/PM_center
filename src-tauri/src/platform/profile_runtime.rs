@@ -3826,6 +3826,38 @@ fn compatibility_issues(
                 Some(contribution_id.into()),
             ));
         }
+        if let Some((component, script_surface)) = component_surface_owners.get(contribution_id) {
+            if !effective_components.contains(&component.id) {
+                issues.push(switch_issue(
+                    "SURFACE_COMPONENT_PROVIDER_DISABLED",
+                    WorkspaceProfileSwitchIssueSeverity::Error,
+                    "surface",
+                    format!(
+                        "页面 {} 由未在当前方案启用的组件 {} 提供",
+                        surface.id, component.name
+                    ),
+                    Some(component.id.clone()),
+                    Some(contribution_id.into()),
+                ));
+            }
+            if profile.shell_layout.home.as_deref() == Some(surface.id.as_str())
+                && !script_surface
+                    .placements
+                    .contains(&ScriptSurfacePlacement::Shell)
+            {
+                issues.push(switch_issue(
+                    "HOME_COMPONENT_PLACEMENT_UNSUPPORTED",
+                    WorkspaceProfileSwitchIssueSeverity::Error,
+                    "surface",
+                    format!(
+                        "组件页面 {} 未声明 shell 放置，不能作为启动主页",
+                        script_surface.name
+                    ),
+                    Some(component.id.clone()),
+                    Some(contribution_id.into()),
+                ));
+            }
+        }
 
         for widget in &surface.widgets {
             if let Some(module_id) = disabled_contribution_provider(
@@ -4025,7 +4057,10 @@ fn validate_ui_extension_bindings(
                 "UI_EXTENSION_PROVIDER_DISABLED",
                 WorkspaceProfileSwitchIssueSeverity::Error,
                 "ui-extension",
-                format!("界面扩展 {} 的组件 {} 未在当前方案中启用", binding.extension_id, owner.name),
+                format!(
+                    "界面扩展 {} 的组件 {} 未在当前方案中启用",
+                    binding.extension_id, owner.name
+                ),
                 Some(owner.id.clone()),
                 Some(binding.extension_id.clone()),
             ));
@@ -4038,7 +4073,10 @@ fn validate_ui_extension_bindings(
                 "UI_EXTENSION_TARGET_MISSING",
                 WorkspaceProfileSwitchIssueSeverity::Error,
                 "ui-extension",
-                format!("界面扩展 {} 的目标组件 {} 未安装", binding.extension_id, extension.target_component_id),
+                format!(
+                    "界面扩展 {} 的目标组件 {} 未安装",
+                    binding.extension_id, extension.target_component_id
+                ),
                 Some(owner.id.clone()),
                 Some(binding.extension_id.clone()),
             ));
@@ -4049,7 +4087,10 @@ fn validate_ui_extension_bindings(
                 "UI_EXTENSION_TARGET_DISABLED",
                 WorkspaceProfileSwitchIssueSeverity::Error,
                 "ui-extension",
-                format!("界面扩展 {} 的目标组件 {} 未在当前方案中启用", binding.extension_id, target.name),
+                format!(
+                    "界面扩展 {} 的目标组件 {} 未在当前方案中启用",
+                    binding.extension_id, target.name
+                ),
                 Some(target.id.clone()),
                 Some(binding.extension_id.clone()),
             ));
@@ -4064,7 +4105,10 @@ fn validate_ui_extension_bindings(
                 "UI_EXTENSION_POINT_MISSING",
                 WorkspaceProfileSwitchIssueSeverity::Error,
                 "ui-extension",
-                format!("界面扩展 {} 指向不存在的扩展点 {}", binding.extension_id, extension.target_point_id),
+                format!(
+                    "界面扩展 {} 指向不存在的扩展点 {}",
+                    binding.extension_id, extension.target_point_id
+                ),
                 Some(target.id.clone()),
                 Some(binding.extension_id.clone()),
             ));
@@ -4080,7 +4124,10 @@ fn validate_ui_extension_bindings(
                 "UI_EXTENSION_SURFACE_MISSING",
                 WorkspaceProfileSwitchIssueSeverity::Error,
                 "ui-extension",
-                format!("界面扩展 {} 的隔离页面 {} 不可用", binding.extension_id, extension.surface_id),
+                format!(
+                    "界面扩展 {} 的隔离页面 {} 不可用",
+                    binding.extension_id, extension.surface_id
+                ),
                 Some(owner.id.clone()),
                 Some(binding.extension_id.clone()),
             ));
@@ -4729,6 +4776,53 @@ mod tests {
             .issues
             .iter()
             .any(|issue| issue.code == "PIN_COMPONENT_PROVIDER_DISABLED"));
+    }
+
+    #[test]
+    fn draft_validation_tracks_component_script_surface_home() {
+        let mut component = component_manifest("test.music-player", "1.0.0");
+        component.contributes.script_surfaces = vec![ScriptSurfaceContribution {
+            id: "test.music-player.surface".into(),
+            name: "音乐播放器".into(),
+            entry: "ui/index.html".into(),
+            placements: vec![ScriptSurfacePlacement::Shell],
+            allowed_commands: Vec::new(),
+            extensions: ExtensionFields::new(),
+        }];
+        let mut profile = build_blank_profile();
+        profile
+            .enabled_components
+            .push(pmc_platform::ProfileComponentSelection {
+                id: component.id.clone(),
+                version_requirement: "^1.0".into(),
+                extensions: ExtensionFields::new(),
+            });
+        profile.surfaces.push(ProfileSurface {
+            id: "music-page".into(),
+            title: Some("音乐播放器".into()),
+            kind: SurfaceKind::ShellPage,
+            layout: SurfaceLayoutKind::ContributionDefined,
+            contribution: Some("test.music-player.surface".into()),
+            template: None,
+            theme_preset: None,
+            widgets: Vec::new(),
+            settings: BTreeMap::from([
+                ("componentId".into(), json!("test.music-player")),
+                ("scriptSurfaceId".into(), json!("test.music-player.surface")),
+            ]),
+            extensions: ExtensionFields::new(),
+        });
+        profile.shell_layout.home = Some("music-page".into());
+
+        let enabled = build_draft_validation(&profile, &[], &[component.clone()]);
+        assert!(enabled.valid, "unexpected issues: {:?}", enabled.issues);
+
+        profile.enabled_components.clear();
+        let disabled = build_draft_validation(&profile, &[], &[component]);
+        assert!(disabled
+            .issues
+            .iter()
+            .any(|issue| issue.code == "SURFACE_COMPONENT_PROVIDER_DISABLED"));
     }
 
     #[test]

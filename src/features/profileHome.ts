@@ -1,4 +1,8 @@
-import type { ProfileSurface, WorkspaceProfileV1 } from '../types/platform';
+import type {
+  ProfileSurface,
+  ScriptSurfaceContribution,
+  WorkspaceProfileV1,
+} from '../types/platform';
 import {
   SURFACE_CONTRIBUTION_BY_ID,
   getContributionUnavailableReason,
@@ -24,6 +28,20 @@ export interface ResolvedProfileHome {
   contribution: SurfaceContributionDefinition;
 }
 
+export interface ProfileHomeScriptSurfaceEntry {
+  componentId: string;
+  componentName: string;
+  surface: ScriptSurfaceContribution;
+}
+
+export interface ResolvedProfileScriptHome {
+  kind: 'script-surface';
+  profile: WorkspaceProfileV1;
+  surface: ProfileSurface;
+  componentId: string;
+  scriptSurface: ScriptSurfaceContribution;
+}
+
 export interface FallbackProfileHome {
   kind: 'fallback';
   profile: WorkspaceProfileV1 | null;
@@ -33,7 +51,7 @@ export interface FallbackProfileHome {
   contributionId?: string;
 }
 
-export type ProfileHomeResolution = ResolvedProfileHome | FallbackProfileHome;
+export type ProfileHomeResolution = ResolvedProfileHome | ResolvedProfileScriptHome | FallbackProfileHome;
 
 const SUPPORTED_HOME_SURFACE_KINDS = new Set<ProfileSurface['kind']>([
   'dashboard',
@@ -44,6 +62,8 @@ export function resolveProfileHome(
   profile: WorkspaceProfileV1 | null,
   contributionRegistry: ContributionRegistrySnapshot,
   shellRendererIds: ReadonlySet<string>,
+  scriptSurfaceEntries: readonly ProfileHomeScriptSurfaceEntry[] = [],
+  scriptSurfaceCatalogLoading = false,
 ): ProfileHomeResolution {
   if (!profile) {
     return fallback(null, 'PROFILE_LOADING', '正在读取当前装配方案。');
@@ -89,13 +109,50 @@ export function resolveProfileHome(
 
   const contribution = SURFACE_CONTRIBUTION_BY_ID.get(contributionId);
   if (!contribution) {
-    return fallback(
+    const configuredComponentId = typeof surface.settings?.componentId === 'string'
+      ? surface.settings.componentId
+      : null;
+    const configuredSurfaceId = typeof surface.settings?.scriptSurfaceId === 'string'
+      ? surface.settings.scriptSurfaceId
+      : contributionId;
+    const scriptEntry = scriptSurfaceEntries.find((entry) => (
+      entry.surface.id === configuredSurfaceId
+      && (!configuredComponentId || entry.componentId === configuredComponentId)
+    ));
+    if (!scriptEntry) {
+      if (scriptSurfaceCatalogLoading) {
+        return fallback(
+          profile,
+          'PROFILE_LOADING',
+          '正在读取组件主页目录。',
+          requestedSurfaceId,
+          contributionId,
+        );
+      }
+      return fallback(
+        profile,
+        'HOME_CONTRIBUTION_UNKNOWN',
+        `主页组件页面未安装、未启用或未进入当前方案：${contributionId}`,
+        requestedSurfaceId,
+        contributionId,
+      );
+    }
+    if (!scriptEntry.surface.placements.includes('shell')) {
+      return fallback(
+        profile,
+        'HOME_CONTRIBUTION_HOST_UNSUPPORTED',
+        `组件页面“${scriptEntry.surface.name}”未声明 shell 放置，不能作为主页。`,
+        requestedSurfaceId,
+        contributionId,
+      );
+    }
+    return {
+      kind: 'script-surface',
       profile,
-      'HOME_CONTRIBUTION_UNKNOWN',
-      `主页贡献未安装或未注册：${contributionId}`,
-      requestedSurfaceId,
-      contributionId,
-    );
+      surface,
+      componentId: scriptEntry.componentId,
+      scriptSurface: scriptEntry.surface,
+    };
   }
 
   if (contribution.host !== 'shell') {

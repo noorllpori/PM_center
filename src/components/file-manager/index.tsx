@@ -23,7 +23,10 @@ import { ContributedShellSurface } from '../shell/ContributedShellSurface';
 import { ProfileHomeSurface } from '../shell/ProfileHomeSurface';
 import { ProfileNavigationBar } from '../shell/ProfileNavigationBar';
 import { OPEN_RECOVERY_SETTINGS_EVENT } from '../../features/recoverySettings';
-import { resolveProfileNavigation } from '../../features/profileLayout';
+import {
+  getProfileHomeScriptSurfaceTarget,
+  resolveProfileNavigation,
+} from '../../features/profileLayout';
 import { Dialog } from '../Dialog';
 import { ProjectLocationDialog } from './ProjectLocationDialog';
 import { createProjectStore, type ProjectStoreApi } from '../../stores/projectStore';
@@ -426,6 +429,31 @@ export function FileManager() {
       shellState.activateTab(homeTab.id);
     }
   }, []);
+
+  const openScriptSurface = useCallback((surface: ScriptSurfaceTool) => {
+    const homeTarget = getProfileHomeScriptSurfaceTarget(activeWorkspaceProfile);
+    if (
+      homeTarget
+      && homeTarget.surfaceId === surface.surfaceId
+      && (!homeTarget.componentId || homeTarget.componentId === surface.componentId)
+    ) {
+      setActiveScriptSurface(null);
+      openProfileHome();
+      return;
+    }
+    setActiveScriptSurface(surface);
+  }, [activeWorkspaceProfile, openProfileHome]);
+
+  useEffect(() => {
+    if (!activeScriptSurface) return;
+    const homeTarget = getProfileHomeScriptSurfaceTarget(activeWorkspaceProfile);
+    if (
+      homeTarget?.surfaceId === activeScriptSurface.surfaceId
+      && (!homeTarget.componentId || homeTarget.componentId === activeScriptSurface.componentId)
+    ) {
+      setActiveScriptSurface(null);
+    }
+  }, [activeScriptSurface, activeWorkspaceProfile]);
 
   useEffect(() => {
     const openRecoverySettings = () => setIsRecoverySettingsOpen(true);
@@ -1572,7 +1600,7 @@ export function FileManager() {
             >
               <Toolbar
                 onOpenBuiltinTool={openBuiltinTool}
-                onOpenScriptSurface={setActiveScriptSurface}
+                onOpenScriptSurface={openScriptSurface}
               />
             </ProjectSessionProvider>
           ) : (
@@ -1585,7 +1613,7 @@ export function FileManager() {
             hasActiveProject={Boolean(activeProjectSession)}
             activeProjectName={activeProjectSession?.projectStore.getState().projectName || activeShellTab?.title}
             onOpenTool={openBuiltinTool}
-            onOpenScriptSurface={setActiveScriptSurface}
+            onOpenScriptSurface={openScriptSurface}
           />
         </div>
       </div>

@@ -130,6 +130,17 @@ function createSurface(definition: SurfaceContributionDefinition, id: string): P
   };
 }
 
+export interface ProfileScriptSurfaceDefinition {
+  componentId: string;
+  surfaceId: string;
+  title: string;
+}
+
+export interface ProfileScriptSurfaceTarget {
+  componentId: string | null;
+  surfaceId: string;
+}
+
 export function ensureProfileSurface(
   profile: WorkspaceProfileV1,
   contributionId: string,
@@ -162,6 +173,67 @@ export function setProfileHomeContribution(
   if (!surface) return;
   shellLayout.home = surface.id;
   profile.shellLayout = shellLayout;
+}
+
+export function ensureProfileScriptSurface(
+  profile: WorkspaceProfileV1,
+  definition: ProfileScriptSurfaceDefinition,
+) {
+  const existing = (profile.surfaces ?? []).find((surface) => (
+    surface.contribution === definition.surfaceId
+    && surface.settings?.componentId === definition.componentId
+  ));
+  if (existing) return existing;
+
+  const surfaces = profile.surfaces ?? [];
+  const id = uniqueLocalId(
+    new Set(surfaces.map((surface) => surface.id)),
+    surfaceLocalId(definition.surfaceId),
+  );
+  const surface: ProfileSurface = {
+    id,
+    title: definition.title,
+    kind: 'shell-page',
+    layout: 'contribution-defined',
+    contribution: definition.surfaceId,
+    widgets: [],
+    settings: {
+      componentId: definition.componentId,
+      scriptSurfaceId: definition.surfaceId,
+    },
+  };
+  profile.surfaces = [...surfaces, surface];
+  return surface;
+}
+
+export function setProfileHomeScriptSurface(
+  profile: WorkspaceProfileV1,
+  definition: ProfileScriptSurfaceDefinition,
+) {
+  const surface = ensureProfileScriptSurface(profile, definition);
+  profile.shellLayout = {
+    ...(profile.shellLayout ?? {}),
+    home: surface.id,
+  };
+}
+
+export function getProfileHomeScriptSurfaceTarget(
+  profile: WorkspaceProfileV1 | null,
+): ProfileScriptSurfaceTarget | null {
+  if (!profile?.shellLayout?.home) return null;
+  const surface = (profile.surfaces ?? []).find(
+    (candidate) => candidate.id === profile.shellLayout?.home,
+  );
+  if (!surface?.contribution || SURFACE_CONTRIBUTION_BY_ID.has(surface.contribution)) {
+    return null;
+  }
+  const componentId = typeof surface.settings?.componentId === 'string'
+    ? surface.settings.componentId
+    : null;
+  const surfaceId = typeof surface.settings?.scriptSurfaceId === 'string'
+    ? surface.settings.scriptSurfaceId
+    : surface.contribution;
+  return { componentId, surfaceId };
 }
 
 export function setProfileNavigationContribution(

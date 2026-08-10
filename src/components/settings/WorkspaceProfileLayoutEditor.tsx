@@ -27,6 +27,7 @@ import {
   reorderProfileWidgets,
   setPinnedToolContribution,
   setProfileHomeContribution,
+  setProfileHomeScriptSurface,
   setProfileNavigationContribution,
   setProfileWidgetContribution,
   updateProfileWidgetRegion,
@@ -227,11 +228,16 @@ export function WorkspaceProfileLayoutEditor({
         title: surface.name,
         placements: surface.placements,
         pinnable: surface.placements.includes('shell'),
+        homeEligible: surface.placements.includes('shell'),
       })))
       .sort((left, right) => left.title.localeCompare(right.title, 'zh-CN'))
   ), [componentRuntime, effectiveComponentIds]);
   const componentSurfaceById = useMemo(
     () => new Map(componentSurfaces.map((surface) => [surface.surfaceId, surface] as const)),
+    [componentSurfaces],
+  );
+  const availableScriptHomeSurfaces = useMemo(
+    () => componentSurfaces.filter((surface) => surface.homeEligible),
     [componentSurfaces],
   );
 
@@ -289,6 +295,14 @@ export function WorkspaceProfileLayoutEditor({
     mutate((profile) => setProfileHomeContribution(profile, definition?.id ?? null));
   };
 
+  const selectScriptHome = (surface: (typeof componentSurfaces)[number]) => {
+    mutate((profile) => setProfileHomeScriptSurface(profile, {
+      componentId: surface.componentId,
+      surfaceId: surface.surfaceId,
+      title: surface.title,
+    }));
+  };
+
   return (
     <div className="space-y-4">
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
@@ -305,7 +319,18 @@ export function WorkspaceProfileLayoutEditor({
                   const definition = availableHomeSurfaces.find(
                     (candidate) => candidate.id === event.target.value,
                   );
-                  selectHome(definition ?? null);
+                  if (definition) {
+                    selectHome(definition);
+                    return;
+                  }
+                  const scriptSurface = availableScriptHomeSurfaces.find(
+                    (candidate) => candidate.surfaceId === event.target.value,
+                  );
+                  if (scriptSurface) {
+                    selectScriptHome(scriptSurface);
+                    return;
+                  }
+                  selectHome(null);
                 }}
                 className="h-9 w-full rounded-md border border-gray-300 bg-white px-3 text-sm dark:border-gray-700 dark:bg-gray-800"
               >
@@ -313,10 +338,21 @@ export function WorkspaceProfileLayoutEditor({
                 {availableHomeSurfaces.map((definition) => (
                   <option key={definition.id} value={definition.id}>{definition.title}</option>
                 ))}
+                {availableScriptHomeSurfaces.length > 0 ? (
+                  <optgroup label="组件页面">
+                    {availableScriptHomeSurfaces.map((surface) => (
+                      <option key={`${surface.componentId}:${surface.surfaceId}`} value={surface.surfaceId}>
+                        {surface.title} · {surface.componentName}
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : null}
                 {currentHomeContributionId
-                  && !availableHomeSurfaces.some((definition) => definition.id === currentHomeContributionId) ? (
+                  && !availableHomeSurfaces.some((definition) => definition.id === currentHomeContributionId)
+                  && !availableScriptHomeSurfaces.some((surface) => surface.surfaceId === currentHomeContributionId) ? (
                     <option value={currentHomeContributionId} disabled>
-                      {contributionTitle(currentHomeContributionId)}（所属组件未选择）
+                      {componentSurfaceById.get(currentHomeContributionId)?.title
+                        || contributionTitle(currentHomeContributionId)}（所属组件未选择）
                     </option>
                   ) : null}
               </select>
@@ -583,6 +619,16 @@ export function WorkspaceProfileLayoutEditor({
                     <p className="truncate text-sm font-medium text-gray-900 dark:text-gray-100">{surface.title}</p>
                     <p className="truncate text-[11px] text-gray-500">{surface.componentName} · {surface.placements.join(' / ')}</p>
                   </div>
+                  {surface.homeEligible ? (
+                    <button
+                      type="button"
+                      onClick={() => selectScriptHome(surface)}
+                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md ${currentHomeContributionId === surface.surfaceId ? 'bg-sky-100 text-sky-700 dark:bg-sky-950/50 dark:text-sky-300' : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'}`}
+                      title={currentHomeContributionId === surface.surfaceId ? '当前启动主页' : '设为启动主页'}
+                    >
+                      <LayoutDashboard className="h-4 w-4" />
+                    </button>
+                  ) : null}
                   {surface.pinnable ? (
                     <button
                       type="button"

@@ -785,13 +785,10 @@ impl ValidateContract for ComponentManifestV1 {
                     ));
                 }
             }
-            if command_capabilities.is_empty() && !self.capabilities.is_empty() {
-                return Err(ContractError::new(
-                    ContractErrorCode::InvalidRuntimeConfiguration,
-                    format!("{path}.requiredCapabilities"),
-                    "带权限组件的自动化命令必须声明 requiredCapability 或 requiredCapabilities",
-                ));
-            }
+            // A component may expose a pure command that only reads its own
+            // persisted state while its other commands access privileged host
+            // services. Keep command capabilities precise rather than forcing
+            // unrelated permission prompts for that state-only operation.
         }
         for (index, event) in self.contributes.automation_events.iter().enumerate() {
             let path = format!("$.contributes.automationEvents[{index}]");

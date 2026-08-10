@@ -103,6 +103,7 @@ if __name__ == "__main__":
 - 用 `requiresComponents` 声明不可缺少的能力，用 `optionalComponents` 表示可降级功能；不要探测未声明的组件。
 - `capabilities` 只声明组件可能请求的能力。真正调用仍需宿主获得一次性授权令牌。
 - 自动化命令需要声明项目上下文、执行语义、输入/输出 Schema、重试次数、并行数与超时。`requiredCapabilities` 是一个列表；旧 `requiredCapability` 仅用于兼容现有包。
+- `capabilityOperation` 用于可变 Capability 的写入或删除意图；读取、目录选择/执行、网络和通知由宿主按每个 Capability 分别固定为 `read`、`execute`、`connect`、`notify`。混合权限命令不得把所有 Capability 强行视为同一种操作。
 - 使用 `nexora.file-operations` 时，在 `requiresComponents` 中声明 `^1.0`，并使用 SDK 的 `project_location()` / `external_location()` 与 `call_file_operation()`。项目路径必须相对；外部绝对路径必须先通过 `external.select` 或 `external.grant-directory` 获取当前组件自己的 `grantId`。跨空间操作传递全部实际所需的 `capabilities`。
 - `pure` 和 `idempotent` 才允许在崩溃后自动重试；副作用无法安全重放时使用 `non-idempotent`。
 - 方案绑定决定何时运行：手动、白名单事件或五段式 cron。保存绑定不会自动运行。
@@ -113,9 +114,11 @@ if __name__ == "__main__":
 
 Script Surface 是第三方界面的公开入口：组件清单声明 HTML 入口和可以调用的自身命令。页面运行于 `iframe sandbox="allow-scripts"`，没有 Tauri IPC、宿主 DOM、本机 URL 或任意网络访问权；它通过每次会话 nonce 消息桥调用自己 Manifest 中允许的自动化命令。
 
-要嵌入宿主界面，除 `scriptSurfaces` 外还必须声明 `uiExtensions`，并在 `requiresComponents` 或 `optionalComponents` 中声明目标组件。目标组件只开放自己的命名插槽或整页替换点；当前 `nexora.project-manager` 提供项目工具栏、侧栏、文件详情、文件右键菜单、项目主页 Widget、项目状态栏和项目工作区整页替换点。方案编辑器的“界面扩展”决定是否启用及排序。扩展关闭、崩溃或校验失败时会完整撤下；整页替换失败时自动回退默认项目工作区。
+声明 `placements: ["shell"]` 的 Script Surface 可以直接进入装配方案的“启动主页”候选，也可以固定到快捷栏。主页使用 Nexora 固定的主页标签承载，同一页面已作为主页时，从功能中心或快捷栏再次打开只会聚焦主页，不会叠加重复弹窗。组件停用、缺失或页面加载失败时，宿主回退到最小安全主页。
 
-`placements` 是保留放置描述，不能单独用来挂载页面。任意 React 渲染器、宿主 Store 与未声明的页面位置仍没有第三方 ABI，不能仅靠字段猜测可用。
+要插入其他组件拥有的局部区域，除 `scriptSurfaces` 外还必须声明 `uiExtensions`，并在 `requiresComponents` 或 `optionalComponents` 中声明目标组件。目标组件只开放自己的命名插槽或整页替换点；当前 `nexora.project-manager` 提供项目工具栏、侧栏、文件详情、文件右键菜单、项目主页 Widget、项目状态栏和项目工作区整页替换点。方案编辑器的“界面扩展”决定是否启用及排序。扩展关闭、崩溃或校验失败时会完整撤下；整页替换失败时自动回退默认项目工作区。
+
+`placements` 的稳定含义为：`shell` 可作为启动主页和快捷栏页面，`dialog` 可由功能中心以对话框打开；`workspace` 与 `widget` 仍只是能力描述，若要嵌入现有工作区或 Widget 区域，必须使用目标组件公开的 `uiExtensions` 扩展点。任意 React 渲染器、宿主 Store 与未声明的页面位置仍没有第三方 ABI。
 
 ## 6. 签名与安装
 

@@ -149,6 +149,15 @@ button {
   background: var(--accent-strong);
 }
 
+.text-button.secondary {
+  background: var(--panel-muted);
+  color: var(--accent-strong);
+}
+
+.text-button.secondary:hover {
+  background: var(--accent-soft);
+}
+
 .text-button.compact {
   min-height: 30px;
   padding: 0 10px;
@@ -398,8 +407,118 @@ input[type="range"] {
   font-size: 10px;
 }
 
+.library-section {
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel-muted) 66%, var(--panel));
+  padding: 12px 18px;
+}
+
+.library-heading,
+.library-row,
+.library-actions {
+  display: flex;
+  align-items: center;
+}
+
+.library-heading {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.library-heading h3 {
+  margin: 2px 0 0;
+  font-size: 12px;
+}
+
+.library-refresh,
+.library-action {
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.library-refresh {
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.library-refresh:hover,
+.library-action:hover {
+  background: var(--accent-soft);
+}
+
+.library-list {
+  display: grid;
+  max-height: 132px;
+  gap: 5px;
+  margin-top: 9px;
+  overflow-y: auto;
+}
+
+.library-empty {
+  margin: 3px 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.library-row {
+  min-width: 0;
+  justify-content: space-between;
+  gap: 8px;
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 7px 8px;
+}
+
+.library-copy {
+  min-width: 0;
+}
+
+.library-name,
+.library-meta {
+  overflow: hidden;
+  margin: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-name {
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.library-meta {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.library-actions {
+  flex: 0 0 auto;
+  gap: 2px;
+}
+
+.library-action {
+  min-height: 25px;
+  padding: 0 6px;
+}
+
+.library-action.danger {
+  color: var(--danger);
+}
+
+.library-action.danger:hover {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
 .track-list {
-  max-height: calc(100vh - 138px);
+  max-height: calc(100vh - 298px);
   margin: 0;
   padding: 8px;
   overflow-y: auto;
@@ -500,7 +619,7 @@ input[type="range"] {
 
 .empty-state {
   display: grid;
-  min-height: calc(100vh - 138px);
+  min-height: calc(100vh - 298px);
   place-items: center;
   align-content: center;
   gap: 9px;

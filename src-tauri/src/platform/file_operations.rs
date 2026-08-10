@@ -985,4 +985,50 @@ mod tests {
             vec![Capability::ProjectFilesRead, Capability::FilesystemExternalWrite],
         );
     }
+
+    #[test]
+    fn searches_audio_files_through_a_canonical_external_grant() {
+        let root = std::env::temp_dir().join(format!("nexora-file-search-{}", Uuid::new_v4()));
+        let component_root = root.join("component-state");
+        let music_root = root.join("Music");
+        fs::create_dir_all(&music_root).expect("create music directory");
+        fs::write(music_root.join("first.mp3"), b"first").expect("write first track");
+        fs::write(music_root.join("second.MP3"), b"second").expect("write second track");
+        fs::write(music_root.join("notes.txt"), b"notes").expect("write non-audio file");
+
+        let canonical_root = fs::canonicalize(&music_root).expect("canonicalize music directory");
+        save_persistent_grants(
+            &component_root,
+            &[ExternalPathGrant {
+                id: "music-grant".into(),
+                component_id: "com.example.player".into(),
+                root_path: canonical_root.to_string_lossy().into_owned(),
+                access: "read".into(),
+                lifetime: GrantLifetime::Persistent,
+                created_at: 0,
+                expires_at: None,
+            }],
+        )
+        .expect("save external grant");
+
+        let result = search_entries(
+            &json!({
+                "location": {
+                    "space": "external",
+                    "grantId": "music-grant",
+                    "path": canonical_root.to_string_lossy(),
+                },
+                "extension": "mp3",
+                "kind": "file",
+                "limit": 10,
+            }),
+            None,
+            &component_root,
+            "com.example.player",
+        )
+        .expect("search external music directory");
+
+        assert_eq!(result["entries"].as_array().map(Vec::len), Some(2));
+        let _ = fs::remove_dir_all(root);
+    }
 }

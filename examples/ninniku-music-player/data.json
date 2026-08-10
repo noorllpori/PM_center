@@ -1,7 +1,10 @@
 {
-  "kind": "nexora-script-surface-example",
+  "kind": "nexora-directory-backed-music-player-example",
   "name": "Ninniku Music Player",
   "interfaceStatus": "stable-2.8.5",
   "networkAccess": false,
-  "persistentPlaylist": false
+  "persistentPlaylist": false,
+  "persistentLibraryDirectories": true,
+  "fileOperationsDependency": "nexora.file-operations",
+  "maximumInlineTrackBytes": 67108864
 }

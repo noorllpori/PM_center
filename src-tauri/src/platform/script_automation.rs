@@ -26,11 +26,10 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Listener};
+use tauri::{async_runtime::JoinHandle, AppHandle, Emitter, Listener};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
 use uuid::Uuid;
 use walkdir::WalkDir;
 
@@ -517,7 +516,7 @@ impl ScriptAutomationRuntime {
         self.accepting_triggers.store(true, Ordering::SeqCst);
         self.install_event_forwarders();
         let runtime = self.clone();
-        let handle = tokio::spawn(async move {
+        let handle = tauri::async_runtime::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(30));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             while runtime.is_running() {
@@ -820,12 +819,17 @@ impl ScriptAutomationRuntime {
             .components
             .content_digest(&manifest.id)
             .unwrap_or_else(|| blake3::hash(manifest.id.as_bytes()).to_hex().to_string());
-        let capability_scope = request.capability_scope.unwrap_or_else(|| {
-            default_capability_scope(
-                required_capabilities.first().copied(),
-                request.project_path.as_deref(),
-            )
-        });
+        let capability_scope = match request.capability_scope {
+            Some(scope) => scope,
+            None => required_capabilities
+                .first()
+                .copied()
+                .map(|capability| {
+                    capability_scope_for(capability, request.project_path.as_deref(), &request.input)
+                })
+                .transpose()?
+                .unwrap_or_default(),
+        };
         let connection = self
             .database
             .lock()
@@ -888,7 +892,7 @@ impl ScriptAutomationRuntime {
         granted: Vec<(CapabilityTokenRequest, String)>,
     ) {
         let runtime = self.clone();
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             Box::pin(runtime.prepare_and_execute(&run_id, granted)).await;
         });
     }
@@ -992,17 +996,6 @@ impl ScriptAutomationRuntime {
         }
         let host = self.host.lock().expect("automation host mutex poisoned");
         let host = host.as_ref().ok_or("脚本自动化宿主尚未初始化")?;
-        let scope = self
-            .database
-            .lock()
-            .expect("automation database mutex poisoned")
-            .query_row(
-                "SELECT capability_scope_json FROM automation_runs WHERE id=?1",
-                [&run.id],
-                |row| row.get::<_, String>(0),
-            )
-            .map_err(|error| error.to_string())?;
-        let scope: CapabilityScopeRequest = serde_json::from_str(&scope).unwrap_or_default();
         for (capability_index, capability) in capabilities.iter().copied().enumerate() {
             if granted.iter().any(|(request, _)| request.capability == capability) {
                 continue;
@@ -1012,9 +1005,9 @@ impl ScriptAutomationRuntime {
                 module_id: SCRIPT_AUTOMATION_MODULE_ID.into(),
                 component_id: Some(run.component_id.clone()),
                 capability,
-                operation: capability_operation(command.capability_operation),
+                operation: capability_operation_for(capability, command.capability_operation),
                 reason: format!("自动化脚本“{}”执行 {}", run.command_name, run.command),
-                scope: scope.clone(),
+                scope: capability_scope_for(capability, run.project_path.as_deref(), &run.input)?,
             };
             let response = host
                 .gateway
@@ -1222,7 +1215,7 @@ impl ScriptAutomationRuntime {
                     );
                     let runtime = self.clone();
                     let id = run_id.to_string();
-                    tokio::spawn(async move {
+                    tauri::async_runtime::spawn(async move {
                         tokio::time::sleep(Duration::from_secs(delay)).await;
                         runtime.spawn_prepare(id, Vec::new());
                     });
@@ -1255,7 +1248,7 @@ impl ScriptAutomationRuntime {
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
         let runtime = self.clone();
         let expected_token = token.clone();
-        let handle = tokio::spawn(async move {
+        let handle = tauri::async_runtime::spawn(async move {
             loop {
                 tokio::select! {
                     _ = &mut shutdown_rx => break,
@@ -1267,7 +1260,7 @@ impl ScriptAutomationRuntime {
                         let root_operation_id = root_operation_id.clone();
                         let granted_capabilities = granted_capabilities.clone();
                         let expected_token = expected_token.clone();
-                        tokio::spawn(async move {
+                        tauri::async_runtime::spawn(async move {
                             runtime
                                 .serve_bridge_connection(
                                     stream,
@@ -2093,24 +2086,14 @@ impl ScriptAutomationRuntime {
                         .cloned()
                         .ok_or_else(|| "权限请求缺少 capability".to_string())
                         .and_then(|value| serde_json::from_value::<Capability>(value).map_err(|_| "权限请求 capability 无效".to_string()))?;
-                    let scope_json = self
-                        .database
-                        .lock()
-                        .expect("automation database mutex poisoned")
-                        .query_row(
-                            "SELECT capability_scope_json FROM automation_runs WHERE id=?1",
-                            [&run.id],
-                            |row| row.get::<_, String>(0),
-                        )
-                        .map_err(|error| error.to_string())?;
                     let capability_request = CapabilityTokenRequest {
                         subject_kind: CapabilitySubjectKind::Component,
                         module_id: SCRIPT_AUTOMATION_MODULE_ID.into(),
                         component_id: Some(run.component_id.clone()),
                         capability,
-                        operation: capability_operation(command.capability_operation),
+                        operation: capability_operation_for(capability, command.capability_operation),
                         reason: format!("自动化脚本“{}”执行 {}", run.command_name, run.command),
-                        scope: serde_json::from_str(&scope_json).unwrap_or_default(),
+                        scope: capability_scope_for(capability, run.project_path.as_deref(), &run.input)?,
                     };
                     let mut granted = self
                         .pending_capability_tokens
@@ -4265,43 +4248,104 @@ fn capability_operation(value: AutomationCapabilityOperation) -> CapabilityOpera
     }
 }
 
-fn default_capability_scope(
-    capability: Option<Capability>,
+/// A command may request multiple capabilities with intrinsically different
+/// operations, such as opening a directory picker and then reading its
+/// contents. The manifest's operation remains the declared intent for mutable
+/// capabilities; read/execute/connect/notify capabilities have a fixed safe
+/// operation derived from the capability itself.
+fn capability_operation_for(
+    capability: Capability,
+    declared: AutomationCapabilityOperation,
+) -> CapabilityOperation {
+    use Capability::*;
+    match capability {
+        AppProfileRead
+        | AppSettingsRead
+        | ClipboardRead
+        | FilesystemExternalRead
+        | ProjectOpen
+        | ProjectFilesRead
+        | ProjectMetadataRead
+        | ProjectStorageRead
+        | ProjectStorageDirect
+        | CacheInspect
+        | RenderInspect
+        | RenderQueueRead => CapabilityOperation::Read,
+        FilesystemDialogOpen
+        | TaskRun
+        | TaskCancel
+        | PythonExecute
+        | PythonPackagesManage
+        | ProcessSpawn
+        | RenderWorkerExecute => CapabilityOperation::Execute,
+        NetworkHttpRequest
+        | NetworkLanDiscover
+        | NetworkLanMessage
+        | NetworkLanTransfer
+        | NetworkServerConnect => CapabilityOperation::Connect,
+        NotificationSend => CapabilityOperation::Notify,
+        AppProfileWrite
+        | AppSettingsWrite
+        | ClipboardWrite
+        | FilesystemExternalWrite
+        | ProjectFilesWrite
+        | ProjectMetadataWrite
+        | ProjectStorageWrite
+        | CacheMaintain
+        | RenderQueueWrite
+        | RenderResultCommit => capability_operation(declared),
+    }
+}
+
+fn capability_scope_for(
+    capability: Capability,
     project_path: Option<&str>,
-) -> CapabilityScopeRequest {
+    input: &Value,
+) -> Result<CapabilityScopeRequest, String> {
     if matches!(
         capability,
-        Some(
-            Capability::ProjectStorageRead
-                | Capability::ProjectStorageWrite
-                | Capability::ProjectStorageDirect
-        )
+        Capability::FilesystemExternalRead | Capability::FilesystemExternalWrite
+    ) {
+        let root_path = input
+            .get("externalRootPath")
+            .and_then(Value::as_str)
+            .filter(|path| !path.trim().is_empty())
+            .ok_or("外部文件操作缺少 externalRootPath 授权根目录")?;
+        return Ok(CapabilityScopeRequest {
+            kind: CapabilityScopeKind::Library,
+            root_path: Some(root_path.into()),
+            relative_path: Some(".".into()),
+        });
+    }
+    if matches!(
+        capability,
+        Capability::ProjectStorageRead
+            | Capability::ProjectStorageWrite
+            | Capability::ProjectStorageDirect
     ) && project_path.is_none()
     {
-        return CapabilityScopeRequest::default();
+        return Ok(CapabilityScopeRequest::default());
     }
     let project_scoped = matches!(
         capability,
-        Some(
-            Capability::ProjectFilesRead
-                | Capability::ProjectFilesWrite
-                | Capability::ProjectMetadataRead
-                | Capability::ProjectMetadataWrite
-                | Capability::ProjectStorageRead
-                | Capability::ProjectStorageWrite
-                | Capability::ProjectStorageDirect
-                | Capability::CacheInspect
-                | Capability::CacheMaintain
-        )
+        Capability::ProjectFilesRead
+            | Capability::ProjectFilesWrite
+            | Capability::ProjectMetadataRead
+            | Capability::ProjectMetadataWrite
+            | Capability::ProjectStorageRead
+            | Capability::ProjectStorageWrite
+            | Capability::ProjectStorageDirect
+            | Capability::CacheInspect
+            | Capability::CacheMaintain
     );
     if project_scoped {
-        CapabilityScopeRequest {
+        Ok(CapabilityScopeRequest {
             kind: CapabilityScopeKind::Project,
             root_path: project_path.map(str::to_string),
             relative_path: None,
-        }
+        })
     } else {
-        CapabilityScopeRequest::default()
+        Ok(CapabilityScopeRequest::default())
     }
 }
 
@@ -4925,6 +4969,31 @@ mod tests {
     }
 
     #[test]
+    fn mixed_capabilities_derive_their_own_safe_operations() {
+        assert_eq!(
+            capability_operation_for(
+                Capability::FilesystemDialogOpen,
+                AutomationCapabilityOperation::Read,
+            ),
+            CapabilityOperation::Execute,
+        );
+        assert_eq!(
+            capability_operation_for(
+                Capability::FilesystemExternalRead,
+                AutomationCapabilityOperation::Execute,
+            ),
+            CapabilityOperation::Read,
+        );
+        assert_eq!(
+            capability_operation_for(
+                Capability::ProjectFilesWrite,
+                AutomationCapabilityOperation::Delete,
+            ),
+            CapabilityOperation::Delete,
+        );
+    }
+
+    #[test]
     fn project_and_component_storage_paths_remain_scoped() {
         let root = std::env::temp_dir().join(format!("nexora-project-bridge-{}", Uuid::new_v4()));
         fs::create_dir_all(root.join("assets")).unwrap();
@@ -4968,18 +5037,41 @@ mod tests {
     }
 
     #[test]
-    fn music_player_example_uses_a_valid_data_pack_surface_contract() {
+    fn music_player_example_uses_a_valid_directory_library_surface_contract() {
         let manifest = parse_component_manifest(include_str!(
             "../../../examples/ninniku-music-player/component.json"
         ))
         .expect("music player example manifest should remain valid");
         assert_eq!(manifest.id, "com.ninniku.music-player");
-        assert_eq!(manifest.runtime, ComponentRuntime::DataPack);
-        assert!(manifest.capabilities.is_empty());
+        assert_eq!(manifest.runtime, ComponentRuntime::PythonAction);
+        assert!(manifest
+            .capabilities
+            .contains(&Capability::FilesystemDialogOpen));
+        assert!(manifest
+            .capabilities
+            .contains(&Capability::FilesystemExternalRead));
+        assert!(manifest
+            .requires_components
+            .iter()
+            .any(|dependency| dependency.id == "nexora.file-operations"));
         assert_eq!(manifest.contributes.script_surfaces.len(), 1);
         assert!(manifest.contributes.script_surfaces[0]
             .allowed_commands
-            .is_empty());
+            .contains(&"add-library-folder".to_string()));
+        assert!(manifest
+            .contributes
+            .automation_commands
+            .iter()
+            .any(|command| command.command == "load-library-track"));
+        let refresh_command = manifest
+            .contributes
+            .automation_commands
+            .iter()
+            .find(|command| command.command == "refresh-libraries")
+            .expect("music player should expose directory refresh");
+        assert!(refresh_command.max_parallelism.unwrap_or_default() >= 2);
+        assert!(include_str!("../../../examples/ninniku-music-player/main.py")
+            .contains("stream.open-read"));
     }
 
     #[test]

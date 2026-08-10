@@ -1,4 +1,4 @@
-use crate::component::{component_map, ComponentManifestV1};
+use crate::component::{component_map, ComponentManifestV1, ScriptSurfacePlacement};
 use crate::ids::{validate_local_id, validate_stable_id, validate_version_requirement};
 use crate::module_manifest::{module_map, ModuleManifestV1};
 use crate::{
@@ -910,6 +910,63 @@ pub fn validate_profile_with_catalogs(
             ));
         }
     }
+    for (index, surface) in profile.surfaces.iter().enumerate() {
+        let Some(contribution_id) = surface.contribution.as_deref() else {
+            continue;
+        };
+        let configured_component_id = surface.settings.get("componentId").and_then(Value::as_str);
+        let owners = component_manifests
+            .iter()
+            .filter_map(|component| {
+                component
+                    .contributes
+                    .script_surfaces
+                    .iter()
+                    .find(|candidate| candidate.id == contribution_id)
+                    .map(|script_surface| (component, script_surface))
+            })
+            .collect::<Vec<_>>();
+        if owners.is_empty() {
+            continue;
+        }
+        let owner = if let Some(component_id) = configured_component_id {
+            owners
+                .iter()
+                .copied()
+                .find(|(component, _)| component.id == component_id)
+                .ok_or_else(|| {
+                    ContractError::new(
+                        ContractErrorCode::InvalidReference,
+                        format!("$.surfaces[{index}].settings.componentId"),
+                        format!("组件页面 {contribution_id} 不属于组件 {component_id}"),
+                    )
+                })?
+        } else if owners.len() == 1 {
+            owners[0]
+        } else {
+            return Err(ContractError::new(
+                ContractErrorCode::InvalidReference,
+                format!("$.surfaces[{index}].settings.componentId"),
+                format!("组件页面 ID 存在多个提供者，必须明确 componentId: {contribution_id}"),
+            ));
+        };
+        if !effective.contains(&owner.0.id) {
+            return Err(ContractError::new(
+                ContractErrorCode::InvalidReference,
+                format!("$.surfaces[{index}].contribution"),
+                format!("页面引用了未启用组件 {}: {contribution_id}", owner.0.id),
+            ));
+        }
+        if profile.shell_layout.home.as_deref() == Some(surface.id.as_str())
+            && !owner.1.placements.contains(&ScriptSurfacePlacement::Shell)
+        {
+            return Err(ContractError::new(
+                ContractErrorCode::InvalidRuntimeConfiguration,
+                format!("$.surfaces[{index}].contribution"),
+                format!("组件页面 {contribution_id} 未声明 shell 放置，不能作为主页"),
+            ));
+        }
+    }
     for (index, binding) in profile.automation_bindings.iter().enumerate() {
         let path = format!("$.automationBindings[{index}]");
         if !effective.contains(&binding.component_id) {
@@ -1179,6 +1236,57 @@ mod tests {
 
         let error = validate_profile_with_catalogs(&profile, &[module], &[]).unwrap_err();
         assert_eq!(error.code, ContractErrorCode::MissingDependency);
+    }
+
+    #[test]
+    fn validates_component_script_surface_home_against_effective_components_and_placement() {
+        let shell_component = parse_component_manifest(
+            r#"{
+              "schemaVersion":1,"id":"test.music","name":"Music","version":"1.0.0",
+              "apiVersion":"1","runtime":"python-action","platforms":["windows-x64"],
+              "entry":"main.py","contributes":{"scriptSurfaces":[{
+                "id":"test.music.surface","name":"Music","entry":"ui/index.html",
+                "placements":["shell"],"allowedCommands":[]
+              }]}
+            }"#,
+        )
+        .unwrap();
+        let profile = parse_workspace_profile(
+            r#"{
+              "schemaVersion":1,"id":"test.profile","name":"Test",
+              "enabledComponents":[{"id":"test.music","versionRequirement":"^1.0"}],
+              "surfaces":[{
+                "id":"music-page","kind":"shell-page","layout":"contribution-defined",
+                "contribution":"test.music.surface",
+                "settings":{"componentId":"test.music","scriptSurfaceId":"test.music.surface"}
+              }],
+              "shellLayout":{"home":"music-page"}
+            }"#,
+        )
+        .unwrap();
+
+        let effective =
+            validate_profile_with_catalogs(&profile, &[], &[shell_component.clone()]).unwrap();
+        assert!(effective.contains("test.music"));
+
+        let mut disabled = profile.clone();
+        disabled.enabled_components.clear();
+        let error = validate_profile_with_catalogs(&disabled, &[], &[shell_component]).unwrap_err();
+        assert_eq!(error.code, ContractErrorCode::InvalidReference);
+
+        let dialog_component = parse_component_manifest(
+            r#"{
+              "schemaVersion":1,"id":"test.music","name":"Music","version":"1.0.0",
+              "apiVersion":"1","runtime":"python-action","platforms":["windows-x64"],
+              "entry":"main.py","contributes":{"scriptSurfaces":[{
+                "id":"test.music.surface","name":"Music","entry":"ui/index.html",
+                "placements":["dialog"],"allowedCommands":[]
+              }]}
+            }"#,
+        )
+        .unwrap();
+        let error = validate_profile_with_catalogs(&profile, &[], &[dialog_component]).unwrap_err();
+        assert_eq!(error.code, ContractErrorCode::InvalidRuntimeConfiguration);
     }
 
     #[test]

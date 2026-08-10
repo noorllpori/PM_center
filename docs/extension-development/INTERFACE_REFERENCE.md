@@ -108,6 +108,8 @@ result = call_component(
 
 `call_component(..., capability="...")` 用于单项权限；跨空间调用可使用 `capabilities=["...", "..."]`。调用方必须传入目标本次操作实际需要的完整集合，宿主会检查每一项是否同时由调用方、目标组件和本次运行批准。
 
+`capabilityOperation` 描述命令对可变 Capability 的意图（`write` 或 `delete`）；宿主会按每个 Capability 推导固定的安全操作。读取权限始终以 `read` 申请，`filesystem.dialog.open`、进程与任务始终以 `execute` 申请，网络以 `connect`、通知以 `notify` 申请。因此一个命令可以同时声明 `filesystem.dialog.open` 和 `filesystem.external.read`，而不需要、也不能用一个错误的单一操作类型覆盖两者。
+
 宿主依次验证：
 
 1. 目标在调用方 `requiresComponents` 或 `optionalComponents` 中声明。
@@ -311,7 +313,7 @@ Python 是受信任代码模型。Capability 约束 Nexora Bridge 与宿主接�
 
 | Contribution | 状态 | 边界 |
 | --- | --- | --- |
-| `scriptSurfaces` | `stable-2.8.5` | 沙箱 HTML/CSS/JS；只能调用 `allowedCommands`。 |
+| `scriptSurfaces` | `stable-2.8.5` | 沙箱 HTML/CSS/JS；只能调用 `allowedCommands`。声明 `placements: ["shell"]` 后可作为 Profile 启动主页并固定到快捷栏。 |
 | `fileHandlers` | `stable-2.8.5` | 声明扩展名、MIME、意图、优先级和工作区目标。 |
 | `settingsSections` | `stable-2.8.5` | 由 Nexora 按 Schema 渲染；停用后表单撤下，数据保留。 |
 | `uiExtensionPoints`、`uiExtensions`、`uiExtensionBindings` | `stable-2.8.5` | 目标组件发布命名插槽/整页替换点；扩展必须声明目标依赖与自身隔离页面，Profile 决定启用和顺序。 |
@@ -321,7 +323,7 @@ Python 是受信任代码模型。Capability 约束 Nexora Bridge 与宿主接�
 | `workflowNodes`、`workflowBindings` | 兼容冻结 | 可往返保存，但不执行。 |
 | Hosted Surface、项目管理器级 ABI | `reserved-r17` | 当前不得生成或伪造。 |
 
-Script Surface 使用 CSP 和会话 nonce，不能访问宿主 DOM、Tauri IPC、本机 URL 或任意远程脚本。插槽页面会收到受控 `ui-extension-context` 事件（项目 ID、项目路径、相对选择、主题、语言和尺寸）；页面崩溃只撤下自身，整页替换会回退默认项目工作区。
+Script Surface 使用 CSP 和会话 nonce，不能访问宿主 DOM、Tauri IPC、本机 URL 或任意远程脚本。`shell` 页面由 Profile Surface 保存 `componentId` 与 `scriptSurfaceId`，在固定主页标签中全尺寸渲染；组件未进入当前方案有效闭包时方案校验失败，运行期缺失时回退最小安全主页。插槽页面会收到受控 `ui-extension-context` 事件（项目 ID、项目路径、相对选择、主题、语言和尺寸）；页面崩溃只撤下自身，整页替换会回退默认项目工作区。
 
 首批稳定项目管理器插槽：`nexora.project-manager.project-toolbar`、`project-sidebar`、`file-details`、`file-context-menu`、`project-home-widgets`、`project-status-bar` 和 `project-workspace`。最后一个是 `surface` 类型，且只接受一项 `mode: "replace"` 绑定；其他插槽按 Profile `order` 排列。
 

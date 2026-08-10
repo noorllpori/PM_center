@@ -71,6 +71,7 @@ Allowed categories: `workspace`, `file-handler`, `service`, `automation`, `appea
 Rules:
 
 - Use `requiredCapabilities` for every Capability the command can require. `requiredCapability` is accepted only as a compatibility alias for a one-item list.
+- `capabilityOperation` is the intent for mutable Capability entries. Nexora derives fixed operations for read, dialog/execute, network/connect, and notification/notify entries individually. A command may therefore combine `filesystem.dialog.open` with `filesystem.external.read`; use `execute` as its declared primary intent and declare both capabilities.
 - Nexora requests only the Capability entries actually needed by the concrete file-operation source, target and action. Do not omit a possible Capability from the Manifest merely because a particular run might not use it.
 - `pure` may be retried safely; `idempotent` requires a stable idempotency strategy; `non-idempotent` must not be automatically replayed.
 - Use JSON Schema for every public input and output.
@@ -211,12 +212,13 @@ Do not request broad external access pre-emptively. Ask for the directory throug
 | Existing CLI or isolated native service | `native-process` |
 | Performance DLL | `native-library` through isolated component host |
 | Custom HTML/CSS/JS page | `scriptSurfaces` sandbox |
+| Make a component page selectable as the Profile home | `scriptSurfaces` with `placements: ["shell"]` |
 | Open a file extension | `fileHandlers` |
 | User-editable settings | `settingsSections` |
 | Insert an isolated page into a supported host location | `uiExtensions` plus a `scriptSurfaces` entry and a dependency on that host |
 | Replace a supported workspace page | `uiExtensions` with `mode: "replace"` on a declared surface point |
 
-Sandbox JavaScript cannot access host DOM, Tauri IPC, local files or undeclared network resources. Hosted React surfaces and project-manager-level ABI are `reserved-r17`.
+Sandbox JavaScript cannot access host DOM, Tauri IPC, local files or undeclared network resources. A `shell` Script Surface can fill the fixed Nexora home host, but it does not gain host DOM or React access. Hosted React surfaces and project-manager-level ABI are `reserved-r17`.
 
 ### UI Extension Contract
 
