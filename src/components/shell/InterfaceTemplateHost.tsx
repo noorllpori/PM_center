@@ -1,6 +1,10 @@
 import { createElement, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { AlertTriangle, Loader2 } from 'lucide-react';
-import { getComponentRuntimeOverview, getPresentationTemplatePreview } from '../../api/componentRuntime';
+import {
+  COMPONENT_RUNTIME_CHANGED_EVENT,
+  getComponentRuntimeOverview,
+  getPresentationTemplatePreview,
+} from '../../api/componentRuntime';
 import type { PresentationTemplatePreview } from '../../types/componentRuntime';
 import type {
   ProfileInterfaceTemplateState,
@@ -219,6 +223,13 @@ export function InterfaceTemplateHost({ profile, renderSlot, fallback }: Interfa
   const [preview, setPreview] = useState<PresentationTemplatePreview | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [runtimeRevision, setRuntimeRevision] = useState(0);
+
+  useEffect(() => {
+    const handleRuntimeChanged = () => setRuntimeRevision((revision) => revision + 1);
+    window.addEventListener(COMPONENT_RUNTIME_CHANGED_EVENT, handleRuntimeChanged);
+    return () => window.removeEventListener(COMPONENT_RUNTIME_CHANGED_EVENT, handleRuntimeChanged);
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -242,7 +253,7 @@ export function InterfaceTemplateHost({ profile, renderSlot, fallback }: Interfa
         if (!disposed) setLoading(false);
       });
     return () => { disposed = true; };
-  }, [templateId]);
+  }, [runtimeRevision, templateId]);
 
   const activeState = templateState(profile, templateId);
   const builtinKind = templateId === 'nexora.shell.blank-home'

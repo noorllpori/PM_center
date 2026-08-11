@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { ProfileAutomationBinding } from '../types/platform';
+import { notifyComponentRuntimeChanged } from './componentRuntime';
+import type { ComponentManifestV1, ProfileAutomationBinding } from '../types/platform';
 import type {
   AutomationAttentionAction,
   AutomationBindingMutationResult,
@@ -62,11 +63,17 @@ export const trustScriptDevelopmentDirectory = (path: string) =>
 export const untrustScriptDevelopmentDirectory = (path: string) =>
   invoke<string[]>('untrust_script_development_directory', { path });
 
-export const reloadScriptComponent = (componentId: string) =>
-  invoke('reload_script_component', { componentId });
+export const reloadScriptComponent = async (componentId: string) => {
+  const manifest = await invoke<ComponentManifestV1>('reload_script_component', { componentId });
+  notifyComponentRuntimeChanged([manifest.id]);
+  return manifest;
+};
 
-export const reloadDevelopmentComponents = (onlyDirty = true) =>
-  invoke<DevelopmentReloadResult>('reload_development_components', { onlyDirty });
+export const reloadDevelopmentComponents = async (onlyDirty = true) => {
+  const result = await invoke<DevelopmentReloadResult>('reload_development_components', { onlyDirty });
+  notifyComponentRuntimeChanged(result.reloaded);
+  return result;
+};
 
 export const createScriptComponentTemplate = (request: {
   parentPath: string;

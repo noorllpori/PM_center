@@ -31,6 +31,7 @@ import {
   setProfileNavigationContribution,
 } from '../../features/profileLayout';
 import {
+  COMPONENT_RUNTIME_CHANGED_EVENT,
   duplicateInterfaceTemplateForDevelopment,
   getComponentRuntimeOverview,
   getPresentationTemplatePreview,
@@ -337,14 +338,20 @@ export function WorkspaceProfileLayoutEditor({
 
   useEffect(() => {
     let disposed = false;
-    void getComponentRuntimeOverview()
+    const refreshRuntime = () => getComponentRuntimeOverview()
       .then((overview) => {
         if (!disposed) setComponentRuntime(overview);
       })
       .catch((error) => {
         if (!disposed) setTemplateLoadError(String(error));
       });
-    return () => { disposed = true; };
+    const handleRuntimeChanged = () => void refreshRuntime();
+    void refreshRuntime();
+    window.addEventListener(COMPONENT_RUNTIME_CHANGED_EVENT, handleRuntimeChanged);
+    return () => {
+      disposed = true;
+      window.removeEventListener(COMPONENT_RUNTIME_CHANGED_EVENT, handleRuntimeChanged);
+    };
   }, []);
   const refreshDevelopmentComponents = async () => {
     setDevelopmentComponents(await getDevelopmentComponentSnapshot());
@@ -579,7 +586,6 @@ export function WorkspaceProfileLayoutEditor({
     if (!selectedDevelopmentTemplate?.componentId) return;
     try {
       await reloadDevelopmentInterfaceTemplate(selectedDevelopmentTemplate.componentId);
-      setComponentRuntime(await getComponentRuntimeOverview());
       await refreshDevelopmentComponents();
       setTemplateDeveloperMessage(`已重载开发模板：${selectedDevelopmentTemplate.componentId}`);
     } catch (error) {

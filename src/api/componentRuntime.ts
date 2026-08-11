@@ -10,6 +10,20 @@ import type {
 } from '../types/componentRuntime';
 
 export const COMPONENT_OPERATION_EVENT = 'nexora:component-operation';
+export const COMPONENT_RUNTIME_CHANGED_EVENT = 'nexora:component-runtime-changed';
+
+export interface ComponentRuntimeChangedDetail {
+  componentIds: string[];
+  reason: 'development-reload';
+}
+
+export function notifyComponentRuntimeChanged(componentIds: string[]) {
+  if (typeof window === 'undefined' || componentIds.length === 0) return;
+  window.dispatchEvent(new CustomEvent<ComponentRuntimeChangedDetail>(
+    COMPONENT_RUNTIME_CHANGED_EVENT,
+    { detail: { componentIds, reason: 'development-reload' } },
+  ));
+}
 
 export const getComponentRuntimeOverview = () =>
   invoke<ComponentRuntimeOverview>('get_component_runtime_overview');
@@ -36,8 +50,11 @@ export const getInterfaceTemplatePreview = (templateId: string) =>
 export const duplicateInterfaceTemplateForDevelopment = (templateId: string, targetDirectory: string) =>
   invoke<string>('duplicate_interface_template_for_development', { templateId, targetDirectory });
 
-export const reloadDevelopmentInterfaceTemplate = (componentId: string) =>
-  invoke<ComponentManifestV1>('reload_development_interface_template', { componentId });
+export const reloadDevelopmentInterfaceTemplate = async (componentId: string) => {
+  const manifest = await invoke<ComponentManifestV1>('reload_development_interface_template', { componentId });
+  notifyComponentRuntimeChanged([manifest.id]);
+  return manifest;
+};
 
 export const exportInterfaceTemplatePackage = (componentId: string, request: {
   destinationPath: string;
