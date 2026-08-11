@@ -11,9 +11,12 @@
 | 项目规则、解析、批处理、自动化和小型界面 | `python-action` 或 `python-worker` + Script Surface | [COMPONENT_PACK_GUIDE.md](COMPONENT_PACK_GUIDE.md) |
 | 包装已有命令行程序 | `native-process` | [COMPONENT_PACK_GUIDE.md](COMPONENT_PACK_GUIDE.md) |
 | 只交付数据、模板、主题或静态资源 | `data-pack` | [COMPONENT_PACK_GUIDE.md](COMPONENT_PACK_GUIDE.md) |
+| 开发工具带以下的完整界面布局和插槽 | `data-pack` 界面模板 | [INTERFACE_TEMPLATE_DEVELOPMENT_GUIDE.md](INTERFACE_TEMPLATE_DEVELOPMENT_GUIDE.md) / [离线 HTML](INTERFACE_TEMPLATE_DEVELOPMENT_GUIDE.html) |
 | 高性能二进制库 | `native-library` | [COMPONENT_PACK_GUIDE.md](COMPONENT_PACK_GUIDE.md)，仅 Windows 隔离宿主 |
 | 组合组件、导航、快捷栏、主页和模板 | `.pmc-profile` / `.pmc-workspace` | [WORKSPACE_AUTHORING.md](WORKSPACE_AUTHORING.md) |
 | 让开发者 AI 生成合规组件 | 规范化稳定接口合同 | [AI_COMPONENT_AUTHORING_REFERENCE.md](AI_COMPONENT_AUTHORING_REFERENCE.md) |
+
+需要先建立整体认识时，从 [SECONDARY_DEVELOPMENT_GUIDE.md](SECONDARY_DEVELOPMENT_GUIDE.md) 开始。它把组件、方案、项目、运行时、权限、Component Bridge、文件操作、自动化、UI 和分发流程放在一份独立总览中。
 
 ## 最短路径：只有安装版 Nexora
 
@@ -35,6 +38,8 @@
 工作台创建的组件模板是学习和起步入口。本文档只承诺已列出的公开合同，不要求第三方从 Nexora 仓库复制示例或脚本。
 
 安装版同时提供两个最小案例：项目资料与组件存储，以及依赖 BlenderIO 的文件检查。它们分别对应本仓库的 `examples/script-project-storage` 和 `examples/script-automation-blend-audit` 内容。
+
+界面模板另提供两个互不覆盖的样例：`examples/blank-home-template` 用于理解完全空白的单插槽模板，`examples/split-interface-template` 用于理解左右 50% 布局、组件页面和当前活动页面的组合。
 
 ## 公开边界
 

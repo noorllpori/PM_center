@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "example.split-interface-template",
+  "name": "左右对半界面模板",
+  "description": "提供左右各占 50% 的双区域 Shell，右侧可承载当前活动页面。",
+  "version": "1.0.0",
+  "apiVersion": "1",
+  "runtime": "data-pack",
+  "role": "data",
+  "category": "appearance",
+  "tags": ["interface-template", "split", "responsive"],
+  "distribution": "local",
+  "uiMode": "none",
+  "platforms": ["any"],
+  "entry": "presentation",
+  "capabilities": [],
+  "contributes": {
+    "shellTemplates": [
+      {
+        "id": "example.shell.split-50",
+        "name": "左右对半布局",
+        "version": "1.0.0",
+        "templatePath": "presentation/shell/split-50/template.json"
+      }
+    ]
+  }
+}

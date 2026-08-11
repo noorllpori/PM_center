@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "example.shell.split-50",
+  "kind": "shell",
+  "version": "1.0.0",
+  "semanticVersion": "1.0.0",
+  "baseHtml": "presentation/shell/split-50/base.html",
+  "styles": "presentation/shell/split-50/styles.css",
+  "slots": [
+    {
+      "id": "left",
+      "name": "左侧区域",
+      "accepts": ["component-surface"],
+      "multiplicity": "one",
+      "layout": "single",
+      "required": false,
+      "collapseWhenEmpty": false
+    },
+    {
+      "id": "right",
+      "name": "右侧区域",
+      "accepts": ["active-surface", "component-surface"],
+      "multiplicity": "one",
+      "layout": "single",
+      "required": false,
+      "collapseWhenEmpty": false
+    }
+  ],
+  "regions": ["left", "right"]
+}

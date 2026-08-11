@@ -1,0 +1,687 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Nexora 界面模板开发指南</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f7fa;
+      --panel: #ffffff;
+      --panel-soft: #f8fafc;
+      --text: #172033;
+      --muted: #5f6b7a;
+      --border: #d8dee8;
+      --brand: #075d73;
+      --brand-soft: #e6f4f7;
+      --accent: #b45309;
+      --accent-soft: #fff7ed;
+      --code: #111827;
+      --code-text: #e5edf5;
+      --shadow: 0 10px 30px rgba(23, 32, 51, 0.08);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --bg: #101418;
+        --panel: #171c21;
+        --panel-soft: #1d2329;
+        --text: #e7edf3;
+        --muted: #aab5c0;
+        --border: #303942;
+        --brand: #6bc2d4;
+        --brand-soft: #13313a;
+        --accent: #f1ad68;
+        --accent-soft: #362619;
+        --code: #090d11;
+        --code-text: #dce7ef;
+        --shadow: none;
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      font-size: 15px;
+      line-height: 1.7;
+      letter-spacing: 0;
+    }
+
+    a { color: var(--brand); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+    a:hover { text-decoration-thickness: 2px; }
+    button, input { font: inherit; letter-spacing: 0; }
+
+    .mobile-bar {
+      display: none;
+      position: sticky;
+      top: 0;
+      z-index: 30;
+      min-height: 52px;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--border);
+      background: color-mix(in srgb, var(--panel) 94%, transparent);
+      backdrop-filter: blur(12px);
+    }
+
+    .mobile-bar button {
+      width: 36px;
+      height: 36px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--text);
+      cursor: pointer;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 292px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow: auto;
+      border-right: 1px solid var(--border);
+      background: var(--panel);
+      padding: 26px 20px 32px;
+    }
+
+    .brand {
+      display: block;
+      color: var(--text);
+      text-decoration: none;
+    }
+
+    .brand-mark {
+      display: grid;
+      width: 38px;
+      height: 38px;
+      place-items: center;
+      margin-bottom: 14px;
+      border-radius: 6px;
+      background: var(--brand);
+      color: #ffffff;
+      font-size: 19px;
+      font-weight: 800;
+    }
+
+    .brand strong { display: block; font-size: 17px; }
+    .brand small { display: block; margin-top: 4px; color: var(--muted); }
+
+    .search {
+      width: 100%;
+      height: 38px;
+      margin: 22px 0 18px;
+      padding: 0 11px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      outline: none;
+      background: var(--panel-soft);
+      color: var(--text);
+    }
+
+    .search:focus { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); }
+    .nav-title { margin: 18px 8px 7px; color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; }
+    .nav-list { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+    .nav-list a {
+      display: block;
+      padding: 7px 9px;
+      border-radius: 5px;
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 13px;
+    }
+    .nav-list a:hover, .nav-list a.active { background: var(--brand-soft); color: var(--brand); }
+    .sidebar-note { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+
+    .content { min-width: 0; padding: 48px clamp(24px, 5vw, 72px) 90px; }
+    .article { width: min(100%, 1040px); margin: 0 auto; }
+
+    .hero {
+      padding: 34px 0 30px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .eyebrow { margin: 0 0 8px; color: var(--brand); font-size: 12px; font-weight: 800; }
+    h1, h2, h3 { scroll-margin-top: 28px; line-height: 1.25; letter-spacing: 0; }
+    h1 { max-width: 850px; margin: 0; font-size: clamp(32px, 5vw, 52px); }
+    h2 { margin: 56px 0 18px; font-size: 27px; }
+    h3 { margin: 32px 0 12px; font-size: 19px; }
+    p { margin: 12px 0; }
+    .lead { max-width: 820px; margin-top: 16px; color: var(--muted); font-size: 18px; }
+
+    .meta-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 27px;
+      padding: 3px 9px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--panel);
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .badge.stable { border-color: #72b6a0; background: #eaf7f2; color: #135d49; }
+    @media (prefers-color-scheme: dark) { .badge.stable { background: #17382f; color: #8ad4ba; } }
+
+    .callout {
+      margin: 22px 0;
+      padding: 15px 17px;
+      border-left: 4px solid var(--brand);
+      border-radius: 0 6px 6px 0;
+      background: var(--brand-soft);
+    }
+    .callout.warn { border-left-color: var(--accent); background: var(--accent-soft); }
+    .callout strong { display: block; margin-bottom: 3px; }
+
+    .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 20px 0; }
+    .panel { border: 1px solid var(--border); border-radius: 6px; background: var(--panel); padding: 17px; }
+    .panel h3 { margin: 0 0 7px; font-size: 16px; }
+    .panel p { margin: 0; color: var(--muted); font-size: 13px; }
+
+    .table-wrap { margin: 18px 0 26px; overflow-x: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); }
+    table { width: 100%; border-collapse: collapse; min-width: 680px; }
+    th, td { padding: 11px 13px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+    th { background: var(--panel-soft); color: var(--muted); font-size: 12px; }
+    tr:last-child td { border-bottom: 0; }
+
+    code { padding: 2px 5px; border-radius: 4px; background: var(--panel-soft); color: var(--accent); font-family: Consolas, "Cascadia Code", monospace; font-size: 0.9em; }
+    pre {
+      position: relative;
+      margin: 17px 0 24px;
+      overflow: auto;
+      border: 1px solid #27313c;
+      border-radius: 6px;
+      background: var(--code);
+      color: var(--code-text);
+      padding: 18px;
+      line-height: 1.55;
+    }
+    pre code { padding: 0; background: transparent; color: inherit; font-size: 13px; }
+    ul, ol { padding-left: 23px; }
+    li + li { margin-top: 5px; }
+    .steps { counter-reset: step; padding: 0; list-style: none; }
+    .steps li { position: relative; min-height: 42px; padding: 5px 0 14px 44px; }
+    .steps li::before {
+      counter-increment: step;
+      content: counter(step);
+      position: absolute;
+      left: 0;
+      top: 1px;
+      display: grid;
+      width: 30px;
+      height: 30px;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--brand);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .footer { margin-top: 64px; padding-top: 24px; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; }
+    .no-results { display: none; margin-top: 10px; color: var(--muted); font-size: 12px; }
+
+    @media (max-width: 920px) {
+      .mobile-bar { display: flex; }
+      .layout { display: block; min-height: 0; }
+      .sidebar {
+        position: fixed;
+        z-index: 40;
+        top: 0;
+        left: 0;
+        width: min(86vw, 310px);
+        transform: translateX(-105%);
+        transition: transform 160ms ease;
+        box-shadow: var(--shadow);
+      }
+      .sidebar.open { transform: translateX(0); }
+      .content { padding-top: 24px; }
+      .grid { grid-template-columns: 1fr; }
+    }
+
+    @media print {
+      .mobile-bar, .sidebar { display: none !important; }
+      .layout { display: block; }
+      .content { padding: 0; }
+      .article { width: 100%; }
+      a { color: inherit; }
+      pre { white-space: pre-wrap; }
+    }
+  </style>
+</head>
+<body>
+  <div class="mobile-bar">
+    <strong>Nexora 模板开发指南</strong>
+    <button id="menuButton" type="button" aria-label="打开目录" title="打开目录">☰</button>
+  </div>
+
+  <div class="layout">
+    <aside class="sidebar" id="sidebar">
+      <a class="brand" href="#top">
+        <span class="brand-mark">N</span>
+        <strong>Nexora 界面模板</strong>
+        <small>安装版二次开发手册</small>
+      </a>
+      <input class="search" id="search" type="search" placeholder="搜索章节" aria-label="搜索章节">
+      <p class="no-results" id="noResults">没有匹配章节</p>
+
+      <p class="nav-title">开始</p>
+      <ul class="nav-list">
+        <li><a href="#model">模型与边界</a></li>
+        <li><a href="#status">支持状态</a></li>
+        <li><a href="#quickstart">最快开发流程</a></li>
+      </ul>
+      <p class="nav-title">合同</p>
+      <ul class="nav-list">
+        <li><a href="#structure">目录结构</a></li>
+        <li><a href="#manifest">component.json</a></li>
+        <li><a href="#descriptor">template.json</a></li>
+        <li><a href="#slots">插槽类型</a></li>
+        <li><a href="#html">HTML 安全规则</a></li>
+        <li><a href="#css">CSS 与响应式</a></li>
+      </ul>
+      <p class="nav-title">开发与交付</p>
+      <ul class="nav-list">
+        <li><a href="#profile">方案绑定</a></li>
+        <li><a href="#reload">VS Code 与重载</a></li>
+        <li><a href="#example">左右 50% 样例</a></li>
+        <li><a href="#package">打包与版本</a></li>
+        <li><a href="#troubleshooting">故障排查</a></li>
+        <li><a href="#checklist">发布验收</a></li>
+      </ul>
+      <div class="sidebar-note">离线单文件，无 CDN、Jekyll 或运行时依赖。</div>
+    </aside>
+
+    <main class="content" id="top">
+      <article class="article">
+        <header class="hero">
+          <p class="eyebrow">NEXORA EXTENSION DEVELOPMENT</p>
+          <h1>界面模板与插槽装配开发指南</h1>
+          <p class="lead">从一个空目录开始，制作可安装、可重载、可装配、可签名分发的 Nexora 主窗口布局。模板负责位置，组件 Surface 负责功能，装配方案负责绑定。</p>
+          <div class="meta-row">
+            <span class="badge stable">stable-2.8.5 核心合同</span>
+            <span class="badge">闭源安装版开发</span>
+            <span class="badge">data-pack</span>
+            <span class="badge">最后整理：2026-08-11</span>
+          </div>
+        </header>
+
+        <section id="model" data-title="模型与边界">
+          <h2>1. 模型与边界</h2>
+          <div class="grid">
+            <div class="panel"><h3>界面模板</h3><p>静态 HTML/CSS、响应式布局和类型化插槽。不运行代码。</p></div>
+            <div class="panel"><h3>组件 Surface</h3><p>真正的交互页面。在隔离环境中运行，并通过组件命令访问能力。</p></div>
+            <div class="panel"><h3>装配方案</h3><p>选择模板和组件，把页面、导航、标签或当前活动页面绑定到插槽。</p></div>
+          </div>
+          <div class="callout"><strong>宿主工具带不会被模板替换</strong>快捷栏、DEV、维护中心和 <code>工具 Alt+Q</code> 由 Nexora 固定保留。模板只控制它下面的区域。</div>
+          <p>模板不是一个完整网页。完全空白模板在没有绑定时可以保持空白；左右模板可以让左边固定显示音乐播放器，右边显示当前项目或启动主页。模板不读取文件、不调用 BlenderIO，也不拥有项目上下文。</p>
+        </section>
+
+        <section id="status" data-title="支持状态">
+          <h2>2. 当前支持状态</h2>
+          <div class="table-wrap"><table>
+            <thead><tr><th>能力</th><th>状态</th><th>当前行为</th></tr></thead>
+            <tbody>
+              <tr><td><code>data-pack</code> + <code>shellTemplates</code></td><td>stable-2.8.5</td><td>可安装、选择、切换和打包</td></tr>
+              <tr><td><code>&lt;nexora-slot&gt;</code></td><td>stable-2.8.5</td><td>七种内容类型，绑定保存在 Profile</td></tr>
+              <tr><td>复制、VS Code、DEV 重载</td><td>experimental</td><td>手动触发；不是保存即实时刷新</td></tr>
+              <tr><td><code>optionsSchema</code></td><td>experimental</td><td>可解析，当前编辑器未完整生成参数表单</td></tr>
+              <tr><td>图片和任意包内媒体</td><td>experimental</td><td>当前 Shell 渲染器不承诺显示</td></tr>
+              <tr><td>模板 JavaScript/宿主 DOM/Tauri</td><td>禁止</td><td>动态功能必须放进组件 Surface</td></tr>
+            </tbody>
+          </table></div>
+        </section>
+
+        <section id="quickstart" data-title="最快开发流程">
+          <h2>3. 最快开发流程</h2>
+          <ol class="steps">
+            <li>打开“编辑装配方案 -> 界面装配”，选择一个已有模板。</li>
+            <li>点击“复制为开发模板”，选择普通工作目录作为父目录。</li>
+            <li>Nexora 会生成新组件 ID、信任开发目录并安装开发副本。</li>
+            <li>点击“VS Code”，修改 <code>template.json</code>、<code>base.html</code> 和 <code>styles.css</code>。</li>
+            <li>保存文件后回 Nexora 点击模板旁“重载”，或点击顶部 <code>DEV</code>。</li>
+            <li>插槽或主页绑定改变后，再点击“保存并应用”。</li>
+          </ol>
+          <div class="callout warn"><strong>两种保存不要混淆</strong>VS Code 保存的是模板源文件；“保存并应用”保存的是装配方案草稿。修改 HTML/CSS 后需要重载，不需要靠“保存并应用”写模板。</div>
+        </section>
+
+        <section id="structure" data-title="目录结构">
+          <h2>4. 目录结构</h2>
+          <pre><code>my-interface-template/
+  component.json
+  README.md
+  presentation/
+    shell/
+      my-shell/
+        template.json
+        base.html
+        styles.css</code></pre>
+          <p>安装时必须选择直接包含 <code>component.json</code> 的根目录，不要选择 <code>presentation</code> 或更深的子目录。目录名可改，公开 ID 不应随意改变。</p>
+        </section>
+
+        <section id="manifest" data-title="component.json 清单">
+          <h2>5. component.json</h2>
+          <pre><code>{
+  "schemaVersion": 1,
+  "id": "com.example.interface-template",
+  "name": "示例界面模板",
+  "description": "提供一个可装配的双区域界面。",
+  "version": "1.0.0",
+  "apiVersion": "1",
+  "runtime": "data-pack",
+  "role": "data",
+  "category": "appearance",
+  "tags": ["interface-template", "layout"],
+  "distribution": "local",
+  "uiMode": "none",
+  "platforms": ["any"],
+  "entry": "presentation",
+  "capabilities": [],
+  "contributes": {
+    "shellTemplates": [{
+      "id": "com.example.shell.two-column",
+      "name": "双区域布局",
+      "version": "1.0.0",
+      "templatePath": "presentation/shell/two-column/template.json"
+    }]
+  }
+}</code></pre>
+          <ul>
+            <li>外部表现模板必须使用 <code>data-pack</code>。</li>
+            <li><code>capabilities</code> 必须为空。</li>
+            <li>贡献 ID/版本必须与 <code>template.json</code> 完全一致。</li>
+            <li><code>entry</code> 和 <code>templatePath</code> 都是包内安全相对路径。</li>
+          </ul>
+        </section>
+
+        <section id="descriptor" data-title="template.json 描述">
+          <h2>6. template.json</h2>
+          <pre><code>{
+  "schemaVersion": 1,
+  "id": "com.example.shell.two-column",
+  "kind": "shell",
+  "version": "1.0.0",
+  "semanticVersion": "1.0.0",
+  "baseHtml": "presentation/shell/two-column/base.html",
+  "styles": "presentation/shell/two-column/styles.css",
+  "slots": [
+    {
+      "id": "left",
+      "name": "左侧区域",
+      "accepts": ["component-surface"],
+      "multiplicity": "one",
+      "layout": "single",
+      "required": false,
+      "collapseWhenEmpty": false
+    },
+    {
+      "id": "right",
+      "name": "右侧区域",
+      "accepts": ["active-surface", "component-surface"],
+      "multiplicity": "one",
+      "layout": "single",
+      "required": false,
+      "collapseWhenEmpty": false
+    }
+  ],
+  "regions": ["left", "right"]
+}</code></pre>
+          <div class="table-wrap"><table>
+            <thead><tr><th>字段</th><th>规则</th></tr></thead>
+            <tbody>
+              <tr><td><code>id</code></td><td>稳定模板 ID，与组件贡献一致</td></tr>
+              <tr><td><code>kind</code></td><td>主窗口布局使用 <code>shell</code></td></tr>
+              <tr><td><code>slots</code></td><td>只要非空，至少一个插槽接受 <code>active-surface</code></td></tr>
+              <tr><td><code>required</code></td><td>必需插槽没有有效绑定时阻止应用；空白布局应设为 false</td></tr>
+              <tr><td><code>collapseWhenEmpty</code></td><td>要保留空白区域时显式设为 false</td></tr>
+              <tr><td><code>minWidth/maxWidth</code></td><td>正整数，最小值不能大于最大值；高度同理</td></tr>
+            </tbody>
+          </table></div>
+        </section>
+
+        <section id="slots" data-title="插槽类型">
+          <h2>7. 插槽类型</h2>
+          <div class="table-wrap"><table>
+            <thead><tr><th>accepts</th><th>显示内容</th><th>注意</th></tr></thead>
+            <tbody>
+              <tr><td><code>active-surface</code></td><td>当前项目、启动主页或当前 Shell 页面</td><td>主内容通常绑定一次</td></tr>
+              <tr><td><code>component-surface</code></td><td>指定组件的隔离页面</td><td>受组件有效闭包和单例/多例规则约束</td></tr>
+              <tr><td><code>navigation</code></td><td>当前方案导航</td><td>由 Profile 条目决定内容</td></tr>
+              <tr><td><code>tabs</code></td><td>Shell 标签栏</td><td>适合多页面工作区</td></tr>
+              <tr><td><code>toolbar</code></td><td>当前项目工具栏</td><td>无活动项目时为空</td></tr>
+              <tr><td><code>status</code></td><td>当前项目状态</td><td>无活动项目时为空</td></tr>
+              <tr><td><code>widget</code></td><td>Widget 内容</td><td>完整第三方 Widget ABI 仍受 Hosted Surface 边界限制</td></tr>
+            </tbody>
+          </table></div>
+          <p><code>multiplicity: one</code> 必须搭配 <code>layout: single</code>。<code>many</code> 可使用 <code>flow</code>、<code>stack</code> 或 <code>tabs</code>。单例 Surface 不能在同一方案重复放置；多实例 Surface 必须由组件声明 <code>instanceMode: multiple</code>。</p>
+        </section>
+
+        <section id="html" data-title="HTML 安全规则">
+          <h2>8. HTML 安全规则</h2>
+          <pre><code>&lt;main class="split-template"&gt;
+  &lt;section class="split-template__pane split-template__pane--left"&gt;
+    &lt;nexora-slot name="left"&gt;&lt;/nexora-slot&gt;
+  &lt;/section&gt;
+  &lt;section class="split-template__pane split-template__pane--right"&gt;
+    &lt;nexora-slot name="right"&gt;&lt;/nexora-slot&gt;
+  &lt;/section&gt;
+&lt;/main&gt;</code></pre>
+          <h3>允许的结构标签</h3>
+          <pre><code>main header aside section footer div nav article
+ul ol li p span h1 h2 h3 h4 h5 h6 hr figure figcaption</code></pre>
+          <p>普通属性只保留 <code>class</code>、<code>id</code>、<code>title</code>、<code>role</code>、<code>aria-*</code>、<code>data-*</code> 和合法 <code>tabindex</code>。内联 <code>style</code> 会被丢弃。</p>
+          <div class="callout warn"><strong>明确禁止</strong><code>script</code>、<code>iframe</code>、<code>object</code>、<code>embed</code>、<code>link</code>、内联事件、远程 URL、本机 URL、<code>data:</code>、动态 import、eval 和宿主对象。按钮、输入框、图片、音视频等交互或媒体应放进组件 Surface。</div>
+        </section>
+
+        <section id="css" data-title="CSS 与响应式">
+          <h2>9. CSS 与响应式</h2>
+          <pre><code>.split-template {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  min-height: 100%;
+  height: 100%;
+  min-width: 0;
+  background: var(--nexora-surface, #ffffff);
+}
+
+.split-template__pane {
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+@media (max-width: 720px) {
+  .split-template {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}</code></pre>
+          <p>Nexora 会自动把普通 CSS 规则限定在当前模板容器下。禁止 <code>@import</code>、表达式、脚本协议、文件协议和远程 URL。</p>
+          <ul>
+            <li>Grid/Flex 根和子项都设置 <code>min-width: 0</code>。</li>
+            <li>纵向可压缩区域设置 <code>min-height: 0</code>。</li>
+            <li>所有 Nexora 颜色变量提供回退值。</li>
+            <li>模板只控制布局，不强制组件页面字体和内部排版。</li>
+            <li>当前宿主会给 component-surface 添加边框、背景和圆角，模板不要依赖移除它。</li>
+          </ul>
+        </section>
+
+        <section id="profile" data-title="方案绑定">
+          <h2>10. 方案绑定</h2>
+          <pre><code>{
+  "shellLayout": {
+    "hostToolbar": { "mode": "fixed" },
+    "shellTemplate": {
+      "id": "com.example.shell.two-column",
+      "versionRequirement": "^1.0.0"
+    },
+    "interfaceTemplateStates": [{
+      "templateId": "com.example.shell.two-column",
+      "slotBindings": [
+        {
+          "id": "slot-left-player",
+          "slotId": "left",
+          "kind": "component-surface",
+          "componentId": "com.example.music-player",
+          "surfaceId": "com.example.music-player.surface",
+          "enabled": true,
+          "order": 10
+        },
+        {
+          "id": "slot-right-active",
+          "slotId": "right",
+          "kind": "active-surface",
+          "enabled": true,
+          "order": 10
+        }
+      ]
+    }]
+  }
+}</code></pre>
+          <p>这段结构由装配编辑器生成，不要求用户手写。模板文件决定插槽，Profile 决定插槽内容。每个模板按 <code>templateId</code> 保存独立状态，切换模板不会删除原绑定。</p>
+          <p>重命名插槽是公开合同变更。旧 Profile 中的 <code>slotId</code> 可能失效，应提升版本并提供迁移说明。</p>
+        </section>
+
+        <section id="reload" data-title="VS Code 与重载">
+          <h2>11. VS Code 与安全重载</h2>
+          <ol>
+            <li>只编辑“复制为开发模板”生成的受信任开发目录。</li>
+            <li>保存文件后点击模板旁“重载”，或顶部 <code>DEV</code>。</li>
+            <li>重载会重新校验 Manifest、HTML、CSS、插槽和路径。</li>
+            <li>校验或安装失败时保留旧运行版本，避免主界面进入半失效状态。</li>
+            <li>模板源码重载后，Profile 绑定仍是原草稿；只有方案改变才“保存并应用”。</li>
+          </ol>
+          <div class="callout"><strong>当前不是自动热更新</strong>Watcher 只标记开发目录发生变化，不自动执行新代码。显式重载是安全边界，也是出现错误时可以回滚的原因。</div>
+        </section>
+
+        <section id="example" data-title="左右 50% 样例">
+          <h2>12. 左右 50% 完整样例</h2>
+          <p>正式样例位于 <code>examples/split-interface-template</code>，与最小空白模板分开。它声明两个可选且不折叠的插槽：</p>
+          <div class="grid">
+            <div class="panel"><h3>left</h3><p>接受一个 component-surface，适合固定音乐播放器或工具面板。</p></div>
+            <div class="panel"><h3>right</h3><p>接受 active-surface 或 component-surface，适合主页/项目工作区。</p></div>
+            <div class="panel"><h3>窄窗口</h3><p>宽度低于 720px 时变成上下各 50%，避免横向挤压。</p></div>
+          </div>
+          <ol>
+            <li>从目录安装样例根目录。</li>
+            <li>在当前 Profile 启用“左右对半界面模板”。</li>
+            <li>在安装的界面模板中选择“左右对半布局”。</li>
+            <li>左侧选择 Ninniku 音乐播放器，右侧加入“主页 / 当前活动页面”。</li>
+            <li>选择启动主页并“保存并应用”。</li>
+          </ol>
+        </section>
+
+        <section id="package" data-title="打包与版本">
+          <h2>13. 打包、分发与版本</h2>
+          <ol class="steps">
+            <li>在开发者工作台校验并信任模板开发目录。</li>
+            <li>创建保存在组件目录之外的 Ed25519 私钥。</li>
+            <li>填写发布者和许可证，生成签名 <code>.pmc-pack</code>。</li>
+            <li>在干净 Nexora 环境测试安装、启用、切换、卸载和重装。</li>
+            <li>需要交付整套装配时，再导出 <code>.pmc-profile</code> 或自包含 <code>.pmc-workspace</code>。</li>
+          </ol>
+          <div class="table-wrap"><table>
+            <thead><tr><th>修改</th><th>版本建议</th><th>理由</th></tr></thead>
+            <tbody>
+              <tr><td>CSS 调整，不改插槽</td><td>Patch</td><td>不改变绑定合同</td></tr>
+              <tr><td>增加可选插槽</td><td>Minor</td><td>旧 Profile 仍可使用</td></tr>
+              <tr><td>改变 accepts/multiplicity</td><td>Minor 或 Major</td><td>旧绑定可能不兼容</td></tr>
+              <tr><td>删除/重命名插槽</td><td>Major</td><td>旧 slotId 会失效</td></tr>
+              <tr><td>改变模板 ID</td><td>新模板</td><td>旧状态不会自动继承</td></tr>
+            </tbody>
+          </table></div>
+        </section>
+
+        <section id="troubleshooting" data-title="故障排查">
+          <h2>14. 故障排查</h2>
+          <div class="table-wrap"><table>
+            <thead><tr><th>现象</th><th>常见原因</th><th>处理</th></tr></thead>
+            <tbody>
+              <tr><td>安装一直转圈</td><td>选错目录、清单无效、运行占用</td><td>选择含 component.json 的根目录，先在工作台校验并看日志</td></tr>
+              <tr><td>修改后没变化</td><td>改了安装副本或尚未重载</td><td>编辑受信任开发目录，保存后点“重载”</td></tr>
+              <tr><td>不能保存方案</td><td>模板/依赖/插槽/版本诊断</td><td>查看底部阻止原因，优先处理缺失模板和旧 slotId</td></tr>
+              <tr><td>“+ 主页”没反应</td><td>one 插槽已占用或已有同类绑定</td><td>移除现有绑定，确认旧状态已迁移</td></tr>
+              <tr><td>提示必须有主插槽</td><td>没有 accepts: active-surface</td><td>至少给一个插槽加入 active-surface</td></tr>
+              <tr><td>空区域消失</td><td>collapseWhenEmpty 默认为 true</td><td>显式设为 false</td></tr>
+              <tr><td>组件页面不在列表</td><td>组件未启用、依赖无效或 placements 不允许</td><td>检查当前方案闭包、版本和 scriptSurfaces</td></tr>
+              <tr><td>图片/按钮不显示</td><td>模板宿主只允许静态结构标签</td><td>把交互和媒体放进 Script Surface</td></tr>
+              <tr><td>版本不满足 ^1.0.0</td><td>Profile 要求与安装版本不兼容</td><td>安装匹配版本或更新方案要求</td></tr>
+            </tbody>
+          </table></div>
+        </section>
+
+        <section id="checklist" data-title="发布验收">
+          <h2>15. 发布验收</h2>
+          <ul>
+            <li>组件贡献和 template.json 的 ID/版本完全一致。</li>
+            <li>至少一个插槽接受 active-surface，空白语义不误用 required。</li>
+            <li>普通、窄窗口、浅色、深色和缩放下无重叠或横向溢出。</li>
+            <li>有项目、无项目、切换主页和关闭标签时 active-surface 正常。</li>
+            <li>组件 Surface 缺失、停用或崩溃时模板可回退。</li>
+            <li>开发重载失败保留旧运行版本，没有重复页面或残留绑定。</li>
+            <li>切换模板再切回，原模板状态保持。</li>
+            <li>签名包在干净环境可安装、卸载和重装。</li>
+            <li>Profile 缺包时显示依赖诊断，Workspace 自包含导入执行签名检查。</li>
+          </ul>
+        </section>
+
+        <footer class="footer">
+          <p><strong>参考：</strong>本页的信息架构参考了 MIT 许可的 <a href="https://github.com/just-the-docs/just-the-docs">Just the Docs</a> 所强调的固定导航、内容优先、移动端适配和少依赖原则。</p>
+          <p>本文件没有引入 Jekyll、Ruby Gem、CDN 或 Just the Docs 源码，是为 Nexora 重新编写的离线单文件文档。完整 Markdown 版本见 <code>INTERFACE_TEMPLATE_DEVELOPMENT_GUIDE.md</code>。</p>
+        </footer>
+      </article>
+    </main>
+  </div>
+
+  <script>
+    (() => {
+      const sidebar = document.getElementById('sidebar');
+      const menuButton = document.getElementById('menuButton');
+      const search = document.getElementById('search');
+      const noResults = document.getElementById('noResults');
+      const links = Array.from(document.querySelectorAll('.nav-list a'));
+      const sections = Array.from(document.querySelectorAll('main section[id]'));
+
+      menuButton.addEventListener('click', () => sidebar.classList.toggle('open'));
+      links.forEach((link) => link.addEventListener('click', () => sidebar.classList.remove('open')));
+
+      search.addEventListener('input', () => {
+        const query = search.value.trim().toLocaleLowerCase('zh-CN');
+        let visible = 0;
+        links.forEach((link) => {
+          const target = document.querySelector(link.getAttribute('href'));
+          const text = `${link.textContent} ${target?.dataset.title || ''} ${target?.textContent || ''}`.toLocaleLowerCase('zh-CN');
+          const match = !query || text.includes(query);
+          link.closest('li').hidden = !match;
+          if (match) visible += 1;
+        });
+        noResults.style.display = visible ? 'none' : 'block';
+      });
+
+      const observer = new IntersectionObserver((entries) => {
+        const current = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+        if (!current) return;
+        links.forEach((link) => link.classList.toggle('active', link.getAttribute('href') === `#${current.target.id}`));
+      }, { rootMargin: '-15% 0px -70% 0px', threshold: [0, 0.1] });
+      sections.forEach((section) => observer.observe(section));
+    })();
+  </script>
+</body>
+</html>

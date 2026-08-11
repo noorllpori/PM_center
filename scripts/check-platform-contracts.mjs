@@ -40,6 +40,8 @@ const componentExamplePaths = [
   'examples/script-project-storage/component.json',
   'examples/script-automation-blend-audit/component.json',
   'examples/ninniku-music-player/component.json',
+  'examples/blank-home-template/component.json',
+  'examples/split-interface-template/component.json',
 ];
 const validateComponentExample = validators.get('component-manifest.schema.json');
 for (const relativePath of componentExamplePaths) {
@@ -47,6 +49,20 @@ for (const relativePath of componentExamplePaths) {
   if (!validateComponentExample(example)) {
     throw new Error(
       `${relativePath} does not match component-manifest.schema.json:\n${JSON.stringify(validateComponentExample.errors, null, 2)}`,
+    );
+  }
+}
+
+const presentationExamplePaths = [
+  'examples/blank-home-template/presentation/shell/blank-home/template.json',
+  'examples/split-interface-template/presentation/shell/split-50/template.json',
+];
+const validatePresentationExample = validators.get('presentation-template.schema.json');
+for (const relativePath of presentationExamplePaths) {
+  const example = readJson(path.join(root, relativePath));
+  if (!validatePresentationExample(example)) {
+    throw new Error(
+      `${relativePath} does not match presentation-template.schema.json:\n${JSON.stringify(validatePresentationExample.errors, null, 2)}`,
     );
   }
 }
@@ -196,7 +212,7 @@ if (rustCheck.status !== 0) {
 }
 
 console.log('Nexora platform contract v1 checks passed.');
-console.log(`Validated ${cases.length} schemas, ${cases.length} fixtures, ${componentExamplePaths.length} component examples, SDK docs, Capability parity, BlenderIO, and Rust semantic rules.`);
+console.log(`Validated ${cases.length} schemas, ${cases.length} fixtures, ${componentExamplePaths.length} component examples, ${presentationExamplePaths.length} presentation examples, SDK docs, Capability parity, BlenderIO, and Rust semantic rules.`);
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
