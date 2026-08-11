@@ -196,7 +196,7 @@ export function CapabilityDiagnosticsSection() {
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <ShieldCheck className="h-4 w-4 text-blue-500" />
-            <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Capability 权限网关</h4>
+            <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">组件权限</h4>
             <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-500 dark:bg-gray-800 dark:text-gray-400">R3</span>
             <HelpAssistant
               title="能力权限"
@@ -210,7 +210,7 @@ export function CapabilityDiagnosticsSection() {
             />
           </div>
           <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            当前使用隔离诊断组件验证权限；业务组件通过同一权限网关接受检查。
+            查看组件权限请求、授权范围和安全检查，并可撤销不再需要的授权。
           </p>
         </div>
         <button

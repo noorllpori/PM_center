@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { X } from 'lucide-react';
+import { ShieldCheck, X } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { PythonEnvManager } from '../PythonEnvManager';
@@ -22,6 +22,8 @@ import { ShellTabBar } from '../shell/ShellTabBar';
 import { ContributedShellSurface } from '../shell/ContributedShellSurface';
 import { ProfileHomeSurface } from '../shell/ProfileHomeSurface';
 import { ProfileNavigationBar } from '../shell/ProfileNavigationBar';
+import { DevelopmentReloadControl } from '../shell/DevelopmentReloadControl';
+import { PinnedToolsToolbar } from './PinnedToolsToolbar';
 import { OPEN_RECOVERY_SETTINGS_EVENT } from '../../features/recoverySettings';
 import {
   getProfileHomeScriptSurfaceTarget,
@@ -1591,24 +1593,36 @@ export function FileManager() {
 
   return (
     <div className="h-screen flex flex-col bg-gray-50 dark:bg-gray-900">
-      <div className="flex items-center border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
-        <div className="flex-1 min-w-0">
+      <div className="flex min-h-12 items-center border-b border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
+        <div className="min-w-0 flex-1 overflow-hidden">
           {activeProjectSession ? (
             <ProjectSessionProvider
               projectStore={activeProjectSession.projectStore}
               workspaceTabStore={activeProjectSession.workspaceTabStore}
             >
-              <Toolbar
-                onOpenBuiltinTool={openBuiltinTool}
-                onOpenScriptSurface={openScriptSurface}
-              />
+              <Toolbar />
             </ProjectSessionProvider>
           ) : (
-            <div className="h-full px-3 py-2" />
+            <div className="h-12 px-3" />
           )}
         </div>
 
-        <div className="flex items-center gap-2 px-3 border-l border-gray-200 dark:border-gray-700">
+        <div className="flex h-12 shrink-0 items-center gap-1.5 border-l border-gray-200 px-2 dark:border-gray-700">
+          <PinnedToolsToolbar
+            onOpenTool={openBuiltinTool}
+            onOpenScriptSurface={openScriptSurface}
+          />
+          <DevelopmentReloadControl
+            onOpenDeveloperWorkbench={() => setIsScriptDeveloperWorkbenchOpen(true)}
+          />
+          <button
+            type="button"
+            onClick={() => setIsRecoverySettingsOpen(true)}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-100"
+            title="维护中心"
+          >
+            <ShieldCheck className="h-4 w-4" />
+          </button>
           <LauncherButton
             hasActiveProject={Boolean(activeProjectSession)}
             activeProjectName={activeProjectSession?.projectStore.getState().projectName || activeShellTab?.title}
@@ -1624,8 +1638,6 @@ export function FileManager() {
         onActivateTab={activateTab}
         onCloseTab={handleCloseShellTab}
         onReorderTabs={reorderTabs}
-        onOpenRecovery={() => setIsRecoverySettingsOpen(true)}
-        onOpenDeveloperWorkbench={() => setIsScriptDeveloperWorkbenchOpen(true)}
       />
 
       {profileNavigationKind !== 'side-bar' ? (

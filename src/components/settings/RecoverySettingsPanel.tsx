@@ -1,7 +1,7 @@
 import { Component, useMemo, useState, type ErrorInfo, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
-  Activity,
+  Boxes,
   LogOut,
   RefreshCcw,
   ShieldCheck,
@@ -16,9 +16,9 @@ import { WorkspaceProfileDiagnosticsSection } from './WorkspaceProfileDiagnostic
 type RecoveryPage = 'profiles' | 'diagnostics' | 'capabilities';
 
 const RECOVERY_PAGES = [
-  { id: 'profiles', label: '方案恢复', icon: SlidersHorizontal },
-  { id: 'diagnostics', label: '高级诊断', icon: Activity },
-  { id: 'capabilities', label: '权限诊断', icon: ShieldCheck },
+  { id: 'profiles', label: '装配方案', icon: SlidersHorizontal },
+  { id: 'diagnostics', label: '组件管理', icon: Boxes },
+  { id: 'capabilities', label: '权限与安全', icon: ShieldCheck },
 ] as const;
 
 class RecoveryPageBoundary extends Component<
@@ -45,7 +45,7 @@ class RecoveryPageBoundary extends Component<
     if (!this.state.error) return this.props.children;
     return (
       <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
-        <p className="font-medium">此设置页加载失败，恢复设置仍可继续使用。</p>
+        <p className="font-medium">此页面加载失败，维护中心的其他功能仍可继续使用。</p>
         <p className="mt-1 break-all text-xs opacity-80">{this.state.error.message || String(this.state.error)}</p>
         <button
           type="button"
@@ -107,15 +107,15 @@ export function RecoverySettingsPanel({
       <Dialog
         isOpen={isOpen}
         onClose={onClose}
-        title="恢复设置"
+        title="维护中心"
         size="2xl"
         contentClassName="min-h-0 overflow-hidden p-0"
       >
         <div className="flex h-[72vh] min-h-[500px] max-h-[780px] min-w-0 flex-col md:flex-row">
           <aside className="flex shrink-0 flex-row items-center gap-1 overflow-x-auto border-b border-gray-200 bg-gray-50/80 p-3 dark:border-gray-800 dark:bg-gray-950/40 md:w-52 md:flex-col md:items-stretch md:border-b-0 md:border-r">
             <div className="hidden px-2 pb-2 md:block">
-              <p className="text-xs font-medium text-gray-500 dark:text-gray-400">不可停用的恢复内核</p>
-              <p className="mt-1 text-[11px] leading-5 text-gray-400">普通设置中心关闭或装配错误时仍可使用。</p>
+              <p className="text-xs font-medium text-gray-500 dark:text-gray-400">系统维护入口</p>
+              <p className="mt-1 text-[11px] leading-5 text-gray-400">即使设置组件关闭或装配异常仍可使用。</p>
             </div>
             {RECOVERY_PAGES.map((page) => {
               const Icon = page.icon;

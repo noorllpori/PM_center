@@ -130,7 +130,7 @@ export function PinnedToolsToolbar({
   }
 
   return (
-    <div className="flex min-w-0 items-center gap-0.5 border-l border-gray-200 pl-1 dark:border-gray-700">
+    <div className="flex min-w-0 shrink-0 items-center gap-0.5 border-r border-gray-200 pr-1 dark:border-gray-700">
       {visibleTools.map((tool) => {
         const Icon = tool.kind === 'builtin' ? tool.tool.icon : FileCode2;
         const title = tool.kind === 'builtin' ? tool.tool.title : tool.surface.title;

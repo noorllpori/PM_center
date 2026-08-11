@@ -2,7 +2,6 @@ import {
   AlertTriangle,
   LayoutDashboard,
   Loader2,
-  ShieldAlert,
   ShieldCheck,
   Wrench,
 } from 'lucide-react';
@@ -60,7 +59,7 @@ export function MinimalSafeHome({
               </p>
               {!isLoading ? (
                 <p className="mt-2 text-xs leading-5 text-gray-500 dark:text-gray-400">
-                  这里不会加载项目扫描或业务页面，你仍可打开恢复设置修正装配方案。
+                  这里不会加载项目扫描或业务页面，你仍可打开维护中心修正装配方案。
                 </p>
               ) : null}
             </div>
@@ -102,13 +101,13 @@ export function MinimalSafeHome({
             onClick={onOpenRecovery}
             className="inline-flex h-9 items-center gap-2 rounded-md border border-gray-300 bg-white px-3.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
           >
-            <ShieldAlert className="h-4 w-4" />
-            恢复设置
+            <ShieldCheck className="h-4 w-4" />
+            维护中心
           </button>
         </div>
 
         <footer className="mt-8 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-gray-400">
-          <span className="inline-flex items-center gap-1.5"><ShieldCheck className="h-3.5 w-3.5" />恢复入口保持可用</span>
+          <span className="inline-flex items-center gap-1.5"><ShieldCheck className="h-3.5 w-3.5" />维护入口保持可用</span>
           <span className="inline-flex items-center gap-1.5"><LayoutDashboard className="h-3.5 w-3.5" />错误主页不会产生空白界面</span>
           <span>{APP_AUTHOR_NAME} · {APP_AUTHOR_CONTACT}</span>
         </footer>

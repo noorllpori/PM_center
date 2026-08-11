@@ -245,7 +245,7 @@ export function ComponentRuntimeDiagnosticsSection() {
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">组件运行时</h4>
+                <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">组件安装与运行</h4>
                 <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-500 dark:bg-gray-800 dark:text-gray-400">R10</span>
               </div>
               <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
@@ -277,7 +277,7 @@ export function ComponentRuntimeDiagnosticsSection() {
               type="button"
               onClick={() => void load()}
               disabled={pending !== null}
-              title="刷新组件运行时"
+              title="刷新组件状态"
               className="flex h-8 w-8 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 disabled:opacity-50 dark:hover:bg-gray-800"
             >
               <RefreshCw className="h-4 w-4" />
@@ -491,7 +491,7 @@ export function ComponentRuntimeDiagnosticsSection() {
             <p className="break-all">安装状态：{overview.statePath}</p>
           </div>
         ) : (
-          <div className="mt-3 flex items-center gap-2 py-4 text-xs text-gray-500"><Loader2 className="h-4 w-4 animate-spin" />正在读取组件运行时...</div>
+          <div className="mt-3 flex items-center gap-2 py-4 text-xs text-gray-500"><Loader2 className="h-4 w-4 animate-spin" />正在读取组件状态...</div>
         )}
       </section>
 

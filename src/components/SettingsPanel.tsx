@@ -2485,7 +2485,7 @@ export function SettingsPanel({
                 className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-amber-700 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-950/30"
               >
                 <Box className="h-3.5 w-3.5" />
-                打开恢复设置
+                打开维护中心
               </button>
               {displayedScope === 'project' && projectName ? (
                 <div>
