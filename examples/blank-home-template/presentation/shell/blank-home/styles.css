@@ -1,0 +1,20 @@
+.blank-home-template {
+  display: flex;
+  min-height: 100%;
+  min-width: 0;
+  background: var(--nexora-surface, #ffffff);
+}
+
+.blank-home-template__primary {
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.blank-home-template__primary > div {
+  min-height: 0;
+  min-width: 0;
+  flex: 1;
+}

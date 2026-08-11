@@ -1583,8 +1583,14 @@ export function FileManager() {
     bindings: ProfileTemplateSlotBinding[],
   ) => {
     const accepts = new Set(slot.accepts);
+    const boundKinds = new Set(
+      bindings
+        .filter((binding) => binding.enabled !== false)
+        .map((binding) => binding.kind),
+    );
+    const homeTarget = getProfileHomeScriptSurfaceTarget(activeWorkspaceProfile);
     const projectPath = activeProjectSession?.projectStore.getState().projectPath;
-    const navigation = accepts.has('navigation') ? (
+    const navigation = accepts.has('navigation') && boundKinds.has('navigation') ? (
       profileNavigationKind === 'side-bar' ? (
         <>
           <div className="md:hidden">
@@ -1620,7 +1626,7 @@ export function FileManager() {
         />
       )
     ) : null;
-    const tabBar = accepts.has('tabs') ? (
+    const tabBar = accepts.has('tabs') && boundKinds.has('tabs') ? (
       <ShellTabBar
         tabs={tabs}
         activeTabId={activeTabId}
@@ -1629,7 +1635,7 @@ export function FileManager() {
         onReorderTabs={reorderTabs}
       />
     ) : null;
-    const toolbar = accepts.has('toolbar') && activeProjectSession ? (
+    const toolbar = accepts.has('toolbar') && boundKinds.has('toolbar') && activeProjectSession ? (
       <ProjectSessionProvider
         projectStore={activeProjectSession.projectStore}
         workspaceTabStore={activeProjectSession.workspaceTabStore}
@@ -1637,7 +1643,7 @@ export function FileManager() {
         <Toolbar />
       </ProjectSessionProvider>
     ) : null;
-    const primary = accepts.has('active-surface') ? (
+    const primary = accepts.has('active-surface') && boundKinds.has('active-surface') ? (
       <div className="h-full min-h-0 w-full overflow-hidden">
         {contributionShellTabs.map((tab) => {
           const isActive = tab.id === activeTabId;
@@ -1664,7 +1670,17 @@ export function FileManager() {
       </div>
     ) : null;
     const componentSurfaces = accepts.has('component-surface')
-      ? bindings.filter((binding) => binding.kind === 'component-surface' && binding.componentId && binding.surfaceId)
+      ? bindings.filter((binding) => (
+        binding.kind === 'component-surface'
+        && binding.componentId
+        && binding.surfaceId
+        // A script surface selected as the active homepage is already
+        // rendered by active-surface. Do not mount that exact singleton again.
+        && !(boundKinds.has('active-surface')
+          && homeTarget
+          && binding.surfaceId === homeTarget.surfaceId
+          && (!homeTarget.componentId || binding.componentId === homeTarget.componentId))
+      ))
         .map((binding) => (
           <div key={binding.id} className="min-h-0 min-w-0 flex-1 overflow-hidden rounded-md border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-950">
             <ScriptSurfaceFrame
@@ -1681,7 +1697,7 @@ export function FileManager() {
           </div>
         ))
       : [];
-    const status = accepts.has('status') && activeProjectSession ? (
+    const status = accepts.has('status') && boundKinds.has('status') && activeProjectSession ? (
       <div className="flex h-7 items-center border-t border-gray-200 px-3 text-[11px] text-gray-500 dark:border-gray-700 dark:text-gray-400">
         {activeProjectSession.projectStore.getState().projectName || '当前项目'}
       </div>

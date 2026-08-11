@@ -625,11 +625,8 @@ impl CapabilityGateway {
                 self.persist_grant_and_audit(&pending, &decision.request_id)?;
             }
             CapabilityDecision::AllowSession => {
-                let session_key = capability_grant_key(
-                    &pending.request,
-                    &pending.approval,
-                    &pending.scope_hash,
-                );
+                let session_key =
+                    capability_grant_key(&pending.request, &pending.approval, &pending.scope_hash);
                 self.session_grants
                     .lock()
                     .expect("capability session grant mutex poisoned")
@@ -1701,7 +1698,10 @@ fn validate_scope_kind(
         Capability::ProjectStorageRead
         | Capability::ProjectStorageWrite
         | Capability::ProjectStorageDirect => {
-            matches!(kind, CapabilityScopeKind::Project | CapabilityScopeKind::None)
+            matches!(
+                kind,
+                CapabilityScopeKind::Project | CapabilityScopeKind::None
+            )
         }
         Capability::CacheInspect | Capability::CacheMaintain => kind == CapabilityScopeKind::Cache,
         Capability::FilesystemExternalRead | Capability::FilesystemExternalWrite => matches!(

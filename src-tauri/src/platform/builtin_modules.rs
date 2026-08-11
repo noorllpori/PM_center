@@ -1,6 +1,6 @@
 use super::builtin_components::{PM_BLENDIO_COMPONENT_ID, PROJECT_MANAGER_COMPONENT_ID};
-use super::file_operations::FILE_OPERATIONS_COMPONENT_ID;
 use super::capability_gateway::CapabilityComponentRegistration;
+use super::file_operations::FILE_OPERATIONS_COMPONENT_ID;
 use super::module_manager::{
     LifecycleFuture, ModuleContext, ModuleHealth, ModuleHealthLevel, ModuleLifecycle,
     RegisteredModule,
@@ -1026,7 +1026,8 @@ pub(crate) fn project_resources_manifest() -> ModuleManifestV1 {
         schema_version: 1,
         id: PROJECT_RESOURCES_MODULE_ID.into(),
         name: "文件操作".into(),
-        description: "兼容运行时：管理项目数据库、目录索引、文件监听和文件操作组件所需的资源释放。".into(),
+        description: "兼容运行时：管理项目数据库、目录索引、文件监听和文件操作组件所需的资源释放。"
+            .into(),
         version: "1.0.0".into(),
         api_version: "1".into(),
         scope: ModuleScope::Project,

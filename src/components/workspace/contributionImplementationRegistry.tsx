@@ -13,6 +13,7 @@ import { LanCollaborationSurface } from '../lan/LanCollaborationSurface';
 import { ProjectHomeSurface } from '../shell/ProjectHomeSurface';
 import { ProjectWorkspace } from '../file-manager/ProjectWorkspace';
 import { ContributionDiagnosticsSurface } from './ContributionDiagnosticsSurface';
+import { NexoraWelcomeSurface } from '../shell/NexoraWelcomeSurface';
 import { getContributedWidgetRendererIds } from './ContributedWidget';
 import { getSettingsSectionImplementationIds } from '../settings/settingsContributionImplementationRegistry';
 
@@ -41,6 +42,7 @@ export const SHELL_SURFACE_RENDERERS: Record<
   string,
   ComponentType<ContributionSurfaceRendererProps>
 > = {
+  [SURFACE_CONTRIBUTIONS.nexoraWelcome.id]: NexoraWelcomeSurface,
   [SURFACE_CONTRIBUTIONS.projectHome.id]: ProjectHomeSurface,
   [SURFACE_CONTRIBUTIONS.projectWorkspace.id]: ProjectWorkspace,
   [SURFACE_CONTRIBUTIONS.lanMain.id]: LanCollaborationSurface,

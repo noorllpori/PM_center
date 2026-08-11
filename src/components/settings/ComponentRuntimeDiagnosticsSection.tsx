@@ -65,6 +65,22 @@ function errorMessage(error: unknown) {
   return String(error);
 }
 
+async function withActionTimeout<T>(action: Promise<T>, label: string, timeoutMs = 45_000) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      action,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`${label}未在 ${Math.ceil(timeoutMs / 1_000)} 秒内响应。请确认 Nexora 桌面后端正在运行后重试。`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function formatTime(timestamp?: number | null) {
   return timestamp ? new Date(timestamp).toLocaleString('zh-CN', { hour12: false }) : '-';
 }
@@ -138,15 +154,16 @@ export function ComponentRuntimeDiagnosticsSection() {
     setError(null);
     setNotice(null);
     try {
-      await action();
-      await useWorkspaceProfileStore.getState().refresh();
-      window.dispatchEvent(new Event(PLATFORM_MODULE_RUNTIME_CHANGED_EVENT));
+      await withActionTimeout(action(), '组件操作');
       setNotice(message);
+      void useWorkspaceProfileStore.getState().refresh()
+        .then(() => window.dispatchEvent(new Event(PLATFORM_MODULE_RUNTIME_CHANGED_EVENT)))
+        .catch((nextError) => setError(errorMessage(nextError)));
     } catch (nextError) {
       setError(errorMessage(nextError));
     } finally {
-      await load();
       setPending(null);
+      void load();
     }
   }, [load]);
 

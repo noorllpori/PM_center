@@ -792,7 +792,8 @@ impl ScriptAutomationRuntime {
             .ok_or_else(|| format!("组件未安装: {}", request.component_id))?;
         self.ensure_component_execution_trusted(&manifest)?;
         let command = automation_command(&manifest, &request.command)?;
-        let required_capabilities = command_required_capabilities(&manifest, &command, &request.input)?;
+        let required_capabilities =
+            command_required_capabilities(&manifest, &command, &request.input)?;
         let mut request = request;
         if command.context_requirement == AutomationContextRequirement::Global {
             request.project_path = None;
@@ -826,7 +827,11 @@ impl ScriptAutomationRuntime {
                 .first()
                 .copied()
                 .map(|capability| {
-                    capability_scope_for(capability, request.project_path.as_deref(), &request.input)
+                    capability_scope_for(
+                        capability,
+                        request.project_path.as_deref(),
+                        &request.input,
+                    )
                 })
                 .transpose()?
                 .unwrap_or_default(),
@@ -960,29 +965,25 @@ impl ScriptAutomationRuntime {
                 return;
             }
         };
-        let required_capabilities = match command_required_capabilities(&manifest, &command, &run.input) {
-            Ok(capabilities) => capabilities,
-            Err(error) => {
-                let _ = self.update_terminal(run_id, "failed", None, Some(error), Vec::new());
-                return;
-            }
-        };
-        let granted = match self.request_capabilities(&run, &command, &required_capabilities, granted) {
-            Ok(Some(granted)) => granted,
-            Ok(None) => return,
-            Err(error) => {
-                let _ = self.update_terminal(run_id, "failed", None, Some(error), Vec::new());
-                return;
-            }
-        };
-        self.execute_component(
-            run_id,
-            &run,
-            &manifest,
-            &command,
-            granted,
-        )
-        .await;
+        let required_capabilities =
+            match command_required_capabilities(&manifest, &command, &run.input) {
+                Ok(capabilities) => capabilities,
+                Err(error) => {
+                    let _ = self.update_terminal(run_id, "failed", None, Some(error), Vec::new());
+                    return;
+                }
+            };
+        let granted =
+            match self.request_capabilities(&run, &command, &required_capabilities, granted) {
+                Ok(Some(granted)) => granted,
+                Ok(None) => return,
+                Err(error) => {
+                    let _ = self.update_terminal(run_id, "failed", None, Some(error), Vec::new());
+                    return;
+                }
+            };
+        self.execute_component(run_id, &run, &manifest, &command, granted)
+            .await;
     }
 
     fn request_capabilities(
@@ -998,7 +999,10 @@ impl ScriptAutomationRuntime {
         let host = self.host.lock().expect("automation host mutex poisoned");
         let host = host.as_ref().ok_or("脚本自动化宿主尚未初始化")?;
         for (capability_index, capability) in capabilities.iter().copied().enumerate() {
-            if granted.iter().any(|(request, _)| request.capability == capability) {
+            if granted
+                .iter()
+                .any(|(request, _)| request.capability == capability)
+            {
                 continue;
             }
             let request = CapabilityTokenRequest {
@@ -1021,8 +1025,8 @@ impl ScriptAutomationRuntime {
                 }
                 CapabilityRequestStatus::ApprovalRequired => {
                     let approval = response.approval.ok_or("权限网关未返回批准请求")?;
-                    let mut pending = serde_json::to_value(approval)
-                        .map_err(|error| error.to_string())?;
+                    let mut pending =
+                        serde_json::to_value(approval).map_err(|error| error.to_string())?;
                     if let Some(object) = pending.as_object_mut() {
                         object.insert(
                             "requiredCapabilities".into(),
@@ -1033,7 +1037,8 @@ impl ScriptAutomationRuntime {
                         );
                         object.insert(
                             "approvedCapabilities".into(),
-                            json!(granted.iter()
+                            json!(granted
+                                .iter()
                                 .map(|(request, _)| request.capability.as_str())
                                 .collect::<Vec<_>>()),
                         );
@@ -1099,13 +1104,13 @@ impl ScriptAutomationRuntime {
         }
         let (bridge_endpoint, bridge_token, bridge_shutdown, bridge_handle) = match self
             .start_bridge(
-            run.clone(),
-            manifest.clone(),
-            operation_id.clone(),
-            capability_grants
-                .iter()
-                .map(|(request, _)| request.capability)
-                .collect(),
+                run.clone(),
+                manifest.clone(),
+                operation_id.clone(),
+                capability_grants
+                    .iter()
+                    .map(|(request, _)| request.capability)
+                    .collect(),
             )
             .await
         {
@@ -1298,11 +1303,9 @@ impl ScriptAutomationRuntime {
         )
         .await
         {
-            Err(_) => Err(AutomationBridgeError::new(
-                "bridge_timeout",
-                "SDK 桥请求读取超时",
-            )
-            .retryable(true)),
+            Err(_) => Err(
+                AutomationBridgeError::new("bridge_timeout", "SDK 桥请求读取超时").retryable(true),
+            ),
             Ok(Err(error)) => Err(AutomationBridgeError::new(
                 "bridge_io_failed",
                 format!("读取 SDK 桥请求失败: {error}"),
@@ -1311,12 +1314,10 @@ impl ScriptAutomationRuntime {
                 "bridge_request_empty",
                 "SDK 桥连接未发送请求",
             )),
-            Ok(Ok(_)) if line.len() > MAX_BRIDGE_REQUEST_BYTES => {
-                Err(AutomationBridgeError::new(
-                    "bridge_request_too_large",
-                    "SDK 桥请求超过 1 MiB 限制",
-                ))
-            }
+            Ok(Ok(_)) if line.len() > MAX_BRIDGE_REQUEST_BYTES => Err(AutomationBridgeError::new(
+                "bridge_request_too_large",
+                "SDK 桥请求超过 1 MiB 限制",
+            )),
             Ok(Ok(_)) => match serde_json::from_str::<AutomationBridgeRequest>(line.trim()) {
                 Err(error) => Err(AutomationBridgeError::new(
                     "bridge_request_invalid",
@@ -1394,21 +1395,19 @@ impl ScriptAutomationRuntime {
                         format!("依赖组件未进入当前方案有效闭包: {component_id}"),
                     ));
                 }
-                let target = self
-                    .components
-                    .manifest(&component_id)
-                    .ok_or_else(|| {
-                        AutomationBridgeError::new(
-                            "component_not_installed",
-                            format!("依赖组件未安装: {component_id}"),
-                        )
-                    })?;
-                let requirement = VersionReq::parse(&dependency.version_requirement).map_err(|_| {
+                let target = self.components.manifest(&component_id).ok_or_else(|| {
                     AutomationBridgeError::new(
-                        "dependency_version_invalid",
-                        format!("依赖版本要求无效: {}", dependency.version_requirement),
+                        "component_not_installed",
+                        format!("依赖组件未安装: {component_id}"),
                     )
                 })?;
+                let requirement =
+                    VersionReq::parse(&dependency.version_requirement).map_err(|_| {
+                        AutomationBridgeError::new(
+                            "dependency_version_invalid",
+                            format!("依赖版本要求无效: {}", dependency.version_requirement),
+                        )
+                    })?;
                 let target_version = Version::parse(&target.version).map_err(|_| {
                     AutomationBridgeError::new(
                         "component_version_invalid",
@@ -1436,16 +1435,26 @@ impl ScriptAutomationRuntime {
                         )
                     })?;
                 let target_input = request.payload.get("input").cloned().unwrap_or(Value::Null);
-                let target_capabilities = if component_id == super::file_operations::FILE_OPERATIONS_COMPONENT_ID {
-                    super::file_operations::required_capabilities_for_command(&command, &target_input)
-                        .map_err(|message| AutomationBridgeError::new("file_operation_request_invalid", message))?
-                } else {
-                    target_command.effective_required_capabilities()
-                };
+                let target_capabilities =
+                    if component_id == super::file_operations::FILE_OPERATIONS_COMPONENT_ID {
+                        super::file_operations::required_capabilities_for_command(
+                            &command,
+                            &target_input,
+                        )
+                        .map_err(|message| {
+                            AutomationBridgeError::new("file_operation_request_invalid", message)
+                        })?
+                    } else {
+                        target_command.effective_required_capabilities()
+                    };
                 if !target_capabilities.is_empty() {
                     let requested_capabilities = bridge_requested_capabilities(&request.payload)?;
-                    if target_capabilities.iter().any(|capability| !requested_capabilities.contains(capability))
-                        || target_capabilities.iter().any(|capability| !granted_capabilities.contains(capability))
+                    if target_capabilities
+                        .iter()
+                        .any(|capability| !requested_capabilities.contains(capability))
+                        || target_capabilities
+                            .iter()
+                            .any(|capability| !granted_capabilities.contains(capability))
                     {
                         return Err(AutomationBridgeError::new(
                             "capability_not_granted",
@@ -1464,18 +1473,19 @@ impl ScriptAutomationRuntime {
                 }
                 let operation_id = format!("{root_operation_id}:dependency:{}", Uuid::new_v4());
                 self.register_bridged_operation(root_operation_id, &operation_id);
-                let target_input = if component_id == super::file_operations::FILE_OPERATIONS_COMPONENT_ID {
-                    json!({
-                        "request": target_input,
-                        "nexora": {
-                            "projectPath": run.project_path,
-                            "callerComponentId": manifest.id,
-                            "rootOperationId": root_operation_id,
-                        },
-                    })
-                } else {
-                    request.payload.get("input").cloned().unwrap_or(Value::Null)
-                };
+                let target_input =
+                    if component_id == super::file_operations::FILE_OPERATIONS_COMPONENT_ID {
+                        json!({
+                            "request": target_input,
+                            "nexora": {
+                                "projectPath": run.project_path,
+                                "callerComponentId": manifest.id,
+                                "rootOperationId": root_operation_id,
+                            },
+                        })
+                    } else {
+                        request.payload.get("input").cloned().unwrap_or(Value::Null)
+                    };
                 let result = self
                     .components
                     .invoke(ComponentInvocationRequest {
@@ -1545,7 +1555,9 @@ impl ScriptAutomationRuntime {
                     root_path: root.to_string_lossy().into_owned(),
                     selected_paths: Vec::new(),
                 })
-                .map_err(|error| AutomationBridgeError::new("bridge_response_failed", error.to_string()))
+                .map_err(|error| {
+                    AutomationBridgeError::new("bridge_response_failed", error.to_string())
+                })
             }
             "project.files.list" => {
                 require_bridge_capability(
@@ -1578,17 +1590,27 @@ impl ScriptAutomationRuntime {
                     .unwrap_or(100)
                     .clamp(1, 500) as usize;
                 let mut paths = fs::read_dir(&directory)
-                    .map_err(|error| AutomationBridgeError::new("project_list_failed", error.to_string()))?
+                    .map_err(|error| {
+                        AutomationBridgeError::new("project_list_failed", error.to_string())
+                    })?
                     .filter_map(Result::ok)
                     .map(|entry| entry.path())
-                    .filter(|path| path.file_name().and_then(|name| name.to_str()) != Some(".pm_center"))
+                    .filter(|path| {
+                        path.file_name().and_then(|name| name.to_str()) != Some(".pm_center")
+                    })
                     .collect::<Vec<_>>();
                 paths.sort_by(|left, right| {
                     left.file_name()
                         .unwrap_or_default()
                         .to_string_lossy()
                         .to_lowercase()
-                        .cmp(&right.file_name().unwrap_or_default().to_string_lossy().to_lowercase())
+                        .cmp(
+                            &right
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .to_lowercase(),
+                        )
                 });
                 let entries = paths
                     .iter()
@@ -1614,8 +1636,9 @@ impl ScriptAutomationRuntime {
                 let root = bridge_project_root(run)?;
                 let relative = required_bridge_string(&request.payload, "relativePath")?;
                 let path = resolve_project_relative(&root, &relative, false)?;
-                serde_json::to_value(project_file_entry(&root, &path)?)
-                    .map_err(|error| AutomationBridgeError::new("bridge_response_failed", error.to_string()))
+                serde_json::to_value(project_file_entry(&root, &path)?).map_err(|error| {
+                    AutomationBridgeError::new("bridge_response_failed", error.to_string())
+                })
             }
             "project.files.resolve" => {
                 let access = request
@@ -1709,18 +1732,16 @@ impl ScriptAutomationRuntime {
                     granted_capabilities,
                     Capability::ProjectStorageWrite,
                 )?;
-                let root = component_storage_root(
-                    &self.database_path,
-                    run,
-                    manifest,
-                    &request.payload,
-                )?;
+                let root =
+                    component_storage_root(&self.database_path, run, manifest, &request.payload)?;
                 let name = required_bridge_string(&request.payload, "name")?;
                 let path = resolve_storage_relative(&root, &name)?;
                 let encoded = required_bridge_string(&request.payload, "dataBase64")?;
                 let bytes = base64::engine::general_purpose::STANDARD
                     .decode(encoded)
-                    .map_err(|error| AutomationBridgeError::new("storage_blob_invalid", error.to_string()))?;
+                    .map_err(|error| {
+                        AutomationBridgeError::new("storage_blob_invalid", error.to_string())
+                    })?;
                 if bytes.len() > 512 * 1024 {
                     return Err(AutomationBridgeError::new(
                         "storage_blob_too_large",
@@ -1736,12 +1757,8 @@ impl ScriptAutomationRuntime {
                     granted_capabilities,
                     Capability::ProjectStorageRead,
                 )?;
-                let root = component_storage_root(
-                    &self.database_path,
-                    run,
-                    manifest,
-                    &request.payload,
-                )?;
+                let root =
+                    component_storage_root(&self.database_path, run, manifest, &request.payload)?;
                 let name = required_bridge_string(&request.payload, "name")?;
                 let path = resolve_storage_relative(&root, &name)?;
                 let metadata = fs::metadata(&path).map_err(|error| {
@@ -1755,12 +1772,8 @@ impl ScriptAutomationRuntime {
                     granted_capabilities,
                     Capability::ProjectStorageWrite,
                 )?;
-                let root = component_storage_root(
-                    &self.database_path,
-                    run,
-                    manifest,
-                    &request.payload,
-                )?;
+                let root =
+                    component_storage_root(&self.database_path, run, manifest, &request.payload)?;
                 let name = required_bridge_string(&request.payload, "name")?;
                 let path = resolve_storage_relative(&root, &name)?;
                 let removed = if path.is_file() {
@@ -1779,14 +1792,15 @@ impl ScriptAutomationRuntime {
                     granted_capabilities,
                     Capability::ProjectStorageRead,
                 )?;
-                let root = component_storage_root(
-                    &self.database_path,
-                    run,
-                    manifest,
-                    &request.payload,
-                )?;
+                let root =
+                    component_storage_root(&self.database_path, run, manifest, &request.payload)?;
                 let mut entries = Vec::new();
-                for item in WalkDir::new(&root).min_depth(1).max_depth(8).into_iter().filter_map(Result::ok) {
+                for item in WalkDir::new(&root)
+                    .min_depth(1)
+                    .max_depth(8)
+                    .into_iter()
+                    .filter_map(Result::ok)
+                {
                     if item.file_type().is_file() {
                         let path = item.path();
                         let size = item.metadata().map(|metadata| metadata.len()).unwrap_or(0);
@@ -1802,13 +1816,13 @@ impl ScriptAutomationRuntime {
                     granted_capabilities,
                     Capability::ProjectStorageDirect,
                 )?;
-                let root = component_storage_root(
-                    &self.database_path,
-                    run,
-                    manifest,
-                    &request.payload,
-                )?;
-                let scope = request.payload.get("scope").and_then(Value::as_str).unwrap_or("global");
+                let root =
+                    component_storage_root(&self.database_path, run, manifest, &request.payload)?;
+                let scope = request
+                    .payload
+                    .get("scope")
+                    .and_then(Value::as_str)
+                    .unwrap_or("global");
                 let kind = storage_kind(&request.payload)?;
                 serde_json::to_value(ComponentStorageHandle {
                     component_id: manifest.id.clone(),
@@ -1816,7 +1830,9 @@ impl ScriptAutomationRuntime {
                     kind,
                     path: root.to_string_lossy().into_owned(),
                 })
-                .map_err(|error| AutomationBridgeError::new("bridge_response_failed", error.to_string()))
+                .map_err(|error| {
+                    AutomationBridgeError::new("bridge_response_failed", error.to_string())
+                })
             }
             "state.get" => {
                 let scope_key = bridge_scope_key(run, &request.payload)?;
@@ -2086,15 +2102,25 @@ impl ScriptAutomationRuntime {
                         .and_then(|value| value.get("capability"))
                         .cloned()
                         .ok_or_else(|| "权限请求缺少 capability".to_string())
-                        .and_then(|value| serde_json::from_value::<Capability>(value).map_err(|_| "权限请求 capability 无效".to_string()))?;
+                        .and_then(|value| {
+                            serde_json::from_value::<Capability>(value)
+                                .map_err(|_| "权限请求 capability 无效".to_string())
+                        })?;
                     let capability_request = CapabilityTokenRequest {
                         subject_kind: CapabilitySubjectKind::Component,
                         module_id: SCRIPT_AUTOMATION_MODULE_ID.into(),
                         component_id: Some(run.component_id.clone()),
                         capability,
-                        operation: capability_operation_for(capability, command.capability_operation),
+                        operation: capability_operation_for(
+                            capability,
+                            command.capability_operation,
+                        ),
                         reason: format!("自动化脚本“{}”执行 {}", run.command_name, run.command),
-                        scope: capability_scope_for(capability, run.project_path.as_deref(), &run.input)?,
+                        scope: capability_scope_for(
+                            capability,
+                            run.project_path.as_deref(),
+                            &run.input,
+                        )?,
                     };
                     let mut granted = self
                         .pending_capability_tokens
@@ -2426,9 +2452,9 @@ impl ScriptAutomationRuntime {
             report
                 .warnings
                 .push("Python 组件属于受信任代码，仍拥有当前 Windows 用户的系统权限。".into());
-            report.warnings.push(
-                "Capability 只约束 Nexora SDK 与宿主接口，不能沙箱 Python 标准库。".into(),
-            );
+            report
+                .warnings
+                .push("Capability 只约束 Nexora SDK 与宿主接口，不能沙箱 Python 标准库。".into());
         }
         let has_presentation_templates = !manifest.contributes.shell_templates.is_empty()
             || !manifest.contributes.page_templates.is_empty()
@@ -2519,8 +2545,14 @@ impl ScriptAutomationRuntime {
             .into_iter()
             .map(|source_path| {
                 let validation = self.validate_development_component(&source_path);
-                let component_id = validation.manifest.as_ref().map(|manifest| manifest.id.clone());
-                let component_name = validation.manifest.as_ref().map(|manifest| manifest.name.clone());
+                let component_id = validation
+                    .manifest
+                    .as_ref()
+                    .map(|manifest| manifest.id.clone());
+                let component_name = validation
+                    .manifest
+                    .as_ref()
+                    .map(|manifest| manifest.name.clone());
                 let installed_root = component_id
                     .as_deref()
                     .and_then(|id| self.components.package_root(id));
@@ -3418,7 +3450,9 @@ fn required_bridge_string(payload: &Value, key: &str) -> Result<String, String> 
         .ok_or_else(|| format!("SDK 桥请求缺少 {key}"))
 }
 
-fn bridge_requested_capabilities(payload: &Value) -> Result<Vec<Capability>, AutomationBridgeError> {
+fn bridge_requested_capabilities(
+    payload: &Value,
+) -> Result<Vec<Capability>, AutomationBridgeError> {
     let values = if let Some(values) = payload.get("capabilities").and_then(Value::as_array) {
         values.clone()
     } else if let Some(value) = payload.get("capability") {
@@ -3431,8 +3465,9 @@ fn bridge_requested_capabilities(payload: &Value) -> Result<Vec<Capability>, Aut
     };
     let mut capabilities = Vec::new();
     for value in values {
-        let capability = serde_json::from_value::<Capability>(value)
-            .map_err(|_| AutomationBridgeError::new("capability_invalid", "依赖 capability 无效"))?;
+        let capability = serde_json::from_value::<Capability>(value).map_err(|_| {
+            AutomationBridgeError::new("capability_invalid", "依赖 capability 无效")
+        })?;
         if !capabilities.contains(&capability) {
             capabilities.push(capability);
         }
@@ -3474,11 +3509,15 @@ fn require_any_bridge_capability(
     allowed
         .iter()
         .copied()
-        .find(|capability| granted.contains(capability) && manifest.capabilities.contains(capability))
-        .ok_or_else(|| AutomationBridgeError::new(
-            "capability_not_granted",
-            "本次运行的 Capability 不能执行该项目操作",
-        ))
+        .find(|capability| {
+            granted.contains(capability) && manifest.capabilities.contains(capability)
+        })
+        .ok_or_else(|| {
+            AutomationBridgeError::new(
+                "capability_not_granted",
+                "本次运行的 Capability 不能执行该项目操作",
+            )
+        })
 }
 
 fn bridge_project_root(run: &AutomationRun) -> Result<PathBuf, AutomationBridgeError> {
@@ -3504,7 +3543,10 @@ fn bridge_project_root(run: &AutomationRun) -> Result<PathBuf, AutomationBridgeE
     Ok(root)
 }
 
-fn validate_relative_parts(value: &str, allow_empty: bool) -> Result<PathBuf, AutomationBridgeError> {
+fn validate_relative_parts(
+    value: &str,
+    allow_empty: bool,
+) -> Result<PathBuf, AutomationBridgeError> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return if allow_empty {
@@ -3539,11 +3581,12 @@ fn resolve_project_relative(
     allow_missing: bool,
 ) -> Result<PathBuf, AutomationBridgeError> {
     let relative_path = validate_relative_parts(relative, true)?;
-    if relative_path
-        .components()
-        .next()
-        .is_some_and(|component| component.as_os_str().to_string_lossy().eq_ignore_ascii_case(".pm_center"))
-    {
+    if relative_path.components().next().is_some_and(|component| {
+        component
+            .as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(".pm_center")
+    }) {
         return Err(AutomationBridgeError::new(
             "project_internal_path_denied",
             "项目内部 .pm_center 不能通过文件接口访问",
@@ -3569,9 +3612,8 @@ fn resolve_project_relative(
         ));
     }
     let parent = target.parent().unwrap_or(root);
-    let canonical_parent = fs::canonicalize(parent).map_err(|error| {
-        AutomationBridgeError::new("project_parent_invalid", error.to_string())
-    })?;
+    let canonical_parent = fs::canonicalize(parent)
+        .map_err(|error| AutomationBridgeError::new("project_parent_invalid", error.to_string()))?;
     if !canonical_parent.starts_with(root) {
         return Err(AutomationBridgeError::new(
             "path_outside_project",
@@ -3601,8 +3643,17 @@ fn project_file_entry(root: &Path, path: &Path) -> Result<ProjectFileEntry, Auto
             .and_then(|value| value.to_str())
             .unwrap_or("")
             .to_string(),
-        kind: if metadata.is_dir() { "directory" } else { "file" }.into(),
-        size_bytes: if metadata.is_file() { metadata.len() } else { 0 },
+        kind: if metadata.is_dir() {
+            "directory"
+        } else {
+            "file"
+        }
+        .into(),
+        size_bytes: if metadata.is_file() {
+            metadata.len()
+        } else {
+            0
+        },
         modified_at,
     })
 }
@@ -3632,7 +3683,10 @@ async fn apply_project_mutations(
         match mutation.kind.as_str() {
             "create-directory" => {
                 let target_relative = mutation.target.as_deref().ok_or_else(|| {
-                    AutomationBridgeError::new("project_mutation_invalid", "create-directory 缺少 target")
+                    AutomationBridgeError::new(
+                        "project_mutation_invalid",
+                        "create-directory 缺少 target",
+                    )
                 })?;
                 let target = resolve_project_relative(root, target_relative, true)?;
                 if target.exists() && !target.is_dir() {
@@ -3657,9 +3711,9 @@ async fn apply_project_mutations(
                 let target = resolve_project_relative(root, target_relative, true)?;
                 remove_existing_target(&target, mutation.overwrite).await?;
                 if let Some(parent) = target.parent() {
-                    tokio::fs::create_dir_all(parent)
-                        .await
-                        .map_err(|error| AutomationBridgeError::new("project_create_failed", error.to_string()))?;
+                    tokio::fs::create_dir_all(parent).await.map_err(|error| {
+                        AutomationBridgeError::new("project_create_failed", error.to_string())
+                    })?;
                 }
                 if mutation.kind == "move" {
                     if tokio::fs::rename(&source, &target).await.is_err() {
@@ -3670,10 +3724,14 @@ async fn apply_project_mutations(
                             None,
                         )
                         .await
-                        .map_err(|error| AutomationBridgeError::new("project_copy_failed", error))?;
+                        .map_err(|error| {
+                            AutomationBridgeError::new("project_copy_failed", error)
+                        })?;
                         crate::fs::delete_file(source.to_string_lossy().into_owned())
                             .await
-                            .map_err(|error| AutomationBridgeError::new("project_delete_failed", error))?;
+                            .map_err(|error| {
+                                AutomationBridgeError::new("project_delete_failed", error)
+                            })?;
                     }
                 } else {
                     crate::fs::copy_path_to_target(
@@ -3714,7 +3772,9 @@ async fn apply_project_mutations(
                 crate::fs::rename_file(source.to_string_lossy().into_owned(), new_name.to_string())
                     .await
                     .map_err(|error| AutomationBridgeError::new("project_rename_failed", error))?;
-                results.push(json!({"kind": mutation.kind, "source": source_relative, "newName": new_name}));
+                results.push(
+                    json!({"kind": mutation.kind, "source": source_relative, "newName": new_name}),
+                );
             }
             "delete" => {
                 let source_relative = mutation.source.as_deref().ok_or_else(|| {
@@ -3783,7 +3843,10 @@ fn write_component_state_value(
         .and_then(|stored| serde_json::from_str::<Value>(&stored).ok())
         .unwrap_or_else(|| json!({}));
     let object = state.as_object_mut().ok_or_else(|| {
-        AutomationBridgeError::new("storage_state_corrupt", "组件状态根值损坏，必须是 JSON 对象")
+        AutomationBridgeError::new(
+            "storage_state_corrupt",
+            "组件状态根值损坏，必须是 JSON 对象",
+        )
     })?;
     object.insert(key.to_string(), value);
     connection
@@ -3798,7 +3861,11 @@ fn write_component_state_value(
 }
 
 fn storage_kind(payload: &Value) -> Result<ComponentStorageKind, AutomationBridgeError> {
-    match payload.get("kind").and_then(Value::as_str).unwrap_or("state") {
+    match payload
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("state")
+    {
         "state" => Ok(ComponentStorageKind::State),
         "cache" => Ok(ComponentStorageKind::Cache),
         value => Err(AutomationBridgeError::new(
@@ -3814,7 +3881,10 @@ fn component_storage_root(
     manifest: &ComponentManifestV1,
     payload: &Value,
 ) -> Result<PathBuf, AutomationBridgeError> {
-    let scope = payload.get("scope").and_then(Value::as_str).unwrap_or("global");
+    let scope = payload
+        .get("scope")
+        .and_then(Value::as_str)
+        .unwrap_or("global");
     let kind = storage_kind(payload)?;
     let kind_name = match kind {
         ComponentStorageKind::State => "state",
@@ -3863,17 +3933,18 @@ fn resolve_storage_relative(root: &Path, name: &str) -> Result<PathBuf, Automati
 }
 
 fn write_storage_blob(path: &Path, bytes: &[u8]) -> Result<(), AutomationBridgeError> {
-    let parent = path.parent().ok_or_else(|| {
-        AutomationBridgeError::new("storage_path_invalid", "Blob 缺少父目录")
-    })?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| AutomationBridgeError::new("storage_path_invalid", "Blob 缺少父目录"))?;
     fs::create_dir_all(parent)
         .map_err(|error| AutomationBridgeError::new("storage_create_failed", error.to_string()))?;
     let temporary = parent.join(format!(".nexora-{}.tmp", Uuid::new_v4()));
     fs::write(&temporary, bytes)
         .map_err(|error| AutomationBridgeError::new("storage_write_failed", error.to_string()))?;
     if path.exists() {
-        fs::remove_file(path)
-            .map_err(|error| AutomationBridgeError::new("storage_replace_failed", error.to_string()))?;
+        fs::remove_file(path).map_err(|error| {
+            AutomationBridgeError::new("storage_replace_failed", error.to_string())
+        })?;
     }
     fs::rename(&temporary, path)
         .map_err(|error| AutomationBridgeError::new("storage_replace_failed", error.to_string()))
@@ -4281,17 +4352,9 @@ fn capability_operation_for(
         | CacheInspect
         | RenderInspect
         | RenderQueueRead => CapabilityOperation::Read,
-        FilesystemDialogOpen
-        | TaskRun
-        | TaskCancel
-        | PythonExecute
-        | PythonPackagesManage
-        | ProcessSpawn
-        | RenderWorkerExecute => CapabilityOperation::Execute,
-        NetworkHttpRequest
-        | NetworkLanDiscover
-        | NetworkLanMessage
-        | NetworkLanTransfer
+        FilesystemDialogOpen | TaskRun | TaskCancel | PythonExecute | PythonPackagesManage
+        | ProcessSpawn | RenderWorkerExecute => CapabilityOperation::Execute,
+        NetworkHttpRequest | NetworkLanDiscover | NetworkLanMessage | NetworkLanTransfer
         | NetworkServerConnect => CapabilityOperation::Connect,
         NotificationSend => CapabilityOperation::Notify,
         AppProfileWrite
@@ -5080,8 +5143,10 @@ mod tests {
             .find(|command| command.command == "refresh-libraries")
             .expect("music player should expose directory refresh");
         assert!(refresh_command.max_parallelism.unwrap_or_default() >= 2);
-        assert!(include_str!("../../../examples/ninniku-music-player/main.py")
-            .contains("stream.open-read"));
+        assert!(
+            include_str!("../../../examples/ninniku-music-player/main.py")
+                .contains("stream.open-read")
+        );
     }
 
     #[test]

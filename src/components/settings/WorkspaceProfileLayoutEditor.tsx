@@ -19,22 +19,16 @@ import {
   SHELL_TAB_CONTRIBUTIONS,
   SURFACE_CONTRIBUTION_BY_ID,
   SURFACE_CONTRIBUTIONS,
-  WIDGET_CONTRIBUTION_BY_ID,
   type SurfaceContributionDefinition,
-  type WidgetContributionDefinition,
 } from '../../features/contributionRegistry';
 import {
   getSelectedModuleContributionIds,
-  getWidgetDefinition,
   reorderPinnedTools,
   reorderProfileNavigation,
-  reorderProfileWidgets,
   setPinnedToolContribution,
   setProfileHomeContribution,
   setProfileHomeScriptSurface,
   setProfileNavigationContribution,
-  setProfileWidgetContribution,
-  updateProfileWidgetRegion,
 } from '../../features/profileLayout';
 import {
   duplicateInterfaceTemplateForDevelopment,
@@ -65,7 +59,7 @@ interface WorkspaceProfileLayoutEditorProps {
   onChange: (updater: (profile: WorkspaceProfileV1) => WorkspaceProfileV1) => void;
 }
 
-type DragKind = 'navigation' | 'tool' | 'widget';
+type DragKind = 'navigation' | 'tool';
 
 interface DragState {
   kind: DragKind;
@@ -73,32 +67,41 @@ interface DragState {
 }
 
 const SHELL_TEMPLATE_OPTIONS: Array<{
-  value: ShellNavigationKind;
+  navigationKind: ShellNavigationKind;
   templateId: string;
   label: string;
   description: string;
   icon: typeof PanelTop;
 }> = [
   {
-    value: 'top-bar',
+    navigationKind: 'top-bar',
     templateId: 'nexora.shell.top-bar',
     label: '顶部',
     description: '导航和工具位于窗口顶部',
     icon: PanelTop,
   },
   {
-    value: 'side-bar',
+    navigationKind: 'side-bar',
     templateId: 'nexora.shell.side-bar',
     label: '侧边',
     description: '主导航位于左侧',
     icon: PanelLeft,
   },
   {
-    value: 'minimal',
+    navigationKind: 'minimal',
     templateId: 'nexora.shell.minimal',
     label: '紧凑',
     description: '减少固定导航占用',
     icon: Menu,
+  },
+  {
+    // shellTemplate is authoritative for current profiles. The compatibility
+    // navigation value only provides a safe fallback for older readers.
+    navigationKind: 'minimal',
+    templateId: 'nexora.shell.blank-home',
+    label: '空白主页',
+    description: '工具带以下仅显示启动主页，不提供导航、标签或其他插槽',
+    icon: LayoutDashboard,
   },
 ];
 
@@ -115,6 +118,30 @@ const BUILTIN_TEMPLATE_SLOTS: TemplateSlotDefinition[] = [
   { id: 'primary', name: '主内容', accepts: ['active-surface', 'component-surface'], multiplicity: 'many', layout: 'stack', required: true },
   { id: 'status', name: '状态', accepts: ['status'], multiplicity: 'one', layout: 'single', collapseWhenEmpty: true },
 ];
+
+const BLANK_HOME_TEMPLATE_SLOTS: TemplateSlotDefinition[] = [
+  { id: 'primary', name: '主页区域', accepts: ['active-surface'], multiplicity: 'one', layout: 'single', collapseWhenEmpty: false },
+];
+
+const HOST_SLOT_KINDS = new Set<ProfileTemplateSlotBinding['kind']>([
+  'active-surface',
+  'navigation',
+  'tabs',
+  'toolbar',
+  'status',
+]);
+
+const LEGACY_IMPLICIT_HOST_TEMPLATES = new Set([
+  'nexora.shell.top-bar',
+  'nexora.shell.side-bar',
+  'nexora.shell.minimal',
+]);
+
+function builtinTemplateSlots(templateId: string) {
+  return templateId === 'nexora.shell.blank-home'
+    ? BLANK_HOME_TEMPLATE_SLOTS
+    : BUILTIN_TEMPLATE_SLOTS;
+}
 
 function canonicalShellTemplateId(id: string | undefined) {
   return id ? LEGACY_SHELL_TEMPLATE_ALIASES[id] ?? id : '';
@@ -164,19 +191,7 @@ function resolveEffectiveComponentIds(
 function contributionTitle(id: string) {
   return SURFACE_CONTRIBUTION_BY_ID.get(id)?.title
     || BUILTIN_TOOLS.find((tool) => tool.contribution.id === id)?.title
-    || WIDGET_CONTRIBUTION_BY_ID.get(id)?.title
     || id;
-}
-
-function orderedWidgets(profile: WorkspaceProfileV1, surfaceId: string) {
-  const surface = (profile.surfaces ?? []).find((candidate) => candidate.id === surfaceId);
-  return [...(surface?.widgets ?? [])].sort((left, right) => {
-    const leftRegion = left.region === 'sidebar' ? 0 : 1;
-    const rightRegion = right.region === 'sidebar' ? 0 : 1;
-    return leftRegion - rightRegion
-      || (left.order ?? 0) - (right.order ?? 0)
-      || left.id.localeCompare(right.id);
-  });
 }
 
 function slotAcceptsLabel(slot: TemplateSlotDefinition) {
@@ -190,6 +205,37 @@ function slotAcceptsLabel(slot: TemplateSlotDefinition) {
     status: '状态',
   };
   return slot.accepts.map((item) => labels[item]).join('、');
+}
+
+function slotBindingLabel(kind: ProfileTemplateSlotBinding['kind']) {
+  const labels: Record<ProfileTemplateSlotBinding['kind'], string> = {
+    'active-surface': '主页 / 当前活动页面',
+    'component-surface': '组件页面',
+    widget: 'Widget',
+    navigation: '导航',
+    tabs: '标签栏',
+    toolbar: '项目工具栏',
+    status: '状态栏',
+  };
+  return labels[kind];
+}
+
+function implicitHostBindings(
+  templateId: string,
+  slots: TemplateSlotDefinition[],
+): ProfileTemplateSlotBinding[] {
+  if (!LEGACY_IMPLICIT_HOST_TEMPLATES.has(canonicalShellTemplateId(templateId))) return [];
+  return slots.flatMap((slot) => {
+    const kind = slot.accepts.find((candidate) => HOST_SLOT_KINDS.has(candidate));
+    if (!kind) return [];
+    return [{
+      id: localBindingId('legacy', slot.id, kind),
+      slotId: slot.id,
+      kind,
+      enabled: true,
+      order: 10,
+    } satisfies ProfileTemplateSlotBinding];
+  });
 }
 
 function localBindingId(...parts: string[]) {
@@ -243,15 +289,11 @@ export function WorkspaceProfileLayoutEditor({
     () => getSelectedModuleContributionIds(draft, modules, 'tools'),
     [draft, modules],
   );
-  const selectedWidgetIds = useMemo(
-    () => getSelectedModuleContributionIds(draft, modules, 'widgets'),
-    [draft, modules],
-  );
-
   const availableHomeSurfaces = useMemo(() => (
     Object.values(SURFACE_CONTRIBUTIONS)
       .filter((definition) => selectedSurfaceIds.has(definition.id))
       .filter((definition) => definition.host === 'shell')
+      .filter((definition) => definition.id !== SURFACE_CONTRIBUTIONS.nexoraWelcome.id)
       .filter((definition) => definition.id !== SURFACE_CONTRIBUTIONS.projectWorkspace.id)
   ), [selectedSurfaceIds]);
 
@@ -310,16 +352,6 @@ export function WorkspaceProfileLayoutEditor({
     (draft.surfaces ?? []).find((surface) => surface.id === surfaceId)
   )).filter((surface): surface is NonNullable<WorkspaceProfileV1['surfaces']>[number] => Boolean(surface));
   const pinnedToolContributionIds = draft.shellLayout?.pinnedTools ?? [];
-  const projectHomeSurface = (draft.surfaces ?? []).find(
-    (surface) => surface.contribution === SURFACE_CONTRIBUTIONS.projectHome.id,
-  );
-  const availableWidgets = useMemo(() => (
-    Array.from(selectedWidgetIds)
-      .map((widgetId) => WIDGET_CONTRIBUTION_BY_ID.get(widgetId))
-      .filter((definition): definition is WidgetContributionDefinition => Boolean(definition))
-      .sort((left, right) => left.title.localeCompare(right.title, 'zh-CN'))
-  ), [selectedWidgetIds]);
-  const widgets = projectHomeSurface ? orderedWidgets(draft, projectHomeSurface.id) : [];
   const externalShellTemplates = useMemo(() => (componentRuntime?.templates.shellTemplates ?? [])
     .filter((item) => !SHELL_TEMPLATE_OPTIONS.some((builtin) => builtin.templateId === item.template.id))
     .sort((left, right) => left.template.name.localeCompare(right.template.name, 'zh-CN')),
@@ -338,16 +370,17 @@ export function WorkspaceProfileLayoutEditor({
     ? developmentComponents.find((item) => item.componentId === selectedExternalShellTemplate.owner.componentId) ?? null
     : null;
   const activeTemplateSlots = selectedBuiltinShellTemplate || !selectedShellTemplateId
-    ? BUILTIN_TEMPLATE_SLOTS
+    ? builtinTemplateSlots(canonicalSelectedShellTemplateId || 'nexora.shell.top-bar')
     : (templatePreview?.slots ?? []);
   const activeTemplateState = (draft.shellLayout?.interfaceTemplateStates ?? []).find(
     (state) => state.templateId === (selectedShellTemplateId
-      || SHELL_TEMPLATE_OPTIONS.find((option) => option.value === (draft.shellLayout?.navigationKind ?? 'top-bar'))?.templateId),
+      || SHELL_TEMPLATE_OPTIONS.find((option) => option.navigationKind === (draft.shellLayout?.navigationKind ?? 'top-bar'))?.templateId),
   ) ?? null;
-  const activeTemplateBindings = activeTemplateState?.slotBindings ?? [];
   const activeTemplateId = selectedShellTemplateId
-    || SHELL_TEMPLATE_OPTIONS.find((option) => option.value === (draft.shellLayout?.navigationKind ?? 'top-bar'))?.templateId
+    || SHELL_TEMPLATE_OPTIONS.find((option) => option.navigationKind === (draft.shellLayout?.navigationKind ?? 'top-bar'))?.templateId
     || 'nexora.shell.top-bar';
+  const activeTemplateBindings = activeTemplateState?.slotBindings
+    ?? implicitHostBindings(activeTemplateId, activeTemplateSlots);
 
   const isSurfaceBound = (componentId: string, surfaceId: string) => activeTemplateBindings.some(
     (binding) => binding.enabled !== false
@@ -389,6 +422,24 @@ export function WorkspaceProfileLayoutEditor({
         instanceId: surface.instanceMode === 'multiple' ? localBindingId('instance', surface.surfaceId, String(instanceNumber)) : undefined,
         enabled: true,
         order: sequence * 10,
+      });
+    }));
+  };
+
+  const addHostContentToSlot = (
+    slot: TemplateSlotDefinition,
+    kind: ProfileTemplateSlotBinding['kind'],
+  ) => {
+    mutate((profile) => mutateTemplateState(profile, (bindings) => {
+      const slotBindings = bindings.filter((binding) => binding.slotId === slot.id && binding.enabled !== false);
+      if (slot.multiplicity === 'one' && slotBindings.length > 0) return;
+      if (bindings.some((binding) => binding.enabled !== false && binding.kind === kind)) return;
+      bindings.push({
+        id: localBindingId('slot', slot.id, kind),
+        slotId: slot.id,
+        kind,
+        enabled: true,
+        order: (slotBindings.length + 1) * 10,
       });
     }));
   };
@@ -488,12 +539,14 @@ export function WorkspaceProfileLayoutEditor({
     updater: (bindings: ProfileTemplateSlotBinding[]) => void,
   ) => {
     const templateId = profile.shellLayout?.shellTemplate?.id
-      || SHELL_TEMPLATE_OPTIONS.find((option) => option.value === (profile.shellLayout?.navigationKind ?? 'top-bar'))?.templateId
+      || SHELL_TEMPLATE_OPTIONS.find((option) => option.navigationKind === (profile.shellLayout?.navigationKind ?? 'top-bar'))?.templateId
       || 'nexora.shell.top-bar';
     profile.shellLayout = { ...(profile.shellLayout ?? {}) };
     const states = [...(profile.shellLayout.interfaceTemplateStates ?? [])];
     const existingIndex = states.findIndex((state) => state.templateId === templateId);
-    const bindings = existingIndex >= 0 ? [...(states[existingIndex].slotBindings ?? [])] : [];
+    const bindings = existingIndex >= 0
+      ? [...(states[existingIndex].slotBindings ?? [])]
+      : implicitHostBindings(templateId, activeTemplateSlots);
     updater(bindings);
     const nextState = existingIndex >= 0
       ? { ...states[existingIndex], slotBindings: bindings }
@@ -531,14 +584,15 @@ export function WorkspaceProfileLayoutEditor({
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
-        <div className="space-y-4">
-          <section className="rounded-md border border-gray-200 dark:border-gray-700">
-            <div className="flex items-center gap-2 border-b border-gray-200 px-3 py-2.5 dark:border-gray-700">
+      <div className="flex flex-col gap-4">
+        <div className="contents">
+          <section className="order-4 rounded-md border border-gray-200 p-3 dark:border-gray-700">
+            <div className="flex flex-wrap items-center gap-3">
               <LayoutDashboard className="h-4 w-4 text-sky-600" />
-              <h4 className="text-sm font-semibold">启动主页</h4>
-            </div>
-            <div className="p-3">
+              <div className="min-w-44">
+                <h4 className="text-sm font-semibold">启动主页</h4>
+                <p className="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">只决定“主页”插槽启动时打开哪个页面</p>
+              </div>
               <select
                 value={currentHomeContributionId}
                 onChange={(event) => {
@@ -558,9 +612,9 @@ export function WorkspaceProfileLayoutEditor({
                   }
                   selectHome(null);
                 }}
-                className="h-9 w-full rounded-md border border-gray-300 bg-white px-3 text-sm dark:border-gray-700 dark:bg-gray-800"
+                className="h-9 min-w-60 flex-1 rounded-md border border-gray-300 bg-white px-3 text-sm dark:border-gray-700 dark:bg-gray-800"
               >
-                <option value="">最小安全主页</option>
+                <option value="">Nexora 欢迎页（默认）</option>
                 {availableHomeSurfaces.map((definition) => (
                   <option key={definition.id} value={definition.id}>{definition.title}</option>
                 ))}
@@ -582,13 +636,10 @@ export function WorkspaceProfileLayoutEditor({
                     </option>
                   ) : null}
               </select>
-              <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-                主页只决定启动时激活的页面；同一页面可另外加入导航或固定到快捷栏，并不互斥。未选择主页时始终进入恢复安全页，不会出现空白窗口。
-              </p>
             </div>
           </section>
 
-          <section className="rounded-md border border-gray-200 dark:border-gray-700">
+          <section className="order-2 rounded-md border border-gray-200 dark:border-gray-700">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 px-3 py-2.5 dark:border-gray-700">
               <div className="flex items-center gap-2">
                 <LayoutDashboard className="h-4 w-4 text-indigo-600" />
@@ -605,7 +656,7 @@ export function WorkspaceProfileLayoutEditor({
                   .filter((binding) => binding.slotId === slot.id)
                   .sort((left, right) => (left.order ?? 0) - (right.order ?? 0) || left.id.localeCompare(right.id));
                 const acceptsComponentSurface = slot.accepts.includes('component-surface');
-                const hostKinds = slot.accepts.filter((kind) => kind !== 'component-surface' && kind !== 'widget');
+                const hostKinds = slot.accepts.filter((kind) => HOST_SLOT_KINDS.has(kind));
                 const eligibleSurfaces = acceptsComponentSurface
                   ? componentSurfaces.filter((surface) => (
                     surface.placements.includes('shell') || surface.placements.includes('workspace')
@@ -613,22 +664,17 @@ export function WorkspaceProfileLayoutEditor({
                     surface.instanceMode === 'multiple' || !isSurfaceBound(surface.componentId, surface.surfaceId)
                   ))
                   : [];
-                const missingRequired = slot.required && bindings.length === 0 && !slot.accepts.some(
-                  (kind) => ['active-surface', 'navigation', 'tabs', 'toolbar', 'status'].includes(kind),
-                );
                 return (
                   <div key={slot.id} className="p-3">
                     <div className="flex flex-wrap items-start justify-between gap-2">
                       <div>
                         <div className="flex flex-wrap items-center gap-1.5">
                           <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{slot.name || slot.id}</p>
-                          {slot.required ? <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">必需</span> : null}
                           {slot.collapseWhenEmpty ? <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500 dark:bg-gray-800">空时折叠</span> : null}
                           <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500 dark:bg-gray-800">{slot.layout || 'flow'} · {slot.multiplicity || 'many'}</span>
                         </div>
                         <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">接受：{slotAcceptsLabel(slot)}{slot.minWidth || slot.minHeight ? ` · 最小 ${slot.minWidth ?? '自动'} x ${slot.minHeight ?? '自动'}` : ''}</p>
                       </div>
-                      {hostKinds.length ? <span className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300">宿主提供：{hostKinds.map((kind) => slotAcceptsLabel({ ...slot, accepts: [kind] })).join('、')}</span> : null}
                     </div>
 
                     {bindings.length ? (
@@ -637,10 +683,17 @@ export function WorkspaceProfileLayoutEditor({
                           const surface = binding.componentId && binding.surfaceId
                             ? componentSurfaces.find((candidate) => candidate.componentId === binding.componentId && candidate.surfaceId === binding.surfaceId)
                             : null;
+                          const available = binding.kind !== 'component-surface' || Boolean(surface);
                           return (
-                            <div key={binding.id} className={`flex min-h-9 items-center gap-2 rounded-md border px-2 ${surface ? 'border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800' : 'border-amber-200 bg-amber-50 dark:border-amber-900/60 dark:bg-amber-950/20'}`}>
-                              <FileCode2 className={`h-3.5 w-3.5 shrink-0 ${surface ? 'text-violet-500' : 'text-amber-600'}`} />
-                              <span className="min-w-0 flex-1 truncate text-xs">{surface ? `${surface.title} · ${surface.componentName}` : `${binding.surfaceId || binding.contributionId || binding.kind}（当前不可用）`}</span>
+                            <div key={binding.id} className={`flex min-h-9 items-center gap-2 rounded-md border px-2 ${available ? 'border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800' : 'border-amber-200 bg-amber-50 dark:border-amber-900/60 dark:bg-amber-950/20'}`}>
+                              {binding.kind === 'component-surface'
+                                ? <FileCode2 className={`h-3.5 w-3.5 shrink-0 ${surface ? 'text-violet-500' : 'text-amber-600'}`} />
+                                : <LayoutDashboard className="h-3.5 w-3.5 shrink-0 text-emerald-600" />}
+                              <span className="min-w-0 flex-1 truncate text-xs">
+                                {binding.kind === 'component-surface'
+                                  ? surface ? `${surface.title} · ${surface.componentName}` : `${binding.surfaceId || binding.contributionId || binding.kind}（当前不可用）`
+                                  : slotBindingLabel(binding.kind)}
+                              </span>
                               {binding.instanceId ? <span className="font-mono text-[10px] text-gray-400">{binding.instanceId}</span> : null}
                               <button type="button" disabled={index === 0} onClick={() => moveTemplateBinding(binding.id, -1)} className="flex h-7 w-6 items-center justify-center rounded text-gray-400 hover:bg-gray-100 disabled:opacity-30 dark:hover:bg-gray-700" title="向前排序"><ArrowUp className="h-3.5 w-3.5" /></button>
                               <button type="button" disabled={index === bindings.length - 1} onClick={() => moveTemplateBinding(binding.id, 1)} className="flex h-7 w-6 items-center justify-center rounded text-gray-400 hover:bg-gray-100 disabled:opacity-30 dark:hover:bg-gray-700" title="向后排序"><ArrowDown className="h-3.5 w-3.5" /></button>
@@ -650,7 +703,28 @@ export function WorkspaceProfileLayoutEditor({
                         })}
                       </div>
                     ) : null}
-                    {missingRequired ? <p className="mt-2 text-xs text-red-600 dark:text-red-300">此必需插槽没有可用内容，保存并应用会被阻止。</p> : null}
+                    {hostKinds.some((kind) => !bindings.some((binding) => binding.enabled !== false && binding.kind === kind)) ? (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {hostKinds
+                          .filter((kind) => !bindings.some((binding) => binding.enabled !== false && binding.kind === kind))
+                          .map((kind) => {
+                            const full = slot.multiplicity === 'one' && bindings.length > 0;
+                            return (
+                              <button
+                                key={`${slot.id}:${kind}`}
+                                type="button"
+                                disabled={full}
+                                onClick={() => addHostContentToSlot(slot, kind)}
+                                className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-40 dark:text-emerald-300 dark:hover:bg-emerald-950/30"
+                                title={full ? '此插槽只允许一个内容' : `将${slotBindingLabel(kind)}加入${slot.name || slot.id}`}
+                              >
+                                <Plus className="h-3.5 w-3.5" />
+                                {slotBindingLabel(kind)}
+                              </button>
+                            );
+                          })}
+                      </div>
+                    ) : null}
                     {acceptsComponentSurface ? (
                       <div className="mt-2 grid gap-1 sm:grid-cols-2">
                         {eligibleSurfaces.map((surface) => {
@@ -682,7 +756,7 @@ export function WorkspaceProfileLayoutEditor({
             </div>
           </section>
 
-          <section className="rounded-md border border-gray-200 dark:border-gray-700">
+          <section className="order-1 rounded-md border border-gray-200 dark:border-gray-700">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 px-3 py-2.5 dark:border-gray-700">
               <div className="flex items-center gap-2">
                 <Menu className="h-4 w-4 text-emerald-600" />
@@ -696,15 +770,15 @@ export function WorkspaceProfileLayoutEditor({
                   const Icon = option.icon;
                   const active = selectedShellTemplateId
                     ? canonicalSelectedShellTemplateId === option.templateId
-                    : (draft.shellLayout?.navigationKind ?? 'top-bar') === option.value;
+                    : (draft.shellLayout?.navigationKind ?? 'top-bar') === option.navigationKind;
                   return (
                     <button
-                      key={option.value}
+                      key={option.templateId}
                       type="button"
                       onClick={() => mutate((profile) => {
                         profile.shellLayout = {
                           ...(profile.shellLayout ?? {}),
-                          navigationKind: option.value,
+                          navigationKind: option.navigationKind,
                           shellTemplate: {
                             id: option.templateId,
                             versionRequirement: '*',
@@ -881,7 +955,7 @@ export function WorkspaceProfileLayoutEditor({
             </div>
           </section>
 
-          <section className="rounded-md border border-gray-200 dark:border-gray-700">
+          <section className="order-3 rounded-md border border-gray-200 dark:border-gray-700">
             <div className="flex items-center gap-2 border-b border-gray-200 px-3 py-2.5 dark:border-gray-700">
               <Pin className="h-4 w-4 text-violet-600" />
               <h4 className="text-sm font-semibold">快捷栏</h4>
@@ -966,215 +1040,6 @@ export function WorkspaceProfileLayoutEditor({
                   ) ? (
                   <p className="py-5 text-center text-xs text-gray-400">没有更多可固定工具</p>
                 ) : null}
-              </div>
-            </div>
-          </section>
-        </div>
-
-        <div className="space-y-4">
-          <section className="rounded-md border border-gray-200 dark:border-gray-700">
-            <div className="flex items-center gap-2 border-b border-gray-200 px-3 py-2.5 dark:border-gray-700">
-              <FileCode2 className="h-4 w-4 text-violet-600" />
-              <h4 className="text-sm font-semibold">组件页面</h4>
-              <span className="ml-auto text-xs text-gray-500">{componentSurfaces.length} 项</span>
-            </div>
-            <div className="max-h-52 divide-y divide-gray-100 overflow-auto dark:divide-gray-800">
-              {componentSurfaces.map((surface) => (
-                <div key={`${surface.componentId}:${surface.surfaceId}`} className="flex items-center gap-3 px-3 py-2.5">
-                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-violet-100 text-violet-700 dark:bg-violet-950/50 dark:text-violet-300">
-                    <FileCode2 className="h-4 w-4" />
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium text-gray-900 dark:text-gray-100">{surface.title}</p>
-                    <p className="truncate text-[11px] text-gray-500">{surface.componentName} · {surface.placements.join(' / ')}</p>
-                  </div>
-                  {surface.homeEligible ? (
-                    <button
-                      type="button"
-                      onClick={() => selectScriptHome(surface)}
-                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md ${currentHomeContributionId === surface.surfaceId ? 'bg-sky-100 text-sky-700 dark:bg-sky-950/50 dark:text-sky-300' : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'}`}
-                      title={currentHomeContributionId === surface.surfaceId ? '当前启动主页' : '设为启动主页'}
-                    >
-                      <LayoutDashboard className="h-4 w-4" />
-                    </button>
-                  ) : null}
-                  {surface.pinnable ? (
-                    <button
-                      type="button"
-                      onClick={() => mutate((profile) => setPinnedToolContribution(
-                        profile,
-                        surface.surfaceId,
-                        !pinnedToolContributionIds.includes(surface.surfaceId),
-                      ))}
-                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md ${pinnedToolContributionIds.includes(surface.surfaceId) ? 'bg-violet-100 text-violet-700 dark:bg-violet-950/50 dark:text-violet-300' : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'}`}
-                      title={pinnedToolContributionIds.includes(surface.surfaceId) ? '从快捷栏移除' : '固定到快捷栏'}
-                    >
-                      <Pin className="h-4 w-4" />
-                    </button>
-                  ) : (
-                    <span className="text-[10px] text-gray-400">未声明 shell</span>
-                  )}
-                </div>
-              ))}
-              {componentSurfaces.length === 0 ? (
-                <p className="px-3 py-6 text-center text-xs text-gray-400">当前方案没有启用带页面的外部组件</p>
-              ) : null}
-            </div>
-          </section>
-
-          <section className="rounded-md border border-gray-200 dark:border-gray-700">
-            <div className="flex items-center gap-2 border-b border-gray-200 px-3 py-2.5 dark:border-gray-700">
-              <LayoutDashboard className="h-4 w-4 text-orange-500" />
-              <h4 className="text-sm font-semibold">项目主页组件</h4>
-            </div>
-            {!projectHomeSurface ? (
-              <div className="p-6 text-center text-xs text-gray-500">
-                选择“项目主页”作为主页，或启用项目管理器后再配置组件。
-              </div>
-            ) : (
-              <div className="p-3">
-                <div
-                  className="space-y-1.5"
-                  onDragOver={(event) => event.preventDefault()}
-                  onDrop={() => handleDrop(
-                    'widget',
-                    null,
-                    (profile, id, beforeId) => reorderProfileWidgets(
-                      profile,
-                      projectHomeSurface.id,
-                      id,
-                      beforeId,
-                    ),
-                  )}
-                >
-                  {widgets.map((widget) => {
-                    const definition = getWidgetDefinition(widget.widget);
-                    return (
-                      <div
-                        key={widget.id}
-                        draggable
-                        onDragStart={() => setDragged({ kind: 'widget', id: widget.id })}
-                        onDragOver={(event) => event.preventDefault()}
-                        onDrop={(event) => {
-                          event.stopPropagation();
-                          handleDrop(
-                            'widget',
-                            widget.id,
-                            (profile, id, beforeId) => reorderProfileWidgets(
-                              profile,
-                              projectHomeSurface.id,
-                              id,
-                              beforeId,
-                            ),
-                          );
-                        }}
-                        className="flex min-h-10 items-center gap-2 rounded-md border border-gray-200 bg-white px-2 dark:border-gray-700 dark:bg-gray-800"
-                      >
-                        <GripVertical className="h-4 w-4 cursor-grab text-gray-400" />
-                        <span className="min-w-0 flex-1 truncate text-sm">{definition?.title || widget.widget}</span>
-                        <select
-                          value={widget.region === 'sidebar' ? 'sidebar' : 'content'}
-                          onChange={(event) => mutate((profile) => updateProfileWidgetRegion(
-                            profile,
-                            projectHomeSurface.id,
-                            widget.id,
-                            event.target.value as 'sidebar' | 'content',
-                          ))}
-                          className="h-7 rounded border border-gray-200 bg-white px-1.5 text-xs dark:border-gray-700 dark:bg-gray-900"
-                          title="组件区域"
-                        >
-                          <option value="sidebar">侧栏</option>
-                          <option value="content">内容</option>
-                        </select>
-                        <button
-                          type="button"
-                          onClick={() => definition && mutate((profile) => setProfileWidgetContribution(
-                            profile,
-                            projectHomeSurface.id,
-                            definition,
-                            false,
-                          ))}
-                          className="flex h-7 w-7 items-center justify-center rounded text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-700"
-                          title="移除组件"
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    );
-                  })}
-                  {widgets.length === 0 ? (
-                    <p className="py-5 text-center text-xs text-gray-400">主页没有组件</p>
-                  ) : null}
-                </div>
-                <div className="mt-3 border-t border-gray-200 pt-3 dark:border-gray-700">
-                  <p className="mb-1.5 text-xs font-medium text-gray-600 dark:text-gray-300">添加组件</p>
-                  <div className="grid gap-1 sm:grid-cols-2">
-                    {availableWidgets
-                      .filter((definition) => !widgets.some((widget) => widget.widget === definition.id))
-                      .map((definition) => (
-                        <button
-                          key={definition.id}
-                          type="button"
-                          onClick={() => mutate((profile) => setProfileWidgetContribution(
-                            profile,
-                            projectHomeSurface.id,
-                            definition,
-                            true,
-                          ))}
-                          className="flex min-h-9 items-center gap-2 rounded-md px-2 text-left text-xs hover:bg-gray-50 dark:hover:bg-gray-800"
-                        >
-                          <Plus className="h-3.5 w-3.5 text-gray-400" />
-                          <span>{definition.title}</span>
-                        </button>
-                      ))}
-                  </div>
-                </div>
-              </div>
-            )}
-          </section>
-
-          <section className="rounded-md border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-800/40">
-            <p className="text-xs font-semibold text-gray-700 dark:text-gray-200">布局预览</p>
-            <div className="mt-3 overflow-hidden rounded-md border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
-              <div className="flex h-8 items-center gap-1 border-b border-gray-200 px-2 dark:border-gray-700">
-                {(draft.shellLayout?.navigationKind ?? 'top-bar') !== 'side-bar'
-                  ? navigationSurfaces.map((surface) => (
-                      <span key={surface.id} className="rounded bg-gray-100 px-2 py-1 text-[10px] dark:bg-gray-800">
-                        {surface.title || surface.id}
-                      </span>
-                    ))
-                  : <span className="text-[10px] text-gray-400">侧边导航</span>}
-                <div className="ml-auto flex gap-1">
-                  {pinnedToolContributionIds.slice(0, 5).map((id) => (
-                    <span key={id} className="h-4 w-4 rounded bg-violet-100 dark:bg-violet-950/60" title={contributionTitle(id)} />
-                  ))}
-                </div>
-              </div>
-              <div className="flex min-h-36">
-                {(draft.shellLayout?.navigationKind ?? 'top-bar') === 'side-bar' ? (
-                  <div className="w-20 border-r border-gray-200 p-2 dark:border-gray-700">
-                    {navigationSurfaces.map((surface) => (
-                      <div key={surface.id} className="mb-1 h-4 rounded bg-emerald-100 dark:bg-emerald-950/50" />
-                    ))}
-                  </div>
-                ) : null}
-                <div className="grid min-w-0 flex-1 grid-cols-3 gap-2 p-3">
-                  <div className="space-y-2">
-                    {widgets.filter((widget) => widget.region === 'sidebar').map((widget) => (
-                      <div key={widget.id} className="h-8 rounded bg-sky-100 dark:bg-sky-950/50" title={getWidgetDefinition(widget.widget)?.title} />
-                    ))}
-                  </div>
-                  <div className="col-span-2 space-y-2">
-                    {widgets.filter((widget) => widget.region !== 'sidebar').map((widget) => (
-                      <div key={widget.id} className="h-10 rounded bg-orange-100 dark:bg-orange-950/50" title={getWidgetDefinition(widget.widget)?.title} />
-                    ))}
-                    {widgets.length === 0 ? (
-                      <div className="flex h-full items-center justify-center text-[10px] text-gray-400">
-                        {currentHomeContributionId ? contributionTitle(currentHomeContributionId) : '最小安全主页'}
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
               </div>
             </div>
           </section>

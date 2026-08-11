@@ -3,8 +3,8 @@ mod builtin_modules;
 mod capability_gateway;
 mod component_runtime;
 mod component_settings;
-mod file_router;
 pub(crate) mod file_operations;
+mod file_router;
 mod module_manager;
 mod presentation_templates;
 mod profile_package;
@@ -65,7 +65,8 @@ pub use file_router::{
     SetFileAssociationBindingRequest,
 };
 pub use presentation_templates::{
-    InterfaceTemplateLayoutValidation, PresentationTemplatePreview, PresentationTemplatePreviewRequest,
+    InterfaceTemplateLayoutValidation, PresentationTemplatePreview,
+    PresentationTemplatePreviewRequest,
 };
 
 use crate::component_packager::{ComponentPackRequest, ComponentPackResult, SigningKeyResult};
@@ -343,7 +344,9 @@ pub fn get_interface_template_preview(
     template_id: String,
     runtime: State<'_, PlatformRuntime>,
 ) -> Result<PresentationTemplatePreview, ComponentRuntimeError> {
-    runtime.components.interface_template_preview_by_id(&template_id)
+    runtime
+        .components
+        .interface_template_preview_by_id(&template_id)
 }
 
 #[tauri::command]

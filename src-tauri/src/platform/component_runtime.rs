@@ -9,9 +9,9 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use pmc_platform::{
     parse_component_manifest, parse_package_header, validate_component_graph, ComponentManifestV1,
     ComponentRuntime, ComponentSurfaceInstanceMode, DigestAlgorithm, PackageKind,
-    PageTemplateContribution, PlatformTarget, ProfileTemplateSlotBinding, ShellTemplateContribution,
-    TemplateSlotAccepts, TemplateSlotDefinition, TemplateSlotLayout, TemplateSlotMultiplicity,
-    ThemePresetContribution, ValidateContract, WorkspaceProfileV1,
+    PageTemplateContribution, PlatformTarget, ProfileTemplateSlotBinding,
+    ShellTemplateContribution, TemplateSlotAccepts, TemplateSlotDefinition, TemplateSlotLayout,
+    TemplateSlotMultiplicity, ThemePresetContribution, ValidateContract, WorkspaceProfileV1,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -1253,7 +1253,7 @@ impl ComponentRuntimeManager {
             .clone();
         let mut diagnostics = Vec::new();
         let slots = if template_id.starts_with("nexora.shell.") {
-            builtin_interface_template_slots()
+            builtin_interface_template_slots(template_id)
         } else {
             let owner = catalog.values().find(|component| {
                 component
@@ -1264,20 +1264,25 @@ impl ComponentRuntimeManager {
                     .any(|template| template.id == template_id)
             });
             match owner.and_then(|component| {
-                component.package_root.as_ref().map(|root| (root, &component.manifest))
+                component
+                    .package_root
+                    .as_ref()
+                    .map(|root| (root, &component.manifest))
             }) {
-                Some((root, manifest)) => match load_presentation_template_preview(root, manifest, template_id) {
-                    Ok(preview) => preview.slots,
-                    Err(error) => {
-                        diagnostics.push(interface_diagnostic(
-                            "TEMPLATE_INVALID",
-                            "error",
-                            "$.shellLayout.shellTemplate",
-                            format!("界面模板无法装载：{}", error.message),
-                        ));
-                        Vec::new()
+                Some((root, manifest)) => {
+                    match load_presentation_template_preview(root, manifest, template_id) {
+                        Ok(preview) => preview.slots,
+                        Err(error) => {
+                            diagnostics.push(interface_diagnostic(
+                                "TEMPLATE_INVALID",
+                                "error",
+                                "$.shellLayout.shellTemplate",
+                                format!("界面模板无法装载：{}", error.message),
+                            ));
+                            Vec::new()
+                        }
                     }
-                },
+                }
                 None => {
                     diagnostics.push(interface_diagnostic(
                         "TEMPLATE_MISSING",
@@ -1294,31 +1299,15 @@ impl ComponentRuntimeManager {
             .interface_template_states
             .iter()
             .find(|state| state.template_id == template_id);
-        let bindings = state.map(|state| state.slot_bindings.as_slice()).unwrap_or_default();
+        let bindings = state
+            .map(|state| state.slot_bindings.as_slice())
+            .unwrap_or_default();
 
         for slot in &slots {
             let slot_bindings = bindings
                 .iter()
                 .filter(|binding| binding.enabled && binding.slot_id == slot.id)
                 .collect::<Vec<_>>();
-            let host_supplies_content = slot.accepts.iter().any(|kind| {
-                matches!(
-                    kind,
-                    TemplateSlotAccepts::ActiveSurface
-                        | TemplateSlotAccepts::Navigation
-                        | TemplateSlotAccepts::Tabs
-                        | TemplateSlotAccepts::Toolbar
-                        | TemplateSlotAccepts::Status
-                )
-            });
-            if slot.required && slot_bindings.is_empty() && !host_supplies_content {
-                diagnostics.push(interface_diagnostic(
-                    "REQUIRED_SLOT_EMPTY",
-                    "error",
-                    &format!("$.shellLayout.interfaceTemplateStates[{template_id}].slotBindings"),
-                    format!("必需插槽 {} 没有装配内容", slot.name),
-                ));
-            }
             if slot.multiplicity == TemplateSlotMultiplicity::One && slot_bindings.len() > 1 {
                 diagnostics.push(interface_diagnostic(
                     "SLOT_MULTIPLICITY_EXCEEDED",
@@ -1329,13 +1318,18 @@ impl ComponentRuntimeManager {
             }
         }
 
-        let slots_by_id = slots.iter().map(|slot| (slot.id.as_str(), slot)).collect::<HashMap<_, _>>();
+        let slots_by_id = slots
+            .iter()
+            .map(|slot| (slot.id.as_str(), slot))
+            .collect::<HashMap<_, _>>();
         let mut singleton_surfaces = HashSet::new();
         for (index, binding) in bindings.iter().enumerate() {
             if !binding.enabled {
                 continue;
             }
-            let path = format!("$.shellLayout.interfaceTemplateStates[{template_id}].slotBindings[{index}]");
+            let path = format!(
+                "$.shellLayout.interfaceTemplateStates[{template_id}].slotBindings[{index}]"
+            );
             let Some(slot) = slots_by_id.get(binding.slot_id.as_str()) else {
                 diagnostics.push(interface_diagnostic(
                     "SLOT_NOT_FOUND",
@@ -1355,7 +1349,9 @@ impl ComponentRuntimeManager {
             );
         }
         InterfaceTemplateLayoutValidation {
-            valid: !diagnostics.iter().any(|diagnostic| diagnostic.severity == "error"),
+            valid: !diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == "error"),
             diagnostics,
         }
     }
@@ -1370,12 +1366,21 @@ impl ComponentRuntimeManager {
             .lock()
             .expect("component catalog mutex poisoned")
             .values()
-            .find(|component| component.manifest.contributes.shell_templates.iter().any(|template| template.id == template_id))
+            .find(|component| {
+                component
+                    .manifest
+                    .contributes
+                    .shell_templates
+                    .iter()
+                    .any(|template| template.id == template_id)
+            })
             .map(|component| component.manifest.id.clone())
-            .ok_or_else(|| ComponentRuntimeError::new(
-                ComponentRuntimeErrorCode::ComponentNotInstalled,
-                format!("界面模板未安装：{template_id}"),
-            ))?;
+            .ok_or_else(|| {
+                ComponentRuntimeError::new(
+                    ComponentRuntimeErrorCode::ComponentNotInstalled,
+                    format!("界面模板未安装：{template_id}"),
+                )
+            })?;
         self.presentation_template_preview(&PresentationTemplatePreviewRequest {
             component_id,
             template_id: template_id.into(),
@@ -1396,15 +1401,26 @@ impl ComponentRuntimeManager {
             .lock()
             .expect("component catalog mutex poisoned")
             .values()
-            .find(|component| component.manifest.contributes.shell_templates.iter().any(|template| template.id == template_id))
+            .find(|component| {
+                component
+                    .manifest
+                    .contributes
+                    .shell_templates
+                    .iter()
+                    .any(|template| template.id == template_id)
+            })
             .cloned()
-            .ok_or_else(|| ComponentRuntimeError::new(
-                ComponentRuntimeErrorCode::ComponentNotInstalled,
-                format!("界面模板未安装：{template_id}"),
-            ))?;
+            .ok_or_else(|| {
+                ComponentRuntimeError::new(
+                    ComponentRuntimeErrorCode::ComponentNotInstalled,
+                    format!("界面模板未安装：{template_id}"),
+                )
+            })?;
         let target_parent = PathBuf::from(target_directory);
-        fs::create_dir_all(&target_parent).map_err(|error| io_error("创建模板开发目录失败", error))?;
-        let target_parent = fs::canonicalize(&target_parent).map_err(|error| io_error("模板开发目录不可用", error))?;
+        fs::create_dir_all(&target_parent)
+            .map_err(|error| io_error("创建模板开发目录失败", error))?;
+        let target_parent = fs::canonicalize(&target_parent)
+            .map_err(|error| io_error("模板开发目录不可用", error))?;
         if !target_parent.is_dir() {
             return Err(ComponentRuntimeError::new(
                 ComponentRuntimeErrorCode::ComponentIoError,
@@ -1985,12 +2001,7 @@ impl ComponentRuntimeManager {
     ) -> Result<ProcessResponse, ComponentRuntimeError> {
         match host_adapter(&installed.manifest) {
             Some("nexora-file-operations") => {
-                super::file_operations::invoke(
-                    &self.app_handle,
-                    &self.root_path,
-                    payload,
-                )
-                .await
+                super::file_operations::invoke(&self.app_handle, &self.root_path, payload).await
             }
             Some("bundled-resource-process") => {
                 self.invoke_bundled_resource_process(installed, control, payload)
@@ -2763,26 +2774,70 @@ fn canonical_interface_template_id(id: &str) -> &str {
     }
 }
 
-fn builtin_interface_template_slots() -> Vec<TemplateSlotDefinition> {
-    let slot = |id: &str, name: &str, accepts: Vec<TemplateSlotAccepts>, required: bool| TemplateSlotDefinition {
-        id: id.into(),
-        name: name.into(),
-        accepts,
-        multiplicity: if id == "primary" { TemplateSlotMultiplicity::Many } else { TemplateSlotMultiplicity::One },
-        layout: if id == "primary" { TemplateSlotLayout::Stack } else { TemplateSlotLayout::Single },
-        required,
-        collapse_when_empty: !required,
-        min_width: None,
-        min_height: None,
-        max_width: None,
-        max_height: None,
-        extensions: Default::default(),
+fn builtin_interface_template_slots(template_id: &str) -> Vec<TemplateSlotDefinition> {
+    let slot = |id: &str, name: &str, accepts: Vec<TemplateSlotAccepts>, required: bool| {
+        TemplateSlotDefinition {
+            id: id.into(),
+            name: name.into(),
+            accepts,
+            multiplicity: if id == "primary" {
+                TemplateSlotMultiplicity::Many
+            } else {
+                TemplateSlotMultiplicity::One
+            },
+            layout: if id == "primary" {
+                TemplateSlotLayout::Stack
+            } else {
+                TemplateSlotLayout::Single
+            },
+            required,
+            collapse_when_empty: !required,
+            min_width: None,
+            min_height: None,
+            max_width: None,
+            max_height: None,
+            extensions: Default::default(),
+        }
     };
+    if template_id == "nexora.shell.blank-home" {
+        return vec![TemplateSlotDefinition {
+            id: "primary".into(),
+            name: "主页".into(),
+            accepts: vec![TemplateSlotAccepts::ActiveSurface],
+            multiplicity: TemplateSlotMultiplicity::One,
+            layout: TemplateSlotLayout::Single,
+            required: false,
+            collapse_when_empty: false,
+            min_width: None,
+            min_height: None,
+            max_width: None,
+            max_height: None,
+            extensions: Default::default(),
+        }];
+    }
     vec![
         slot("tabs", "标签", vec![TemplateSlotAccepts::Tabs], false),
-        slot("navigation", "导航", vec![TemplateSlotAccepts::Navigation], false),
-        slot("toolbar", "项目工具", vec![TemplateSlotAccepts::Toolbar], false),
-        slot("primary", "主内容", vec![TemplateSlotAccepts::ActiveSurface, TemplateSlotAccepts::ComponentSurface], true),
+        slot(
+            "navigation",
+            "导航",
+            vec![TemplateSlotAccepts::Navigation],
+            false,
+        ),
+        slot(
+            "toolbar",
+            "项目工具",
+            vec![TemplateSlotAccepts::Toolbar],
+            false,
+        ),
+        slot(
+            "primary",
+            "主内容",
+            vec![
+                TemplateSlotAccepts::ActiveSurface,
+                TemplateSlotAccepts::ComponentSurface,
+            ],
+            true,
+        ),
         slot("status", "状态", vec![TemplateSlotAccepts::Status], false),
     ]
 }
@@ -2809,73 +2864,133 @@ fn validate_template_surface_binding(
     path: &str,
     diagnostics: &mut Vec<InterfaceTemplateDiagnostic>,
 ) {
-    if !matches!(binding.kind, pmc_platform::TemplateSlotBindingKind::ComponentSurface) {
-        if !slot.accepts.iter().any(|accepts| matches!(
-            (accepts, &binding.kind),
-            (TemplateSlotAccepts::ActiveSurface, pmc_platform::TemplateSlotBindingKind::ActiveSurface)
-                | (TemplateSlotAccepts::Widget, pmc_platform::TemplateSlotBindingKind::Widget)
-                | (TemplateSlotAccepts::Navigation, pmc_platform::TemplateSlotBindingKind::Navigation)
-                | (TemplateSlotAccepts::Tabs, pmc_platform::TemplateSlotBindingKind::Tabs)
-                | (TemplateSlotAccepts::Toolbar, pmc_platform::TemplateSlotBindingKind::Toolbar)
-                | (TemplateSlotAccepts::Status, pmc_platform::TemplateSlotBindingKind::Status)
-        )) {
+    if !matches!(
+        binding.kind,
+        pmc_platform::TemplateSlotBindingKind::ComponentSurface
+    ) {
+        if !slot.accepts.iter().any(|accepts| {
+            matches!(
+                (accepts, &binding.kind),
+                (
+                    TemplateSlotAccepts::ActiveSurface,
+                    pmc_platform::TemplateSlotBindingKind::ActiveSurface
+                ) | (
+                    TemplateSlotAccepts::Widget,
+                    pmc_platform::TemplateSlotBindingKind::Widget
+                ) | (
+                    TemplateSlotAccepts::Navigation,
+                    pmc_platform::TemplateSlotBindingKind::Navigation
+                ) | (
+                    TemplateSlotAccepts::Tabs,
+                    pmc_platform::TemplateSlotBindingKind::Tabs
+                ) | (
+                    TemplateSlotAccepts::Toolbar,
+                    pmc_platform::TemplateSlotBindingKind::Toolbar
+                ) | (
+                    TemplateSlotAccepts::Status,
+                    pmc_platform::TemplateSlotBindingKind::Status
+                )
+            )
+        }) {
             diagnostics.push(interface_diagnostic(
-                "SLOT_KIND_INCOMPATIBLE", "error", path,
+                "SLOT_KIND_INCOMPATIBLE",
+                "error",
+                path,
                 format!("插槽 {} 不接受该绑定类型", slot.name),
             ));
         }
         return;
     }
-    if !slot.accepts.contains(&TemplateSlotAccepts::ComponentSurface) {
+    if !slot
+        .accepts
+        .contains(&TemplateSlotAccepts::ComponentSurface)
+    {
         diagnostics.push(interface_diagnostic(
-            "SLOT_KIND_INCOMPATIBLE", "error", path,
+            "SLOT_KIND_INCOMPATIBLE",
+            "error",
+            path,
             format!("插槽 {} 不接受组件页面", slot.name),
         ));
         return;
     }
-    let (Some(component_id), Some(surface_id)) = (&binding.component_id, &binding.surface_id) else {
+    let (Some(component_id), Some(surface_id)) = (&binding.component_id, &binding.surface_id)
+    else {
         diagnostics.push(interface_diagnostic(
-            "SURFACE_REFERENCE_INVALID", "error", path,
+            "SURFACE_REFERENCE_INVALID",
+            "error",
+            path,
             "组件页面绑定缺少 componentId 或 surfaceId",
         ));
         return;
     };
     let Some(component) = catalog.get(component_id) else {
         diagnostics.push(interface_diagnostic(
-            "SURFACE_COMPONENT_MISSING", "error", path,
+            "SURFACE_COMPONENT_MISSING",
+            "error",
+            path,
             format!("组件页面的组件未安装：{component_id}"),
         ));
         return;
     };
-    let Some(surface) = component.manifest.contributes.script_surfaces.iter().find(|surface| surface.id == *surface_id) else {
+    let Some(surface) = component
+        .manifest
+        .contributes
+        .script_surfaces
+        .iter()
+        .find(|surface| surface.id == *surface_id)
+    else {
         diagnostics.push(interface_diagnostic(
-            "SURFACE_MISSING", "error", path,
+            "SURFACE_MISSING",
+            "error",
+            path,
             format!("组件 {} 未公开页面 {}", component.manifest.name, surface_id),
         ));
         return;
     };
-    if !surface.placements.iter().any(|placement| matches!(
-        placement,
-        pmc_platform::ScriptSurfacePlacement::Shell | pmc_platform::ScriptSurfacePlacement::Workspace
-    )) {
+    if !surface.placements.iter().any(|placement| {
+        matches!(
+            placement,
+            pmc_platform::ScriptSurfacePlacement::Shell
+                | pmc_platform::ScriptSurfacePlacement::Workspace
+        )
+    }) {
         diagnostics.push(interface_diagnostic(
-            "SURFACE_PLACEMENT_INCOMPATIBLE", "error", path,
+            "SURFACE_PLACEMENT_INCOMPATIBLE",
+            "error",
+            path,
             format!("页面 {} 未声明可嵌入界面模板", surface.name),
         ));
     }
     let identity = format!("{component_id}:{surface_id}");
-    if surface.instance_mode == ComponentSurfaceInstanceMode::Singleton && !singleton_surfaces.insert(identity) {
+    if surface.instance_mode == ComponentSurfaceInstanceMode::Singleton
+        && !singleton_surfaces.insert(identity)
+    {
         diagnostics.push(interface_diagnostic(
-            "SINGLETON_SURFACE_DUPLICATED", "error", path,
+            "SINGLETON_SURFACE_DUPLICATED",
+            "error",
+            path,
             format!("单例页面 {} 不能在同一模板中重复装配", surface.name),
         ));
     }
-    if surface.size_hints.min_width.zip(slot.max_width).is_some_and(|(min, max)| min > max)
-        || surface.size_hints.min_height.zip(slot.max_height).is_some_and(|(min, max)| min > max)
+    if surface
+        .size_hints
+        .min_width
+        .zip(slot.max_width)
+        .is_some_and(|(min, max)| min > max)
+        || surface
+            .size_hints
+            .min_height
+            .zip(slot.max_height)
+            .is_some_and(|(min, max)| min > max)
     {
         diagnostics.push(interface_diagnostic(
-            "SURFACE_SIZE_INCOMPATIBLE", "error", path,
-            format!("页面 {} 的最小尺寸超过插槽 {} 的最大尺寸", surface.name, slot.name),
+            "SURFACE_SIZE_INCOMPATIBLE",
+            "error",
+            path,
+            format!(
+                "页面 {} 的最小尺寸超过插槽 {} 的最大尺寸",
+                surface.name, slot.name
+            ),
         ));
     }
 }
@@ -2888,61 +3003,94 @@ fn rewrite_copied_shell_template(
 ) -> Result<(), ComponentRuntimeError> {
     let manifest_path = root.join(COMPONENT_MANIFEST_FILE);
     let mut document: Value = serde_json::from_str(
-        &fs::read_to_string(&manifest_path).map_err(|error| io_error("读取复制模板的 component.json 失败", error))?,
-    ).map_err(|error| ComponentRuntimeError::new(
-        ComponentRuntimeErrorCode::ComponentManifestInvalid,
-        format!("复制模板的 component.json 无效：{error}"),
-    ))?;
+        &fs::read_to_string(&manifest_path)
+            .map_err(|error| io_error("读取复制模板的 component.json 失败", error))?,
+    )
+    .map_err(|error| {
+        ComponentRuntimeError::new(
+            ComponentRuntimeErrorCode::ComponentManifestInvalid,
+            format!("复制模板的 component.json 无效：{error}"),
+        )
+    })?;
     let templates = document
         .pointer_mut("/contributes/shellTemplates")
         .and_then(Value::as_array_mut)
-        .ok_or_else(|| ComponentRuntimeError::new(
-            ComponentRuntimeErrorCode::ComponentManifestInvalid,
-            "复制模板未声明 shellTemplates",
-        ))?;
+        .ok_or_else(|| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentManifestInvalid,
+                "复制模板未声明 shellTemplates",
+            )
+        })?;
     let position = templates
         .iter()
-        .position(|template| template.get("id").and_then(Value::as_str) == Some(original_template_id))
-        .ok_or_else(|| ComponentRuntimeError::new(
-            ComponentRuntimeErrorCode::ComponentManifestInvalid,
-            "复制模板未找到目标界面模板贡献",
-        ))?;
+        .position(|template| {
+            template.get("id").and_then(Value::as_str) == Some(original_template_id)
+        })
+        .ok_or_else(|| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentManifestInvalid,
+                "复制模板未找到目标界面模板贡献",
+            )
+        })?;
     let mut template = templates.remove(position);
     let template_path = template
         .get("templatePath")
         .and_then(Value::as_str)
         .map(str::to_string)
-        .ok_or_else(|| ComponentRuntimeError::new(
-            ComponentRuntimeErrorCode::ComponentManifestInvalid,
-            "Shell 模板贡献缺少 templatePath",
-        ))?;
+        .ok_or_else(|| {
+            ComponentRuntimeError::new(
+                ComponentRuntimeErrorCode::ComponentManifestInvalid,
+                "Shell 模板贡献缺少 templatePath",
+            )
+        })?;
     template["id"] = Value::String(copied_template_id.into());
-    template["name"] = Value::String(format!("{}（开发副本）", template.get("name").and_then(Value::as_str).unwrap_or("界面模板")));
+    template["name"] = Value::String(format!(
+        "{}（开发副本）",
+        template
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("界面模板")
+    ));
     templates.clear();
     templates.push(template);
     document["id"] = Value::String(component_id.into());
-    document["name"] = Value::String(format!("{}（开发副本）", document.get("name").and_then(Value::as_str).unwrap_or("界面模板")));
+    document["name"] = Value::String(format!(
+        "{}（开发副本）",
+        document
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("界面模板")
+    ));
     document["distribution"] = Value::String("local".into());
-    if let Some(contributes) = document.get_mut("contributes").and_then(Value::as_object_mut) {
+    if let Some(contributes) = document
+        .get_mut("contributes")
+        .and_then(Value::as_object_mut)
+    {
         contributes.remove("pageTemplates");
         contributes.remove("themePresets");
     }
     let descriptor_path = resolve_data_path(root, &template_path)?;
     let mut descriptor: Value = serde_json::from_str(
-        &fs::read_to_string(&descriptor_path).map_err(|error| io_error("读取复制模板 descriptor 失败", error))?,
-    ).map_err(|error| ComponentRuntimeError::new(
-        ComponentRuntimeErrorCode::ComponentManifestInvalid,
-        format!("复制模板 descriptor 无效：{error}"),
-    ))?;
+        &fs::read_to_string(&descriptor_path)
+            .map_err(|error| io_error("读取复制模板 descriptor 失败", error))?,
+    )
+    .map_err(|error| {
+        ComponentRuntimeError::new(
+            ComponentRuntimeErrorCode::ComponentManifestInvalid,
+            format!("复制模板 descriptor 无效：{error}"),
+        )
+    })?;
     descriptor["id"] = Value::String(copied_template_id.into());
     fs::write(
         &manifest_path,
         serde_json::to_string_pretty(&document).map_err(|error| contract_error(error))?,
-    ).map_err(|error| io_error("写入复制模板 component.json 失败", error))?;
+    )
+    .map_err(|error| io_error("写入复制模板 component.json 失败", error))?;
     fs::write(
         descriptor_path,
         serde_json::to_string_pretty(&descriptor).map_err(|error| contract_error(error))?,
-    ).map_err(|error| io_error("写入复制模板 descriptor 失败", error))?;
+    )
+    .map_err(|error| io_error("写入复制模板 descriptor 失败", error))?;
     let manifest = read_component_manifest(&manifest_path)?;
     validate_presentation_component(root, &manifest)?;
     Ok(())
@@ -2999,11 +3147,13 @@ fn create_builtin_interface_template_copy(
     fs::write(
         root.join(COMPONENT_MANIFEST_FILE),
         serde_json::to_string_pretty(&manifest).map_err(|error| contract_error(error))?,
-    ).map_err(|error| io_error("写入内置模板开发副本 component.json 失败", error))?;
+    )
+    .map_err(|error| io_error("写入内置模板开发副本 component.json 失败", error))?;
     fs::write(
         template_directory.join("template.json"),
         serde_json::to_string_pretty(&descriptor).map_err(|error| contract_error(error))?,
-    ).map_err(|error| io_error("写入内置模板开发副本 descriptor 失败", error))?;
+    )
+    .map_err(|error| io_error("写入内置模板开发副本 descriptor 失败", error))?;
     fs::write(
         template_directory.join("base.html"),
         "<main class=\"nexora-template-starter\"><header class=\"nexora-template-starter__tabs\"><nexora-slot name=\"tabs\"></nexora-slot></header><aside class=\"nexora-template-starter__navigation\"><nexora-slot name=\"navigation\"></nexora-slot></aside><section class=\"nexora-template-starter__workspace\"><header><nexora-slot name=\"toolbar\"></nexora-slot></header><section class=\"nexora-template-starter__primary\"><nexora-slot name=\"primary\"></nexora-slot></section></section><footer class=\"nexora-template-starter__status\"><nexora-slot name=\"status\"></nexora-slot></footer></main>",

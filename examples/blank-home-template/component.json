@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "example.blank-home-template",
+  "name": "空白主页模板",
+  "description": "初始完全空白，仅提供一个可显式装配主页的 Nexora Shell 区域。",
+  "version": "1.1.0",
+  "apiVersion": "1",
+  "runtime": "data-pack",
+  "role": "data",
+  "distribution": "local",
+  "uiMode": "none",
+  "platforms": ["any"],
+  "entry": "presentation",
+  "capabilities": [],
+  "contributes": {
+    "shellTemplates": [
+      {
+        "id": "example.shell.blank-home",
+        "name": "空白主页",
+        "version": "1.1.0",
+        "templatePath": "presentation/shell/blank-home/template.json"
+      }
+    ]
+  }
+}

@@ -847,10 +847,10 @@ result = call_file_operation(
       {
         id: 'nexora.presentation.templates', name: 'Nexora 内置表现模板', group: 'bundled', category: 'appearance', defaultEnabled: true,
         technical: 'data-pack · 随安装包 · 可卸载', scope: 'profile', callLevel: 'internal', callLabel: '装配模板贡献',
-        description: '提供 Shell、页面布局和主题预设，供界面装配方案引用。',
+        description: '提供 Shell、页面布局和主题预设，供界面装配方案引用；“空白主页”默认不装配任何内容。',
         dependencies: ['无必需依赖'], capabilities: ['无 Capability'],
-        contributions: ['Shell: nexora.shell.top-bar/side-bar/minimal', '页面: dashboard-grid/list-detail/workspace', '主题: system/light/dark'],
-        abilities: ['选择顶部、侧边或紧凑导航', '为主页和工作区提供区域模板', '提供跟随系统、浅色和深色预设'],
+        contributions: ['Shell: nexora.shell.top-bar/side-bar/minimal/blank-home', '页面: dashboard-grid/list-detail/workspace', '主题: system/light/dark'],
+        abilities: ['选择顶部、侧边、紧凑或空白主页模板', '空白主页可显式装配一个活动主页', '为主页和工作区提供区域模板', '提供跟随系统、浅色和深色预设'],
         limits: ['没有运行时代码或公开命令', '当前模板不等于任意 HTML 完整覆盖宿主', '卸载前必须清理或替换 Profile 中的模板引用'],
         publicText: '只在装配编辑器中通过稳定模板 ID 引用，不能 call_component。',
       }

@@ -430,11 +430,12 @@ fn validate_html(
 
 fn template_slot_names(source: &str) -> Vec<String> {
     let expression = regex::Regex::new(
-        r#"(?is)<nexora-slot\b[^>]*\bname\s*=\s*([\"'])\s*([a-z][a-z0-9-]*)\s*\1[^>]*>"#,
-    ).expect("template slot regex must compile");
+        r#"(?is)<nexora-slot\b[^>]*\bname\s*=\s*[\"']\s*([a-z][a-z0-9-]*)\s*[\"'][^>]*>"#,
+    )
+    .expect("template slot regex must compile");
     expression
         .captures_iter(source)
-        .filter_map(|captures| captures.get(2).map(|value| value.as_str().to_string()))
+        .filter_map(|captures| captures.get(1).map(|value| value.as_str().to_string()))
         .collect()
 }
 
@@ -516,7 +517,9 @@ fn compile_css_block(source: &str, scope: &str) -> Result<String, ComponentRunti
                 output.push_str(&compile_css_block(body, scope)?);
                 output.push('}');
             } else {
-                return Err(template_error("模板 CSS 只允许 @media、@supports、@container 或 @layer 嵌套规则"));
+                return Err(template_error(
+                    "模板 CSS 只允许 @media、@supports、@container 或 @layer 嵌套规则",
+                ));
             }
         } else {
             let selectors = selector
@@ -596,16 +599,18 @@ mod tests {
     }
 
     #[test]
-    fn local_example_template_passes_staging_validation() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    fn local_example_templates_pass_staging_validation() {
+        let examples = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("src-tauri must have a workspace parent")
-            .join("examples")
-            .join("presentation-template-studio");
-        let manifest = pmc_platform::parse_component_manifest(
-            &fs::read_to_string(root.join("component.json")).unwrap(),
-        )
-        .unwrap();
-        validate_presentation_component(&root, &manifest).unwrap();
+            .join("examples");
+        for name in ["presentation-template-studio", "blank-home-template"] {
+            let root = examples.join(name);
+            let manifest = pmc_platform::parse_component_manifest(
+                &fs::read_to_string(root.join("component.json")).unwrap(),
+            )
+            .unwrap();
+            validate_presentation_component(&root, &manifest).unwrap();
+        }
     }
 }

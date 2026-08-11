@@ -97,6 +97,7 @@ R9 的组件可用性守卫不定义最终双击行为。R10-0 增加 `FileInten
 - `nexora.shell.top-bar`
 - `nexora.shell.side-bar`
 - `nexora.shell.minimal`
+- `nexora.shell.blank-home`（默认空白，可显式装配启动主页）
 - 三个内置 PageTemplate
 - system/light/dark ThemePreset
 

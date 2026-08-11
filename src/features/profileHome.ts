@@ -5,6 +5,7 @@ import type {
 } from '../types/platform';
 import {
   SURFACE_CONTRIBUTION_BY_ID,
+  SURFACE_CONTRIBUTIONS,
   getContributionUnavailableReason,
   type ContributionRegistrySnapshot,
   type SurfaceContributionDefinition,
@@ -71,6 +72,27 @@ export function resolveProfileHome(
 
   const requestedSurfaceId = profile.shellLayout?.home?.trim();
   if (!requestedSurfaceId) {
+    const contribution = SURFACE_CONTRIBUTIONS.nexoraWelcome;
+    const unavailableReason = getContributionUnavailableReason(
+      contributionRegistry,
+      contribution,
+    );
+    if (!unavailableReason && shellRendererIds.has(contribution.id)) {
+      return {
+        kind: 'resolved',
+        profile,
+        surface: {
+          id: 'nexora-default-welcome',
+          title: contribution.title,
+          kind: 'shell-page',
+          layout: 'contribution-defined',
+          contribution: contribution.id,
+          widgets: [],
+          settings: {},
+        },
+        contribution,
+      };
+    }
     return fallback(
       profile,
       'HOME_NOT_CONFIGURED',

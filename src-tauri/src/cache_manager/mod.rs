@@ -549,7 +549,11 @@ fn compute_cache_report(project_path: &str) -> Result<CacheReport, String> {
     if components.exists() {
         for entry in fs::read_dir(&components).map_err(|error| error.to_string())? {
             let entry = entry.map_err(|error| error.to_string())?;
-            if !entry.file_type().map_err(|error| error.to_string())?.is_dir() {
+            if !entry
+                .file_type()
+                .map_err(|error| error.to_string())?
+                .is_dir()
+            {
                 continue;
             }
             let (state_count, state_bytes) = path_stats(&entry.path().join("state"));
@@ -1193,7 +1197,11 @@ fn clear_component_caches(project_path: &str) -> Result<u64, String> {
     let mut affected = 0_u64;
     for entry in fs::read_dir(&root).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
-        if !entry.file_type().map_err(|error| error.to_string())?.is_dir() {
+        if !entry
+            .file_type()
+            .map_err(|error| error.to_string())?
+            .is_dir()
+        {
             continue;
         }
         let cache = entry.path().join("cache");
@@ -1493,16 +1501,29 @@ mod tests {
 
         let report = compute_cache_report(&root.to_string_lossy()).unwrap();
         assert_eq!(
-            report.categories.iter().find(|item| item.id == "componentCache").unwrap().entry_count,
+            report
+                .categories
+                .iter()
+                .find(|item| item.id == "componentCache")
+                .unwrap()
+                .entry_count,
             1,
         );
         assert!(
-            report.categories.iter().find(|item| item.id == "componentState").unwrap().protected,
+            report
+                .categories
+                .iter()
+                .find(|item| item.id == "componentState")
+                .unwrap()
+                .protected,
         );
 
         assert_eq!(clear_component_caches(&root.to_string_lossy()).unwrap(), 1);
         assert!(!component_root.join("cache").exists());
-        assert_eq!(fs::read(component_root.join("state/index.json")).unwrap(), b"state");
+        assert_eq!(
+            fs::read(component_root.join("state/index.json")).unwrap(),
+            b"state"
+        );
         let _ = fs::remove_dir_all(root);
     }
 

@@ -104,6 +104,15 @@ export interface SurfaceContributionDefinition extends ContributionDefinition {
 }
 
 export const SURFACE_CONTRIBUTIONS = {
+  nexoraWelcome: {
+    ...contribution(
+      'core.welcome.surface',
+      'surfaces',
+      null,
+    ),
+    title: 'Nexora 欢迎页',
+    host: 'shell',
+  },
   projectHome: {
     ...contribution(
       'builtin.project-manager.home-surface',

@@ -23,6 +23,18 @@ const BUILTIN_SLOTS: TemplateSlotDefinition[] = [
   { id: 'status', name: '状态', accepts: ['status'], multiplicity: 'one', layout: 'single', collapseWhenEmpty: true },
 ];
 
+// This is intentionally a different contract from navigation templates: the
+// home surface is the only content Nexora supplies below the utility bar.
+const BLANK_HOME_TEMPLATE_SLOTS: TemplateSlotDefinition[] = [
+  { id: 'primary', name: '主页区域', accepts: ['active-surface'], multiplicity: 'one', layout: 'single', collapseWhenEmpty: false },
+];
+
+function builtinSlots(templateId: string | undefined) {
+  return templateId === 'nexora.shell.blank-home'
+    ? BLANK_HOME_TEMPLATE_SLOTS
+    : BUILTIN_SLOTS;
+}
+
 const ALLOWED_ELEMENTS = new Set([
   'main', 'header', 'aside', 'section', 'footer', 'div', 'nav', 'article', 'ul', 'ol', 'li',
   'p', 'span', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'figure', 'figcaption',
@@ -34,10 +46,31 @@ function templateState(profile: WorkspaceProfileV1 | null, templateId: string | 
   ) ?? null;
 }
 
-function getBindings(state: ProfileInterfaceTemplateState | null, slotId: string) {
-  return (state?.slotBindings ?? [])
+function getBindings(
+  state: ProfileInterfaceTemplateState | null,
+  slotId: string,
+  implicitBindings: ProfileTemplateSlotBinding[] = [],
+) {
+  return (state ? state.slotBindings ?? [] : implicitBindings)
     .filter((binding) => binding.enabled !== false && binding.slotId === slotId)
     .sort((left, right) => (left.order ?? 0) - (right.order ?? 0) || left.id.localeCompare(right.id));
+}
+
+function implicitBuiltinBindings(
+  kind: 'top-bar' | 'side-bar' | 'minimal' | 'blank-home',
+): ProfileTemplateSlotBinding[] {
+  if (kind === 'blank-home') return [];
+  return builtinSlots(undefined).flatMap((slot) => {
+    const hostKind = slot.accepts.find((accepts) => accepts !== 'component-surface' && accepts !== 'widget');
+    if (!hostKind) return [];
+    return [{
+      id: `legacy-${slot.id}-${hostKind}`,
+      slotId: slot.id,
+      kind: hostKind,
+      enabled: true,
+      order: 10,
+    } satisfies ProfileTemplateSlotBinding];
+  });
 }
 
 function slotById(slots: TemplateSlotDefinition[], id: string) {
@@ -59,7 +92,7 @@ function SlotContainer({
   bindings: ProfileTemplateSlotBinding[];
   children: ReactNode;
 }) {
-  if (!children && slot.collapseWhenEmpty !== false) return null;
+  if (bindings.length === 0 && slot.collapseWhenEmpty !== false) return null;
   const layout = slot.layout ?? 'flow';
   const layoutClass = layout === 'stack'
     ? 'flex min-h-0 flex-col gap-2'
@@ -81,11 +114,6 @@ function SlotContainer({
       }}
     >
       {children}
-      {bindings.length === 0 && slot.required ? (
-        <div className="flex min-h-28 items-center justify-center border border-dashed border-amber-300 bg-amber-50/70 p-3 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950/20 dark:text-amber-300">
-          必需插槽“{slot.name || slot.id}”尚未装配内容
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -143,15 +171,23 @@ function BuiltinInterfaceTemplate({
   state,
   renderSlot,
 }: {
-  kind: 'top-bar' | 'side-bar' | 'minimal';
+  kind: 'top-bar' | 'side-bar' | 'minimal' | 'blank-home';
   state: ProfileInterfaceTemplateState | null;
   renderSlot: InterfaceTemplateHostProps['renderSlot'];
 }) {
+  const implicitBindings = implicitBuiltinBindings(kind);
   const render = (id: string) => {
-    const slot = slotById(BUILTIN_SLOTS, id);
-    const bindings = getBindings(state, id);
+    const slot = slotById(builtinSlots(kind === 'blank-home' ? 'nexora.shell.blank-home' : undefined), id);
+    const bindings = getBindings(state, id, implicitBindings);
     return <SlotContainer slot={slot} bindings={bindings}>{renderSlot(slot, bindings)}</SlotContainer>;
   };
+  if (kind === 'blank-home') {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="min-h-0 flex-1 overflow-hidden">{render('primary')}</div>
+      </div>
+    );
+  }
   if (kind === 'side-bar') {
     return (
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -209,7 +245,9 @@ export function InterfaceTemplateHost({ profile, renderSlot, fallback }: Interfa
   }, [templateId]);
 
   const activeState = templateState(profile, templateId);
-  const builtinKind = profile?.shellLayout?.navigationKind ?? 'top-bar';
+  const builtinKind = templateId === 'nexora.shell.blank-home'
+    ? 'blank-home'
+    : profile?.shellLayout?.navigationKind ?? 'top-bar';
   const renderedExternal = useMemo(() => {
     if (!preview?.baseHtml || !preview.slots.length) return null;
     const document = new DOMParser().parseFromString(preview.baseHtml, 'text/html');

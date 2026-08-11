@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "example.shell.blank-home",
+  "kind": "shell",
+  "version": "1.1.0",
+  "semanticVersion": "1.1.0",
+  "baseHtml": "presentation/shell/blank-home/base.html",
+  "styles": "presentation/shell/blank-home/styles.css",
+  "slots": [
+    {
+      "id": "primary",
+      "name": "主页区域",
+      "accepts": ["active-surface"],
+      "multiplicity": "one",
+      "layout": "single",
+      "required": false,
+      "collapseWhenEmpty": false
+    }
+  ],
+  "regions": ["primary"]
+}
