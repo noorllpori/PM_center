@@ -305,6 +305,17 @@ export function WorkspaceProfileEditorDialog({
   const dirty = Boolean(draft) && JSON.stringify(draft) !== originalDocumentRef.current;
   const editingCurrentProfile = Boolean(profileId) && profileId === currentProfileId;
   const layoutValid = interfaceValidation?.valid !== false;
+  const saveBlockedReason = !dirty
+    ? '当前草稿没有变化'
+    : validating
+      ? '正在校验方案'
+      : validation?.valid === false
+        ? validation.issues.find((issue) => issue.severity === 'error')?.message || '组件依赖校验未通过'
+        : !layoutValid
+          ? interfaceValidation?.diagnostics.find((diagnostic) => diagnostic.severity === 'error')?.message || '界面模板校验未通过'
+          : !validation
+            ? error || '方案校验尚未完成'
+            : null;
 
   const updateDraft = (updater: (current: WorkspaceProfileV1) => WorkspaceProfileV1) => {
     setDraft((current) => {
@@ -464,6 +475,11 @@ export function WorkspaceProfileEditorDialog({
         size="2xl"
         footer={
           <>
+          {saveBlockedReason ? (
+            <span className="mr-auto max-w-xl truncate text-xs text-amber-600 dark:text-amber-300" title={saveBlockedReason}>
+              {saveBlockedReason}
+            </span>
+          ) : <span className="mr-auto" />}
           <button
             type="button"
             onClick={handleClose}
@@ -476,6 +492,7 @@ export function WorkspaceProfileEditorDialog({
             type="button"
             onClick={() => void handleSave()}
             disabled={!dirty || !validation?.valid || !layoutValid || validating || loading || isMutating}
+            title={saveBlockedReason || (editingCurrentProfile ? '保存并应用当前方案' : '保存方案')}
             className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-4 py-2 text-sm text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {isMutating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}

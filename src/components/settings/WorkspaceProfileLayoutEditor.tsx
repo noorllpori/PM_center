@@ -220,6 +220,81 @@ function slotBindingLabel(kind: ProfileTemplateSlotBinding['kind']) {
   return labels[kind];
 }
 
+function slotAcceptsBinding(
+  slot: TemplateSlotDefinition,
+  binding: ProfileTemplateSlotBinding,
+) {
+  return slot.accepts.includes(binding.kind);
+}
+
+function normalizeTemplateBindings(
+  slots: TemplateSlotDefinition[],
+  bindings: ProfileTemplateSlotBinding[],
+) {
+  const slotById = new Map(slots.map((slot) => [slot.id, slot] as const));
+  const enabledCounts = new Map<string, number>();
+  const enabledHostKinds = new Set<ProfileTemplateSlotBinding['kind']>();
+  const next: ProfileTemplateSlotBinding[] = [];
+
+  const hasCapacity = (slot: TemplateSlotDefinition, binding: ProfileTemplateSlotBinding) => (
+    slot.multiplicity !== 'one'
+      || binding.enabled === false
+      || (enabledCounts.get(slot.id) ?? 0) === 0
+  );
+
+  bindings.forEach((binding) => {
+    if (
+      binding.enabled !== false
+      && binding.kind !== 'component-surface'
+      && binding.kind !== 'widget'
+      && enabledHostKinds.has(binding.kind)
+    ) {
+      return;
+    }
+
+    const currentSlot = slotById.get(binding.slotId);
+    const targetSlot = currentSlot
+      && slotAcceptsBinding(currentSlot, binding)
+      && hasCapacity(currentSlot, binding)
+      ? currentSlot
+      : slots.find((slot) => slotAcceptsBinding(slot, binding) && hasCapacity(slot, binding));
+    if (!targetSlot) return;
+
+    const normalized = targetSlot.id === binding.slotId
+      ? binding
+      : { ...binding, slotId: targetSlot.id };
+    next.push(normalized);
+    if (binding.enabled !== false) {
+      enabledCounts.set(targetSlot.id, (enabledCounts.get(targetSlot.id) ?? 0) + 1);
+      if (binding.kind !== 'component-surface' && binding.kind !== 'widget') {
+        enabledHostKinds.add(binding.kind);
+      }
+    }
+  });
+
+  return next;
+}
+
+function normalizeProfileTemplateState(
+  profile: WorkspaceProfileV1,
+  templateId: string,
+  slots: TemplateSlotDefinition[],
+) {
+  const currentStates = profile.shellLayout?.interfaceTemplateStates ?? [];
+  const stateIndex = currentStates.findIndex((state) => state.templateId === templateId);
+  if (stateIndex < 0) return;
+  const currentState = currentStates[stateIndex];
+  const normalized = normalizeTemplateBindings(slots, currentState.slotBindings ?? []);
+  if (JSON.stringify(normalized) === JSON.stringify(currentState.slotBindings ?? [])) return;
+
+  const states = [...currentStates];
+  states[stateIndex] = { ...currentState, slotBindings: normalized };
+  profile.shellLayout = {
+    ...(profile.shellLayout ?? {}),
+    interfaceTemplateStates: states,
+  };
+}
+
 function implicitHostBindings(
   templateId: string,
   slots: TemplateSlotDefinition[],
@@ -520,7 +595,15 @@ export function WorkspaceProfileLayoutEditor({
       selectedExternalShellTemplate.owner.componentId,
       selectedExternalShellTemplate.template.id,
     ).then((preview) => {
-      if (!disposed) setTemplatePreview(preview);
+      if (!disposed) {
+        setTemplatePreview(preview);
+        onChange((profile) => {
+          if (profile.shellLayout?.shellTemplate?.id === preview.templateId) {
+            normalizeProfileTemplateState(profile, preview.templateId, preview.slots);
+          }
+          return profile;
+        });
+      }
     }).catch((error) => {
       if (!disposed) setTemplateLoadError(String(error));
     });
@@ -544,9 +627,10 @@ export function WorkspaceProfileLayoutEditor({
     profile.shellLayout = { ...(profile.shellLayout ?? {}) };
     const states = [...(profile.shellLayout.interfaceTemplateStates ?? [])];
     const existingIndex = states.findIndex((state) => state.templateId === templateId);
-    const bindings = existingIndex >= 0
+    const existingBindings = existingIndex >= 0
       ? [...(states[existingIndex].slotBindings ?? [])]
       : implicitHostBindings(templateId, activeTemplateSlots);
+    const bindings = normalizeTemplateBindings(activeTemplateSlots, existingBindings);
     updater(bindings);
     const nextState = existingIndex >= 0
       ? { ...states[existingIndex], slotBindings: bindings }

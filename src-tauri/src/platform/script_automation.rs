@@ -2473,7 +2473,7 @@ impl ScriptAutomationRuntime {
             }
         }
         if let Some(entry) = manifest.entry.as_deref() {
-            if !source.join(entry).is_file() {
+            if !development_entry_exists(&source, entry, manifest.runtime) {
                 report.errors.push(format!("运行入口不存在: {entry}"));
             }
         }
@@ -4588,6 +4588,14 @@ fn persist_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
     fs::rename(temporary, path).map_err(|error| error.to_string())
 }
 
+fn development_entry_exists(root: &Path, entry: &str, runtime: ComponentRuntime) -> bool {
+    let path = root.join(entry);
+    match runtime {
+        ComponentRuntime::DataPack => path.exists(),
+        _ => path.is_file(),
+    }
+}
+
 fn hash_directory(root: &Path) -> Result<String, String> {
     let mut files = WalkDir::new(root)
         .follow_links(false)
@@ -5147,6 +5155,36 @@ mod tests {
             include_str!("../../../examples/ninniku-music-player/main.py")
                 .contains("stream.open-read")
         );
+    }
+
+    #[test]
+    fn data_pack_development_entry_accepts_a_directory() {
+        let root = std::env::temp_dir().join(format!("nexora-data-pack-entry-{}", Uuid::new_v4()));
+        fs::create_dir_all(root.join("presentation")).unwrap();
+        fs::write(root.join("main.py"), b"print('ok')").unwrap();
+
+        assert!(development_entry_exists(
+            &root,
+            "presentation",
+            ComponentRuntime::DataPack,
+        ));
+        assert!(!development_entry_exists(
+            &root,
+            "presentation",
+            ComponentRuntime::PythonAction,
+        ));
+        assert!(development_entry_exists(
+            &root,
+            "main.py",
+            ComponentRuntime::PythonAction,
+        ));
+        assert!(!development_entry_exists(
+            &root,
+            "missing",
+            ComponentRuntime::DataPack,
+        ));
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
