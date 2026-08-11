@@ -226,13 +226,28 @@ export interface AutomationEventContribution {
   [key: string]: unknown;
 }
 
-export type ScriptSurfacePlacement = 'shell' | 'workspace' | 'dialog' | 'widget';
+export type ScriptSurfacePlacement = 'shell' | 'workspace' | 'dialog' | 'widget' | 'independent-window';
+export type ComponentSurfaceInstanceMode = 'singleton' | 'multiple';
+
+export interface ComponentSurfaceSizeHints {
+  minWidth?: number;
+  minHeight?: number;
+  preferredWidth?: number;
+  preferredHeight?: number;
+  maxWidth?: number;
+  maxHeight?: number;
+  compactSurface?: string;
+  [key: string]: unknown;
+}
 
 export interface ScriptSurfaceContribution {
   id: string;
   name: string;
   entry: string;
   placements: ScriptSurfacePlacement[];
+  defaultSurface?: boolean;
+  instanceMode?: ComponentSurfaceInstanceMode;
+  sizeHints?: ComponentSurfaceSizeHints;
   allowedCommands?: string[];
   [key: string]: unknown;
 }
@@ -295,6 +310,24 @@ export interface ThemePresetContribution {
 }
 
 export type PresentationTemplateKind = 'shell' | 'page' | 'theme';
+export type TemplateSlotAccepts = 'active-surface' | 'component-surface' | 'widget' | 'navigation' | 'tabs' | 'toolbar' | 'status';
+export type TemplateSlotMultiplicity = 'one' | 'many';
+export type TemplateSlotLayout = 'single' | 'stack' | 'tabs' | 'flow';
+
+export interface TemplateSlotDefinition {
+  id: string;
+  name?: string;
+  accepts: TemplateSlotAccepts[];
+  multiplicity?: TemplateSlotMultiplicity;
+  layout?: TemplateSlotLayout;
+  required?: boolean;
+  collapseWhenEmpty?: boolean;
+  minWidth?: number;
+  minHeight?: number;
+  maxWidth?: number;
+  maxHeight?: number;
+  [key: string]: unknown;
+}
 
 export interface PresentationTemplateDocumentV1 {
   schemaVersion: typeof PLATFORM_SCHEMA_VERSION;
@@ -304,6 +337,9 @@ export interface PresentationTemplateDocumentV1 {
   baseHtml?: string;
   styles?: string;
   regions?: string[];
+  slots?: TemplateSlotDefinition[];
+  optionsSchema?: JsonValue;
+  semanticVersion?: string;
   assets?: string[];
   [key: string]: unknown;
 }
@@ -453,15 +489,46 @@ export interface ProfilePathVariable {
 }
 
 export type ShellNavigationKind = 'top-bar' | 'side-bar' | 'minimal';
+export type HostToolbarMode = 'fixed' | 'auto-hide';
+
+export interface HostToolbarConfig {
+  mode?: HostToolbarMode;
+  [key: string]: unknown;
+}
+
+export type TemplateSlotBindingKind = TemplateSlotAccepts;
+
+export interface ProfileTemplateSlotBinding {
+  id: string;
+  slotId: string;
+  kind: TemplateSlotBindingKind;
+  contributionId?: string;
+  componentId?: string;
+  surfaceId?: string;
+  instanceId?: string;
+  enabled?: boolean;
+  order?: number;
+  settings?: JsonObject;
+  [key: string]: unknown;
+}
+
+export interface ProfileInterfaceTemplateState {
+  templateId: string;
+  settings?: JsonObject;
+  slotBindings?: ProfileTemplateSlotBinding[];
+  [key: string]: unknown;
+}
 
 export interface ProfileShellLayout {
   home?: string;
   navigation?: string[];
   pinnedTools?: string[];
+  hostToolbar?: HostToolbarConfig;
   /** Compatibility fallback until installable Shell templates own the full frame. */
   navigationKind?: ShellNavigationKind;
   shellTemplate?: ProfilePresentationBinding;
   themePreset?: ProfilePresentationBinding;
+  interfaceTemplateStates?: ProfileInterfaceTemplateState[];
   [key: string]: unknown;
 }
 

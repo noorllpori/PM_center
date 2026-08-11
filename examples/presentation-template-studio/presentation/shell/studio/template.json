@@ -5,5 +5,13 @@
   "version": "1.0.0",
   "baseHtml": "presentation/shell/studio/base.html",
   "styles": "presentation/shell/studio/styles.css",
-  "regions": ["navigation", "toolbar", "content"]
+  "semanticVersion": "1.0.0",
+  "slots": [
+    {"id": "tabs", "name": "标签", "accepts": ["tabs"], "multiplicity": "one", "layout": "single"},
+    {"id": "navigation", "name": "导航", "accepts": ["navigation"], "multiplicity": "one", "layout": "single", "collapseWhenEmpty": true},
+    {"id": "toolbar", "name": "项目工具", "accepts": ["toolbar"], "multiplicity": "one", "layout": "single", "collapseWhenEmpty": true},
+    {"id": "primary", "name": "主内容", "accepts": ["active-surface", "component-surface"], "multiplicity": "many", "layout": "stack", "required": true},
+    {"id": "status", "name": "状态", "accepts": ["status"], "multiplicity": "one", "layout": "single", "collapseWhenEmpty": true}
+  ],
+  "regions": ["navigation", "toolbar", "primary"]
 }

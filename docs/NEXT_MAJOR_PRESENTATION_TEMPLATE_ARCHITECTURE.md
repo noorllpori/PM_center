@@ -1,6 +1,6 @@
 # Nexora 界面表现模板与可替换 Shell
 
-> 状态：`verifying`（R10-P1 安全安装、P2 隔离预览和 P3 装配选择/引用保护已实现）
+> 状态：`verifying`（静态模板包、受控插槽、固定宿主工具带、Profile 插槽状态、保存前诊断和开发副本链路已实现；详见 `NEXT_MAJOR_R17_R18_INTERFACE_TEMPLATE_SLOTS.md`）
 >
 > 日期：2026-08-06
 >
@@ -35,15 +35,15 @@ Nexora 的 Profile 不只决定启用哪些模块，也应决定软件启动后�
 
 ### 3.1 ShellTemplate
 
-控制整个应用框架，包括：
+控制宿主工具带以下的应用框架，包括：
 
-- 品牌区和窗口控制；
 - 顶部栏、侧栏或其他导航结构；
-- 功能中心、搜索和快捷工具；
+- 标签、项目工具和状态区；
 - 主 Surface 宿主；
 - 标签、任务状态、通知和覆盖层；
-- 无边框窗口拖动区域；
 - 普通和窄窗口的结构变化。
+
+快捷栏、DEV、维护中心和 `工具 Alt+Q` 已移动到不可被模板删除的 `HostUtilityBar`；原生 Windows 标题栏继续负责拖动和窗口控制。模板不能接管这两个区域。
 
 现有模式映射为：
 
@@ -169,16 +169,9 @@ schema v1 以向后兼容可选字段增加模板绑定：
 
 ### 5.1 Shell 强制节点
 
-每个 Shell 模板必须提供：
+新 Shell 模板使用 `<nexora-slot name="...">` 声明结构，且至少包含一个接受 `active-surface` 的主插槽。可用内容包括标签、导航、项目工具、状态、当前活动页面和组件页面。恢复入口、功能中心、DEV、快捷栏与窗口控制由固定宿主工具带或原生标题栏负责，模板不再声明 `<pm-recovery-entry>`。
 
-- `<pm-surface-host>`：当前主页或 Shell 页面；
-- `<pm-overlay-host>`：对话框、菜单和 HelpAssistant；
-- `<pm-window-controls>`：最小化、最大化和关闭；
-- 至少一个 `<pm-window-drag-region>`；
-- `<pm-recovery-entry>`：恢复入口，允许在正常视觉中隐藏到系统菜单，但不能删除；
-- 可选 `<pm-navigation>`、`<pm-toolbar>`、`<pm-tabs>`、`<pm-task-status>` 和 `<pm-notification-center>`。
-
-缺少强制节点的包在安装和应用前被拒绝。
+旧模板仍可使用 `<pm-surface-host>`、`<pm-navigation>`、`<pm-toolbar>`、`<pm-tabs>` 和 `<pm-task-status>`，运行时自动映射为新插槽；旧格式继续要求历史安全节点，避免未经验证的旧模板改变既有窗口控制边界。
 
 ### 5.2 Surface 插槽
 

@@ -1,8 +1,10 @@
 import type {
   ComponentManifestV1,
   ComponentRuntime,
+  JsonValue,
   PageTemplateContribution,
   ShellTemplateContribution,
+  TemplateSlotDefinition,
   ThemePresetContribution,
 } from './platform';
 
@@ -122,9 +124,25 @@ export interface PresentationTemplatePreview {
   kind: 'shell' | 'page' | 'theme';
   version: string;
   baseHtml?: string | null;
+  compiledStyles?: string | null;
   styles?: string | null;
   regions: string[];
+  slots: TemplateSlotDefinition[];
+  optionsSchema?: JsonValue | null;
+  semanticVersion?: string | null;
   contentDigest: string;
+}
+
+export interface InterfaceTemplateDiagnostic {
+  code: string;
+  severity: 'error' | 'warning' | 'info' | string;
+  path: string;
+  message: string;
+}
+
+export interface InterfaceTemplateLayoutValidation {
+  valid: boolean;
+  diagnostics: InterfaceTemplateDiagnostic[];
 }
 
 export interface ComponentRuntimeCommandError {

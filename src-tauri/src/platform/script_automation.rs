@@ -4,6 +4,7 @@ use super::capability_gateway::{
     CapabilityTokenRequest,
 };
 use super::component_runtime::ComponentInstallSource;
+use super::presentation_templates::validate_presentation_component;
 use super::{ComponentInvocationRequest, ComponentRuntimeManager, ModuleManager};
 use crate::platform::profile_runtime::WorkspaceProfileRuntime;
 use base64::Engine;
@@ -2429,12 +2430,21 @@ impl ScriptAutomationRuntime {
                 "Capability 只约束 Nexora SDK 与宿主接口，不能沙箱 Python 标准库。".into(),
             );
         }
+        let has_presentation_templates = !manifest.contributes.shell_templates.is_empty()
+            || !manifest.contributes.page_templates.is_empty()
+            || !manifest.contributes.theme_presets.is_empty();
         if manifest.contributes.automation_commands.is_empty()
             && manifest.contributes.script_surfaces.is_empty()
+            && !has_presentation_templates
         {
             report
                 .errors
-                .push("组件没有 automationCommands 或 scriptSurfaces".into());
+                .push("组件没有 automationCommands、scriptSurfaces 或界面模板贡献".into());
+        }
+        if has_presentation_templates {
+            if let Err(error) = validate_presentation_component(&source, &manifest) {
+                report.errors.push(error.message);
+            }
         }
         if let Some(entry) = manifest.entry.as_deref() {
             if !source.join(entry).is_file() {

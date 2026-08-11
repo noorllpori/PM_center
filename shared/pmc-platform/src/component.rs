@@ -222,6 +222,36 @@ pub enum ScriptSurfacePlacement {
     Workspace,
     Dialog,
     Widget,
+    IndependentWindow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ComponentSurfaceInstanceMode {
+    #[default]
+    Singleton,
+    Multiple,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ComponentSurfaceSizeHints {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_width: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_height: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_width: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_height: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_width: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_height: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_surface: Option<String>,
+    #[serde(flatten)]
+    pub extensions: ExtensionFields,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -232,6 +262,12 @@ pub struct ScriptSurfaceContribution {
     pub entry: String,
     #[serde(default)]
     pub placements: Vec<ScriptSurfacePlacement>,
+    #[serde(default)]
+    pub default_surface: bool,
+    #[serde(default)]
+    pub instance_mode: ComponentSurfaceInstanceMode,
+    #[serde(default)]
+    pub size_hints: ComponentSurfaceSizeHints,
     #[serde(default)]
     pub allowed_commands: Vec<String>,
     #[serde(flatten)]
@@ -800,6 +836,7 @@ impl ValidateContract for ComponentManifestV1 {
             }
         }
         let mut script_surface_ids = BTreeSet::new();
+        let mut default_surface_count = 0usize;
         for (index, surface) in self.contributes.script_surfaces.iter().enumerate() {
             let path = format!("$.contributes.scriptSurfaces[{index}]");
             validate_stable_id(&surface.id, &format!("{path}.id"))?;
@@ -811,6 +848,48 @@ impl ValidateContract for ComponentManifestV1 {
                     format!("{path}.placements"),
                     "脚本页面至少声明一个宿主位置",
                 ));
+            }
+            if surface.default_surface {
+                default_surface_count += 1;
+                if default_surface_count > 1 {
+                    return Err(ContractError::new(
+                        ContractErrorCode::DuplicateId,
+                        format!("{path}.defaultSurface"),
+                        "每个组件最多只能声明一个默认界面",
+                    ));
+                }
+            }
+            let hints = &surface.size_hints;
+            for (name, value) in [
+                ("minWidth", hints.min_width),
+                ("minHeight", hints.min_height),
+                ("preferredWidth", hints.preferred_width),
+                ("preferredHeight", hints.preferred_height),
+                ("maxWidth", hints.max_width),
+                ("maxHeight", hints.max_height),
+            ] {
+                if value == Some(0) {
+                    return Err(ContractError::new(
+                        ContractErrorCode::InvalidRuntimeConfiguration,
+                        format!("{path}.sizeHints.{name}"),
+                        "页面尺寸必须大于 0",
+                    ));
+                }
+            }
+            for (minimum, preferred, maximum, axis) in [
+                (hints.min_width, hints.preferred_width, hints.max_width, "width"),
+                (hints.min_height, hints.preferred_height, hints.max_height, "height"),
+            ] {
+                if minimum.zip(preferred).is_some_and(|(min, pref)| min > pref)
+                    || preferred.zip(maximum).is_some_and(|(pref, max)| pref > max)
+                    || minimum.zip(maximum).is_some_and(|(min, max)| min > max)
+                {
+                    return Err(ContractError::new(
+                        ContractErrorCode::InvalidRuntimeConfiguration,
+                        format!("{path}.sizeHints"),
+                        format!("页面 {axis} 尺寸范围无效"),
+                    ));
+                }
             }
             let mut allowed_commands = BTreeSet::new();
             for (command_index, command) in surface.allowed_commands.iter().enumerate() {
@@ -834,6 +913,21 @@ impl ValidateContract for ComponentManifestV1 {
                 return Err(duplicate_contribution(&path, &surface.id));
             }
             script_surface_ids.insert(surface.id.as_str());
+        }
+        for (index, surface) in self.contributes.script_surfaces.iter().enumerate() {
+            if let Some(compact_surface) = &surface.size_hints.compact_surface {
+                validate_stable_id(
+                    compact_surface,
+                    &format!("$.contributes.scriptSurfaces[{index}].sizeHints.compactSurface"),
+                )?;
+                if compact_surface == &surface.id || !script_surface_ids.contains(compact_surface.as_str()) {
+                    return Err(ContractError::new(
+                        ContractErrorCode::InvalidReference,
+                        format!("$.contributes.scriptSurfaces[{index}].sizeHints.compactSurface"),
+                        "紧凑页面必须引用同一组件中的其他页面",
+                    ));
+                }
+            }
         }
         let mut extension_point_ids = BTreeSet::new();
         for (index, point) in self.contributes.ui_extension_points.iter().enumerate() {

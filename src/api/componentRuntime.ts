@@ -1,9 +1,11 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { ComponentManifestV1 } from '../types/platform';
+import type { ComponentManifestV1, WorkspaceProfileV1 } from '../types/platform';
 import type {
   ComponentPackageInspection,
   ComponentInvocationResult,
   ComponentRuntimeOverview,
+  InterfaceTemplateLayoutValidation,
+  PresentationTemplateCatalog,
   PresentationTemplatePreview,
 } from '../types/componentRuntime';
 
@@ -24,6 +26,39 @@ export const getPresentationTemplatePreview = (componentId: string, templateId: 
   invoke<PresentationTemplatePreview>('get_presentation_template_preview', {
     request: { componentId, templateId },
   });
+
+export const listInterfaceTemplates = () =>
+  invoke<PresentationTemplateCatalog>('list_interface_templates');
+
+export const getInterfaceTemplatePreview = (templateId: string) =>
+  invoke<PresentationTemplatePreview>('get_interface_template_preview', { templateId });
+
+export const duplicateInterfaceTemplateForDevelopment = (templateId: string, targetDirectory: string) =>
+  invoke<string>('duplicate_interface_template_for_development', { templateId, targetDirectory });
+
+export const reloadDevelopmentInterfaceTemplate = (componentId: string) =>
+  invoke<ComponentManifestV1>('reload_development_interface_template', { componentId });
+
+export const exportInterfaceTemplatePackage = (componentId: string, request: {
+  destinationPath: string;
+  keyPath: string;
+  publisherId: string;
+  publisherName: string;
+  license?: string;
+  producerVersion?: string;
+}) => invoke<{
+  componentId: string;
+  componentVersion: string;
+  destinationPath: string;
+  contentDigest: string;
+  fileCount: number;
+}>('export_interface_template_package', {
+  componentId,
+  request: { ...request, sourcePath: '' },
+});
+
+export const validateInterfaceLayout = (profile: WorkspaceProfileV1) =>
+  invoke<InterfaceTemplateLayoutValidation>('validate_interface_layout', { profile });
 
 export const installComponentFromPackage = (packagePath: string) =>
   invoke<ComponentManifestV1>('install_component_from_package', {

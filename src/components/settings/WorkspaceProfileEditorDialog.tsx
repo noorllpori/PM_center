@@ -19,7 +19,7 @@ import {
   Undo2,
 } from 'lucide-react';
 import { getPlatformModuleRuntime } from '../../api/platformModules';
-import { getComponentRuntimeOverview } from '../../api/componentRuntime';
+import { getComponentRuntimeOverview, validateInterfaceLayout } from '../../api/componentRuntime';
 import {
   getWorkspaceProfileDocument,
   validateWorkspaceProfileDraft,
@@ -32,7 +32,7 @@ import type {
   JsonValue,
   WorkspaceProfileV1,
 } from '../../types/platform';
-import type { ComponentRuntimeOverview } from '../../types/componentRuntime';
+import type { ComponentRuntimeOverview, InterfaceTemplateLayoutValidation } from '../../types/componentRuntime';
 import type { PlatformModuleDiagnostic } from '../../types/platformRuntime';
 import type {
   WorkspaceProfileDraftValidation,
@@ -154,6 +154,7 @@ export function WorkspaceProfileEditorDialog({
   const [modules, setModules] = useState<PlatformModuleDiagnostic[]>([]);
   const [componentRuntime, setComponentRuntime] = useState<ComponentRuntimeOverview | null>(null);
   const [validation, setValidation] = useState<WorkspaceProfileDraftValidation | null>(null);
+  const [interfaceValidation, setInterfaceValidation] = useState<InterfaceTemplateLayoutValidation | null>(null);
   const [loading, setLoading] = useState(false);
   const [validating, setValidating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -195,6 +196,7 @@ export function WorkspaceProfileEditorDialog({
       setModules([]);
       setComponentRuntime(null);
       setValidation(null);
+      setInterfaceValidation(null);
       setError(formatRuntimeError(loadError));
     } finally {
       setLoading(false);
@@ -221,16 +223,18 @@ export function WorkspaceProfileEditorDialog({
     const sequence = ++validationSequenceRef.current;
     setValidating(true);
     const timeoutId = window.setTimeout(() => {
-      void validateWorkspaceProfileDraft(draft)
-        .then((result) => {
+      void Promise.all([validateWorkspaceProfileDraft(draft), validateInterfaceLayout(draft)])
+        .then(([result, templateResult]) => {
           if (validationSequenceRef.current === sequence) {
             setValidation(result);
+            setInterfaceValidation(templateResult);
             setError(null);
           }
         })
         .catch((validationError) => {
           if (validationSequenceRef.current === sequence) {
             setValidation(null);
+            setInterfaceValidation(null);
             setError(formatRuntimeError(validationError));
           }
         })
@@ -300,6 +304,7 @@ export function WorkspaceProfileEditorDialog({
   ), [componentRuntime, validation?.components]);
   const dirty = Boolean(draft) && JSON.stringify(draft) !== originalDocumentRef.current;
   const editingCurrentProfile = Boolean(profileId) && profileId === currentProfileId;
+  const layoutValid = interfaceValidation?.valid !== false;
 
   const updateDraft = (updater: (current: WorkspaceProfileV1) => WorkspaceProfileV1) => {
     setDraft((current) => {
@@ -425,7 +430,7 @@ export function WorkspaceProfileEditorDialog({
   };
 
   const handleSave = async () => {
-    if (!draft || !validation?.valid || isMutating || validating) return;
+    if (!draft || !validation?.valid || !layoutValid || isMutating || validating) return;
     setError(null);
     setSaveMessage(null);
     try {
@@ -470,7 +475,7 @@ export function WorkspaceProfileEditorDialog({
           <button
             type="button"
             onClick={() => void handleSave()}
-            disabled={!dirty || !validation?.valid || validating || loading || isMutating}
+            disabled={!dirty || !validation?.valid || !layoutValid || validating || loading || isMutating}
             className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-4 py-2 text-sm text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {isMutating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
@@ -821,6 +826,21 @@ export function WorkspaceProfileEditorDialog({
                         : 'text-blue-700 dark:text-blue-300'
                   }`}>
                     {issue.message}
+                  </p>
+                ))}
+              </div>
+            ) : null}
+            {interfaceValidation?.diagnostics.length ? (
+              <div className="mt-2 space-y-1 border-t border-current/10 pt-2">
+                {interfaceValidation.diagnostics.map((diagnostic) => (
+                  <p key={`${diagnostic.code}:${diagnostic.path}`} className={`text-xs ${
+                    diagnostic.severity === 'error'
+                      ? 'text-red-700 dark:text-red-300'
+                      : diagnostic.severity === 'warning'
+                        ? 'text-amber-700 dark:text-amber-300'
+                        : 'text-blue-700 dark:text-blue-300'
+                  }`}>
+                    界面模板：{diagnostic.message}
                   </p>
                 ))}
               </div>

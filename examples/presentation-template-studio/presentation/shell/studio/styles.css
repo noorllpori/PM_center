@@ -1,16 +1,14 @@
 .studio-shell {
   display: grid;
   grid-template-columns: 13rem minmax(0, 1fr);
-  grid-template-rows: 2.75rem minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
   min-height: 100%;
   background: var(--nexora-surface, #f8fafc);
   color: var(--nexora-foreground, #172033);
 }
 
-.studio-shell__header {
+.studio-shell__tabs {
   grid-column: 1 / -1;
-  display: flex;
-  justify-content: space-between;
 }
 
 .studio-shell__navigation {
@@ -20,4 +18,23 @@
 
 .studio-shell__workspace {
   min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.studio-shell__toolbar,
+.studio-shell__primary,
+.studio-shell__status {
+  min-width: 0;
+}
+
+.studio-shell__primary {
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.studio-shell__status {
+  grid-column: 1 / -1;
 }

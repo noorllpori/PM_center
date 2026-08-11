@@ -11,6 +11,8 @@ interface ScriptSurfaceFrameProps {
   surfaceId: string;
   projectPath?: string | null;
   extensionContext?: JsonValue;
+  /** A template/editor preview may render a surface but must never execute it. */
+  preview?: boolean;
 }
 
 interface SurfaceInvokeMessage {
@@ -34,6 +36,7 @@ export function ScriptSurfaceFrame({
   surfaceId,
   projectPath,
   extensionContext,
+  preview = false,
 }: ScriptSurfaceFrameProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [document, setDocument] = useState<ScriptSurfaceDocument | null>(null);
@@ -79,6 +82,15 @@ export function ScriptSurfaceFrame({
       ) {
         return;
       }
+      if (preview) {
+        iframeRef.current?.contentWindow?.postMessage({
+          type: 'nexora-script-result',
+          requestId: message.requestId,
+          ok: false,
+          error: '界面模板预览不执行组件命令。请应用方案后再运行该页面。',
+        }, '*');
+        return;
+      }
       void startRun({
         componentId,
         command: message.command,
@@ -104,7 +116,7 @@ export function ScriptSurfaceFrame({
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [componentId, document, projectPath, startRun, surfaceId]);
+  }, [componentId, document, preview, projectPath, startRun, surfaceId]);
 
   useEffect(() => {
     if (!document) return;
@@ -181,12 +193,21 @@ export function ScriptSurfaceFrame({
         sandbox="allow-scripts"
         srcDoc={document.html}
         onLoad={() => {
-          if (!extensionContext) return;
-          iframeRef.current?.contentWindow?.postMessage({
-            type: 'nexora-script-event',
-            nonce: document.nonce,
-            event: { type: 'ui-extension-context', payload: extensionContext },
-          }, '*');
+          if (!document) return;
+          if (extensionContext) {
+            iframeRef.current?.contentWindow?.postMessage({
+              type: 'nexora-script-event',
+              nonce: document.nonce,
+              event: { type: 'ui-extension-context', payload: extensionContext },
+            }, '*');
+          }
+          if (preview) {
+            iframeRef.current?.contentWindow?.postMessage({
+              type: 'nexora-script-event',
+              nonce: document.nonce,
+              event: { type: 'template-preview', preview: true },
+            }, '*');
+          }
         }}
         className="h-full w-full border-0 bg-white"
       />

@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
+import { open } from '@tauri-apps/plugin-dialog';
 import {
+  ArrowDown,
+  ArrowUp,
   FileCode2,
   GripVertical,
   LayoutDashboard,
@@ -8,6 +11,7 @@ import {
   PanelTop,
   Pin,
   Plus,
+  RefreshCw,
   X,
 } from 'lucide-react';
 import { BUILTIN_TOOLS } from '../../features/builtinTools';
@@ -32,14 +36,28 @@ import {
   setProfileWidgetContribution,
   updateProfileWidgetRegion,
 } from '../../features/profileLayout';
-import { getComponentRuntimeOverview } from '../../api/componentRuntime';
+import {
+  duplicateInterfaceTemplateForDevelopment,
+  getComponentRuntimeOverview,
+  getPresentationTemplatePreview,
+  installComponentFromDirectory,
+  reloadDevelopmentInterfaceTemplate,
+} from '../../api/componentRuntime';
+import {
+  getDevelopmentComponentSnapshot,
+  openScriptDevelopmentDirectoryInVSCode,
+  trustScriptDevelopmentDirectory,
+} from '../../api/scriptAutomation';
+import type { DevelopmentComponentSnapshot } from '../../types/automation';
 import type {
   ModuleManifestV1,
   ProfileComponentSelection,
+  ProfileTemplateSlotBinding,
   ShellNavigationKind,
+  TemplateSlotDefinition,
   WorkspaceProfileV1,
 } from '../../types/platform';
-import type { ComponentRuntimeOverview } from '../../types/componentRuntime';
+import type { ComponentRuntimeOverview, PresentationTemplatePreview } from '../../types/componentRuntime';
 
 interface WorkspaceProfileLayoutEditorProps {
   draft: WorkspaceProfileV1;
@@ -89,6 +107,14 @@ const LEGACY_SHELL_TEMPLATE_ALIASES: Record<string, string> = {
   'builtin.shell.side-bar': 'nexora.shell.side-bar',
   'builtin.shell.compact': 'nexora.shell.minimal',
 };
+
+const BUILTIN_TEMPLATE_SLOTS: TemplateSlotDefinition[] = [
+  { id: 'tabs', name: '标签', accepts: ['tabs'], multiplicity: 'one', layout: 'single' },
+  { id: 'navigation', name: '导航', accepts: ['navigation'], multiplicity: 'one', layout: 'single', collapseWhenEmpty: true },
+  { id: 'toolbar', name: '项目工具', accepts: ['toolbar'], multiplicity: 'one', layout: 'single', collapseWhenEmpty: true },
+  { id: 'primary', name: '主内容', accepts: ['active-surface', 'component-surface'], multiplicity: 'many', layout: 'stack', required: true },
+  { id: 'status', name: '状态', accepts: ['status'], multiplicity: 'one', layout: 'single', collapseWhenEmpty: true },
+];
 
 function canonicalShellTemplateId(id: string | undefined) {
   return id ? LEGACY_SHELL_TEMPLATE_ALIASES[id] ?? id : '';
@@ -153,6 +179,29 @@ function orderedWidgets(profile: WorkspaceProfileV1, surfaceId: string) {
   });
 }
 
+function slotAcceptsLabel(slot: TemplateSlotDefinition) {
+  const labels: Record<TemplateSlotDefinition['accepts'][number], string> = {
+    'active-surface': '活动页面',
+    'component-surface': '组件页面',
+    widget: 'Widget',
+    navigation: '导航',
+    tabs: '标签',
+    toolbar: '项目工具',
+    status: '状态',
+  };
+  return slot.accepts.map((item) => labels[item]).join('、');
+}
+
+function localBindingId(...parts: string[]) {
+  return parts
+    .join('-')
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 104) || 'slot-binding';
+}
+
 export function WorkspaceProfileLayoutEditor({
   draft,
   modules,
@@ -161,6 +210,9 @@ export function WorkspaceProfileLayoutEditor({
   const [dragged, setDragged] = useState<DragState | null>(null);
   const [componentRuntime, setComponentRuntime] = useState<ComponentRuntimeOverview | null>(null);
   const [templateLoadError, setTemplateLoadError] = useState<string | null>(null);
+  const [templatePreview, setTemplatePreview] = useState<PresentationTemplatePreview | null>(null);
+  const [templateDeveloperMessage, setTemplateDeveloperMessage] = useState<string | null>(null);
+  const [developmentComponents, setDevelopmentComponents] = useState<DevelopmentComponentSnapshot[]>([]);
 
   useEffect(() => {
     let disposed = false;
@@ -172,6 +224,12 @@ export function WorkspaceProfileLayoutEditor({
         if (!disposed) setTemplateLoadError(String(error));
       });
     return () => { disposed = true; };
+  }, []);
+  const refreshDevelopmentComponents = async () => {
+    setDevelopmentComponents(await getDevelopmentComponentSnapshot());
+  };
+  useEffect(() => {
+    void refreshDevelopmentComponents().catch(() => setDevelopmentComponents([]));
   }, []);
   const selectedSurfaceIds = useMemo(
     () => getSelectedModuleContributionIds(draft, modules, 'surfaces'),
@@ -227,6 +285,8 @@ export function WorkspaceProfileLayoutEditor({
         surfaceId: surface.id,
         title: surface.name,
         placements: surface.placements,
+        instanceMode: surface.instanceMode ?? 'singleton',
+        sizeHints: surface.sizeHints,
         pinnable: surface.placements.includes('shell'),
         homeEligible: surface.placements.includes('shell'),
       })))
@@ -269,12 +329,178 @@ export function WorkspaceProfileLayoutEditor({
   const selectedBuiltinShellTemplate = SHELL_TEMPLATE_OPTIONS.some(
     (option) => option.templateId === canonicalSelectedShellTemplateId,
   );
+  const selectedExternalShellTemplate = externalShellTemplates.find(
+    (item) => item.template.id === selectedShellTemplateId,
+  );
+  const selectedTemplateForDevelopment = selectedExternalShellTemplate?.template.id
+    || (selectedBuiltinShellTemplate ? canonicalSelectedShellTemplateId : '');
+  const selectedDevelopmentTemplate = selectedExternalShellTemplate
+    ? developmentComponents.find((item) => item.componentId === selectedExternalShellTemplate.owner.componentId) ?? null
+    : null;
+  const activeTemplateSlots = selectedBuiltinShellTemplate || !selectedShellTemplateId
+    ? BUILTIN_TEMPLATE_SLOTS
+    : (templatePreview?.slots ?? []);
+  const activeTemplateState = (draft.shellLayout?.interfaceTemplateStates ?? []).find(
+    (state) => state.templateId === (selectedShellTemplateId
+      || SHELL_TEMPLATE_OPTIONS.find((option) => option.value === (draft.shellLayout?.navigationKind ?? 'top-bar'))?.templateId),
+  ) ?? null;
+  const activeTemplateBindings = activeTemplateState?.slotBindings ?? [];
+  const activeTemplateId = selectedShellTemplateId
+    || SHELL_TEMPLATE_OPTIONS.find((option) => option.value === (draft.shellLayout?.navigationKind ?? 'top-bar'))?.templateId
+    || 'nexora.shell.top-bar';
+
+  const isSurfaceBound = (componentId: string, surfaceId: string) => activeTemplateBindings.some(
+    (binding) => binding.enabled !== false
+      && binding.kind === 'component-surface'
+      && binding.componentId === componentId
+      && binding.surfaceId === surfaceId,
+  );
+
+  const addComponentSurfaceToSlot = (
+    slot: TemplateSlotDefinition,
+    surface: (typeof componentSurfaces)[number],
+  ) => {
+    mutate((profile) => mutateTemplateState(profile, (bindings) => {
+      const slotBindings = bindings.filter((binding) => binding.slotId === slot.id && binding.enabled !== false);
+      if (slot.multiplicity === 'one' && slotBindings.length > 0) return;
+      if (surface.instanceMode === 'singleton' && bindings.some(
+        (binding) => binding.enabled !== false
+          && binding.kind === 'component-surface'
+          && binding.componentId === surface.componentId
+          && binding.surfaceId === surface.surfaceId,
+      )) return;
+      const sequence = bindings.filter((binding) => binding.slotId === slot.id).length + 1;
+      const instanceNumber = bindings.filter(
+        (binding) => binding.componentId === surface.componentId && binding.surfaceId === surface.surfaceId,
+      ).length + 1;
+      const baseId = localBindingId('slot', slot.id, surface.componentId, surface.surfaceId, String(instanceNumber));
+      let id = baseId;
+      let duplicate = 2;
+      while (bindings.some((binding) => binding.id === id)) {
+        id = localBindingId(baseId, String(duplicate));
+        duplicate += 1;
+      }
+      bindings.push({
+        id,
+        slotId: slot.id,
+        kind: 'component-surface',
+        componentId: surface.componentId,
+        surfaceId: surface.surfaceId,
+        instanceId: surface.instanceMode === 'multiple' ? localBindingId('instance', surface.surfaceId, String(instanceNumber)) : undefined,
+        enabled: true,
+        order: sequence * 10,
+      });
+    }));
+  };
+
+  const removeTemplateBinding = (bindingId: string) => {
+    mutate((profile) => mutateTemplateState(profile, (bindings) => {
+      const index = bindings.findIndex((binding) => binding.id === bindingId);
+      if (index >= 0) bindings.splice(index, 1);
+    }));
+  };
+
+  const moveTemplateBinding = (bindingId: string, direction: -1 | 1) => {
+    mutate((profile) => mutateTemplateState(profile, (bindings) => {
+      const binding = bindings.find((candidate) => candidate.id === bindingId);
+      if (!binding) return;
+      const peers = bindings
+        .filter((candidate) => candidate.slotId === binding.slotId)
+        .sort((left, right) => (left.order ?? 0) - (right.order ?? 0) || left.id.localeCompare(right.id));
+      const index = peers.findIndex((candidate) => candidate.id === bindingId);
+      const neighbor = peers[index + direction];
+      if (!neighbor) return;
+      const order = binding.order ?? 0;
+      binding.order = neighbor.order ?? 0;
+      neighbor.order = order;
+    }));
+  };
+
+  const duplicateSelectedTemplate = async () => {
+    if (!selectedTemplateForDevelopment) return;
+    setTemplateDeveloperMessage(null);
+    try {
+      const selectedDirectory = await open({
+        directory: true,
+        multiple: false,
+        title: '选择界面模板开发目录',
+      });
+      if (!selectedDirectory || Array.isArray(selectedDirectory)) return;
+      const sourcePath = await duplicateInterfaceTemplateForDevelopment(
+        selectedTemplateForDevelopment,
+        selectedDirectory,
+      );
+      await trustScriptDevelopmentDirectory(sourcePath);
+      const manifest = await installComponentFromDirectory(sourcePath);
+      const copiedTemplate = manifest.contributes?.shellTemplates?.[0];
+      if (!copiedTemplate) throw new Error('开发副本没有声明界面模板');
+      mutate((profile) => {
+        profile.shellLayout = {
+          ...(profile.shellLayout ?? {}),
+          shellTemplate: { id: copiedTemplate.id, versionRequirement: `^${copiedTemplate.version}` },
+        };
+        selectComponent(profile, manifest.id, manifest.version);
+      });
+      setComponentRuntime(await getComponentRuntimeOverview());
+      await refreshDevelopmentComponents();
+      setTemplateDeveloperMessage(`已创建、信任并安装开发副本：${sourcePath}`);
+    } catch (error) {
+      setTemplateDeveloperMessage(`创建开发副本失败：${String(error)}`);
+    }
+  };
+
+  const reloadSelectedDevelopmentTemplate = async () => {
+    if (!selectedDevelopmentTemplate?.componentId) return;
+    try {
+      await reloadDevelopmentInterfaceTemplate(selectedDevelopmentTemplate.componentId);
+      setComponentRuntime(await getComponentRuntimeOverview());
+      await refreshDevelopmentComponents();
+      setTemplateDeveloperMessage(`已重载开发模板：${selectedDevelopmentTemplate.componentId}`);
+    } catch (error) {
+      setTemplateDeveloperMessage(`重载开发模板失败：${String(error)}`);
+    }
+  };
+
+  useEffect(() => {
+    let disposed = false;
+    setTemplatePreview(null);
+    if (!selectedExternalShellTemplate) return () => { disposed = true; };
+    void getPresentationTemplatePreview(
+      selectedExternalShellTemplate.owner.componentId,
+      selectedExternalShellTemplate.template.id,
+    ).then((preview) => {
+      if (!disposed) setTemplatePreview(preview);
+    }).catch((error) => {
+      if (!disposed) setTemplateLoadError(String(error));
+    });
+    return () => { disposed = true; };
+  }, [selectedExternalShellTemplate]);
 
   const mutate = (updater: (profile: WorkspaceProfileV1) => void) => {
     onChange((profile) => {
       updater(profile);
       return profile;
     });
+  };
+
+  const mutateTemplateState = (
+    profile: WorkspaceProfileV1,
+    updater: (bindings: ProfileTemplateSlotBinding[]) => void,
+  ) => {
+    const templateId = profile.shellLayout?.shellTemplate?.id
+      || SHELL_TEMPLATE_OPTIONS.find((option) => option.value === (profile.shellLayout?.navigationKind ?? 'top-bar'))?.templateId
+      || 'nexora.shell.top-bar';
+    profile.shellLayout = { ...(profile.shellLayout ?? {}) };
+    const states = [...(profile.shellLayout.interfaceTemplateStates ?? [])];
+    const existingIndex = states.findIndex((state) => state.templateId === templateId);
+    const bindings = existingIndex >= 0 ? [...(states[existingIndex].slotBindings ?? [])] : [];
+    updater(bindings);
+    const nextState = existingIndex >= 0
+      ? { ...states[existingIndex], slotBindings: bindings }
+      : { templateId, slotBindings: bindings };
+    if (existingIndex >= 0) states[existingIndex] = nextState;
+    else states.push(nextState);
+    profile.shellLayout.interfaceTemplateStates = states;
   };
 
   const handleDrop = (
@@ -365,10 +591,104 @@ export function WorkspaceProfileLayoutEditor({
           <section className="rounded-md border border-gray-200 dark:border-gray-700">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 px-3 py-2.5 dark:border-gray-700">
               <div className="flex items-center gap-2">
+                <LayoutDashboard className="h-4 w-4 text-indigo-600" />
+                <div>
+                  <h4 className="text-sm font-semibold">模板插槽</h4>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400">选择区域并装配当前方案中有效组件公开的页面。切换模板时，各模板的装配会分别保留。</p>
+                </div>
+              </div>
+              <span className="font-mono text-[10px] text-gray-400">{activeTemplateId}</span>
+            </div>
+            <div className="divide-y divide-gray-100 dark:divide-gray-800">
+              {activeTemplateSlots.map((slot) => {
+                const bindings = activeTemplateBindings
+                  .filter((binding) => binding.slotId === slot.id)
+                  .sort((left, right) => (left.order ?? 0) - (right.order ?? 0) || left.id.localeCompare(right.id));
+                const acceptsComponentSurface = slot.accepts.includes('component-surface');
+                const hostKinds = slot.accepts.filter((kind) => kind !== 'component-surface' && kind !== 'widget');
+                const eligibleSurfaces = acceptsComponentSurface
+                  ? componentSurfaces.filter((surface) => (
+                    surface.placements.includes('shell') || surface.placements.includes('workspace')
+                  )).filter((surface) => (
+                    surface.instanceMode === 'multiple' || !isSurfaceBound(surface.componentId, surface.surfaceId)
+                  ))
+                  : [];
+                const missingRequired = slot.required && bindings.length === 0 && !slot.accepts.some(
+                  (kind) => ['active-surface', 'navigation', 'tabs', 'toolbar', 'status'].includes(kind),
+                );
+                return (
+                  <div key={slot.id} className="p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{slot.name || slot.id}</p>
+                          {slot.required ? <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">必需</span> : null}
+                          {slot.collapseWhenEmpty ? <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500 dark:bg-gray-800">空时折叠</span> : null}
+                          <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500 dark:bg-gray-800">{slot.layout || 'flow'} · {slot.multiplicity || 'many'}</span>
+                        </div>
+                        <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">接受：{slotAcceptsLabel(slot)}{slot.minWidth || slot.minHeight ? ` · 最小 ${slot.minWidth ?? '自动'} x ${slot.minHeight ?? '自动'}` : ''}</p>
+                      </div>
+                      {hostKinds.length ? <span className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300">宿主提供：{hostKinds.map((kind) => slotAcceptsLabel({ ...slot, accepts: [kind] })).join('、')}</span> : null}
+                    </div>
+
+                    {bindings.length ? (
+                      <div className="mt-2 space-y-1.5">
+                        {bindings.map((binding, index) => {
+                          const surface = binding.componentId && binding.surfaceId
+                            ? componentSurfaces.find((candidate) => candidate.componentId === binding.componentId && candidate.surfaceId === binding.surfaceId)
+                            : null;
+                          return (
+                            <div key={binding.id} className={`flex min-h-9 items-center gap-2 rounded-md border px-2 ${surface ? 'border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800' : 'border-amber-200 bg-amber-50 dark:border-amber-900/60 dark:bg-amber-950/20'}`}>
+                              <FileCode2 className={`h-3.5 w-3.5 shrink-0 ${surface ? 'text-violet-500' : 'text-amber-600'}`} />
+                              <span className="min-w-0 flex-1 truncate text-xs">{surface ? `${surface.title} · ${surface.componentName}` : `${binding.surfaceId || binding.contributionId || binding.kind}（当前不可用）`}</span>
+                              {binding.instanceId ? <span className="font-mono text-[10px] text-gray-400">{binding.instanceId}</span> : null}
+                              <button type="button" disabled={index === 0} onClick={() => moveTemplateBinding(binding.id, -1)} className="flex h-7 w-6 items-center justify-center rounded text-gray-400 hover:bg-gray-100 disabled:opacity-30 dark:hover:bg-gray-700" title="向前排序"><ArrowUp className="h-3.5 w-3.5" /></button>
+                              <button type="button" disabled={index === bindings.length - 1} onClick={() => moveTemplateBinding(binding.id, 1)} className="flex h-7 w-6 items-center justify-center rounded text-gray-400 hover:bg-gray-100 disabled:opacity-30 dark:hover:bg-gray-700" title="向后排序"><ArrowDown className="h-3.5 w-3.5" /></button>
+                              <button type="button" onClick={() => removeTemplateBinding(binding.id)} className="flex h-7 w-7 items-center justify-center rounded text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-700" title="从插槽移除"><X className="h-3.5 w-3.5" /></button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                    {missingRequired ? <p className="mt-2 text-xs text-red-600 dark:text-red-300">此必需插槽没有可用内容，保存并应用会被阻止。</p> : null}
+                    {acceptsComponentSurface ? (
+                      <div className="mt-2 grid gap-1 sm:grid-cols-2">
+                        {eligibleSurfaces.map((surface) => {
+                          const minTooLarge = (slot.maxWidth && surface.sizeHints?.minWidth && surface.sizeHints.minWidth > slot.maxWidth)
+                            || (slot.maxHeight && surface.sizeHints?.minHeight && surface.sizeHints.minHeight > slot.maxHeight);
+                          const full = slot.multiplicity === 'one' && bindings.length > 0;
+                          return (
+                            <button
+                              key={`${slot.id}:${surface.componentId}:${surface.surfaceId}`}
+                              type="button"
+                              disabled={Boolean(minTooLarge || full)}
+                              onClick={() => addComponentSurfaceToSlot(slot, surface)}
+                              className="flex min-h-9 items-center gap-2 rounded-md px-2 text-left text-xs hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-gray-800"
+                              title={minTooLarge ? '组件最小尺寸超过模板插槽限制' : full ? '此插槽只允许一个内容' : `加入 ${slot.name || slot.id}`}
+                            >
+                              <Plus className="h-3.5 w-3.5 shrink-0 text-gray-400" />
+                              <span className="min-w-0 flex-1 truncate">{surface.title}</span>
+                              <span className="max-w-28 truncate text-[10px] text-gray-400">{surface.instanceMode === 'multiple' ? '可多开' : '单例'} · {surface.componentName}</span>
+                            </button>
+                          );
+                        })}
+                        {eligibleSurfaces.length === 0 ? <p className="py-1 text-xs text-gray-400">没有可加入此插槽的组件页面。</p> : null}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+              {activeTemplateSlots.length === 0 ? <p className="p-4 text-center text-xs text-amber-600 dark:text-amber-300">该模板没有声明可装配插槽，不能应用为主界面。</p> : null}
+            </div>
+          </section>
+
+          <section className="rounded-md border border-gray-200 dark:border-gray-700">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 px-3 py-2.5 dark:border-gray-700">
+              <div className="flex items-center gap-2">
                 <Menu className="h-4 w-4 text-emerald-600" />
                 <div>
-                  <h4 className="text-sm font-semibold">Shell 模板</h4>
-                  <p className="text-[11px] text-gray-500 dark:text-gray-400">内置模板与已安装的安全模板包均可引用</p>
+                  <h4 className="text-sm font-semibold">界面模板</h4>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400">控制宿主工具带以下的全部布局，可引用内置或已安装模板包</p>
                 </div>
               </div>
               <div className="inline-flex overflow-hidden rounded-md border border-gray-200 dark:border-gray-700">
@@ -407,8 +727,38 @@ export function WorkspaceProfileLayoutEditor({
               </div>
             </div>
             <div className="grid gap-3 p-3 md:grid-cols-2">
+              <div className="md:col-span-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2.5 dark:border-gray-700 dark:bg-gray-800/50">
+                <div>
+                  <p className="text-xs font-medium text-gray-700 dark:text-gray-200">宿主工具带</p>
+                  <p className="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">快捷栏、DEV、维护中心和功能中心始终由 Nexora 管理。</p>
+                </div>
+                <div className="inline-flex overflow-hidden rounded-md border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
+                  {([
+                    ['fixed', '固定显示'],
+                    ['auto-hide', '移到顶部展开'],
+                  ] as const).map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => mutate((profile) => {
+                        profile.shellLayout = {
+                          ...(profile.shellLayout ?? {}),
+                          hostToolbar: { ...(profile.shellLayout?.hostToolbar ?? {}), mode },
+                        };
+                      })}
+                      className={`h-8 px-2.5 text-xs transition-colors ${
+                        (draft.shellLayout?.hostToolbar?.mode ?? 'fixed') === mode
+                          ? 'bg-sky-50 font-medium text-sky-700 dark:bg-sky-950/50 dark:text-sky-300'
+                          : 'text-gray-500 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
               <label className="md:col-span-2">
-                <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-300">安装的 Shell 模板</span>
+                <span className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-300">安装的界面模板</span>
                 <select
                   value={selectedBuiltinShellTemplate ? '' : selectedShellTemplateId}
                   onChange={(event) => {
@@ -427,7 +777,7 @@ export function WorkspaceProfileLayoutEditor({
                   }}
                   className="h-9 w-full rounded-md border border-gray-300 bg-white px-3 text-sm dark:border-gray-700 dark:bg-gray-800"
                 >
-                  <option value="">使用下方内置兼容模板</option>
+                  <option value="">使用下方内置界面模板</option>
                   {externalShellTemplates.map((item) => (
                     <option key={item.template.id} value={item.template.id}>{item.template.name} · {item.owner.componentName}</option>
                   ))}
@@ -441,10 +791,29 @@ export function WorkspaceProfileLayoutEditor({
                   <p className="mt-1 text-[11px] text-gray-400">旧版模板标识已兼容为“{SHELL_TEMPLATE_OPTIONS.find((item) => item.templateId === canonicalSelectedShellTemplateId)?.label}”。下次选择布局并保存后会写入新标识。</p>
                 ) : null}
                 {externalShellTemplates.length ? (
-                  <p className="mt-1 text-[11px] text-gray-400">模板包先经静态净化和沙箱预览；Shell 仍由 Nexora 恢复容器托管，缺失时自动回退内置布局。</p>
+                  <p className="mt-1 text-[11px] text-gray-400">模板包先经静态净化；模板只控制工具带以下的布局，缺失时自动回退内置布局。</p>
                 ) : null}
                 {templateLoadError ? <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-300">无法读取模板目录：{templateLoadError}</p> : null}
-              </label>
+               </label>
+              {selectedTemplateForDevelopment ? (
+                <div className="md:col-span-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-dashed border-gray-300 px-3 py-2 dark:border-gray-700">
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400">已安装模板保持只读。复制后会创建受信任的本地 data-pack，供 VS Code 修改与 DEV 重载。</p>
+                  <div className="flex items-center gap-1.5">
+                    {selectedDevelopmentTemplate ? <>
+                      <button type="button" onClick={() => void openScriptDevelopmentDirectoryInVSCode(selectedDevelopmentTemplate.sourcePath).catch((error) => setTemplateDeveloperMessage(`无法打开 VS Code：${String(error)}`))} className="inline-flex h-8 items-center gap-1.5 rounded-md border border-gray-300 px-2.5 text-xs text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800">
+                        <FileCode2 className="h-3.5 w-3.5" />VS Code
+                      </button>
+                      <button type="button" disabled={!selectedDevelopmentTemplate.valid || !selectedDevelopmentTemplate.trusted} onClick={() => void reloadSelectedDevelopmentTemplate()} className="inline-flex h-8 items-center gap-1.5 rounded-md border border-sky-200 px-2.5 text-xs text-sky-700 hover:bg-sky-50 disabled:opacity-40 dark:border-sky-900/60 dark:text-sky-300 dark:hover:bg-sky-950/30">
+                        <RefreshCw className="h-3.5 w-3.5" />重载
+                      </button>
+                    </> : null}
+                    <button type="button" onClick={() => void duplicateSelectedTemplate()} className="inline-flex h-8 items-center gap-1.5 rounded-md border border-indigo-200 px-2.5 text-xs text-indigo-700 hover:bg-indigo-50 dark:border-indigo-900/60 dark:text-indigo-300 dark:hover:bg-indigo-950/30">
+                      <FileCode2 className="h-3.5 w-3.5" />复制为开发模板
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+              {templateDeveloperMessage ? <p className="md:col-span-2 text-[11px] text-gray-500 dark:text-gray-400">{templateDeveloperMessage}</p> : null}
               <div>
                 <p className="mb-2 text-xs font-medium text-gray-600 dark:text-gray-300">已加入导航</p>
                 <div

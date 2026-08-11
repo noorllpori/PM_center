@@ -133,6 +133,27 @@
       ],
       "type": "object"
     },
+    "HostToolbarConfig": {
+      "additionalProperties": true,
+      "properties": {
+        "mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/HostToolbarMode"
+            }
+          ],
+          "default": "fixed"
+        }
+      },
+      "type": "object"
+    },
+    "HostToolbarMode": {
+      "enum": [
+        "fixed",
+        "auto-hide"
+      ],
+      "type": "string"
+    },
     "ProfileAutomationBinding": {
       "additionalProperties": true,
       "properties": {
@@ -267,6 +288,30 @@
       ],
       "type": "object"
     },
+    "ProfileInterfaceTemplateState": {
+      "additionalProperties": true,
+      "properties": {
+        "settings": {
+          "additionalProperties": true,
+          "default": {},
+          "type": "object"
+        },
+        "slotBindings": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ProfileTemplateSlotBinding"
+          },
+          "type": "array"
+        },
+        "templateId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "templateId"
+      ],
+      "type": "object"
+    },
     "ProfileModuleSelection": {
       "additionalProperties": true,
       "properties": {
@@ -349,6 +394,23 @@
             "string",
             "null"
           ]
+        },
+        "hostToolbar": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/HostToolbarConfig"
+            }
+          ],
+          "default": {
+            "mode": "fixed"
+          }
+        },
+        "interfaceTemplateStates": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ProfileInterfaceTemplateState"
+          },
+          "type": "array"
         },
         "navigation": {
           "default": [],
@@ -456,6 +518,64 @@
         "id",
         "kind",
         "layout"
+      ],
+      "type": "object"
+    },
+    "ProfileTemplateSlotBinding": {
+      "additionalProperties": true,
+      "properties": {
+        "componentId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "contributionId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "instanceId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/definitions/TemplateSlotBindingKind"
+        },
+        "order": {
+          "default": 0,
+          "format": "int32",
+          "type": "integer"
+        },
+        "settings": {
+          "additionalProperties": true,
+          "default": {},
+          "type": "object"
+        },
+        "slotId": {
+          "type": "string"
+        },
+        "surfaceId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "slotId"
       ],
       "type": "object"
     },
@@ -626,6 +746,18 @@
         "split",
         "list-detail",
         "contribution-defined"
+      ],
+      "type": "string"
+    },
+    "TemplateSlotBindingKind": {
+      "enum": [
+        "active-surface",
+        "component-surface",
+        "widget",
+        "navigation",
+        "tabs",
+        "toolbar",
+        "status"
       ],
       "type": "string"
     },
@@ -816,6 +948,10 @@
             }
           ],
           "default": {
+            "hostToolbar": {
+              "mode": "fixed"
+            },
+            "interfaceTemplateStates": [],
             "navigation": [],
             "navigationKind": "top-bar",
             "pinnedTools": []

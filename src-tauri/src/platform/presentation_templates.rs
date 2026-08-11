@@ -2,7 +2,7 @@ use super::{ComponentRuntimeError, ComponentRuntimeErrorCode};
 use pmc_platform::{
     parse_presentation_template, ComponentManifestV1, ComponentRuntime, PageTemplateContribution,
     PresentationTemplateDocumentV1, PresentationTemplateKind, ShellTemplateContribution,
-    ThemePresetContribution,
+    TemplateSlotDefinition, ThemePresetContribution,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -35,9 +35,33 @@ pub struct PresentationTemplatePreview {
     pub kind: PresentationTemplateKind,
     pub version: String,
     pub base_html: Option<String>,
+    /// Scoped CSS produced by the presentation compiler. The raw stylesheet
+    /// never needs to be injected into the host document.
+    pub compiled_styles: Option<String>,
+    /// Kept for compatibility with the diagnostics preview introduced before
+    /// interface templates; normal shell rendering uses compiledStyles.
     pub styles: Option<String>,
     pub regions: Vec<String>,
+    pub slots: Vec<TemplateSlotDefinition>,
+    pub options_schema: Option<Value>,
+    pub semantic_version: Option<String>,
     pub content_digest: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InterfaceTemplateDiagnostic {
+    pub code: String,
+    pub severity: String,
+    pub path: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InterfaceTemplateLayoutValidation {
+    pub valid: bool,
+    pub diagnostics: Vec<InterfaceTemplateDiagnostic>,
 }
 
 /// External presentation components are data-only. Validate every referenced
@@ -136,7 +160,7 @@ pub fn load_presentation_template_preview(
     let base_html = match descriptor.base_html.as_deref() {
         Some(path) => {
             let html = read_limited_text(&resolve_template_path(root, path)?)?;
-            validate_html(&html, is_shell)?;
+            validate_html(&html, is_shell, &descriptor.slots)?;
             Some(html)
         }
         None if kind == PresentationTemplateKind::Theme => None,
@@ -150,6 +174,10 @@ pub fn load_presentation_template_preview(
         }
         None => None,
     };
+    let compiled_styles = styles
+        .as_deref()
+        .map(|css| compile_scoped_styles(css, template_id))
+        .transpose()?;
     let content_digest = blake3::hash(
         format!(
             "{}\n{}\n{}\n{}",
@@ -170,8 +198,12 @@ pub fn load_presentation_template_preview(
         kind,
         version,
         base_html,
+        compiled_styles,
         styles,
         regions,
+        slots: descriptor.slots,
+        options_schema: descriptor.options_schema,
+        semantic_version: descriptor.semantic_version,
         content_digest,
     })
 }
@@ -195,7 +227,7 @@ fn validate_shell_template(
         descriptor.base_html.as_deref(),
         "Shell 模板缺少 baseHtml",
     )?;
-    validate_html(&html, true)?;
+    validate_html(&html, true, &descriptor.slots)?;
     validate_styles(root, descriptor.styles.as_deref())?;
     Ok(())
 }
@@ -216,7 +248,7 @@ fn validate_page_template(
         descriptor.base_html.as_deref(),
         "页面模板缺少 baseHtml",
     )?;
-    validate_html(&html, false)?;
+    validate_html(&html, false, &descriptor.slots)?;
     if contribution
         .regions
         .iter()
@@ -331,7 +363,11 @@ fn resolve_template_path(root: &Path, relative: &str) -> Result<PathBuf, Compone
     Ok(resolved)
 }
 
-fn validate_html(source: &str, is_shell: bool) -> Result<(), ComponentRuntimeError> {
+fn validate_html(
+    source: &str,
+    is_shell: bool,
+    slots: &[TemplateSlotDefinition],
+) -> Result<(), ComponentRuntimeError> {
     let lowered = source.to_ascii_lowercase();
     for forbidden in [
         "<script",
@@ -368,13 +404,38 @@ fn validate_html(source: &str, is_shell: bool) -> Result<(), ComponentRuntimeErr
         return Err(template_error("模板 HTML 不允许远程资源"));
     }
     if is_shell {
-        for node in REQUIRED_SHELL_NODES {
-            if !lowered.contains(&format!("<{node}")) {
-                return Err(template_error(format!("Shell 模板缺少强制节点 <{node}>")));
+        // The persistent HostUtilityBar owns recovery access and window
+        // controls. Older templates remain valid through their historical
+        // required nodes; new typed templates declare their own slot tree.
+        if slots.is_empty() {
+            for node in REQUIRED_SHELL_NODES {
+                if !lowered.contains(&format!("<{node}")) {
+                    return Err(template_error(format!("Shell 模板缺少强制节点 <{node}>")));
+                }
+            }
+        } else {
+            let names = template_slot_names(source);
+            for slot in slots {
+                if !names.iter().any(|name| name == &slot.id) {
+                    return Err(template_error(format!(
+                        "模板插槽 {} 未在 baseHtml 中声明 <nexora-slot>",
+                        slot.id
+                    )));
+                }
             }
         }
     }
     Ok(())
+}
+
+fn template_slot_names(source: &str) -> Vec<String> {
+    let expression = regex::Regex::new(
+        r#"(?is)<nexora-slot\b[^>]*\bname\s*=\s*([\"'])\s*([a-z][a-z0-9-]*)\s*\1[^>]*>"#,
+    ).expect("template slot regex must compile");
+    expression
+        .captures_iter(source)
+        .filter_map(|captures| captures.get(2).map(|value| value.as_str().to_string()))
+        .collect()
 }
 
 fn contains_inline_event_handler(source: &str) -> bool {
@@ -410,6 +471,86 @@ fn validate_css(source: &str) -> Result<(), ComponentRuntimeError> {
     Ok(())
 }
 
+/// Templates are data-only packages. Scope every ordinary rule beneath the
+/// template host so a package cannot restyle the Nexora utility bar, dialogs,
+/// or another template. Nested conditional rules keep their at-rule and have
+/// their contents compiled recursively.
+fn compile_scoped_styles(source: &str, template_id: &str) -> Result<String, ComponentRuntimeError> {
+    let scope = format!(r#"[data-nexora-interface-template="{}"]"#, template_id);
+    compile_css_block(source, &scope)
+}
+
+fn compile_css_block(source: &str, scope: &str) -> Result<String, ComponentRuntimeError> {
+    let mut output = String::with_capacity(source.len() + 128);
+    let mut cursor = 0usize;
+    while cursor < source.len() {
+        let Some(open_relative) = source[cursor..].find('{') else {
+            output.push_str(&source[cursor..]);
+            break;
+        };
+        let open = cursor + open_relative;
+        let selector = source[cursor..open].trim();
+        let mut depth = 1usize;
+        let mut index = open + 1;
+        while index < source.len() && depth > 0 {
+            match source.as_bytes()[index] {
+                b'{' => depth += 1,
+                b'}' => depth -= 1,
+                _ => {}
+            }
+            index += 1;
+        }
+        if depth != 0 {
+            return Err(template_error("模板 CSS 大括号未闭合"));
+        }
+        let body = &source[open + 1..index - 1];
+        if selector.trim_start().starts_with('@') {
+            let directive = selector.trim_start().to_ascii_lowercase();
+            if directive.starts_with("@media")
+                || directive.starts_with("@supports")
+                || directive.starts_with("@container")
+                || directive.starts_with("@layer")
+            {
+                output.push_str(selector);
+                output.push('{');
+                output.push_str(&compile_css_block(body, scope)?);
+                output.push('}');
+            } else {
+                return Err(template_error("模板 CSS 只允许 @media、@supports、@container 或 @layer 嵌套规则"));
+            }
+        } else {
+            let selectors = selector
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| scope_css_selector(value, scope))
+                .collect::<Result<Vec<_>, _>>()?;
+            if selectors.is_empty() {
+                return Err(template_error("模板 CSS 规则缺少选择器"));
+            }
+            output.push_str(&selectors.join(", "));
+            output.push('{');
+            output.push_str(body);
+            output.push('}');
+        }
+        cursor = index;
+    }
+    Ok(output)
+}
+
+fn scope_css_selector(selector: &str, scope: &str) -> Result<String, ComponentRuntimeError> {
+    let lowered = selector.to_ascii_lowercase();
+    if selector == "*"
+        || lowered.starts_with("html")
+        || lowered.starts_with("body")
+        || lowered.starts_with(":root")
+        || lowered.contains("::")
+    {
+        return Err(template_error("模板 CSS 不能使用全局根选择器或伪元素"));
+    }
+    Ok(format!("{scope} {selector}"))
+}
+
 fn template_error(message: impl Into<String>) -> ComponentRuntimeError {
     ComponentRuntimeError::new(ComponentRuntimeErrorCode::ComponentPackageInvalid, message)
 }
@@ -421,17 +562,17 @@ mod tests {
 
     #[test]
     fn rejects_scripted_or_remote_html() {
-        assert!(validate_html("<pm-surface-host /><script>alert(1)</script>", false).is_err());
-        assert!(validate_html("<img src=\"https://example.com/image.png\">", false).is_err());
-        assert!(validate_html("<button onclick=\"run()\">Run</button>", false).is_err());
+        assert!(validate_html("<pm-surface-host /><script>alert(1)</script>", false, &[]).is_err());
+        assert!(validate_html("<img src=\"https://example.com/image.png\">", false, &[]).is_err());
+        assert!(validate_html("<button onclick=\"run()\">Run</button>", false, &[]).is_err());
     }
 
     #[test]
     fn requires_recovery_nodes_for_shells() {
-        assert!(validate_html("<pm-surface-host />", true).is_err());
+        assert!(validate_html("<pm-surface-host />", true, &[]).is_err());
         assert!(validate_html(
             "<pm-surface-host /><pm-overlay-host /><pm-window-controls /><pm-window-drag-region /><pm-recovery-entry />",
-            true,
+            true, &[],
         )
         .is_ok());
     }
@@ -440,6 +581,18 @@ mod tests {
     fn rejects_external_css() {
         assert!(validate_css("@import url(https://example.com/theme.css);").is_err());
         assert!(validate_css("main { background: url(../assets/hero.png); }").is_ok());
+    }
+
+    #[test]
+    fn compiles_styles_under_template_scope() {
+        let compiled = compile_scoped_styles(
+            ".shell, .shell__main { color: red; } @media (max-width: 600px) { .shell { display: block; } }",
+            "example.shell",
+        )
+        .unwrap();
+        assert!(compiled.contains("[data-nexora-interface-template=\"example.shell\"] .shell"));
+        assert!(compiled.contains("@media"));
+        assert!(compile_scoped_styles("body { color: red; }", "example.shell").is_err());
     }
 
     #[test]

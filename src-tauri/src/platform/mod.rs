@@ -64,7 +64,9 @@ pub use file_router::{
     FileRoutingScopeContext, FileRoutingSnapshot, RemoveFileAssociationBindingRequest,
     SetFileAssociationBindingRequest,
 };
-pub use presentation_templates::{PresentationTemplatePreview, PresentationTemplatePreviewRequest};
+pub use presentation_templates::{
+    InterfaceTemplateLayoutValidation, PresentationTemplatePreview, PresentationTemplatePreviewRequest,
+};
 
 use crate::component_packager::{ComponentPackRequest, ComponentPackResult, SigningKeyResult};
 use builtin_components::builtin_component_manifests;
@@ -327,6 +329,61 @@ pub fn get_presentation_template_preview(
     runtime: State<'_, PlatformRuntime>,
 ) -> Result<PresentationTemplatePreview, ComponentRuntimeError> {
     runtime.components.presentation_template_preview(&request)
+}
+
+#[tauri::command]
+pub fn list_interface_templates(
+    runtime: State<'_, PlatformRuntime>,
+) -> component_runtime::PresentationTemplateCatalog {
+    runtime.components.overview().templates
+}
+
+#[tauri::command]
+pub fn get_interface_template_preview(
+    template_id: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<PresentationTemplatePreview, ComponentRuntimeError> {
+    runtime.components.interface_template_preview_by_id(&template_id)
+}
+
+#[tauri::command]
+pub fn duplicate_interface_template_for_development(
+    template_id: String,
+    target_directory: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<String, ComponentRuntimeError> {
+    runtime
+        .components
+        .duplicate_interface_template_for_development(&template_id, &target_directory)
+}
+
+#[tauri::command]
+pub fn export_interface_template_package(
+    component_id: String,
+    mut request: ComponentPackRequest,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<ComponentPackResult, String> {
+    let manifest = runtime
+        .components
+        .manifest(&component_id)
+        .ok_or_else(|| format!("界面模板组件未安装：{component_id}"))?;
+    if manifest.contributes.shell_templates.is_empty() {
+        return Err("目标组件没有界面模板贡献，不能作为界面模板包导出".into());
+    }
+    let root = runtime
+        .components
+        .package_root(&component_id)
+        .ok_or_else(|| "内置兼容模板没有独立资料包；请先复制为开发模板再导出".to_string())?;
+    request.source_path = root.to_string_lossy().into_owned();
+    crate::component_packager::pack_component(request)
+}
+
+#[tauri::command]
+pub fn validate_interface_layout(
+    profile: pmc_platform::WorkspaceProfileV1,
+    runtime: State<'_, PlatformRuntime>,
+) -> InterfaceTemplateLayoutValidation {
+    runtime.components.validate_interface_layout(&profile)
 }
 
 #[tauri::command]
@@ -629,6 +686,14 @@ pub async fn reload_script_component(
         .await?;
     sync_component_catalog(&runtime)?;
     Ok(manifest)
+}
+
+#[tauri::command]
+pub async fn reload_development_interface_template(
+    component_id: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<pmc_platform::ComponentManifestV1, ComponentRuntimeError> {
+    reload_script_component(component_id, runtime).await
 }
 
 #[tauri::command]

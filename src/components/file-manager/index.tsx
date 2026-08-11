@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ShieldCheck, X } from 'lucide-react';
+import { X } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { PythonEnvManager } from '../PythonEnvManager';
@@ -8,7 +8,6 @@ import { RecoverySettingsPanel } from '../settings/RecoverySettingsPanel';
 import { TaskPanel } from '../TaskPanel';
 import { openStandaloneDirectoryViewer } from './openStandaloneDirectoryViewer';
 import { openStandaloneImageViewer } from '../image-viewer/openStandaloneImageViewer';
-import { LauncherButton } from '../Launcher';
 import { BlenderFileParserDialog } from '../tools/BlenderFileParserDialog';
 import { ScriptDeveloperWorkbench } from '../automation/ScriptDeveloperWorkbench';
 import { ScriptSurfaceFrame } from '../automation/ScriptSurfaceFrame';
@@ -22,8 +21,8 @@ import { ShellTabBar } from '../shell/ShellTabBar';
 import { ContributedShellSurface } from '../shell/ContributedShellSurface';
 import { ProfileHomeSurface } from '../shell/ProfileHomeSurface';
 import { ProfileNavigationBar } from '../shell/ProfileNavigationBar';
-import { DevelopmentReloadControl } from '../shell/DevelopmentReloadControl';
-import { PinnedToolsToolbar } from './PinnedToolsToolbar';
+import { HostUtilityBar } from '../shell/HostUtilityBar';
+import { InterfaceTemplateHost } from '../shell/InterfaceTemplateHost';
 import { OPEN_RECOVERY_SETTINGS_EVENT } from '../../features/recoverySettings';
 import {
   getProfileHomeScriptSurfaceTarget,
@@ -93,6 +92,7 @@ import {
   type ProjectLocationReport,
 } from '../../api/projects';
 import { emitAutomationEvent } from '../../api/scriptAutomation';
+import type { ProfileTemplateSlotBinding, TemplateSlotDefinition } from '../../types/platform';
 
 interface ProjectSession {
   projectStore: ProjectStoreApi;
@@ -1578,6 +1578,134 @@ export function FileManager() {
     }
   }, [showToast]);
 
+  const renderTemplateSlot = useCallback((
+    slot: TemplateSlotDefinition,
+    bindings: ProfileTemplateSlotBinding[],
+  ) => {
+    const accepts = new Set(slot.accepts);
+    const projectPath = activeProjectSession?.projectStore.getState().projectPath;
+    const navigation = accepts.has('navigation') ? (
+      profileNavigationKind === 'side-bar' ? (
+        <>
+          <div className="md:hidden">
+            <ProfileNavigationBar
+              items={profileNavigationItems}
+              kind="top-bar"
+              activeContributionId={activeShellTab?.contributionId}
+              homeSurfaceId={activeWorkspaceProfile?.shellLayout?.home}
+              homeActive={activeShellTab?.type === 'home'}
+              onOpen={openProfileNavigation}
+              onOpenHome={openProfileHome}
+            />
+          </div>
+          <ProfileNavigationBar
+            items={profileNavigationItems}
+            kind="side-bar"
+            activeContributionId={activeShellTab?.contributionId}
+            homeSurfaceId={activeWorkspaceProfile?.shellLayout?.home}
+            homeActive={activeShellTab?.type === 'home'}
+            onOpen={openProfileNavigation}
+            onOpenHome={openProfileHome}
+          />
+        </>
+      ) : (
+        <ProfileNavigationBar
+          items={profileNavigationItems}
+          kind={profileNavigationKind}
+          activeContributionId={activeShellTab?.contributionId}
+          homeSurfaceId={activeWorkspaceProfile?.shellLayout?.home}
+          homeActive={activeShellTab?.type === 'home'}
+          onOpen={openProfileNavigation}
+          onOpenHome={openProfileHome}
+        />
+      )
+    ) : null;
+    const tabBar = accepts.has('tabs') ? (
+      <ShellTabBar
+        tabs={tabs}
+        activeTabId={activeTabId}
+        onActivateTab={activateTab}
+        onCloseTab={handleCloseShellTab}
+        onReorderTabs={reorderTabs}
+      />
+    ) : null;
+    const toolbar = accepts.has('toolbar') && activeProjectSession ? (
+      <ProjectSessionProvider
+        projectStore={activeProjectSession.projectStore}
+        workspaceTabStore={activeProjectSession.workspaceTabStore}
+      >
+        <Toolbar />
+      </ProjectSessionProvider>
+    ) : null;
+    const primary = accepts.has('active-surface') ? (
+      <div className="h-full min-h-0 w-full overflow-hidden">
+        {contributionShellTabs.map((tab) => {
+          const isActive = tab.id === activeTabId;
+          return (
+            <div key={tab.id} className={isActive ? 'h-full' : 'hidden'}>
+              <ContributedShellSurface tab={tab} isActive={isActive} />
+            </div>
+          );
+        })}
+        {!isContributionShellActive && activeProjectSession ? (
+          <ProjectSessionProvider
+            projectStore={activeProjectSession.projectStore}
+            workspaceTabStore={activeProjectSession.workspaceTabStore}
+          >
+            <ProjectWorkspace />
+          </ProjectSessionProvider>
+        ) : !isContributionShellActive ? (
+          <ProfileHomeSurface
+            onOpenProject={handleOpenProject}
+            settingsLoaded={isSettingsLoaded}
+            onOpenRecovery={() => setIsRecoverySettingsOpen(true)}
+          />
+        ) : null}
+      </div>
+    ) : null;
+    const componentSurfaces = accepts.has('component-surface')
+      ? bindings.filter((binding) => binding.kind === 'component-surface' && binding.componentId && binding.surfaceId)
+        .map((binding) => (
+          <div key={binding.id} className="min-h-0 min-w-0 flex-1 overflow-hidden rounded-md border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-950">
+            <ScriptSurfaceFrame
+              componentId={binding.componentId!}
+              surfaceId={binding.surfaceId!}
+              projectPath={projectPath}
+              extensionContext={{
+                host: 'interface-template',
+                slotId: slot.id,
+                instanceId: binding.instanceId ?? binding.id,
+                preview: false,
+              }}
+            />
+          </div>
+        ))
+      : [];
+    const status = accepts.has('status') && activeProjectSession ? (
+      <div className="flex h-7 items-center border-t border-gray-200 px-3 text-[11px] text-gray-500 dark:border-gray-700 dark:text-gray-400">
+        {activeProjectSession.projectStore.getState().projectName || '当前项目'}
+      </div>
+    ) : null;
+    return <>{tabBar}{navigation}{toolbar}{primary}{componentSurfaces}{status}</>;
+  }, [
+    activeProjectSession,
+    activeShellTab?.contributionId,
+    activeShellTab?.type,
+    activeTabId,
+    activeWorkspaceProfile?.shellLayout?.home,
+    contributionShellTabs,
+    handleCloseShellTab,
+    handleOpenProject,
+    isContributionShellActive,
+    isSettingsLoaded,
+    openProfileHome,
+    openProfileNavigation,
+    profileNavigationItems,
+    profileNavigationKind,
+    reorderTabs,
+    tabs,
+  ]);
+
   const toastStyles = {
     info: 'border-blue-200 bg-white text-gray-900',
     success: 'border-green-200 bg-white text-gray-900',
@@ -1593,114 +1721,21 @@ export function FileManager() {
 
   return (
     <div className="h-screen flex flex-col bg-gray-50 dark:bg-gray-900">
-      <div className="flex min-h-12 items-center border-b border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
-        <div className="min-w-0 flex-1 overflow-hidden">
-          {activeProjectSession ? (
-            <ProjectSessionProvider
-              projectStore={activeProjectSession.projectStore}
-              workspaceTabStore={activeProjectSession.workspaceTabStore}
-            >
-              <Toolbar />
-            </ProjectSessionProvider>
-          ) : (
-            <div className="h-12 px-3" />
-          )}
-        </div>
-
-        <div className="flex h-12 shrink-0 items-center gap-1.5 border-l border-gray-200 px-2 dark:border-gray-700">
-          <PinnedToolsToolbar
-            onOpenTool={openBuiltinTool}
-            onOpenScriptSurface={openScriptSurface}
-          />
-          <DevelopmentReloadControl
-            onOpenDeveloperWorkbench={() => setIsScriptDeveloperWorkbenchOpen(true)}
-          />
-          <button
-            type="button"
-            onClick={() => setIsRecoverySettingsOpen(true)}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-100"
-            title="维护中心"
-          >
-            <ShieldCheck className="h-4 w-4" />
-          </button>
-          <LauncherButton
-            hasActiveProject={Boolean(activeProjectSession)}
-            activeProjectName={activeProjectSession?.projectStore.getState().projectName || activeShellTab?.title}
-            onOpenTool={openBuiltinTool}
-            onOpenScriptSurface={openScriptSurface}
-          />
-        </div>
-      </div>
-
-      <ShellTabBar
-        tabs={tabs}
-        activeTabId={activeTabId}
-        onActivateTab={activateTab}
-        onCloseTab={handleCloseShellTab}
-        onReorderTabs={reorderTabs}
+      <HostUtilityBar
+        mode={activeWorkspaceProfile?.shellLayout?.hostToolbar?.mode}
+        hasActiveProject={Boolean(activeProjectSession)}
+        activeProjectName={activeProjectSession?.projectStore.getState().projectName || activeShellTab?.title}
+        onOpenTool={openBuiltinTool}
+        onOpenScriptSurface={openScriptSurface}
+        onOpenRecovery={() => setIsRecoverySettingsOpen(true)}
+        onOpenDeveloperWorkbench={() => setIsScriptDeveloperWorkbenchOpen(true)}
       />
 
-      {profileNavigationKind !== 'side-bar' ? (
-        <ProfileNavigationBar
-          items={profileNavigationItems}
-          kind={profileNavigationKind}
-          activeContributionId={activeShellTab?.contributionId}
-          homeSurfaceId={activeWorkspaceProfile?.shellLayout?.home}
-          homeActive={activeShellTab?.type === 'home'}
-          onOpen={openProfileNavigation}
-          onOpenHome={openProfileHome}
-        />
-      ) : (
-        <div className="md:hidden">
-          <ProfileNavigationBar
-            items={profileNavigationItems}
-            kind="top-bar"
-            activeContributionId={activeShellTab?.contributionId}
-            homeSurfaceId={activeWorkspaceProfile?.shellLayout?.home}
-            homeActive={activeShellTab?.type === 'home'}
-            onOpen={openProfileNavigation}
-            onOpenHome={openProfileHome}
-          />
-        </div>
-      )}
-
-      <div className="flex min-h-0 flex-1 overflow-hidden">
-        {profileNavigationKind === 'side-bar' ? (
-          <ProfileNavigationBar
-            items={profileNavigationItems}
-            kind="side-bar"
-            activeContributionId={activeShellTab?.contributionId}
-            homeSurfaceId={activeWorkspaceProfile?.shellLayout?.home}
-            homeActive={activeShellTab?.type === 'home'}
-            onOpen={openProfileNavigation}
-            onOpenHome={openProfileHome}
-          />
-        ) : null}
-        <div className="min-w-0 flex-1 overflow-hidden">
-          {contributionShellTabs.map((tab) => {
-            const isActive = tab.id === activeTabId;
-            return (
-              <div key={tab.id} className={isActive ? 'h-full' : 'hidden'}>
-                <ContributedShellSurface tab={tab} isActive={isActive} />
-              </div>
-            );
-          })}
-          {!isContributionShellActive && activeProjectSession ? (
-            <ProjectSessionProvider
-              projectStore={activeProjectSession.projectStore}
-              workspaceTabStore={activeProjectSession.workspaceTabStore}
-            >
-              <ProjectWorkspace />
-            </ProjectSessionProvider>
-          ) : !isContributionShellActive ? (
-            <ProfileHomeSurface
-              onOpenProject={handleOpenProject}
-              settingsLoaded={isSettingsLoaded}
-              onOpenRecovery={() => setIsRecoverySettingsOpen(true)}
-            />
-          ) : null}
-        </div>
-      </div>
+      <InterfaceTemplateHost
+        profile={activeWorkspaceProfile}
+        renderSlot={renderTemplateSlot}
+        fallback={<div className="flex min-h-0 flex-1 items-center justify-center text-sm text-gray-500">当前界面模板不可用。</div>}
+      />
 
       <PythonEnvManager
         isOpen={isPythonEnvOpen && pythonToolAvailable}

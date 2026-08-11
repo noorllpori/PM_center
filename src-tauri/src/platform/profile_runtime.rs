@@ -4754,6 +4754,9 @@ mod tests {
                 ScriptSurfacePlacement::Shell,
                 ScriptSurfacePlacement::Dialog,
             ],
+            default_surface: false,
+            instance_mode: Default::default(),
+            size_hints: Default::default(),
             allowed_commands: Vec::new(),
             extensions: ExtensionFields::new(),
         }];
@@ -4786,6 +4789,9 @@ mod tests {
             name: "音乐播放器".into(),
             entry: "ui/index.html".into(),
             placements: vec![ScriptSurfacePlacement::Shell],
+            default_surface: false,
+            instance_mode: Default::default(),
+            size_hints: Default::default(),
             allowed_commands: Vec::new(),
             extensions: ExtensionFields::new(),
         }];
@@ -4837,6 +4843,9 @@ mod tests {
                 ScriptSurfacePlacement::Shell,
                 ScriptSurfacePlacement::Workspace,
             ],
+            default_surface: false,
+            instance_mode: Default::default(),
+            size_hints: Default::default(),
             allowed_commands: Vec::new(),
             extensions: ExtensionFields::new(),
         }];

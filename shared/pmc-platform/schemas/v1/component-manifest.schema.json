@@ -413,6 +413,73 @@
       ],
       "type": "object"
     },
+    "ComponentSurfaceInstanceMode": {
+      "enum": [
+        "singleton",
+        "multiple"
+      ],
+      "type": "string"
+    },
+    "ComponentSurfaceSizeHints": {
+      "additionalProperties": true,
+      "properties": {
+        "compactSurface": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "maxHeight": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "maxWidth": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "minHeight": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "minWidth": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "preferredHeight": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "preferredWidth": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "ComponentUiMode": {
       "enum": [
         "none",
@@ -565,11 +632,23 @@
           },
           "type": "array"
         },
+        "defaultSurface": {
+          "default": false,
+          "type": "boolean"
+        },
         "entry": {
           "type": "string"
         },
         "id": {
           "type": "string"
+        },
+        "instanceMode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ComponentSurfaceInstanceMode"
+            }
+          ],
+          "default": "singleton"
         },
         "name": {
           "type": "string"
@@ -580,6 +659,14 @@
             "$ref": "#/definitions/ScriptSurfacePlacement"
           },
           "type": "array"
+        },
+        "sizeHints": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ComponentSurfaceSizeHints"
+            }
+          ],
+          "default": {}
         }
       },
       "required": [
@@ -594,7 +681,8 @@
         "shell",
         "workspace",
         "dialog",
-        "widget"
+        "widget",
+        "independent-window"
       ],
       "type": "string"
     },

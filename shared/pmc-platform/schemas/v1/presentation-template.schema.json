@@ -10,6 +10,113 @@
         "theme"
       ],
       "type": "string"
+    },
+    "TemplateSlotAccepts": {
+      "enum": [
+        "active-surface",
+        "component-surface",
+        "widget",
+        "navigation",
+        "tabs",
+        "toolbar",
+        "status"
+      ],
+      "type": "string"
+    },
+    "TemplateSlotDefinition": {
+      "additionalProperties": true,
+      "properties": {
+        "accepts": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/TemplateSlotAccepts"
+          },
+          "type": "array"
+        },
+        "collapseWhenEmpty": {
+          "default": true,
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "layout": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TemplateSlotLayout"
+            }
+          ],
+          "default": "flow"
+        },
+        "maxHeight": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "maxWidth": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "minHeight": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "minWidth": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "multiplicity": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TemplateSlotMultiplicity"
+            }
+          ],
+          "default": "many"
+        },
+        "name": {
+          "default": "",
+          "type": "string"
+        },
+        "required": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "TemplateSlotLayout": {
+      "enum": [
+        "flow",
+        "single",
+        "stack",
+        "tabs"
+      ],
+      "type": "string"
+    },
+    "TemplateSlotMultiplicity": {
+      "enum": [
+        "one",
+        "many"
+      ],
+      "type": "string"
     }
   },
   "properties": {
@@ -32,6 +139,7 @@
     "kind": {
       "$ref": "#/definitions/PresentationTemplateKind"
     },
+    "optionsSchema": true,
     "regions": {
       "default": [],
       "items": {
@@ -44,6 +152,19 @@
       "format": "uint16",
       "minimum": 0.0,
       "type": "integer"
+    },
+    "semanticVersion": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "slots": {
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/TemplateSlotDefinition"
+      },
+      "type": "array"
     },
     "styles": {
       "type": [

@@ -91,6 +91,71 @@ pub enum ShellNavigationKind {
     Minimal,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum HostToolbarMode {
+    #[default]
+    Fixed,
+    AutoHide,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct HostToolbarConfig {
+    #[serde(default)]
+    pub mode: HostToolbarMode,
+    #[serde(flatten)]
+    pub extensions: ExtensionFields,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum TemplateSlotBindingKind {
+    ActiveSurface,
+    ComponentSurface,
+    Widget,
+    Navigation,
+    Tabs,
+    Toolbar,
+    Status,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileTemplateSlotBinding {
+    pub id: String,
+    pub slot_id: String,
+    pub kind: TemplateSlotBindingKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contribution_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_id: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub order: i32,
+    #[serde(default)]
+    pub settings: BTreeMap<String, Value>,
+    #[serde(flatten)]
+    pub extensions: ExtensionFields,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileInterfaceTemplateState {
+    pub template_id: String,
+    #[serde(default)]
+    pub settings: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub slot_bindings: Vec<ProfileTemplateSlotBinding>,
+    #[serde(flatten)]
+    pub extensions: ExtensionFields,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileShellLayout {
@@ -100,12 +165,16 @@ pub struct ProfileShellLayout {
     pub navigation: Vec<String>,
     #[serde(default)]
     pub pinned_tools: Vec<String>,
+    #[serde(default)]
+    pub host_toolbar: HostToolbarConfig,
     #[serde(default = "default_navigation_kind")]
     pub navigation_kind: ShellNavigationKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell_template: Option<ProfilePresentationBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme_preset: Option<ProfilePresentationBinding>,
+    #[serde(default)]
+    pub interface_template_states: Vec<ProfileInterfaceTemplateState>,
     #[serde(flatten)]
     pub extensions: ExtensionFields,
 }
@@ -120,9 +189,11 @@ impl Default for ProfileShellLayout {
             home: None,
             navigation: Vec::new(),
             pinned_tools: Vec::new(),
+            host_toolbar: HostToolbarConfig::default(),
             navigation_kind: default_navigation_kind(),
             shell_template: None,
             theme_preset: None,
+            interface_template_states: Vec::new(),
             extensions: ExtensionFields::new(),
         }
     }
@@ -485,6 +556,43 @@ impl ValidateContract for WorkspaceProfileV1 {
         }
         if let Some(binding) = &self.shell_layout.theme_preset {
             validate_presentation_binding(binding, "$.shellLayout.themePreset")?;
+        }
+        let mut interface_template_ids = BTreeSet::new();
+        for (index, state) in self.shell_layout.interface_template_states.iter().enumerate() {
+            let path = format!("$.shellLayout.interfaceTemplateStates[{index}]");
+            validate_stable_id(&state.template_id, &format!("{path}.templateId"))?;
+            if !interface_template_ids.insert(state.template_id.as_str()) {
+                return duplicate(format!("{path}.templateId"), &state.template_id);
+            }
+            let mut binding_ids = BTreeSet::new();
+            for (binding_index, binding) in state.slot_bindings.iter().enumerate() {
+                let binding_path = format!("{path}.slotBindings[{binding_index}]");
+                validate_local_id(&binding.id, &format!("{binding_path}.id"))?;
+                validate_local_id(&binding.slot_id, &format!("{binding_path}.slotId"))?;
+                if !binding_ids.insert(binding.id.as_str()) {
+                    return duplicate(format!("{binding_path}.id"), &binding.id);
+                }
+                if let Some(contribution_id) = &binding.contribution_id {
+                    validate_stable_id(contribution_id, &format!("{binding_path}.contributionId"))?;
+                }
+                if let Some(component_id) = &binding.component_id {
+                    validate_stable_id(component_id, &format!("{binding_path}.componentId"))?;
+                }
+                if let Some(surface_id) = &binding.surface_id {
+                    validate_stable_id(surface_id, &format!("{binding_path}.surfaceId"))?;
+                }
+                if let Some(instance_id) = &binding.instance_id {
+                    validate_local_id(instance_id, &format!("{binding_path}.instanceId"))?;
+                }
+                let component_surface = matches!(binding.kind, TemplateSlotBindingKind::ComponentSurface);
+                if component_surface != (binding.component_id.is_some() && binding.surface_id.is_some()) {
+                    return Err(ContractError::new(
+                        ContractErrorCode::InvalidReference,
+                        binding_path,
+                        "组件页面绑定必须同时声明 componentId 和 surfaceId，其他绑定不能声明它们",
+                    ));
+                }
+            }
         }
 
         let mut data_source_ids = BTreeSet::new();
