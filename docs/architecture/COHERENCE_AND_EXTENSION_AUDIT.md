@@ -1,10 +1,10 @@
 # 架构自洽与扩展性审计
 
-状态：当前代码与文档交叉检查，2026-08-07。此审计区分已经可用的能力、明确限制与应在后续版本补强的架构债务。
+状态：当前代码与文档交叉检查，2026-08-12。此审计区分已经可用的能力、明确限制与应在后续版本补强的架构债务。
 
 ## 1. 结论
 
-Nexora 的核心方向是自洽的：**Profile 选择功能闭包，Module 管理产品生命周期，Component 提供可安装能力，Capability 约束宿主接口，Contribution 决定可见入口，ResourceRegistry/运行时负责停止与恢复。** 这足以支持“项目管理器、媒体资料库、局域网通信端、外部 Blender 渲染器”等不同装配，而无需把它们固化为互斥产品模式。
+Nexora 的核心方向是自洽的：**Profile 选择组件闭包，内部兼容层承接旧生命周期，Component 提供可安装能力，Capability 约束宿主接口，Contribution 决定可见入口，ResourceRegistry/运行时负责停止与恢复。** 这足以支持“项目管理器、媒体资料库、局域网通信端、外部 Blender 渲染器”等不同装配，而无需把它们固化为互斥产品模式。
 
 后续扩展的主要难点不在于再增加运行时类型，而在于把“已经可表达的字段”严格分成“可由第三方稳定使用”和“暂时只供本体目录/诊断使用”。在这条边界未收紧前，贸然建设商城或鼓励第三方任意 UI 注入，会带来兼容性与安全债务。
 
@@ -36,7 +36,7 @@ Nexora 的核心方向是自洽的：**Profile 选择功能闭包，Module 管�
 | EXE、Python Worker、DLL、资料包运行时 | 是，但需协议/平台测试 | DLL 仅 Windows 且隔离；优先 Python 或 EXE。 |
 | 文件处理器与用户文件关联 | 是 | 通过 `fileHandlers` 和文件路由，不直接拦截前端双击。 |
 | Schema 设置区、模板与主题 | 是 | 设置字段由宿主渲染；模板经静态净化和恢复容器托管。 |
-| Script Surface 的任意位置自动嵌入 | 尚未实现，规划 R17 | 当前从功能中心打开为对话框；`placements` 不会自动生成 Shell、工作区或 Widget 宿主。 |
+| Script Surface 插入当前模板插槽 | verifying | 可作为 component-surface 插入当前界面模板；仍不是任意 DOM、原生 Widget 或右键菜单 ABI。 |
 | 任意 React/DOM 注入、任意 Tauri command | 否 | 不公开，禁止依赖。Script Surface 运行在沙箱 iframe。 |
 | 任意宿主菜单、Widget、DataSource 的自定义渲染器 | 尚未形成独立第三方 UI ABI，规划 R17 | Manifest 字段可被记录/诊断，但没有开放直接加载第三方 React 的宿主 ABI。新 UI 当前优先走 `scriptSurfaces`。 |
 | 节点 DAG 执行器 | 旧合同冻结；新合同规划 R18 | `workflowNodes` 继续兼容往返但不执行；R18 使用新的编排合同 v2，不复用旧字段语义。 |
@@ -55,7 +55,7 @@ Nexora 的核心方向是自洽的：**Profile 选择功能闭包，Module 管�
 
 Component Manifest 已能表达多种贡献，但宿主并未开放任意 React 代码加载。若文档不说明，开发者会误以为声明 `widgets` 就能获得原生 Widget。
 
-建议：R17 前保持 Script Surface 为第三方 UI 的唯一公开路径；R17 先设计独立 Hosted Surface、Project Context、菜单、Widget/DataSource、生命周期和性能/权限协议，再宣布稳定。即使 R17 完成也不开放第三方 React 直接注入宿主 DOM。
+建议：当前保持 Script Surface 与静态界面模板为第三方 UI 的唯一公开路径；完整 R17 仍需设计 Project Context、菜单、Widget/DataSource、独立窗口、生命周期和性能/权限协议，再宣布稳定。即使 R17 完成也不开放第三方 React 直接注入宿主 DOM。
 
 ### P1：减少双份贡献目录的漂移风险
 

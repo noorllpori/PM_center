@@ -1,55 +1,59 @@
 # Nexora 当前本体架构
 
-状态：当前实现快照，基于 `2.8.5` 开发线。最后核对：2026-08-07。
+状态：当前实现快照，基于 `2.8.5` 开发线。最后核对：2026-08-12。
 
 ## 1. 总体分层
 
 ```mermaid
 flowchart TB
-  UI[React 前端 Shell\n标签、项目、设置、功能中心]
+  UI[React 前端 Shell\n固定工具带、模板、标签与设置]
   Tauri[Tauri/Rust 宿主\n命令、窗口、进程、文件与事件]
   Profile[Profile Runtime\n装配方案、迁移、切换、恢复]
-  Module[Module Manager\n模块生命周期与资源登记]
+  Legacy[内部兼容适配层\n旧 Module 生命周期与资源登记]
+  Bridge[Component Bridge\n依赖、命令、上下文与取消]
   Capability[Capability Gateway\n一次性令牌、范围与审计]
   Component[Component Runtime\n安装、签名、监督、取消、模板]
   Automation[Script Automation\nPython SDK、事件、cron、运行历史]
-  Domains[业务域\n项目资源、渲染、局域网、媒体、文件路由]
+  Domains[业务域\n文件操作、渲染、局域网、媒体与项目会话]
   Storage[(应用数据、项目 .pm_center、\n组件目录与业务 SQLite)]
 
   UI <--> Tauri
   Tauri --> Profile
-  Profile --> Module
+  Profile --> Legacy
   Profile --> Component
-  Module --> Capability
+  Legacy --> Capability
+  Component --> Bridge
+  Bridge --> Capability
   Component --> Capability
   Automation --> Component
   Automation --> Capability
-  Module --> Domains
+  Legacy --> Domains
+  Bridge --> Domains
   Component --> Domains
   Tauri --> Storage
   Domains --> Storage
 ```
 
-前端不直接拥有后台服务。它读取 Profile、Module 和 Component 的运行时快照，以受控贡献目录决定页面、工具、设置区、文件处理器和 Shell 标签是否可见。Rust 宿主才拥有数据库、监听端口、watcher、子进程、窗口和 Capability 令牌。
+前端不直接拥有后台服务。它读取 Profile、Component 和内部兼容适配层的运行时快照，以受控贡献目录决定页面、工具、设置区、文件处理器和 Shell 标签是否可见。Rust 宿主才拥有数据库、监听端口、watcher、子进程、窗口和 Capability 令牌。
 
-## 2. 四个基本对象
+## 2. 三个用户对象与内部兼容层
 
 | 对象 | 职责 | 能否安装/卸载 | 数据边界 |
 | --- | --- | --- | --- |
-| **Module** | 产品级功能生命周期，例如项目管理、渲染中心、局域网协同、媒体资料库。拥有后台资源及宿主 UI 贡献。 | 内置模块由 Profile 启用或停用，不以第三方包作为常规扩展单元。 | 应用数据或项目数据，按模块 `dataPolicy` 管理。 |
-| **Component** | 可替换的服务、功能或资料包，例如 BlenderIO、Python 自动化、文件处理器、模板、EXE、DLL。 | 是。随附组件也可卸载并重新安装。 | 组件运行时目录及组件自己的受控状态。 |
-| **Profile** | 用户装配方案：启用哪些 Module/Component、主页、导航、快捷栏、设置、Surface、自动化绑定和本机映射。 | 可以创建、复制、导入、导出、切换或删除非受保护方案。 | 软件级 Profile 存储；不携带项目绝对路径、凭据和用户私密数据。 |
+| **内部 Module 兼容层** | 迁移期承接旧内置生命周期与资源登记。普通用户和第三方开发者不直接配置或开发 Module。 | 不作为第三方安装单元。 | 由宿主内部管理。 |
+| **Component** | 可替换的服务、功能或资料包，例如文件操作、BlenderIO、Python 自动化、文件处理器、模板、EXE、DLL。 | 是。随附组件也可卸载并重新安装。 | 组件运行时目录及组件自己的受控状态。 |
+| **Profile** | 用户装配方案：启用哪些组件、主页、导航、快捷栏、模板插槽、设置、自动化绑定和本机映射。 | 可以创建、复制、导入、导出、切换或删除非受保护方案。 | 软件级 Profile 存储；不携带项目绝对路径、凭据和用户私密数据。 |
 | **Project** | 用户项目目录及其 `.pm_center` 元数据、索引、缓存、集合和项目级状态。 | 打开/关闭，不等于启用 Module。 | 项目根目录的 `.pm_center`；关闭项目后释放 watcher、数据库和 TreeCache。 |
 
-`Module` 与 `Component` 不存在“内核/普通”的权限等级。两者都要经 Capability Gateway；区别只在生命周期和用途。`builtin-rust` 是迁移兼容运行时，不是不可卸载特权。
+组件不存在“内核/普通”的权限等级。所有公开组件都经 Capability Gateway、依赖校验和统一安装模型处理。`builtin-rust` 是迁移兼容运行时，不是不可卸载特权。
 
 ## 3. 启动、装配与页面
 
 ```text
 应用启动
   -> 读取/迁移 Profile 与本机绑定
-  -> 解析 Module 依赖和有效 Component 闭包
-  -> 启动有效 Module 的后台资源
+  -> 解析有效 Component 闭包和旧 Module 兼容适配
+  -> 启动组件与适配层声明的后台资源
   -> 同步 Component Registry 与 Capability 目录
   -> 恢复 Shell、项目和工作区会话
   -> 触发 app.started 自动化事件
@@ -57,14 +61,14 @@ flowchart TB
 
 Profile 的 `shellLayout.home` 只表示启动时激活的 Surface。它不垄断页面入口：独立 Shell 页面应同时有导航项与可 Pin 工具入口，打开后聚焦同一个单例 Shell 标签。项目工作区标签则是按项目路径单例。
 
-Profile 切换是事务：先预检依赖、组件、Capability、模板与引用；再停止旧资源、应用新闭包、提交 Profile，失败会回滚。停用 Module 只撤下入口和资源，不自动删除项目、组件、Profile 或业务历史。
+Profile 切换是事务：先预检依赖、组件、Capability、模板与引用；再停止旧资源、应用新闭包、提交 Profile，失败会回滚。停用组件只撤下入口和资源，不自动删除项目、组件、Profile 或业务历史。
 
 ## 4. 贡献与显示边界
 
-Module Manifest 和 Component Manifest 都可声明贡献。前端维护受控目录，后端 Manifest 声明所有权，运行时必须同时满足：
+组件清单与内部兼容适配层都可声明贡献。前端维护受控目录，后端清单声明所有权，运行时必须同时满足：
 
 1. 贡献 ID 在前端目录有定义；
-2. 当前有效 Module/Component 声明并拥有该贡献；
+2. 当前有效组件或内部适配层声明并拥有该贡献；
 3. 宿主存在对应渲染器、处理器或安全实现；
 4. 相关 Capability、依赖和 Profile 引用有效。
 
@@ -86,7 +90,7 @@ Python 是**受信任代码模型**：SDK 和宿主接口受网关约束，但 P
 
 ### 脚本自动化
 
-`builtin.script-automation` 基于 Component Runtime 执行自动化命令。Profile 保存手动、事件和 cron 绑定；运行数据库保存输入快照、不可变 Manifest 摘要、尝试、日志、权限等待和 `attention`。`pure`/`idempotent` 运行可以按规则恢复，`non-idempotent` 的中断结果必须人工处理。当前第三方 Script Surface 从功能中心打开为沙箱对话框，并可在开发者工作台预览；`placements` 还是兼容的页面放置描述，尚不会自动生成任意 Shell、工作区或 Widget 宿主。
+`builtin.script-automation` 基于 Component Runtime 执行自动化命令。Profile 保存手动、事件和 cron 绑定；运行数据库保存输入快照、不可变 Manifest 摘要、尝试、日志、权限等待和 `attention`。`pure`/`idempotent` 运行可以按规则恢复，`non-idempotent` 的中断结果必须人工处理。第三方 Script Surface 可从功能中心打开，也可作为当前界面模板的 component-surface 插槽内容；它仍不能注入宿主 DOM、直接调用 Tauri 或获得任意 Widget/右键菜单宿主。
 
 ## 6. 数据位置与所有权
 
@@ -100,7 +104,7 @@ Python 是**受信任代码模型**：SDK 和宿主接口受网关约束，但 P
 
 ## 7. 业务域边界
 
-- **项目资源**：项目打开、数据库、watcher、TreeCache、集合、文件列表和项目级设置。
+- **文件操作**：通过受控项目路径和已授权外部路径提供文件、缓存、Watcher 与项目上下文操作；组件不能直接访问 TreeCache 或项目数据库。
 - **渲染中心**：Blender Worker、帧领取、输出提交、性能采样和视频打包。它的外部渲染站使用应用数据私有队列，不强制打开项目。
 - **局域网协同**：软件级发现、联系人、聊天与传输；不属于任何单个项目。
 - **媒体资料库**：软件级、可停用的独立资料库；项目级媒体关联应由后续“项目媒体桥接”组件提供，而不反向绑定基础库到项目 watcher。

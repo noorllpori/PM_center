@@ -1,6 +1,6 @@
 # Nexora 本体架构资料
 
-本文档组记录 Nexora 2.8.5 当前开发线的实际架构。它服务于维护闭源 Nexora 本体、审查大版本改动和决定后续扩展边界的人员；它不是第三方组件 API 手册，也不属于安装版用户制作组件或装配空间时必须取得的源码资料。
+本文档组记录 Nexora 2.8.5 当前开发线的实际架构。它服务于维护闭源 Nexora 本体、审查大版本改动和决定后续扩展边界的人员；它不是第三方组件 API 手册，也不属于安装版用户制作组件或装配空间时必须取得的源码资料。当前状态与路线先从 [../README.md](../README.md) 阅读。
 
 ## 阅读顺序
 
@@ -20,8 +20,10 @@
 - `shared/pmc-platform/src/`：Schema 背后的 Rust 语义校验；
 - `src-tauri/resources/script-sdk/nexora_sdk/`：Python 脚本组件 SDK v1；
 - `examples/`：当前可安装、可验证的组件和模板示例；
-- `docs/NEXT_MAJOR_*`：每个里程碑的设计、实现记录与验收证据。
+- `docs/PROJECT_CONTEXT.md`、`docs/NEXT_MAJOR_IMPLEMENTATION_ROADMAP.md`：当前状态与实施顺序；
+- `docs/extension-development/`：对安装版扩展开发者公开的接口与示例；
+- `docs/archive/2026-08-12/`：历史设计和验收证据，不是当前合同。
 
 ## 维护规则
 
-任何会改变下列任一项的提交，必须同步更新本目录或明确链接到新的合同版本：组件清单字段、Profile/装配空间格式、组件进程协议、Capability、组件开发流程、实际可公开贡献的 UI 类型。不要只更新历史里程碑文档。
+任何会改变下列任一项的提交，必须同步更新本目录或明确链接到新的合同版本：组件清单字段、Profile/装配空间格式、组件进程协议、Capability、组件开发流程、实际可公开贡献的 UI 类型。不要把变更只写入历史归档。
