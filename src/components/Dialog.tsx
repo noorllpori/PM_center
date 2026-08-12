@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 
 interface DialogProps {
@@ -63,7 +64,7 @@ export function Dialog({
     '2xl': 'w-[1040px]',
   };
 
-  return (
+  const dialog = (
     <div
       ref={overlayRef}
       onMouseDown={handleOverlayMouseDown}
@@ -101,6 +102,12 @@ export function Dialog({
       </div>
     </div>
   );
+
+  // Dialogs must escape transformed or clipped component surfaces. In
+  // particular, the auto-hide HostUtilityBar uses translateY for its reveal
+  // animation; rendering inside it would make a fixed overlay cover only the
+  // toolbar's containing block instead of the whole Nexora window.
+  return typeof document === 'undefined' ? dialog : createPortal(dialog, document.body);
 }
 
 // 确认对话框专用组件
