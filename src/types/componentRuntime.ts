@@ -130,6 +130,7 @@ export interface PresentationTemplatePreview {
   slots: TemplateSlotDefinition[];
   optionsSchema?: JsonValue | null;
   semanticVersion?: string | null;
+  cssWarnings: string[];
   contentDigest: string;
 }
 

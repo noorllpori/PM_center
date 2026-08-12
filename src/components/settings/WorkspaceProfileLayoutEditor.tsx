@@ -67,6 +67,17 @@ interface DragState {
   id: string;
 }
 
+function formatTemplateError(error: unknown) {
+  if (typeof error === 'string') return error;
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === 'object') {
+    const typed = error as { code?: string; message?: string; details?: unknown };
+    const details = Array.isArray(typed.details) ? typed.details.map(String) : [];
+    return [typed.code, typed.message, ...details].filter(Boolean).join('：');
+  }
+  return String(error);
+}
+
 const SHELL_TEMPLATE_OPTIONS: Array<{
   navigationKind: ShellNavigationKind;
   templateId: string;
@@ -343,7 +354,7 @@ export function WorkspaceProfileLayoutEditor({
         if (!disposed) setComponentRuntime(overview);
       })
       .catch((error) => {
-        if (!disposed) setTemplateLoadError(String(error));
+        if (!disposed) setTemplateLoadError(formatTemplateError(error));
       });
     const handleRuntimeChanged = () => void refreshRuntime();
     void refreshRuntime();
@@ -596,6 +607,7 @@ export function WorkspaceProfileLayoutEditor({
   useEffect(() => {
     let disposed = false;
     setTemplatePreview(null);
+    setTemplateLoadError(null);
     if (!selectedExternalShellTemplate) return () => { disposed = true; };
     void getPresentationTemplatePreview(
       selectedExternalShellTemplate.owner.componentId,
@@ -611,7 +623,7 @@ export function WorkspaceProfileLayoutEditor({
         });
       }
     }).catch((error) => {
-      if (!disposed) setTemplateLoadError(String(error));
+      if (!disposed) setTemplateLoadError(formatTemplateError(error));
     });
     return () => { disposed = true; };
   }, [selectedExternalShellTemplate]);
@@ -957,7 +969,8 @@ export function WorkspaceProfileLayoutEditor({
                 {externalShellTemplates.length ? (
                   <p className="mt-1 text-[11px] text-gray-400">模板包先经静态净化；模板只控制工具带以下的布局，缺失时自动回退内置布局。</p>
                 ) : null}
-                {templateLoadError ? <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-300">无法读取模板目录：{templateLoadError}</p> : null}
+                {templateLoadError ? <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-300">界面模板无法加载：{templateLoadError}</p> : null}
+                {templatePreview?.cssWarnings.map((warning) => <p key={warning} className="mt-1 text-[11px] text-amber-600 dark:text-amber-300">CSS 风险提示：{warning}</p>)}
                </label>
               {selectedTemplateForDevelopment ? (
                 <div className="md:col-span-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-dashed border-gray-300 px-3 py-2 dark:border-gray-700">

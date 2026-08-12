@@ -472,6 +472,9 @@
 
         <section id="html" data-title="HTML 安全规则">
           <h2>8. HTML 安全规则</h2>
+          <h3>宿主托管的可拖拽分割</h3>
+          <p>模板可以在静态布局根节点上声明 <code>data-nexora-resizable="horizontal"</code>，并用 <code>data-nexora-resize-first</code>、<code>data-nexora-resize-second</code>、<code>data-nexora-resize-key</code> 和两个 <code>data-nexora-resize-region</code> 标记左右区域。Nexora 会插入可访问的分割手柄，负责鼠标、触摸和键盘调整，模板不需要也不能编写 JavaScript。</p>
+          <p>两侧 CSS 使用 <code>--nexora-split-first</code> 与 <code>--nexora-split-second</code> 作为 <code>fr</code> 比例。拖动后按模板保存到当前 Profile 的 <code>interfaceTemplateStates[].settings[resizeKey].firstPercent</code>；窄窗口隐藏手柄并由响应式规则切换为上下布局，预览不会保存。</p>
           <pre><code>&lt;main class="split-template"&gt;
   &lt;section class="split-template__pane split-template__pane--left"&gt;
     &lt;nexora-slot name="left"&gt;&lt;/nexora-slot&gt;
@@ -505,16 +508,24 @@ ul ol li p span h1 h2 h3 h4 h5 h6 hr figure figcaption</code></pre>
   overflow: hidden;
 }
 
+.split-template__pane > div {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  flex: 1;
+}
+
 @media (max-width: 720px) {
   .split-template {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
   }
 }</code></pre>
-          <p>Nexora 会自动把普通 CSS 规则限定在当前模板容器下。禁止 <code>@import</code>、表达式、脚本协议、文件协议和远程 URL。</p>
+          <p>Nexora 会自动把普通 CSS 规则限定在当前模板容器下。禁止 <code>@import</code>、表达式、脚本协议、文件协议和远程 URL。<code>::before</code>、<code>::after</code>、<code>::selection</code> 等 CSS 伪元素允许使用；检测到后会提示检查 <code>z-index</code>、覆盖范围、点击命中和可访问性。</p>
           <ul>
             <li>Grid/Flex 根和子项都设置 <code>min-width: 0</code>。</li>
-            <li>纵向可压缩区域设置 <code>min-height: 0</code>。</li>
+            <li>纵向可压缩区域设置 <code>min-height: 0</code>；含 <code>component-surface</code> 的单插槽外层还应设置 <code>display: flex; flex-direction: column</code>，让隔离 iframe 填满区域而不是使用默认 150px 高度。</li>
             <li>所有 Nexora 颜色变量提供回退值。</li>
             <li>模板只控制布局，不强制组件页面字体和内部排版。</li>
             <li>当前宿主会给 component-surface 添加边框、背景和圆角，模板不要依赖移除它。</li>

@@ -713,6 +713,58 @@ impl WorkspaceProfileRuntime {
         Ok(ComponentProfileCleanupRollback { backups })
     }
 
+    /// Removes one component's profile-owned contributions from the active
+    /// profile while keeping the installed component and all other profiles.
+    /// This is deliberately separate from component deletion, which must
+    /// clean every profile before the component can disappear from the catalog.
+    pub(crate) fn detach_component_from_current_profile(
+        &self,
+        manifest: &ComponentManifestV1,
+        module_manifests: &[ModuleManifestV1],
+    ) -> Result<WorkspaceProfileMutationResult, WorkspaceProfileRuntimeError> {
+        let _guard = self.operation_lock.lock().map_err(|_| {
+            WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileLockPoisoned,
+                "装配方案运行时锁已损坏",
+                None,
+            )
+        })?;
+        self.ensure_edit_repository_ready_locked()?;
+
+        let state = self.read_state()?;
+        let path = self.profile_path(&state.current_profile_id);
+        let mut profile = self.read_profile(&path)?;
+        if !remove_component_owned_profile_references(&mut profile, manifest) {
+            return Err(WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileEditBlocked,
+                format!("组件 {} 未挂载到当前装配方案", manifest.id),
+                Some(&path),
+            ));
+        }
+
+        profile.revision = profile.revision.saturating_add(1);
+        let validation = build_draft_validation(
+            &profile,
+            module_manifests,
+            &self.component_manifests_snapshot(),
+        );
+        if !validation.valid {
+            return Err(draft_validation_error(
+                "取消挂载后当前装配方案未通过依赖预检",
+                &validation,
+                Some(&path),
+            ));
+        }
+
+        replace_json(&path, &profile)?;
+        let snapshot = self.snapshot_locked(module_manifests)?;
+        Ok(WorkspaceProfileMutationResult {
+            profile,
+            validation,
+            snapshot,
+        })
+    }
+
     pub(crate) fn rollback_component_reference_removal(
         &self,
         rollback: ComponentProfileCleanupRollback,
@@ -2716,6 +2768,32 @@ fn remove_component_owned_profile_references(
         profile.shell_layout.theme_preset = None;
     }
 
+    // Template state belongs to its template.  If the template provider is
+    // detached, retaining its slot bindings would leave a profile that points
+    // at a component which is no longer in the effective closure.  Other
+    // templates can stay selected, but bindings that mount this component's
+    // surfaces must be removed as well.
+    profile
+        .shell_layout
+        .interface_template_states
+        .retain(|state| !presentation_id_is_owned(&shell_template_ids, &state.template_id));
+    for state in &mut profile.shell_layout.interface_template_states {
+        state.slot_bindings.retain(|binding| {
+            binding.component_id.as_deref() != Some(manifest.id.as_str())
+                && !binding
+                    .surface_id
+                    .as_deref()
+                    .is_some_and(|surface_id| script_surface_ids.contains(surface_id))
+                && !binding
+                    .contribution_id
+                    .as_deref()
+                    .is_some_and(|contribution_id| {
+                        script_surface_ids.contains(contribution_id)
+                            || tool_ids.contains(contribution_id)
+                    })
+        });
+    }
+
     before != serde_json::to_value(&*profile).ok()
 }
 
@@ -4591,7 +4669,8 @@ mod tests {
         Capability, ComponentContributions, ComponentDependency, ComponentDistribution,
         ComponentResourceLimits, ComponentRole, ComponentRuntime, ComponentUiMode,
         ModuleContributions, ModuleDataPolicy, ModuleDependency, ModuleScope, PlatformTarget,
-        ScriptSurfaceContribution,
+        ProfileInterfaceTemplateState, ProfilePresentationBinding, ProfileTemplateSlotBinding,
+        ScriptSurfaceContribution, ShellTemplateContribution, TemplateSlotBindingKind,
     };
 
     fn test_root(label: &str) -> PathBuf {
@@ -4916,6 +4995,116 @@ mod tests {
             .unwrap();
         assert_eq!(fs::read(&current_path).unwrap(), current_before);
         assert_eq!(fs::read(&second_path).unwrap(), second_before);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn detaching_component_cleans_current_template_and_slot_references_only() {
+        let root = test_root("detach-current-component");
+        let mut component = component_manifest("test.music-player", "1.0.0");
+        component.contributes.script_surfaces = vec![ScriptSurfaceContribution {
+            id: "test.music-player.surface".into(),
+            name: "音乐播放器".into(),
+            entry: "ui/index.html".into(),
+            placements: vec![ScriptSurfacePlacement::Shell],
+            default_surface: true,
+            instance_mode: Default::default(),
+            size_hints: Default::default(),
+            allowed_commands: Vec::new(),
+            extensions: ExtensionFields::new(),
+        }];
+        component.contributes.shell_templates = vec![ShellTemplateContribution {
+            id: "test.music-player.shell".into(),
+            name: "音乐播放器模板".into(),
+            version: "1.0.0".into(),
+            variants: Vec::new(),
+            adapter: None,
+            extensions: ExtensionFields::new(),
+        }];
+        let runtime = WorkspaceProfileRuntime::new_with_components(&root, vec![component.clone()]);
+        let snapshot = runtime
+            .initialize_from_current_configuration(&[], &BTreeSet::new(), &[])
+            .unwrap();
+        let mut current = snapshot.current_profile;
+        current
+            .enabled_components
+            .push(pmc_platform::ProfileComponentSelection {
+                id: component.id.clone(),
+                version_requirement: "^1.0".into(),
+                extensions: ExtensionFields::new(),
+            });
+        current.shell_layout.shell_template = Some(ProfilePresentationBinding {
+            id: "test.music-player.shell".into(),
+            version_requirement: "^1.0".into(),
+            variant: None,
+            settings: BTreeMap::new(),
+            extensions: ExtensionFields::new(),
+        });
+        current.shell_layout.interface_template_states = vec![
+            ProfileInterfaceTemplateState {
+                template_id: "test.music-player.shell".into(),
+                settings: BTreeMap::new(),
+                slot_bindings: vec![ProfileTemplateSlotBinding {
+                    id: "music-primary".into(),
+                    slot_id: "primary".into(),
+                    kind: TemplateSlotBindingKind::ComponentSurface,
+                    contribution_id: None,
+                    component_id: Some(component.id.clone()),
+                    surface_id: Some("test.music-player.surface".into()),
+                    instance_id: None,
+                    enabled: true,
+                    order: 0,
+                    settings: BTreeMap::new(),
+                    extensions: ExtensionFields::new(),
+                }],
+                extensions: ExtensionFields::new(),
+            },
+            ProfileInterfaceTemplateState {
+                template_id: "test.other.shell".into(),
+                settings: BTreeMap::new(),
+                slot_bindings: vec![ProfileTemplateSlotBinding {
+                    id: "music-sidebar".into(),
+                    slot_id: "sidebar".into(),
+                    kind: TemplateSlotBindingKind::ComponentSurface,
+                    contribution_id: None,
+                    component_id: Some(component.id.clone()),
+                    surface_id: Some("test.music-player.surface".into()),
+                    instance_id: None,
+                    enabled: true,
+                    order: 0,
+                    settings: BTreeMap::new(),
+                    extensions: ExtensionFields::new(),
+                }],
+                extensions: ExtensionFields::new(),
+            },
+        ];
+        let original_revision = current.revision;
+        replace_json(&runtime.profile_path(&current.id), &current).unwrap();
+
+        let result = runtime
+            .detach_component_from_current_profile(&component, &[])
+            .unwrap();
+
+        assert!(result.validation.valid, "{:?}", result.validation.issues);
+        assert_eq!(result.profile.revision, original_revision + 1);
+        assert!(result
+            .profile
+            .enabled_components
+            .iter()
+            .all(|selection| selection.id != component.id));
+        assert!(result.profile.shell_layout.shell_template.is_none());
+        assert_eq!(
+            result.profile.shell_layout.interface_template_states.len(),
+            1
+        );
+        assert_eq!(
+            result.profile.shell_layout.interface_template_states[0].template_id,
+            "test.other.shell"
+        );
+        assert!(result.profile.shell_layout.interface_template_states[0]
+            .slot_bindings
+            .is_empty());
+        assert!(runtime.component_manifest(&component.id).is_some());
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import {
@@ -12,6 +12,8 @@ import {
   Loader2,
   PackagePlus,
   Play,
+  Power,
+  PowerOff,
   RefreshCw,
   Save,
   ShieldCheck,
@@ -21,6 +23,7 @@ import {
 import {
   createScriptComponentTemplate,
   generateScriptSigningKey,
+  getDevelopmentComponentSnapshot,
   listAutomationBindings,
   listScriptDevelopmentFiles,
   openScriptDevelopmentDirectoryInVSCode,
@@ -34,10 +37,12 @@ import {
   untrustScriptDevelopmentDirectory,
   validateScriptComponent,
 } from '../../api/scriptAutomation';
+import { detachComponentFromCurrentProfile, uninstallComponent } from '../../api/componentRuntime';
 import { useAutomationStore } from '../../stores/automationStore';
 import { useWorkspaceProfileStore } from '../../stores/workspaceProfileStore';
 import type {
   ScriptComponentValidation,
+  DevelopmentComponentSnapshot,
   ScriptDevelopmentDocument,
   ScriptDevelopmentFile,
 } from '../../types/automation';
@@ -48,7 +53,7 @@ import type {
   ProfileAutomationBinding,
   WorkspaceProfileV1,
 } from '../../types/platform';
-import { Dialog } from '../Dialog';
+import { ConfirmDialog, Dialog } from '../Dialog';
 import { ScriptSurfaceFrame } from './ScriptSurfaceFrame';
 
 interface ScriptDeveloperWorkbenchProps {
@@ -81,6 +86,27 @@ function parseJson(text: string): JsonValue {
   return JSON.parse(text) as JsonValue;
 }
 
+function formatActionError(error: unknown): string {
+  if (typeof error === 'string') return error;
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === 'object') {
+    const typed = error as {
+      code?: string;
+      message?: string;
+      details?: unknown;
+      path?: string;
+    };
+    const prefix = typed.code ? `${typed.code}: ` : '';
+    const message = typed.message || '操作失败';
+    const details = Array.isArray(typed.details) && typed.details.length
+      ? `\n${typed.details.map(String).join('\n')}`
+      : '';
+    const path = typed.path ? `\n${typed.path}` : '';
+    return `${prefix}${message}${details}${path}`;
+  }
+  return String(error);
+}
+
 export function ScriptDeveloperWorkbench({ isOpen, onClose, projectPath }: ScriptDeveloperWorkbenchProps) {
   const snapshot = useAutomationStore((state) => state.snapshot);
   const initialize = useAutomationStore((state) => state.initialize);
@@ -92,6 +118,8 @@ export function ScriptDeveloperWorkbench({ isOpen, onClose, projectPath }: Scrip
   const [section, setSection] = useState<WorkbenchSection>('components');
   const [sourcePath, setSourcePath] = useState('');
   const [validation, setValidation] = useState<ScriptComponentValidation | null>(null);
+  const [developmentComponents, setDevelopmentComponents] = useState<DevelopmentComponentSnapshot[]>([]);
+  const [uninstallTarget, setUninstallTarget] = useState<DevelopmentComponentSnapshot | null>(null);
   const [files, setFiles] = useState<ScriptDevelopmentFile[]>([]);
   const [activeDocument, setActiveDocument] = useState<ScriptDevelopmentDocument | null>(null);
   const [editorContent, setEditorContent] = useState('');
@@ -128,17 +156,20 @@ export function ScriptDeveloperWorkbench({ isOpen, onClose, projectPath }: Scrip
     () => EVENT_OPTIONS.filter((event) => selectedComponent?.events.includes(event)),
     [selectedComponent],
   );
+  const refreshDevelopmentComponents = useCallback(async () => {
+    setDevelopmentComponents(await getDevelopmentComponentSnapshot());
+  }, []);
 
   useEffect(() => {
     if (!isOpen) return;
-    void Promise.all([initialize(), refreshProfiles()]);
-  }, [initialize, isOpen, refreshProfiles]);
+    void Promise.all([initialize(), refreshProfiles(), refreshDevelopmentComponents()]);
+  }, [initialize, isOpen, refreshDevelopmentComponents, refreshProfiles]);
 
   useEffect(() => {
     if (!isOpen || !currentProfile) return;
     void listAutomationBindings(currentProfile.id)
       .then(setBindings)
-      .catch((nextError) => setError(String(nextError)));
+      .catch((nextError) => setError(formatActionError(nextError)));
   }, [currentProfile?.id, currentProfile?.revision, isOpen]);
 
   useEffect(() => {
@@ -171,7 +202,7 @@ export function ScriptDeveloperWorkbench({ isOpen, onClose, projectPath }: Scrip
     try {
       await action();
     } catch (nextError) {
-      setError(String(nextError));
+      setError(formatActionError(nextError));
     } finally {
       setBusy(false);
     }
@@ -225,16 +256,16 @@ export function ScriptDeveloperWorkbench({ isOpen, onClose, projectPath }: Scrip
     await runAction(async () => {
       await trustScriptDevelopmentDirectory(sourcePath);
       setValidation(await validateScriptComponent(sourcePath));
-      await refreshAutomation();
+      await Promise.all([refreshAutomation(), refreshDevelopmentComponents()]);
       setMessage('开发目录已信任。Python 仍拥有当前 Windows 用户权限。');
     });
   };
 
-  const untrustSource = async () => {
+  const untrustSource = async (path = sourcePath) => {
     await runAction(async () => {
-      await untrustScriptDevelopmentDirectory(sourcePath);
-      setValidation(await validateScriptComponent(sourcePath));
-      await refreshAutomation();
+      await untrustScriptDevelopmentDirectory(path);
+      setValidation(await validateScriptComponent(path));
+      await Promise.all([refreshAutomation(), refreshDevelopmentComponents()]);
       setMessage('已解除开发目录信任；已安装副本和历史记录不自动删除。');
     });
   };
@@ -244,13 +275,12 @@ export function ScriptDeveloperWorkbench({ isOpen, onClose, projectPath }: Scrip
     if (!componentId) return;
     await runAction(async () => {
       await reloadScriptComponent(componentId);
-      await Promise.all([refreshProfiles(), refreshAutomation()]);
+      await Promise.all([refreshProfiles(), refreshAutomation(), refreshDevelopmentComponents()]);
       setMessage(`已从开发目录热重载 ${componentId}`);
     });
   };
 
-  const enableInProfile = async () => {
-    const componentId = validation?.manifest?.id;
+  const enableInProfile = async (componentId = validation?.manifest?.id, componentVersion = validation?.manifest?.version) => {
     const profile = useWorkspaceProfileStore.getState().snapshot?.currentProfile;
     if (!componentId || !profile) return;
     await runAction(async () => {
@@ -259,12 +289,45 @@ export function ScriptDeveloperWorkbench({ isOpen, onClose, projectPath }: Scrip
       if (!existing.some((item) => item.id === componentId)) {
         next.enabledComponents = [...existing, {
           id: componentId,
-          versionRequirement: `^${validation?.manifest?.version ?? '0.1.0'}`,
+          versionRequirement: `^${componentVersion ?? '0.1.0'}`,
         }];
       }
       await saveCurrentProfile({ profile: next, expectedRevision: profile.revision ?? 1 });
-      await refreshAutomation();
+      await Promise.all([refreshAutomation(), refreshProfiles(), refreshDevelopmentComponents()]);
       setMessage('组件已加入当前装配方案的有效组件闭包。');
+    });
+  };
+
+  const removeFromProfile = async (componentId: string) => {
+    await runAction(async () => {
+      await detachComponentFromCurrentProfile(componentId);
+      await Promise.all([refreshAutomation(), refreshProfiles(), refreshDevelopmentComponents()]);
+      setMessage('组件及其页面、模板、主页、插槽和自动化绑定已从当前装配方案移除；开发目录和运行副本仍保留。');
+    });
+  };
+
+  const loadDevelopmentComponent = async (componentId: string) => {
+    await runAction(async () => {
+      await reloadScriptComponent(componentId);
+      await Promise.all([refreshProfiles(), refreshAutomation(), refreshDevelopmentComponents()]);
+      setMessage(`已从开发目录加载 ${componentId}`);
+    });
+  };
+
+  const selectDevelopmentComponent = async (component: DevelopmentComponentSnapshot) => {
+    setSourcePath(component.sourcePath);
+    setSection('components');
+    await inspectSource(component.sourcePath);
+  };
+
+  const uninstallDevelopmentComponent = async (component: DevelopmentComponentSnapshot) => {
+    const componentId = component.componentId;
+    if (!componentId) return;
+    await runAction(async () => {
+      await uninstallComponent(componentId);
+      await Promise.all([refreshProfiles(), refreshAutomation(), refreshDevelopmentComponents()]);
+      setValidation(await validateScriptComponent(component.sourcePath));
+      setMessage('已卸载 Nexora 中的运行副本；开发目录、源文件和目录信任仍保留。');
     });
   };
 
@@ -467,6 +530,50 @@ export function ScriptDeveloperWorkbench({ isOpen, onClose, projectPath }: Scrip
 
         {section === 'components' ? (
           <div className="min-h-0 flex-1 overflow-auto p-4">
+            <section className="mb-4 overflow-hidden rounded-md border border-gray-200 dark:border-gray-700">
+              <div className="flex items-center justify-between gap-3 border-b border-gray-200 px-4 py-3 dark:border-gray-700">
+                <div>
+                  <h3 className="text-sm font-semibold">受信任开发组件</h3>
+                  <p className="text-xs text-gray-500">已选择并信任的测试目录。可选择、加载、挂载到当前方案或移除。</p>
+                </div>
+                <button type="button" onClick={() => void runAction(refreshDevelopmentComponents)} disabled={busy} className="flex h-8 w-8 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-300 dark:hover:bg-gray-800" title="重新扫描开发目录">
+                  <RefreshCw className={`h-4 w-4 ${busy ? 'animate-spin' : ''}`} />
+                </button>
+              </div>
+              {developmentComponents.length ? (
+                <div className="divide-y divide-gray-100 dark:divide-gray-800">
+                  {developmentComponents.map((component) => {
+                    const profileComponent = profileSnapshot?.components.find((item) => item.id === component.componentId);
+                    const mounted = Boolean(component.componentId && currentProfile?.enabledComponents?.some((item) => item.id === component.componentId));
+                    const selected = sourcePath === component.sourcePath;
+                    const loadable = component.valid && component.trusted && Boolean(component.componentId);
+                    return (
+                      <div key={component.sourcePath} className={`flex flex-wrap items-center gap-3 px-4 py-3 ${selected ? 'bg-blue-50/70 dark:bg-blue-950/20' : ''}`}>
+                        <button type="button" onClick={() => void selectDevelopmentComponent(component)} className="min-w-0 flex-1 text-left">
+                          <p className="truncate text-sm font-medium text-gray-800 dark:text-gray-100">{component.componentName ?? component.componentId ?? '无效开发目录'}</p>
+                          <p className="mt-0.5 truncate font-mono text-[11px] text-gray-500">{component.componentId ?? component.sourcePath}</p>
+                          <p className="mt-0.5 truncate text-[11px] text-gray-400">{component.sourcePath}</p>
+                        </button>
+                        <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                          <span className={`rounded px-2 py-1 ${component.valid ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300' : 'bg-red-100 text-red-700 dark:bg-red-950/50 dark:text-red-300'}`}>{component.valid ? '合同有效' : '校验失败'}</span>
+                          <span className={`rounded px-2 py-1 ${component.installed ? 'bg-blue-100 text-blue-700 dark:bg-blue-950/50 dark:text-blue-300' : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300'}`}>{component.installed ? '已加载' : '未加载'}</span>
+                          {mounted ? <span className="rounded bg-violet-100 px-2 py-1 text-violet-700 dark:bg-violet-950/50 dark:text-violet-300">当前装配</span> : null}
+                          {component.dirty ? <span className="rounded bg-amber-100 px-2 py-1 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">有变化</span> : null}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <button type="button" disabled={!loadable || busy} onClick={() => component.componentId && void loadDevelopmentComponent(component.componentId)} className="inline-flex h-8 items-center gap-1 rounded-md border border-gray-300 px-2 text-xs disabled:opacity-50 dark:border-gray-700" title={component.installed ? '从开发目录热重载运行副本' : '从开发目录加载运行副本'}><RefreshCw className="h-3.5 w-3.5" />{component.installed ? '重载' : '加载'}</button>
+                          {component.installed && !mounted ? <button type="button" disabled={busy || !component.componentId} onClick={() => component.componentId && void enableInProfile(component.componentId, profileComponent?.version)} className="inline-flex h-8 items-center gap-1 rounded-md border border-gray-300 px-2 text-xs disabled:opacity-50 dark:border-gray-700" title="挂载到当前装配方案"><Power className="h-3.5 w-3.5" />挂载</button> : null}
+                          {mounted && component.componentId ? <button type="button" disabled={busy} onClick={() => void removeFromProfile(component.componentId!)} className="inline-flex h-8 items-center gap-1 rounded-md border border-gray-300 px-2 text-xs disabled:opacity-50 dark:border-gray-700" title="从当前装配方案移除"><PowerOff className="h-3.5 w-3.5" />取消挂载</button> : null}
+                          {component.installed ? <button type="button" disabled={busy} onClick={() => setUninstallTarget(component)} className="flex h-8 w-8 items-center justify-center rounded-md text-red-600 hover:bg-red-50 disabled:opacity-50 dark:text-red-300 dark:hover:bg-red-950/30" title="卸载 Nexora 中的运行副本"><Trash2 className="h-3.5 w-3.5" /></button> : null}
+                          <button type="button" disabled={busy} onClick={() => { setSourcePath(component.sourcePath); void untrustSource(component.sourcePath); }} className="flex h-8 w-8 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-300 dark:hover:bg-gray-800" title="解除开发目录信任"><ShieldOff className="h-3.5 w-3.5" /></button>
+                        </div>
+                        {!component.valid && component.errors.length ? <p className="w-full text-[11px] text-red-600 dark:text-red-300">{component.errors.join('；')}</p> : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : <p className="px-4 py-6 text-sm text-gray-400">还没有受信任的开发目录。选择目录并通过校验后，点击“信任目录”即可在这里管理。</p>}
+            </section>
             <div className="grid gap-4 lg:grid-cols-2">
               <section className="rounded-md border border-gray-200 p-4 dark:border-gray-700">
                 <div className="flex items-center justify-between">
@@ -579,6 +686,23 @@ export function ScriptDeveloperWorkbench({ isOpen, onClose, projectPath }: Scrip
         ) : null}
 
         {busy ? <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-white/40 dark:bg-gray-900/40"><Loader2 className="h-6 w-6 animate-spin text-blue-600" /></div> : null}
+
+        <ConfirmDialog
+          isOpen={Boolean(uninstallTarget)}
+          onClose={() => setUninstallTarget(null)}
+          onConfirm={() => {
+            const target = uninstallTarget;
+            setUninstallTarget(null);
+            if (target) void uninstallDevelopmentComponent(target);
+          }}
+          title="卸载开发组件运行副本"
+          message={uninstallTarget
+            ? `确定卸载“${uninstallTarget.componentName ?? uninstallTarget.componentId}”在 Nexora 中的运行副本吗？\n\n将撤下相关页面、自动化和文件处理入口，并清理装配引用。开发目录、源代码和目录信任都会保留，可稍后再次加载。`
+            : ''}
+          confirmText="确认卸载"
+          cancelText="取消"
+          type="warning"
+        />
       </main>
     </Dialog>
   );

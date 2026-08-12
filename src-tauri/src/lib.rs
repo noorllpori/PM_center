@@ -1464,6 +1464,7 @@ pub fn run() {
             platform::create_workspace_profile,
             platform::save_workspace_profile,
             platform::apply_current_workspace_profile,
+            platform::detach_component_from_current_profile,
             platform::export_workspace_profile_package,
             platform::inspect_workspace_profile_package,
             platform::import_workspace_profile_package,

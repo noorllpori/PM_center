@@ -1,10 +1,30 @@
 .split-interface-template {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(220px, var(--nexora-split-first, 1fr)) 8px minmax(280px, var(--nexora-split-second, 1fr));
   min-height: 100%;
   height: 100%;
   min-width: 0;
   background: var(--nexora-surface, #ffffff);
+}
+
+.nexora-template-resize-handle {
+  position: relative;
+  z-index: 2;
+  width: 8px;
+  min-width: 8px;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+  background: var(--nexora-border, #e5e7eb);
+  transition: background-color 120ms ease;
+}
+
+.nexora-template-resize-handle:hover,
+.nexora-template-resize-handle:focus-visible {
+  background: var(--nexora-accent, #60a5fa);
 }
 
 .split-interface-template__pane {
@@ -19,6 +39,8 @@
 }
 
 .split-interface-template__pane > div {
+  display: flex;
+  flex-direction: column;
   min-height: 0;
   min-width: 0;
   flex: 1;
@@ -28,6 +50,10 @@
   .split-interface-template {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .nexora-template-resize-handle {
+    display: none;
   }
 
   .split-interface-template__pane--left {

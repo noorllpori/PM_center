@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { ComponentManifestV1, WorkspaceProfileV1 } from '../types/platform';
+import type { WorkspaceProfileMutationResult } from '../types/workspaceProfileRuntime';
 import type {
   ComponentPackageInspection,
   ComponentInvocationResult,
@@ -14,14 +15,17 @@ export const COMPONENT_RUNTIME_CHANGED_EVENT = 'nexora:component-runtime-changed
 
 export interface ComponentRuntimeChangedDetail {
   componentIds: string[];
-  reason: 'development-reload';
+  reason: 'development-reload' | 'component-uninstalled';
 }
 
-export function notifyComponentRuntimeChanged(componentIds: string[]) {
+export function notifyComponentRuntimeChanged(
+  componentIds: string[],
+  reason: ComponentRuntimeChangedDetail['reason'] = 'development-reload',
+) {
   if (typeof window === 'undefined' || componentIds.length === 0) return;
   window.dispatchEvent(new CustomEvent<ComponentRuntimeChangedDetail>(
     COMPONENT_RUNTIME_CHANGED_EVENT,
-    { detail: { componentIds, reason: 'development-reload' } },
+    { detail: { componentIds, reason } },
   ));
 }
 
@@ -85,8 +89,11 @@ export const installComponentFromPackage = (packagePath: string) =>
 export const trustComponentPackagePublisher = (packagePath: string) =>
   invoke<{ id: string; displayName: string; publicKey: string }>('trust_component_package_publisher', { packagePath });
 
-export const uninstallComponent = (componentId: string) =>
-  invoke<ComponentManifestV1>('uninstall_component', { componentId });
+export const uninstallComponent = async (componentId: string) => {
+  const manifest = await invoke<ComponentManifestV1>('uninstall_component', { componentId });
+  notifyComponentRuntimeChanged([manifest.id], 'component-uninstalled');
+  return manifest;
+};
 
 export const disableComponent = (componentId: string) =>
   invoke<ComponentManifestV1>('disable_component', { componentId });
@@ -110,3 +117,7 @@ export const reinstallBundledComponent = (componentId: string) =>
 
 export const cancelComponentOperation = (operationId: string) =>
   invoke<void>('cancel_component_operation', { operationId });
+
+/** Removes all current-profile references without uninstalling the component. */
+export const detachComponentFromCurrentProfile = (componentId: string) =>
+  invoke<WorkspaceProfileMutationResult>('detach_component_from_current_profile', { componentId });

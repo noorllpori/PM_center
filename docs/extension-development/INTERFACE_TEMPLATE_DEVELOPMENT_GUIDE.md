@@ -242,6 +242,37 @@ ul ol li p span h1 h2 h3 h4 h5 h6 hr figure figcaption
 
 ## 7. `styles.css`
 
+### 7.1 宿主托管的可拖拽分割
+
+左右或上下区域不需要在模板中编写 JavaScript。模板可以在一个静态布局根节点上声明水平分割：
+
+```html
+<main
+  data-nexora-resizable="horizontal"
+  data-nexora-resize-first="left"
+  data-nexora-resize-second="right"
+  data-nexora-resize-key="main-split"
+  data-nexora-resize-min-first="220"
+  data-nexora-resize-min-second="280"
+>
+  <section data-nexora-resize-region="left"><nexora-slot name="left"></nexora-slot></section>
+  <section data-nexora-resize-region="right"><nexora-slot name="right"></nexora-slot></section>
+</main>
+```
+
+宿主会在两个区域之间插入可访问的分割手柄，处理鼠标、触摸和键盘方向键。CSS 用 `--nexora-split-first` 与 `--nexora-split-second` 作为两侧的 `fr` 比例；窄窗口低于两个最小宽度之和时，手柄自动隐藏并由模板的响应式规则切换为上下布局。
+
+`data-nexora-resize-key` 必须在模板内稳定且唯一。用户拖动后，比例保存在当前 Profile 对应模板的 `interfaceTemplateStates[].settings[resizeKey].firstPercent` 中；不同模板互不覆盖，取消编辑不会写入，切换模板后会恢复各自比例。预览模式只显示手柄，不会保存 Profile。
+
+例如 `main-split` 拖到 42% 后，方案中会出现：
+
+```json
+{
+  "templateId": "example.shell.split-50",
+  "settings": { "main-split": { "firstPercent": 42 } }
+}
+```
+
 ```css
 .split-template {
   display: grid;
@@ -264,6 +295,8 @@ ul ol li p span h1 h2 h3 h4 h5 h6 hr figure figcaption
 }
 
 .split-template__pane > div {
+  display: flex;
+  flex-direction: column;
   min-height: 0;
   min-width: 0;
   flex: 1;
@@ -292,10 +325,12 @@ CSS 禁止：
 - `http://`、`https://` 或协议相对 URL；
 - 依赖宿主内部 Tailwind 类名或 React DOM 结构。
 
+CSS 伪元素（例如 `::before`、`::after`、`::selection` 和浏览器私有伪元素）允许使用。Nexora 会继续把选择器限制在模板根容器内，并在界面装配与安全预览中提示风险：伪元素可能通过 `position`、`z-index` 或覆盖层遮住组件内容、改变点击命中或影响可访问性。模板作者需要自行检查这些影响。
+
 布局建议：
 
 1. 根节点同时设置 `min-height: 100%`、`min-width: 0`。
-2. 所有 Grid/Flex 子项设置 `min-width: 0`，可滚动区域设置 `min-height: 0`。
+2. 所有 Grid/Flex 子项设置 `min-width: 0`，可滚动区域设置 `min-height: 0`。含 `component-surface` 的单插槽外层还应设置 `display: flex; flex-direction: column`，让隔离 iframe 能填满区域而不是使用默认 150px 高度。
 3. 固定区域使用 `minmax()` 或明确的最小/最大值，避免窄窗口横向溢出。
 4. 颜色变量必须带回退值，例如 `var(--nexora-border, #e5e7eb)`。
 5. 不使用视口宽度缩放字体；组件页面负责自己的排版。

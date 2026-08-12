@@ -1,8 +1,16 @@
-<main class="split-interface-template">
-  <section class="split-interface-template__pane split-interface-template__pane--left">
+<main
+  class="split-interface-template"
+  data-nexora-resizable="horizontal"
+  data-nexora-resize-first="left"
+  data-nexora-resize-second="right"
+  data-nexora-resize-key="main-split"
+  data-nexora-resize-min-first="220"
+  data-nexora-resize-min-second="280"
+>
+  <section data-nexora-resize-region="left" class="split-interface-template__pane split-interface-template__pane--left">
     <nexora-slot name="left"></nexora-slot>
   </section>
-  <section class="split-interface-template__pane split-interface-template__pane--right">
+  <section data-nexora-resize-region="right" class="split-interface-template__pane split-interface-template__pane--right">
     <nexora-slot name="right"></nexora-slot>
   </section>
 </main>

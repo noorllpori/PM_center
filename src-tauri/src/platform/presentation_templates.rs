@@ -45,6 +45,10 @@ pub struct PresentationTemplatePreview {
     pub slots: Vec<TemplateSlotDefinition>,
     pub options_schema: Option<Value>,
     pub semantic_version: Option<String>,
+    /// Pseudo-elements are supported, but can create visual layers above a
+    /// component surface. Keep this visible to template authors instead of
+    /// rejecting otherwise valid static CSS.
+    pub css_warnings: Vec<String>,
     pub content_digest: String,
 }
 
@@ -178,6 +182,10 @@ pub fn load_presentation_template_preview(
         .as_deref()
         .map(|css| compile_scoped_styles(css, template_id))
         .transpose()?;
+    let css_warnings = styles
+        .as_deref()
+        .map(template_css_warnings)
+        .unwrap_or_default();
     let content_digest = blake3::hash(
         format!(
             "{}\n{}\n{}\n{}",
@@ -204,6 +212,7 @@ pub fn load_presentation_template_preview(
         slots: descriptor.slots,
         options_schema: descriptor.options_schema,
         semantic_version: descriptor.semantic_version,
+        css_warnings,
         content_digest,
     })
 }
@@ -547,11 +556,26 @@ fn scope_css_selector(selector: &str, scope: &str) -> Result<String, ComponentRu
         || lowered.starts_with("html")
         || lowered.starts_with("body")
         || lowered.starts_with(":root")
-        || lowered.contains("::")
     {
-        return Err(template_error("模板 CSS 不能使用全局根选择器或伪元素"));
+        return Err(template_error("模板 CSS 不能使用全局根选择器"));
     }
     Ok(format!("{scope} {selector}"))
+}
+
+fn template_css_warnings(source: &str) -> Vec<String> {
+    let expression = regex::Regex::new(r"::[a-zA-Z][a-zA-Z0-9_-]*")
+        .expect("pseudo-element regex must compile");
+    let pseudo_elements = expression
+        .find_iter(source)
+        .map(|entry| entry.as_str().to_ascii_lowercase())
+        .collect::<std::collections::BTreeSet<_>>();
+    if pseudo_elements.is_empty() {
+        return Vec::new();
+    }
+    vec![format!(
+        "模板 CSS 使用伪元素（{}）。已允许并继续受模板范围隔离；请检查 z-index、覆盖范围、点击命中和可访问性。",
+        pseudo_elements.into_iter().collect::<Vec<_>>().join("、")
+    )]
 }
 
 fn template_error(message: impl Into<String>) -> ComponentRuntimeError {
@@ -596,6 +620,20 @@ mod tests {
         assert!(compiled.contains("[data-nexora-interface-template=\"example.shell\"] .shell"));
         assert!(compiled.contains("@media"));
         assert!(compile_scoped_styles("body { color: red; }", "example.shell").is_err());
+    }
+
+    #[test]
+    fn permits_and_reports_pseudo_elements() {
+        let compiled = compile_scoped_styles(
+            ".pane::before { content: ''; } .pane::after { pointer-events: none; }",
+            "example.shell",
+        )
+        .unwrap();
+        assert!(compiled.contains("[data-nexora-interface-template=\"example.shell\"] .pane::before"));
+        let warnings = template_css_warnings(".pane::before { content: ''; } .pane::after { content: ''; }");
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("::before"));
+        assert!(warnings[0].contains("::after"));
     }
 
     #[test]

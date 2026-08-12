@@ -1183,6 +1183,39 @@ pub async fn apply_current_workspace_profile(
 }
 
 #[tauri::command]
+pub async fn detach_component_from_current_profile(
+    component_id: String,
+    runtime: State<'_, PlatformRuntime>,
+) -> Result<WorkspaceProfileMutationResult, WorkspaceProfileRuntimeError> {
+    let _guard = runtime.profile_switch_lock.lock().await;
+    runtime
+        .script_automation
+        .prepare_component_uninstall(&component_id)
+        .await
+        .map_err(|message| {
+            WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileSwitchBlocked,
+                message,
+                None,
+            )
+        })?;
+    let manifest = runtime
+        .components
+        .stored_manifest(&component_id)
+        .ok_or_else(|| {
+            WorkspaceProfileRuntimeError::new(
+                WorkspaceProfileRuntimeErrorCode::ProfileDocumentInvalid,
+                format!("组件未安装: {component_id}"),
+                None,
+            )
+        })?;
+    let manifests = formal_module_manifests(&runtime);
+    runtime
+        .profiles
+        .detach_component_from_current_profile(&manifest, &manifests)
+}
+
+#[tauri::command]
 pub fn export_workspace_profile_package(
     request: ExportWorkspaceProfilePackageRequest,
     runtime: State<'_, PlatformRuntime>,
