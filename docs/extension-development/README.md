@@ -37,9 +37,9 @@
 
 工作台创建的组件模板是学习和起步入口。本文档只承诺已列出的公开合同，不要求第三方从 Nexora 仓库复制示例或脚本。
 
-安装版同时提供两个最小案例：项目资料与组件存储，以及依赖 BlenderIO 的文件检查。它们分别对应本仓库的 `examples/script-project-storage` 和 `examples/script-automation-blend-audit` 内容。
+安装版同时提供两个最小案例：项目资料与组件存储，以及依赖 BlenderIO 的文件检查。它们分别对应本仓库的 `examples/components/script-project-storage` 和 `examples/components/script-automation-blend-audit` 内容。
 
-界面模板另提供两个互不覆盖的样例：`examples/blank-home-template` 用于理解完全空白的单插槽模板，`examples/split-interface-template` 用于理解左右 50% 布局、组件页面和当前活动页面的组合。
+界面模板另提供两个互不覆盖的样例：`examples/templates/blank-home-template` 用于理解完全空白的单插槽模板，`examples/templates/split-interface-template` 用于理解左右 50% 布局、组件页面和当前活动页面的组合。
 
 ## 公开边界
 

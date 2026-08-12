@@ -6,7 +6,7 @@
 
 1. 打开 `工具 Alt+Q -> 维护中心 -> 组件运行时`。
 2. 点击“从目录安装”。
-3. 选择本目录 `examples/split-interface-template`，也就是直接包含 `component.json` 的目录。
+3. 选择本目录 `examples/templates/split-interface-template`，也就是直接包含 `component.json` 的目录。
 4. 在当前装配方案中启用“左右对半界面模板”。
 
 ## 装配

@@ -120,6 +120,6 @@ Python 是**受信任代码模型**：SDK 和宿主接口受网关约束，但 P
 | Tauri 命令注册 | `src-tauri/src/lib.rs` |
 | 前端贡献目录与可用性 | `src/features/contributionRegistry.ts`、`contributionCatalogDiagnostics.ts` |
 | Shell/项目标签与页面渲染 | `src/stores/shellTabStore.ts`、`src/components/shell/`、`src/components/workspace/` |
-| 脚本 SDK 和样例 | `src-tauri/resources/script-sdk/`、`examples/script-automation-*` |
+| 脚本 SDK 和样例 | `src-tauri/resources/script-sdk/`、`examples/components/script-automation-*` |
 
 第三方开发者不应把本体内部 Rust 函数、Tauri command 名称、React 组件路径或数据库表名当作稳定扩展 API。稳定入口见 [../extension-development/INTERFACE_REFERENCE.md](../extension-development/INTERFACE_REFERENCE.md)。

@@ -7,7 +7,7 @@
 ## 安装与打开
 
 1. 打开 `Alt+Q -> 脚本自动化 -> 开发者工作台`。
-2. 选择目录 `examples/ninniku-music-player`。
+2. 选择目录 `examples/components/ninniku-music-player`。
 3. 执行校验，将目录加入开发目录并安装到当前方案。
 4. 保存并应用方案，从功能中心打开“Ninniku 音乐播放器”。
 5. 若要让它直接成为主页，进入当前方案的“界面装配”，在“启动主页”中选择“Ninniku 音乐播放器”，再保存并应用。播放器会占满 Nexora 主内容区；功能中心再次点击时只聚焦主页。

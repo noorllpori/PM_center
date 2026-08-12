@@ -5120,7 +5120,7 @@ mod tests {
     #[test]
     fn music_player_example_uses_a_valid_directory_library_surface_contract() {
         let manifest = parse_component_manifest(include_str!(
-            "../../../examples/ninniku-music-player/component.json"
+            "../../../examples/components/ninniku-music-player/component.json"
         ))
         .expect("music player example manifest should remain valid");
         assert_eq!(manifest.id, "com.ninniku.music-player");
@@ -5152,7 +5152,7 @@ mod tests {
             .expect("music player should expose directory refresh");
         assert!(refresh_command.max_parallelism.unwrap_or_default() >= 2);
         assert!(
-            include_str!("../../../examples/ninniku-music-player/main.py")
+            include_str!("../../../examples/components/ninniku-music-player/main.py")
                 .contains("stream.open-read")
         );
     }

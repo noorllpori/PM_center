@@ -643,7 +643,7 @@ mod tests {
             .expect("src-tauri must have a workspace parent")
             .join("examples");
         for name in ["presentation-template-studio", "blank-home-template"] {
-            let root = examples.join(name);
+            let root = examples.join("templates").join(name);
             let manifest = pmc_platform::parse_component_manifest(
                 &fs::read_to_string(root.join("component.json")).unwrap(),
             )

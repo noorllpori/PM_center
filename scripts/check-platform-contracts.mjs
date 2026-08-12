@@ -37,11 +37,12 @@ for (const [schemaName, fixtureName] of cases) {
 }
 
 const componentExamplePaths = [
-  'examples/script-project-storage/component.json',
-  'examples/script-automation-blend-audit/component.json',
-  'examples/ninniku-music-player/component.json',
-  'examples/blank-home-template/component.json',
-  'examples/split-interface-template/component.json',
+  'examples/components/script-project-storage/component.json',
+  'examples/components/script-automation-blend-audit/component.json',
+  'examples/components/ninniku-music-player/component.json',
+  'examples/runtime/native-library-echo/component.json',
+  'examples/templates/blank-home-template/component.json',
+  'examples/templates/split-interface-template/component.json',
 ];
 const validateComponentExample = validators.get('component-manifest.schema.json');
 for (const relativePath of componentExamplePaths) {
@@ -54,8 +55,8 @@ for (const relativePath of componentExamplePaths) {
 }
 
 const presentationExamplePaths = [
-  'examples/blank-home-template/presentation/shell/blank-home/template.json',
-  'examples/split-interface-template/presentation/shell/split-50/template.json',
+  'examples/templates/blank-home-template/presentation/shell/blank-home/template.json',
+  'examples/templates/split-interface-template/presentation/shell/split-50/template.json',
 ];
 const validatePresentationExample = validators.get('presentation-template.schema.json');
 for (const relativePath of presentationExamplePaths) {

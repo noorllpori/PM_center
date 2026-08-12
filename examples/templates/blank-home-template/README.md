@@ -6,7 +6,7 @@
 
 1. 在 Nexora 打开“维护中心（或恢复设置） -> 高级诊断 -> 组件运行时”。
 2. 点击“从目录安装”。
-3. 选择本目录：`E:\PM_center\examples\blank-home-template`。
+3. 选择本目录：`E:\PM_center\examples\templates\blank-home-template`。
 
 安装后，模板组件 ID 为 `example.blank-home-template`，模板 ID 为 `example.shell.blank-home`。
 

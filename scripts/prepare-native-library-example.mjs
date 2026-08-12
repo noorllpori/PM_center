@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 
 const root = process.cwd();
 const profile = process.argv.includes('--debug') || process.env.NODE_ENV === 'development' ? 'debug' : 'release';
-const exampleRoot = resolve(root, 'examples', 'native-library-echo');
+const exampleRoot = resolve(root, 'examples', 'runtime', 'native-library-echo');
 const manifest = resolve(exampleRoot, 'Cargo.toml');
 const targetDirectory = resolve(root, 'target', 'native-library-echo');
 const libraryName = process.platform === 'win32'

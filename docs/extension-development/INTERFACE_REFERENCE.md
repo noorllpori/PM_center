@@ -359,5 +359,5 @@ Script Surface 使用 CSP 和会话 nonce，不能访问宿主 DOM、Tauri IPC�
 
 端到端样例：
 
-- `examples/script-project-storage`：项目资料、JSON 状态、Blob 和专属目录。
-- `examples/script-automation-blend-audit`：声明依赖并调用 `pmc.blendio/inspect`。
+- `examples/components/script-project-storage`：项目资料、JSON 状态、Blob 和专属目录。
+- `examples/components/script-automation-blend-audit`：声明依赖并调用 `pmc.blendio/inspect`。

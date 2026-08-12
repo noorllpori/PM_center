@@ -25,7 +25,7 @@
 
 ```powershell
 npm run component:keygen -- C:\secure\nexora-example-key.json
-npm run component:pack -- examples\script-automation-blend-audit dist\nexora-example-blend-audit.pmc-pack --key C:\secure\nexora-example-key.json --publisher-id nexora.examples --publisher-name "Nexora Examples"
+npm run component:pack -- examples\components\script-automation-blend-audit dist\nexora-example-blend-audit.pmc-pack --key C:\secure\nexora-example-key.json --publisher-id nexora.examples --publisher-name "Nexora Examples"
 ```
 
 签名私钥只能保存在组件目录和仓库之外。

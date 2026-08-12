@@ -36,7 +36,7 @@ files, network resources, or external programs.
 $out = Join-Path $env:TEMP "nexora-r11-acceptance"
 New-Item -ItemType Directory -Force $out | Out-Null
 cargo run --manifest-path src-tauri/Cargo.toml --bin nexora-component-pack -- keygen "$out\test-publisher.json"
-cargo run --manifest-path src-tauri/Cargo.toml --bin nexora-component-pack -- pack examples/script-automation-acceptance-suite "$out\automation-acceptance.pmc-pack" --key "$out\test-publisher.json" --publisher-id nexora.r11.acceptance --publisher-name "Nexora R11 Acceptance"
+cargo run --manifest-path src-tauri/Cargo.toml --bin nexora-component-pack -- pack examples/components/script-automation-acceptance-suite "$out\automation-acceptance.pmc-pack" --key "$out\test-publisher.json" --publisher-id nexora.r11.acceptance --publisher-name "Nexora R11 Acceptance"
 ```
 
 The package should be reported as signed but untrusted until the disposable publisher
