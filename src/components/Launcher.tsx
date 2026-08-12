@@ -404,7 +404,10 @@ export function LauncherButton({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.key.toLowerCase() === 'q') {
         e.preventDefault();
-        setIsOpen((value) => !value);
+        // Alt+Q is a global reveal command. It must be idempotent because the
+        // auto-hide HostUtilityBar listens to the same shortcut to reveal its
+        // overlay; toggling here could close the panel during that first pass.
+        setIsOpen(true);
       }
     };
     const handleOpenRequest = () => setIsOpen(true);
