@@ -1737,6 +1737,12 @@ export function FileManager() {
 
   return (
     <div className="h-screen flex flex-col bg-gray-50 dark:bg-gray-900">
+      <div
+        aria-hidden="true"
+        className={activeWorkspaceProfile?.shellLayout?.hostToolbar?.mode === 'auto-hide'
+          ? 'hidden'
+          : 'h-6 shrink-0 bg-white dark:bg-gray-900'}
+      />
       <HostUtilityBar
         mode={activeWorkspaceProfile?.shellLayout?.hostToolbar?.mode}
         hasActiveProject={Boolean(activeProjectSession)}

@@ -49,7 +49,7 @@ export function HostUtilityBar({
   return (
     <div
       className={mode === 'auto-hide'
-        ? 'pointer-events-none absolute inset-x-0 top-0 z-[60] h-12'
+        ? 'pointer-events-none relative z-[60] h-6 shrink-0 border-b border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900'
         : 'relative z-50 flex h-12 shrink-0 items-center justify-end border-b border-gray-200 bg-white px-2 dark:border-gray-700 dark:bg-gray-900'}
       onMouseEnter={() => {
         if (mode === 'auto-hide') {
@@ -61,10 +61,12 @@ export function HostUtilityBar({
         <button
           type="button"
           onFocus={() => setExpanded(true)}
-          className="pointer-events-auto absolute left-1/2 top-0 h-1 w-16 -translate-x-1/2 rounded-b bg-gray-300/70 opacity-70 transition-opacity duration-200 hover:opacity-100 focus:opacity-100 dark:bg-gray-600/80"
+          className="pointer-events-auto absolute inset-0 flex w-full items-start justify-center pt-1 text-transparent"
           title="展开宿主工具带"
           aria-label="展开宿主工具带"
-        />
+        >
+          <span className="block h-1 w-16 rounded-b bg-gray-300/70 opacity-70 transition-opacity duration-200 hover:opacity-100 dark:bg-gray-600/80" />
+        </button>
       ) : null}
       <div
         className={mode === 'auto-hide'

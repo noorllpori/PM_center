@@ -1,0 +1,34 @@
+- generic [ref=e3]:
+  - generic [ref=e6]:
+    - button "维护中心" [ref=e7] [cursor=pointer]
+    - button "工具 Alt+Q" [ref=e11] [cursor=pointer]:
+      - generic [ref=e15]: 工具
+      - generic [ref=e16]: Alt+Q
+  - generic [ref=e17]:
+    - generic "主页" [ref=e21]
+    - generic [ref=e31]:
+      - banner [ref=e32]:
+        - generic [ref=e33]:
+          - paragraph [ref=e34]: Nexora · v2.8.5
+          - heading "最小安全主页" [level=1] [ref=e35]
+      - generic [ref=e41]:
+        - heading "已回退到安全主页" [level=2] [ref=e42]
+        - paragraph [ref=e43]: 装配方案读取失败：Cannot read properties of undefined (reading 'invoke')
+        - paragraph [ref=e44]: 这里不会加载项目扫描或业务页面，你仍可打开维护中心修正装配方案。
+      - generic [ref=e45]:
+        - generic [ref=e46]:
+          - paragraph [ref=e47]: 当前方案
+          - paragraph [ref=e48]: 读取中
+        - generic [ref=e49]:
+          - paragraph [ref=e50]: 启用组件
+          - paragraph [ref=e51]: "0"
+        - generic [ref=e52]:
+          - paragraph [ref=e53]: 主页目标
+          - paragraph [ref=e54]: 未配置
+      - generic [ref=e55]:
+        - button "打开功能中心" [ref=e56] [cursor=pointer]
+        - button "维护中心" [ref=e59] [cursor=pointer]
+      - contentinfo [ref=e63]:
+        - generic [ref=e64]: 维护入口保持可用
+        - generic [ref=e68]: 错误主页不会产生空白界面
+        - generic [ref=e74]: 章知涵@Ninniku · QQ：2143178235

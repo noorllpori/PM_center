@@ -1492,7 +1492,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
   }
 
   const middlePanel = (
-    <section className={`${showMobileConversation ? 'hidden lg:flex' : 'flex'} min-w-0 w-full flex-col border-r border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950 lg:w-[310px] lg:shrink-0`}>
+    <section className={`${showMobileConversation ? 'hidden lg:flex' : 'flex'} min-h-0 min-w-0 w-full flex-col overflow-hidden border-r border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950 lg:w-[310px] lg:shrink-0`}>
       <div className="border-b border-gray-200 px-3 py-3 dark:border-gray-800">
         <div className="flex items-center gap-2">
           <div className="relative min-w-0 flex-1">
@@ -1669,8 +1669,8 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
   );
 
   return (
-    <div className="flex h-full min-h-0 w-full min-w-0 bg-white text-gray-900 dark:bg-gray-950 dark:text-gray-100">
-      <aside className="flex w-14 shrink-0 flex-col items-center border-r border-gray-200 bg-gray-100 py-3 dark:border-gray-800 dark:bg-gray-900">
+    <div className="flex h-full min-h-0 w-full min-w-0 overflow-hidden bg-white text-gray-900 dark:bg-gray-950 dark:text-gray-100">
+      <aside className="flex min-h-0 w-14 shrink-0 flex-col items-center overflow-hidden border-r border-gray-200 bg-gray-100 py-3 dark:border-gray-800 dark:bg-gray-900">
         <LanAvatar id={profile.id} name={profile.displayName} avatarPath={profile.avatarPath} size="md" />
         <div className="mt-5 flex flex-col gap-2">
           <NavigationButton active={mode === 'messages'} title="最近消息" badge={unreadCount} onClick={() => { setQuery(''); setMode('messages'); setShowMobileConversation(false); }}><MessageCircle className="h-5 w-5" /></NavigationButton>
@@ -1689,7 +1689,7 @@ export function LanCollaborationSurface({ isActive = true }: LanCollaborationSur
       {middlePanel}
 
       <main
-        className={`${showMobileConversation ? 'flex' : 'hidden lg:flex'} relative min-w-0 flex-1 flex-col bg-white dark:bg-gray-950`}
+        className={`${showMobileConversation ? 'flex' : 'hidden lg:flex'} relative min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-white dark:bg-gray-950`}
         onDragEnter={(event) => {
           if (mode !== 'messages') return;
           const isFileDrag = hasInternalDragData(event.dataTransfer)

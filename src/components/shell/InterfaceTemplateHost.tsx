@@ -99,6 +99,9 @@ function SlotContainer({
 }) {
   if (bindings.length === 0 && slot.collapseWhenEmpty !== false) return null;
   const layout = slot.layout ?? 'flow';
+  const fillsAvailableSpace = slot.accepts.some((accepts) => (
+    accepts === 'active-surface' || accepts === 'component-surface'
+  ));
   const layoutClass = layout === 'stack'
     ? 'flex min-h-0 flex-col gap-2'
     : layout === 'tabs'
@@ -113,7 +116,7 @@ function SlotContainer({
     <div
       data-nexora-slot={slot.id}
       data-nexora-slot-kind={slot.accepts.join(',')}
-      className={layoutClass}
+      className={`${layoutClass} ${fillsAvailableSpace ? 'h-full flex-1 overflow-hidden' : ''}`}
       style={{
         minWidth: slot.minWidth,
         minHeight: slot.minHeight,
@@ -358,7 +361,7 @@ function ResizableTemplateRoot({
     return () => cleanups.forEach((cleanup) => cleanup());
   }, [profile, saveCurrentProfile, templateId]);
 
-  return <div ref={rootRef} data-nexora-interface-template-root className="flex min-h-0 flex-1 flex-col overflow-hidden [&>*]:min-h-0 [&>*]:min-w-0 [&>*]:flex-1">{children}</div>;
+  return <div ref={rootRef} data-nexora-interface-template-root className="flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden [&>*]:min-h-0 [&>*]:min-w-0 [&>*]:flex-1">{children}</div>;
 }
 
 function BuiltinInterfaceTemplate({
@@ -378,14 +381,14 @@ function BuiltinInterfaceTemplate({
   };
   if (kind === 'blank-home') {
     return (
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden">
         <div className="min-h-0 flex-1 overflow-hidden">{render('primary')}</div>
       </div>
     );
   }
   if (kind === 'side-bar') {
     return (
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden">
         {render('tabs')}
         <div className="flex min-h-0 flex-1 overflow-hidden">
           {render('navigation')}
@@ -399,7 +402,7 @@ function BuiltinInterfaceTemplate({
     );
   }
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+    <div className="flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden">
       {render('tabs')}
       {render('navigation')}
       {render('toolbar')}
@@ -463,7 +466,7 @@ export function InterfaceTemplateHost({ profile, renderSlot, fallback }: Interfa
   }
   if (renderedExternal) {
     return (
-      <div data-nexora-interface-template={preview?.templateId} className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div data-nexora-interface-template={preview?.templateId} className="flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden">
         {preview?.compiledStyles ? <style>{preview.compiledStyles}</style> : null}
         <ResizableTemplateRoot templateId={preview?.templateId ?? templateId ?? ''} profile={profile}>
           {renderedExternal}
