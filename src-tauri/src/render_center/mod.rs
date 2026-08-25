@@ -880,6 +880,27 @@ def emit(kind, **payload):
     payload['type'] = kind
     print('PM_RENDER_EVENT ' + json.dumps(payload, ensure_ascii=False), flush=True)
 
+def set_output_format(scene, requested):
+    """Select the media type before the format.
+
+    Blender exposes image_settings.file_format as a context-sensitive enum. A
+    .blend saved for movie output only exposes FFMPEG until media_type is
+    switched back to IMAGE (or MULTI_LAYER_IMAGE), so assigning PNG/JPEG
+    directly raises ``enum ... not found in ('FFMPEG',)``.
+    """
+    output_format = (requested or 'PNG').upper()
+    image_settings = scene.render.image_settings
+    # Blender versions before the media-type API expose one flat enum; keep
+    # those versions working while using the contextual enum on newer ones.
+    if hasattr(image_settings, 'media_type'):
+        if output_format == 'FFMPEG':
+            image_settings.media_type = 'VIDEO'
+        elif output_format == 'OPEN_EXR_MULTILAYER':
+            image_settings.media_type = 'MULTI_LAYER_IMAGE'
+        else:
+            image_settings.media_type = 'IMAGE'
+    image_settings.file_format = output_format
+
 try:
     separator = sys.argv.index('--')
     spec_path = sys.argv[separator + 2] if sys.argv[separator + 1] == '--spec' else sys.argv[separator + 1]
@@ -897,7 +918,7 @@ try:
         scene.render.resolution_y = int(spec['resolutionY'])
     if spec.get('resolutionPercentage'):
         scene.render.resolution_percentage = int(spec['resolutionPercentage'])
-    scene.render.image_settings.file_format = spec.get('outputFormat') or 'PNG'
+    set_output_format(scene, spec.get('outputFormat'))
     scene.render.filepath = spec['outputPath']
     scene.render.use_file_extension = False
     os.makedirs(os.path.dirname(spec['outputPath']), exist_ok=True)
@@ -919,6 +940,19 @@ PREFIX = 'PM_RENDER_EVENT '
 def emit(kind, **payload):
     payload['type'] = kind
     print(PREFIX + json.dumps(payload, ensure_ascii=False), flush=True)
+
+def set_output_format(scene, requested):
+    """Select the media type before the format (Blender's enum is contextual)."""
+    output_format = (requested or 'PNG').upper()
+    image_settings = scene.render.image_settings
+    if hasattr(image_settings, 'media_type'):
+        if output_format == 'FFMPEG':
+            image_settings.media_type = 'VIDEO'
+        elif output_format == 'OPEN_EXR_MULTILAYER':
+            image_settings.media_type = 'MULTI_LAYER_IMAGE'
+        else:
+            image_settings.media_type = 'IMAGE'
+    image_settings.file_format = output_format
 
 separator = sys.argv.index('--')
 worker_id = sys.argv[separator + 2] if sys.argv[separator + 1] == '--worker-id' else 'worker'
@@ -956,7 +990,7 @@ for raw_line in sys.stdin:
             scene.render.resolution_y = int(command['resolutionY'])
         if command.get('resolutionPercentage'):
             scene.render.resolution_percentage = int(command['resolutionPercentage'])
-        scene.render.image_settings.file_format = command.get('outputFormat') or 'PNG'
+        set_output_format(scene, command.get('outputFormat'))
         scene.render.filepath = temp_output_path
         scene.render.use_file_extension = False
         os.makedirs(os.path.dirname(temp_output_path), exist_ok=True)
@@ -6183,7 +6217,7 @@ mod tests {
         fs::write(&worker_script, persistent_worker_script()).unwrap();
 
         let create_code = format!(
-            "import bpy; s=bpy.context.scene; s.render.resolution_x=64; s.render.resolution_y=64; s.render.resolution_percentage=100; bpy.ops.wm.save_as_mainfile(filepath=r'{}')",
+            "import bpy; s=bpy.context.scene; s.render.resolution_x=64; s.render.resolution_y=64; s.render.resolution_percentage=100; s.render.image_settings.media_type='VIDEO'; s.render.image_settings.file_format='FFMPEG'; bpy.ops.wm.save_as_mainfile(filepath=r'{}')",
             blend_path.to_string_lossy()
         );
         let create_status = std_command(&blender)
