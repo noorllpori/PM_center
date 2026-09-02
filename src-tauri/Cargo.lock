@@ -3418,7 +3418,6 @@ dependencies = [
  "mime_guess",
  "notify",
  "notify-rust",
- "pmc-platform",
  "pmc-protocol",
  "regex",
  "reqwest 0.12.28",
@@ -3446,16 +3445,6 @@ dependencies = [
  "uuid",
  "walkdir",
  "windows 0.54.0",
-]
-
-[[package]]
-name = "pmc-platform"
-version = "1.0.0"
-dependencies = [
- "schemars 0.8.22",
- "semver",
- "serde",
- "serde_json",
 ]
 
 [[package]]

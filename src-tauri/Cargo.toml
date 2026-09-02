@@ -62,7 +62,6 @@ url = "2"
 futures-util = "0.3"
 keyring = { version = "3", features = ["windows-native"] }
 pmc-protocol = { path = "../shared/pmc-protocol" }
-pmc-platform = { path = "../shared/pmc-platform" }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 tokio-util = { version = "0.7", features = ["io"] }
 tokio-stream = "0.1"

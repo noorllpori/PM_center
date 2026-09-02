@@ -1,6 +1,0 @@
-{
-  "code": "INVALID_REFERENCE",
-  "path": "$.surfaces[0].widgets[0].dataSource",
-  "message": "数据源不存在: missing-source"
-}
-
