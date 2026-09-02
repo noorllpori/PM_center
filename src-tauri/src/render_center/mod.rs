@@ -857,6 +857,7 @@ fn inspect_script() -> &'static str {
     r#"import bpy, json
 result = []
 for scene in bpy.data.scenes:
+    image_format = scene.render.image_settings.file_format
     result.append({
         'name': scene.name,
         'frameStart': scene.frame_start,
@@ -865,7 +866,10 @@ for scene in bpy.data.scenes:
         'resolutionY': scene.render.resolution_y,
         'fps': scene.render.fps / max(scene.render.fps_base, 0.0001),
         'engine': scene.render.engine,
-        'outputFormat': scene.render.image_settings.file_format,
+        # Render Center creates image sequences. A scene saved for movie
+        # output has no valid per-frame image format, so deliberately ignore
+        # FFMPEG here instead of returning a value the UI cannot select.
+        'outputFormat': 'PNG' if getattr(scene.render, 'is_movie_format', False) or image_format == 'FFMPEG' else image_format,
     })
 print('PM_RENDER_INSPECT_START')
 print(json.dumps(result, ensure_ascii=False))
@@ -888,17 +892,14 @@ def set_output_format(scene, requested):
     switched back to IMAGE (or MULTI_LAYER_IMAGE), so assigning PNG/JPEG
     directly raises ``enum ... not found in ('FFMPEG',)``.
     """
-    output_format = (requested or 'PNG').upper()
+    output_format = str(requested or 'PNG').upper()
+    if output_format not in {'PNG', 'JPEG', 'OPEN_EXR', 'TIFF', 'WEBP'}:
+        output_format = 'PNG'
     image_settings = scene.render.image_settings
     # Blender versions before the media-type API expose one flat enum; keep
     # those versions working while using the contextual enum on newer ones.
     if hasattr(image_settings, 'media_type'):
-        if output_format == 'FFMPEG':
-            image_settings.media_type = 'VIDEO'
-        elif output_format == 'OPEN_EXR_MULTILAYER':
-            image_settings.media_type = 'MULTI_LAYER_IMAGE'
-        else:
-            image_settings.media_type = 'IMAGE'
+        image_settings.media_type = 'IMAGE'
     image_settings.file_format = output_format
 
 try:
@@ -943,15 +944,12 @@ def emit(kind, **payload):
 
 def set_output_format(scene, requested):
     """Select the media type before the format (Blender's enum is contextual)."""
-    output_format = (requested or 'PNG').upper()
+    output_format = str(requested or 'PNG').upper()
+    if output_format not in {'PNG', 'JPEG', 'OPEN_EXR', 'TIFF', 'WEBP'}:
+        output_format = 'PNG'
     image_settings = scene.render.image_settings
     if hasattr(image_settings, 'media_type'):
-        if output_format == 'FFMPEG':
-            image_settings.media_type = 'VIDEO'
-        elif output_format == 'OPEN_EXR_MULTILAYER':
-            image_settings.media_type = 'MULTI_LAYER_IMAGE'
-        else:
-            image_settings.media_type = 'IMAGE'
+        image_settings.media_type = 'IMAGE'
     image_settings.file_format = output_format
 
 separator = sys.argv.index('--')
@@ -1101,6 +1099,13 @@ fn normalize_output_format(format: &str) -> Result<String, String> {
     }
 }
 
+/// Render jobs always write one image per frame. Blender's movie format is a
+/// scene-level setting used by animation output and must never enter a frame
+/// job's persisted spec; treat legacy/unknown values as the safe PNG default.
+fn frame_output_format(format: Option<&str>) -> String {
+    normalize_output_format(format.unwrap_or("PNG")).unwrap_or_else(|_| "PNG".into())
+}
+
 fn frame_output_path(
     output_dir: &Path,
     scene_name: &str,
@@ -1185,7 +1190,7 @@ pub async fn create_render_batch(
             .join(safe_name(blend_stem))
             .join(format!("{}-{}", timestamp, short_id));
         fs::create_dir_all(&output_dir).map_err(|error| error.to_string())?;
-        let format = job.output_format.clone().unwrap_or_else(|| "PNG".into());
+        let format = frame_output_format(job.output_format.as_deref());
         let spec = json!({
             "blendPath": job.blend_path,
             "sceneName": job.scene_name,
@@ -1309,11 +1314,7 @@ fn render_job_settings(job: &RenderJob, spec: &Value) -> RenderJobSettings {
             .get("engine")
             .and_then(Value::as_str)
             .map(str::to_string),
-        output_format: spec
-            .get("outputFormat")
-            .and_then(Value::as_str)
-            .unwrap_or("PNG")
-            .to_string(),
+        output_format: frame_output_format(spec.get("outputFormat").and_then(Value::as_str)),
     }
 }
 
@@ -1738,11 +1739,7 @@ fn update_render_job_settings(
         .get("engine")
         .and_then(Value::as_str)
         .map(str::to_string);
-    let old_output_format = spec
-        .get("outputFormat")
-        .and_then(Value::as_str)
-        .unwrap_or("PNG")
-        .to_ascii_uppercase();
+    let old_output_format = frame_output_format(spec.get("outputFormat").and_then(Value::as_str));
     let render_settings_changed = old_scene_name != request.scene_name
         || old_resolution_percentage != request.resolution_percentage
         || old_engine != request.engine
@@ -2200,7 +2197,16 @@ struct JobExecutionSpec {
 fn load_execution_spec(conn: &Connection, job_id: &str) -> Result<JobExecutionSpec, String> {
     conn.query_row("SELECT blend_path,scene_name,blender_path,pre_hook,post_hook,force_overwrite,max_retries,spec_json,parallelism,execution_mode,frame_order_mode FROM render_jobs WHERE id=?1", params![job_id], |row| {
         let spec_json: String = row.get(7)?;
-        Ok(JobExecutionSpec { blend_path: row.get(0)?, scene_name: row.get(1)?, blender_path: row.get(2)?, pre_hook: row.get(3)?, post_hook: row.get(4)?, force_overwrite: row.get::<_,i64>(5)? != 0, max_retries: row.get(6)?, spec: serde_json::from_str(&spec_json).unwrap_or(Value::Null), parallelism: row.get::<_,i64>(8)?.clamp(1,8), execution_mode: row.get(9)?, frame_order_mode: row.get(10)? })
+        let mut spec = serde_json::from_str::<Value>(&spec_json).unwrap_or_else(|_| json!({}));
+        if !spec.is_object() {
+            spec = json!({});
+        }
+        // Older jobs could persist the source scene's FFMPEG value even
+        // though this subsystem only supports image sequences. Normalize it
+        // at the execution boundary so retries of those jobs are safe too.
+        let output_format = frame_output_format(spec.get("outputFormat").and_then(Value::as_str));
+        spec["outputFormat"] = json!(output_format);
+        Ok(JobExecutionSpec { blend_path: row.get(0)?, scene_name: row.get(1)?, blender_path: row.get(2)?, pre_hook: row.get(3)?, post_hook: row.get(4)?, force_overwrite: row.get::<_,i64>(5)? != 0, max_retries: row.get(6)?, spec, parallelism: row.get::<_,i64>(8)?.clamp(1,8), execution_mode: row.get(9)?, frame_order_mode: row.get(10)? })
     }).map_err(|error| error.to_string())
 }
 
@@ -4895,11 +4901,8 @@ fn collect_batch_package_jobs(
         .query_map(params![batch_id, project_path], |row| {
             let spec_json: String = row.get(6)?;
             let spec = serde_json::from_str::<Value>(&spec_json).unwrap_or(Value::Null);
-            let output_format = spec
-                .get("outputFormat")
-                .and_then(Value::as_str)
-                .unwrap_or("PNG")
-                .to_string();
+            let output_format =
+                frame_output_format(spec.get("outputFormat").and_then(Value::as_str));
             let expected_dimensions = package_dimensions_from_spec(&spec);
             Ok(BatchPackageJob {
                 id: row.get(0)?,
@@ -6153,6 +6156,15 @@ mod tests {
         assert!(valid_output_with_dimensions(&output, Some((2, 3))));
         assert!(!valid_output_with_dimensions(&output, Some((3, 2))));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn frame_output_format_ignores_movie_and_unknown_values() {
+        assert_eq!(frame_output_format(None), "PNG");
+        assert_eq!(frame_output_format(Some("FFMPEG")), "PNG");
+        assert_eq!(frame_output_format(Some("ffmpeg")), "PNG");
+        assert_eq!(frame_output_format(Some("not-a-format")), "PNG");
+        assert_eq!(frame_output_format(Some("open_exr")), "OPEN_EXR");
     }
 
     #[test]

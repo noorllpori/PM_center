@@ -105,6 +105,20 @@ type RerenderConfirmation = {
 const EMPTY_RENDER_JOBS: RenderJob[] = [];
 const EMPTY_SOURCE_PATHS: string[] = [];
 
+// Render Center only produces one image file per frame. Blender stores
+// animation output as FFMPEG at the scene level, but that format is not a
+// valid frame output here and must never leak into the editable/job state.
+const IMAGE_OUTPUT_FORMATS = ['PNG', 'JPEG', 'OPEN_EXR', 'TIFF', 'WEBP'] as const;
+
+function normalizeImageOutputFormat(value: string | null | undefined): string {
+  const normalized = value?.trim().toUpperCase();
+  return normalized && IMAGE_OUTPUT_FORMATS.includes(
+    normalized as (typeof IMAGE_OUTPUT_FORMATS)[number],
+  )
+    ? normalized
+    : 'PNG';
+}
+
 const STATUS_LABELS: Record<string, string> = {
   queued: '等待中', pending: '等待中', starting: '正在启动', running: '渲染中', pausing: '正在暂停', paused: '已暂停',
   cancelling: '正在取消', cancelled: '已取消', completed: '已完成', failed: '失败',
@@ -1231,7 +1245,10 @@ function JobDetailPane({ detail, busy, onAction }: { detail: RenderJobDetail; bu
 function EditRenderJobDialog({ detail, onClose, onSave }: { detail: RenderJobDetail; onClose: () => void; onSave: (request: UpdateRenderJobRequest) => Promise<boolean> }) {
   const { job, settings } = detail;
   const showToast = useUiStore((state) => state.showToast);
-  const [form, setForm] = useState<UpdateRenderJobRequest>(() => ({ ...settings }));
+  const [form, setForm] = useState<UpdateRenderJobRequest>(() => ({
+    ...settings,
+    outputFormat: normalizeImageOutputFormat(settings.outputFormat),
+  }));
   const [source, setSource] = useState<RenderSourceInfo | null>(null);
   const [inspecting, setInspecting] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -1265,12 +1282,12 @@ function EditRenderJobDialog({ detail, onClose, onSave }: { detail: RenderJobDet
   const scenes = source?.scenes || [];
   const sceneOptions = scenes.some((scene) => scene.name === form.sceneName)
     ? scenes
-    : [{ name: form.sceneName, frameStart: form.frameStart, frameEnd: form.frameEnd, resolutionX: 0, resolutionY: 0, fps: 0, engine: form.engine || '', outputFormat: form.outputFormat }, ...scenes];
+    : [{ name: form.sceneName, frameStart: form.frameStart, frameEnd: form.frameEnd, resolutionX: 0, resolutionY: 0, fps: 0, engine: form.engine || '', outputFormat: normalizeImageOutputFormat(form.outputFormat) }, ...scenes];
   const selectedScene = sceneOptions.find((scene) => scene.name === form.sceneName);
   const imageSettingsChanged = form.sceneName !== settings.sceneName
     || form.resolutionPercentage !== settings.resolutionPercentage
     || form.engine !== settings.engine
-    || form.outputFormat !== settings.outputFormat;
+    || normalizeImageOutputFormat(form.outputFormat) !== normalizeImageOutputFormat(settings.outputFormat);
   const frameLayoutChanged = form.frameStart !== settings.frameStart
     || form.frameEnd !== settings.frameEnd
     || form.frameStep !== settings.frameStep;
@@ -1288,7 +1305,10 @@ function EditRenderJobDialog({ detail, onClose, onSave }: { detail: RenderJobDet
       && !confirm('画面设置已修改，范围内已完成的帧会按新设置重新渲染；仅修改帧范围不会重渲染已有结果。确定继续吗？')) return;
     setSaving(true);
     try {
-      if (await onSave(form)) onClose();
+      if (await onSave({
+        ...form,
+        outputFormat: normalizeImageOutputFormat(form.outputFormat),
+      })) onClose();
     } finally {
       setSaving(false);
     }
@@ -1329,7 +1349,7 @@ function EditRenderJobDialog({ detail, onClose, onSave }: { detail: RenderJobDet
                     frameStart: scene?.frameStart ?? current.frameStart,
                     frameEnd: scene?.frameEnd ?? current.frameEnd,
                     engine: scene?.engine || null,
-                    outputFormat: scene?.outputFormat || current.outputFormat,
+                    outputFormat: normalizeImageOutputFormat(scene?.outputFormat || current.outputFormat),
                   }));
                 }}
               >
@@ -1341,7 +1361,7 @@ function EditRenderJobDialog({ detail, onClose, onSave }: { detail: RenderJobDet
             <Field label="步长"><input type="number" min={1} value={form.frameStep} onChange={(event) => setForm((current) => ({ ...current, frameStep: Math.max(1, Number(event.target.value)) }))} /></Field>
             <Field label={<span className="inline-flex items-center gap-1">帧多开<HelpAssistant title="帧多开" text={["这是当前任务期望的 Worker 数，实际数量还受全局 Blender 进程上限约束。", "严格顺序模式固定只使用 1 个 Worker；切回动态领取后会恢复这里的设置。"]} placement="top" /></span>}><select disabled={form.frameOrderMode === 'strict'} value={form.parallelism} onChange={(event) => setForm((current) => ({ ...current, parallelism: Number(event.target.value) }))}>{[1,2,3,4,5,6,7,8].map((value) => <option key={value} value={value}>{value} 开</option>)}</select></Field>
             <Field label={<span className="inline-flex items-center gap-1">分辨率 %<HelpAssistant title="分辨率比例" text={['按场景原始分辨率的百分比渲染。100% 为正式输出，较低比例可用于快速预览。', '改变比例会重新渲染已有帧。']} placement="top" /></span>}><input type="number" min={1} max={100} value={form.resolutionPercentage} onChange={(event) => setForm((current) => ({ ...current, resolutionPercentage: Number(event.target.value) }))} /></Field>
-            <Field label={<span className="inline-flex items-center gap-1">格式<HelpAssistant title="输出格式" text={['PNG 适合常规交付；JPEG 文件更小；OPEN_EXR 常用于后期合成。', '切换格式会生成新的输出扩展名，并重新渲染受影响帧。']} placement="top-end" /></span>}><select value={form.outputFormat} onChange={(event) => setForm((current) => ({ ...current, outputFormat: event.target.value }))}><option>PNG</option><option>JPEG</option><option>OPEN_EXR</option><option>TIFF</option><option>WEBP</option></select></Field>
+          <Field label={<span className="inline-flex items-center gap-1">格式<HelpAssistant title="输出格式" text={['渲染中心只输出图片序列；PNG 适合常规交付，JPEG 文件更小，OPEN_EXR 常用于后期合成。', 'Blender 场景若保存为动画格式，会按 PNG 处理；视频打包在渲染完成后单独进行。']} placement="top-end" /></span>}><select value={normalizeImageOutputFormat(form.outputFormat)} onChange={(event) => setForm((current) => ({ ...current, outputFormat: normalizeImageOutputFormat(event.target.value) }))}><option>PNG</option><option>JPEG</option><option>OPEN_EXR</option><option>TIFF</option><option>WEBP</option></select></Field>
           </div>
           <div className="mt-2 flex min-h-5 items-center gap-2 text-[11px] text-gray-500">
             {selectedScene && selectedScene.resolutionX > 0 && <span>{selectedScene.resolutionX} × {selectedScene.resolutionY} · {selectedScene.fps} fps · {form.engine || '-'}</span>}
@@ -1711,7 +1731,7 @@ function CreateBatchDialog({ projectPath, presets, initialSources, onClose, onCr
     if (typeof settings.outputRoot === 'string') setOutputRoot(settings.outputRoot);
     if (typeof settings.forceOverwrite === 'boolean') setForceOverwrite(settings.forceOverwrite);
     if (typeof settings.maxRetries === 'number') setMaxRetries(settings.maxRetries);
-    if (typeof settings.outputFormat === 'string') setJobs((items) => items.map((item) => ({ ...item, outputFormat: settings.outputFormat as string })));
+    if (typeof settings.outputFormat === 'string') setJobs((items) => items.map((item) => ({ ...item, outputFormat: normalizeImageOutputFormat(settings.outputFormat as string) })));
     if (typeof settings.resolutionPercentage === 'number') setJobs((items) => items.map((item) => ({ ...item, resolutionPercentage: settings.resolutionPercentage as number })));
     if (typeof settings.parallelism === 'number') setJobs((items) => items.map((item) => ({ ...item, parallelism: Math.min(8, Math.max(1, settings.parallelism as number)) })));
     if (settings.executionMode === 'persistent' || settings.executionMode === 'isolated') setJobs((items) => items.map((item) => ({ ...item, executionMode: settings.executionMode as RenderExecutionMode })));
@@ -1719,7 +1739,7 @@ function CreateBatchDialog({ projectPath, presets, initialSources, onClose, onCr
   };
   const savePreset = async () => {
     if (!presetName.trim()) return;
-    await invoke('save_render_preset', { projectPath, name: presetName.trim(), scope: presetScope, settings: { outputRoot, forceOverwrite, maxRetries, outputFormat: jobs[0]?.outputFormat || 'PNG', resolutionPercentage: jobs[0]?.resolutionPercentage || 100, parallelism: jobs[0]?.parallelism || 1, executionMode: jobs[0]?.executionMode || 'persistent', frameOrderMode: jobs[0]?.frameOrderMode || 'dynamic' } });
+    await invoke('save_render_preset', { projectPath, name: presetName.trim(), scope: presetScope, settings: { outputRoot, forceOverwrite, maxRetries, outputFormat: normalizeImageOutputFormat(jobs[0]?.outputFormat), resolutionPercentage: jobs[0]?.resolutionPercentage || 100, parallelism: jobs[0]?.parallelism || 1, executionMode: jobs[0]?.executionMode || 'persistent', frameOrderMode: jobs[0]?.frameOrderMode || 'dynamic' } });
     setPresetName('');
     showToast({ title: '预设已保存', message: presetScope === 'global' ? '所有项目均可使用' : '仅当前项目使用', tone: 'success' });
   };
@@ -1728,7 +1748,7 @@ function CreateBatchDialog({ projectPath, presets, initialSources, onClose, onCr
     if (!namePrefix.trim() || !blenderPath || !validJobs.length) return;
     setSubmitting(true);
     try {
-      const request: CreateRenderBatchRequest = { name: `${namePrefix.trim()} ${batchTimestamp}`, blenderPath, outputRoot: outputRoot || null, preHook: preHook || null, postHook: postHook || null, forceOverwrite, maxRetries, jobs: validJobs.map((job) => ({ blendPath: job.path, sceneName: job.sceneName, frameStart: job.frameStart, frameEnd: job.frameEnd, frameStep: job.frameStep, parallelism: job.parallelism, executionMode: job.executionMode, frameOrderMode: job.frameOrderMode, resolutionX: job.scenes.find((scene) => scene.name === job.sceneName)?.resolutionX || null, resolutionY: job.scenes.find((scene) => scene.name === job.sceneName)?.resolutionY || null, resolutionPercentage: job.resolutionPercentage, engine: job.engine || null, outputFormat: job.outputFormat })) };
+      const request: CreateRenderBatchRequest = { name: `${namePrefix.trim()} ${batchTimestamp}`, blenderPath, outputRoot: outputRoot || null, preHook: preHook || null, postHook: postHook || null, forceOverwrite, maxRetries, jobs: validJobs.map((job) => ({ blendPath: job.path, sceneName: job.sceneName, frameStart: job.frameStart, frameEnd: job.frameEnd, frameStep: job.frameStep, parallelism: job.parallelism, executionMode: job.executionMode, frameOrderMode: job.frameOrderMode, resolutionX: job.scenes.find((scene) => scene.name === job.sceneName)?.resolutionX || null, resolutionY: job.scenes.find((scene) => scene.name === job.sceneName)?.resolutionY || null, resolutionPercentage: job.resolutionPercentage, engine: job.engine || null, outputFormat: normalizeImageOutputFormat(job.outputFormat) })) };
       await invoke('create_render_batch', { projectPath, request });
       showToast({ title: '渲染批次已加入队列', message: `${validJobs.length} 个作业，等待手动开始`, tone: 'success' });
       await onCreated();
@@ -1793,7 +1813,7 @@ function CreateBatchDialog({ projectPath, presets, initialSources, onClose, onCr
 
 function toEditableJob(source: RenderSourceInfo): EditableJob {
   const scene = source.scenes[0];
-  return { path: source.path, scenes: source.scenes, sceneName: scene?.name || '', frameStart: scene?.frameStart ?? 1, frameEnd: scene?.frameEnd ?? 250, frameStep: 1, parallelism: 1, executionMode: 'persistent', frameOrderMode: 'dynamic', resolutionPercentage: 100, engine: scene?.engine || '', outputFormat: scene?.outputFormat || 'PNG', error: source.error };
+  return { path: source.path, scenes: source.scenes, sceneName: scene?.name || '', frameStart: scene?.frameStart ?? 1, frameEnd: scene?.frameEnd ?? 250, frameStep: 1, parallelism: 1, executionMode: 'persistent', frameOrderMode: 'dynamic', resolutionPercentage: 100, engine: scene?.engine || '', outputFormat: normalizeImageOutputFormat(scene?.outputFormat), error: source.error };
 }
 
 function EditableJobRow({ job, onChange, onRemove }: { job: EditableJob; onChange: (patch: Partial<EditableJob>) => void; onRemove: () => void }) {
@@ -1819,12 +1839,12 @@ function EditableJobRow({ job, onChange, onRemove }: { job: EditableJob; onChang
             </Field>
           </div>
           <div className="mt-2 grid grid-cols-[minmax(116px,1fr)_68px_68px_56px_88px_90px] gap-2 max-[680px]:grid-cols-3">
-            <Field label="场景"><select value={job.sceneName} onChange={(event) => { const next = job.scenes.find((item) => item.name === event.target.value); onChange({ sceneName: event.target.value, frameStart: next?.frameStart ?? job.frameStart, frameEnd: next?.frameEnd ?? job.frameEnd, engine: next?.engine ?? job.engine, outputFormat: next?.outputFormat ?? job.outputFormat }); }}>{job.scenes.map((item) => <option key={item.name}>{item.name}</option>)}</select></Field>
+            <Field label="场景"><select value={job.sceneName} onChange={(event) => { const next = job.scenes.find((item) => item.name === event.target.value); onChange({ sceneName: event.target.value, frameStart: next?.frameStart ?? job.frameStart, frameEnd: next?.frameEnd ?? job.frameEnd, engine: next?.engine ?? job.engine, outputFormat: normalizeImageOutputFormat(next?.outputFormat ?? job.outputFormat) }); }}>{job.scenes.map((item) => <option key={item.name}>{item.name}</option>)}</select></Field>
             <Field label="起始"><input type="number" value={job.frameStart} onChange={(event) => onChange({ frameStart: Number(event.target.value) })} /></Field>
             <Field label="结束"><input type="number" value={job.frameEnd} onChange={(event) => onChange({ frameEnd: Number(event.target.value) })} /></Field>
             <Field label="步长"><input type="number" min={1} value={job.frameStep} onChange={(event) => onChange({ frameStep: Math.max(1, Number(event.target.value)) })} /></Field>
             <Field label={<span className="inline-flex items-center gap-1">分辨率 %<HelpAssistant title="渲染分辨率比例" text={['按场景原始分辨率的百分比渲染。', '降低比例可以加快预览渲染，正式输出通常使用 100%。']} images={[{ src: '/help_media/渲染像素比.jpg', alt: '不同渲染清晰度的对比' }]} placement="top" /></span>}><input type="number" min={1} max={100} value={job.resolutionPercentage} onChange={(event) => onChange({ resolutionPercentage: Number(event.target.value) })} /></Field>
-            <Field label="格式"><select value={job.outputFormat} onChange={(event) => onChange({ outputFormat: event.target.value })}><option>PNG</option><option>JPEG</option><option>OPEN_EXR</option><option>TIFF</option><option>WEBP</option></select></Field>
+            <Field label="格式"><select value={normalizeImageOutputFormat(job.outputFormat)} onChange={(event) => onChange({ outputFormat: normalizeImageOutputFormat(event.target.value) })}><option>PNG</option><option>JPEG</option><option>OPEN_EXR</option><option>TIFF</option><option>WEBP</option></select></Field>
           </div>
           <div className="mt-1 text-[10px] text-gray-500">{scene?.resolutionX} × {scene?.resolutionY} · {scene?.fps} fps · {job.engine}</div>
         </>
