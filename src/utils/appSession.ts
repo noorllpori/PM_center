@@ -1,5 +1,6 @@
 import { load } from '@tauri-apps/plugin-store';
 import type { WorkspaceTabType } from '../stores/workspaceTabStore';
+import type { TextEditorTransferPayload } from '../components/text-editor/textEditorWindowTransfer';
 
 const STORE_FILE = 'app-session.json';
 const SESSION_KEY = 'appSession';
@@ -11,6 +12,7 @@ export interface PersistedWorkspaceTab {
   type: PersistedWorkspaceTabType;
   filePath?: string;
   title?: string;
+  editorSnapshot?: TextEditorTransferPayload;
 }
 
 export interface PersistedWorkspaceActiveTab {
@@ -76,6 +78,58 @@ function normalizePathKey(path?: string | null) {
     .toLowerCase();
 }
 
+function sanitizeTextEditorSnapshot(
+  snapshot: unknown,
+  filePath: string,
+  fallbackTitle?: string,
+): TextEditorTransferPayload | undefined {
+  if (!snapshot || typeof snapshot !== 'object') {
+    return undefined;
+  }
+
+  const candidate = snapshot as Partial<TextEditorTransferPayload>;
+  const supportedLanguages = [
+    'plaintext',
+    'python',
+    'javascript',
+    'typescript',
+    'html',
+    'css',
+    'json',
+    'rust',
+    'markdown',
+  ] as const;
+
+  if (
+    candidate.filePath !== filePath ||
+    typeof candidate.content !== 'string' ||
+    typeof candidate.originalContent !== 'string' ||
+    !supportedLanguages.includes(candidate.language as (typeof supportedLanguages)[number])
+  ) {
+    return undefined;
+  }
+
+  const language = candidate.language as TextEditorTransferPayload['language'];
+
+  const markdownViewMode = candidate.markdownViewMode === 'source' || candidate.markdownViewMode === 'rich-text'
+    ? candidate.markdownViewMode
+    : undefined;
+
+  return {
+    filePath,
+    title: typeof candidate.title === 'string' && candidate.title
+      ? candidate.title
+      : fallbackTitle || filePath.split(/[\\/]/).pop() || filePath,
+    content: candidate.content,
+    originalContent: candidate.originalContent,
+    language,
+    isDirty: typeof candidate.isDirty === 'boolean'
+      ? candidate.isDirty
+      : candidate.content !== candidate.originalContent,
+    markdownViewMode,
+  };
+}
+
 function sanitizeWorkspaceTab(tab: unknown): PersistedWorkspaceTab | null {
   if (!tab || typeof tab !== 'object') {
     return null;
@@ -99,10 +153,15 @@ function sanitizeWorkspaceTab(tab: unknown): PersistedWorkspaceTab | null {
     return null;
   }
 
+  const editorSnapshot = candidate.type === 'text' && candidate.filePath
+    ? sanitizeTextEditorSnapshot(candidate.editorSnapshot, candidate.filePath, candidate.title)
+    : undefined;
+
   return {
     type: candidate.type,
     filePath: candidate.filePath || undefined,
     title: candidate.title || undefined,
+    editorSnapshot,
   };
 }
 

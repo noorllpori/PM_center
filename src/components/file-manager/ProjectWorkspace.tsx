@@ -221,6 +221,7 @@ export function ProjectWorkspace() {
   const openDirectoryInTab = useWorkspaceTabStore((state) => state.openDirectoryInTab);
   const reorderTabs = useWorkspaceTabStore((state) => state.reorderTabs);
   const updateTabDirty = useWorkspaceTabStore((state) => state.updateTabDirty);
+  const updateTabEditorSnapshot = useWorkspaceTabStore((state) => state.updateTabEditorSnapshot);
   const confirmFileTabClose = useSettingsStore((state) => state.confirmFileTabClose);
 
   const [isDragImportActive, setIsDragImportActive] = useState(false);
@@ -247,7 +248,6 @@ export function ProjectWorkspace() {
   const externalDropConflictResolverRef = useRef<((choice: ConflictResolution) => void) | null>(null);
   const fileTreeResizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const fileDetailsResizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
-  const textEditorSnapshotsRef = useRef(new Map<string, TextEditorTransferPayload>());
   const fsChangeRefreshTimerRef = useRef<number | null>(null);
   const fsRefreshInFlightRef = useRef(false);
   const lastTreeRefreshAtRef = useRef(0);
@@ -265,7 +265,8 @@ export function ProjectWorkspace() {
       return;
     }
 
-    if (!confirmFileTabClose) {
+    const shouldConfirm = confirmFileTabClose || (tab.type === 'text' && tab.isDirty === true);
+    if (!shouldConfirm) {
       closeTab(tabId);
       return;
     }
@@ -321,23 +322,9 @@ export function ProjectWorkspace() {
     return () => window.removeEventListener(OPEN_MDT_OVERVIEW_EVENT, handleOpenMdtOverview);
   }, [isInitialized]);
 
-  useEffect(() => {
-    const activeTextTabIds = new Set(
-      tabs
-        .filter((tab) => tab.type === 'text')
-        .map((tab) => tab.id),
-    );
-
-    for (const tabId of textEditorSnapshotsRef.current.keys()) {
-      if (!activeTextTabIds.has(tabId)) {
-        textEditorSnapshotsRef.current.delete(tabId);
-      }
-    }
-  }, [tabs]);
-
   const handleTextEditorStateChange = useCallback((tabId: string, snapshot: TextEditorTransferPayload) => {
-    textEditorSnapshotsRef.current.set(tabId, snapshot);
-  }, []);
+    updateTabEditorSnapshot(tabId, snapshot);
+  }, [updateTabEditorSnapshot]);
 
   const getSelectedClipboardItems = useCallback(() => {
     const state = projectStore.getState();
@@ -1006,7 +993,7 @@ export function ProjectWorkspace() {
       return;
     }
 
-    const snapshot = textEditorSnapshotsRef.current.get(tabId);
+    const snapshot = tab.editorSnapshot;
     const canTransferSnapshot = snapshot?.filePath === tab.filePath;
 
     if (!canTransferSnapshot && !tab.isDirty) {

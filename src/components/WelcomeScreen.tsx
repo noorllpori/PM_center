@@ -45,9 +45,10 @@ function getProjectDatePrefix(date = new Date()): string {
 interface WelcomeScreenProps {
   onOpenProject: (path: string) => Promise<void> | void;
   settingsLoaded: boolean;
+  onExitApp?: () => Promise<boolean> | boolean;
 }
 
-export function WelcomeScreen({ onOpenProject, settingsLoaded }: WelcomeScreenProps) {
+export function WelcomeScreen({ onOpenProject, settingsLoaded, onExitApp }: WelcomeScreenProps) {
   const { 
     recentProjects, 
     projectsRootDir,
@@ -531,6 +532,7 @@ export function WelcomeScreen({ onOpenProject, settingsLoaded }: WelcomeScreenPr
         onClose={() => setShowSettings(false)}
         defaultScope="global"
         onOpenProject={onOpenProject}
+        onExitApp={onExitApp}
       />
 
       {/* 已忽略项目列表对话框 */}

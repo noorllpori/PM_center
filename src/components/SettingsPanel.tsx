@@ -63,6 +63,7 @@ interface SettingsPanelProps {
   onClose: () => void;
   defaultScope?: SettingsScope;
   onOpenProject?: (path: string) => Promise<void> | void;
+  onExitApp?: () => Promise<boolean> | boolean;
 }
 
 interface ToolStatus {
@@ -207,6 +208,7 @@ export function SettingsPanel({
   onClose,
   defaultScope = 'global',
   onOpenProject,
+  onExitApp,
 }: SettingsPanelProps) {
   const {
     autoOpenLastProject,
@@ -698,7 +700,12 @@ export function SettingsPanel({
     setIsExitingApp(true);
 
     try {
-      await invoke('exit_app');
+      const exitStarted = onExitApp
+        ? await onExitApp()
+        : (await invoke('exit_app'), true);
+      if (!exitStarted) {
+        setIsExitingApp(false);
+      }
     } catch (error) {
       setAlertDialog({
         isOpen: true,
@@ -2205,11 +2212,7 @@ export function SettingsPanel({
 
       <ConfirmDialog
         isOpen={exitConfirmDialogOpen}
-        onClose={() => {
-          if (!isExitingApp) {
-            setExitConfirmDialogOpen(false);
-          }
-        }}
+        onClose={() => setExitConfirmDialogOpen(false)}
         onConfirm={() => void handleExitApp()}
         title="结束程序"
         message="结束程序后，主窗口、托盘和后台进程都会一起退出。确定继续吗？"

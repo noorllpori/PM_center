@@ -17,7 +17,7 @@ import { Toolbar, TOOLBAR_SEARCH_FOCUS_EVENT } from './Toolbar';
 import { OPEN_MDT_OVERVIEW_EVENT, ProjectWorkspace } from './ProjectWorkspace';
 import { ProjectSessionProvider } from './ProjectSessionProvider';
 import { ShellTabBar } from '../shell/ShellTabBar';
-import { Dialog } from '../Dialog';
+import { ConfirmDialog, Dialog } from '../Dialog';
 import { ProjectLocationDialog } from './ProjectLocationDialog';
 import { createProjectStore, type ProjectStoreApi } from '../../stores/projectStore';
 import { useTaskStore } from '../../stores/taskStore';
@@ -86,6 +86,16 @@ interface PendingProjectOpen {
   report: ProjectLocationReport;
 }
 
+interface PendingDirtyProjectClose {
+  tabId: string;
+  title: string;
+  dirtyTabTitles: string[];
+}
+
+interface PendingDirtyExit {
+  dirtyLabels: string[];
+}
+
 const SESSION_PERSIST_DEBOUNCE_MS = 180;
 
 function getProjectNameFromPath(path: string) {
@@ -123,6 +133,7 @@ function serializeWorkspaceSession(
       type: tab.type,
       filePath: tab.filePath,
       title: tab.title,
+      editorSnapshot: tab.type === 'text' ? tab.editorSnapshot : undefined,
     }];
   });
 
@@ -181,7 +192,9 @@ async function restoreWorkspaceSession(
       continue;
     }
 
-    const tabId = await workspaceTabStore.getState().openFileInTab(tab.filePath);
+    const tabId = await workspaceTabStore.getState().openFileInTab(tab.filePath, {
+      editorSnapshot: tab.type === 'text' ? tab.editorSnapshot : undefined,
+    });
     if (tabId) {
       restoredTabIds.set(getPersistedWorkspaceTabKey(tab), tabId);
     }
@@ -285,6 +298,8 @@ export function FileManager() {
   const [projectLocationSearchError, setProjectLocationSearchError] = useState<string | null>(null);
   const [hasSearchedProjectLocation, setHasSearchedProjectLocation] = useState(false);
   const [isOpeningResolvedProject, setIsOpeningResolvedProject] = useState(false);
+  const [pendingDirtyProjectClose, setPendingDirtyProjectClose] = useState<PendingDirtyProjectClose | null>(null);
+  const [pendingDirtyExit, setPendingDirtyExit] = useState<PendingDirtyExit | null>(null);
   const sessionsRef = useRef<Map<string, ProjectSession>>(new Map());
   const sessionSubscriptionsRef = useRef<Map<string, ProjectSessionSubscriptions>>(new Map());
   const sessionPersistTimerRef = useRef<number | null>(null);
@@ -394,6 +409,75 @@ export function FileManager() {
       void persistAppSession();
     }, SESSION_PERSIST_DEBOUNCE_MS);
   }, [persistAppSession]);
+
+  const getDirtyEditorLabels = useCallback(() => {
+    const labels: string[] = [];
+
+    for (const session of sessionsRef.current.values()) {
+      const projectState = session.projectStore.getState();
+      const projectName = projectState.projectName || getProjectNameFromPath(projectState.projectPath || '项目');
+
+      for (const tab of session.workspaceTabStore.getState().tabs) {
+        if (tab.type === 'text' && tab.isDirty) {
+          labels.push(`${projectName} · ${tab.title}`);
+        }
+      }
+    }
+
+    return labels;
+  }, []);
+
+  const discardDirtyEditorSnapshots = useCallback(() => {
+    for (const session of sessionsRef.current.values()) {
+      const workspaceState = session.workspaceTabStore.getState();
+
+      for (const tab of workspaceState.tabs) {
+        if (tab.type !== 'text' || !tab.isDirty) {
+          continue;
+        }
+
+        if (tab.editorSnapshot) {
+          workspaceState.updateTabEditorSnapshot(tab.id, {
+            ...tab.editorSnapshot,
+            content: tab.editorSnapshot.originalContent,
+            isDirty: false,
+          });
+        } else {
+          workspaceState.updateTabDirty(tab.id, false);
+        }
+      }
+    }
+  }, []);
+
+  const requestExitApp = useCallback(async () => {
+    const dirtyLabels = getDirtyEditorLabels();
+    if (dirtyLabels.length > 0) {
+      setPendingDirtyExit({ dirtyLabels });
+      return false;
+    }
+
+    await persistAppSession();
+    await invoke('exit_app');
+    return true;
+  }, [getDirtyEditorLabels, persistAppSession]);
+
+  const confirmDirtyExit = useCallback(async () => {
+    if (!pendingDirtyExit) {
+      return;
+    }
+
+    try {
+      discardDirtyEditorSnapshots();
+      await persistAppSession();
+      await invoke('exit_app');
+    } catch (error) {
+      showToast({
+        title: '结束程序失败',
+        message: String(error),
+        tone: 'error',
+      });
+    }
+  }, [discardDirtyEditorSnapshots, pendingDirtyExit, persistAppSession, showToast]);
 
   const registerSessionPersistence = useCallback((projectPath: string, session: ProjectSession) => {
     const normalizedPath = normalizeProjectPath(projectPath);
@@ -1009,6 +1093,36 @@ export function FileManager() {
   }, [activeTabId, schedulePersistAppSession, tabs]);
 
   useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+
+    void listen('pm-center:request-exit', () => {
+      if (disposed) {
+        return;
+      }
+
+      void requestExitApp().catch((error) => {
+        showToast({
+          title: '结束程序失败',
+          message: String(error),
+          tone: 'error',
+        });
+      });
+    }).then((cleanup) => {
+      if (disposed) {
+        cleanup();
+      } else {
+        unlisten = cleanup;
+      }
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [requestExitApp, showToast]);
+
+  useEffect(() => {
     return () => {
       if (sessionPersistTimerRef.current !== null) {
         window.clearTimeout(sessionPersistTimerRef.current);
@@ -1023,8 +1137,8 @@ export function FileManager() {
     };
   }, []);
 
-  const handleCloseShellTab = async (tabId: string) => {
-    const closingTab = tabs.find((tab) => tab.id === tabId);
+  const finalizeCloseShellTab = useCallback(async (tabId: string) => {
+    const closingTab = useShellTabStore.getState().tabs.find((tab) => tab.id === tabId);
     closeTab(tabId);
 
     if (closingTab?.type === 'project' && closingTab.projectPath) {
@@ -1040,7 +1154,43 @@ export function FileManager() {
         console.warn('Failed to release project resources:', closingTab.projectPath, error);
       }
     }
+  }, [closeTab, unregisterSessionPersistence]);
+
+  const handleCloseShellTab = async (tabId: string) => {
+    const closingTab = useShellTabStore.getState().tabs.find((tab) => tab.id === tabId);
+
+    if (closingTab?.type === 'project' && closingTab.projectPath) {
+      const session = sessionsRef.current.get(normalizeProjectPath(closingTab.projectPath));
+      const dirtyTabTitles = session
+        ? session.workspaceTabStore
+            .getState()
+            .tabs
+            .filter((tab) => tab.type === 'text' && tab.isDirty)
+            .map((tab) => tab.title)
+        : [];
+
+      if (dirtyTabTitles.length > 0) {
+        setPendingDirtyProjectClose({
+          tabId,
+          title: closingTab.title,
+          dirtyTabTitles,
+        });
+        return;
+      }
+    }
+
+    await finalizeCloseShellTab(tabId);
   };
+
+  const confirmDirtyProjectClose = useCallback(() => {
+    if (!pendingDirtyProjectClose) {
+      return;
+    }
+
+    const { tabId } = pendingDirtyProjectClose;
+    setPendingDirtyProjectClose(null);
+    void finalizeCloseShellTab(tabId);
+  }, [finalizeCloseShellTab, pendingDirtyProjectClose]);
 
   const openBuiltinTool = useCallback((toolId: BuiltinToolId) => {
     const shellState = useShellTabStore.getState();
@@ -1181,6 +1331,7 @@ export function FileManager() {
           <WelcomeScreen
             onOpenProject={handleOpenProject}
             settingsLoaded={isSettingsLoaded}
+            onExitApp={requestExitApp}
           />
         ) : null}
       </div>
@@ -1201,6 +1352,7 @@ export function FileManager() {
             onClose={() => setIsSettingsOpen(false)}
             defaultScope="project"
             onOpenProject={handleOpenProject}
+            onExitApp={requestExitApp}
           />
         </ProjectSessionProvider>
       ) : (
@@ -1211,6 +1363,7 @@ export function FileManager() {
             onClose={() => setIsSettingsOpen(false)}
             defaultScope="global"
             onOpenProject={handleOpenProject}
+            onExitApp={requestExitApp}
           />
         </>
       )}
@@ -1238,6 +1391,32 @@ export function FileManager() {
         onRepair={() => void openResolvedProject()}
         onSearch={() => void searchForProjectLocation()}
         onSelectLocation={selectResolvedProjectLocation}
+      />
+
+      <ConfirmDialog
+        isOpen={pendingDirtyProjectClose !== null}
+        onClose={() => setPendingDirtyProjectClose(null)}
+        onConfirm={confirmDirtyProjectClose}
+        title="关闭项目标签"
+        message={pendingDirtyProjectClose
+          ? `项目“${pendingDirtyProjectClose.title}”中有未保存的文本修改：${pendingDirtyProjectClose.dirtyTabTitles.join('、')}。\n确定放弃这些修改并关闭项目吗？`
+          : ''}
+        confirmText="放弃修改并关闭"
+        cancelText="取消"
+        type="danger"
+      />
+
+      <ConfirmDialog
+        isOpen={pendingDirtyExit !== null}
+        onClose={() => setPendingDirtyExit(null)}
+        onConfirm={() => void confirmDirtyExit()}
+        title="有未保存的文本修改"
+        message={pendingDirtyExit
+          ? `检测到 ${pendingDirtyExit.dirtyLabels.length} 个未保存文本标签：${pendingDirtyExit.dirtyLabels.slice(0, 3).join('、')}${pendingDirtyExit.dirtyLabels.length > 3 ? '等' : ''}。\n确定放弃修改并结束程序吗？`
+          : ''}
+        confirmText="放弃修改并退出"
+        cancelText="取消"
+        type="danger"
       />
 
       {toast.isOpen && (

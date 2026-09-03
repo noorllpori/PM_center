@@ -147,6 +147,7 @@ export interface WorkspaceTabState {
   closeTab: (tabId: string) => void;
   reorderTabs: (fromId: string, toId: string) => void;
   updateTabDirty: (tabId: string, isDirty: boolean) => void;
+  updateTabEditorSnapshot: (tabId: string, snapshot: TextEditorTransferPayload) => void;
   resetTabs: () => void;
 }
 
@@ -441,6 +442,26 @@ export function createWorkspaceTabStore(storeOptions: CreateWorkspaceTabStoreOpt
         return {
           tabs: nextTabs,
         };
+      });
+    },
+
+    updateTabEditorSnapshot: (tabId, snapshot) => {
+      set((state) => {
+        let hasChanged = false;
+        const nextTabs = state.tabs.map((tab) => {
+          if (tab.id !== tabId || tab.type !== 'text') {
+            return tab;
+          }
+
+          hasChanged = true;
+          return {
+            ...tab,
+            isDirty: snapshot.isDirty,
+            editorSnapshot: snapshot,
+          };
+        });
+
+        return hasChanged ? { tabs: nextTabs } : state;
       });
     },
 

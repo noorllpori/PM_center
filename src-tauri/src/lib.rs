@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, Runtime,
+    Emitter, Manager, Runtime,
 };
 use tokio::sync::Mutex;
 
@@ -1390,9 +1390,8 @@ pub fn run() {
                         }
                     }
                     "quit" => {
-                        render_center::shutdown_all();
-                        smart_clipboard::shutdown();
-                        app.exit(0);
+                        let _ = show_window(app);
+                        let _ = app.emit("pm-center:request-exit", ());
                     }
                     _ => {}
                 })

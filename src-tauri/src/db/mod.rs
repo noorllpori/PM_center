@@ -1,5 +1,5 @@
 use chrono::DateTime;
-use rusqlite::{params, params_from_iter, Connection};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -995,12 +995,27 @@ impl Database {
 
         // 压缩并保存每一天的数据
         for (date, changes) in by_date {
+            let existing_data: Option<Vec<u8>> = tx
+                .query_row(
+                    "SELECT compressed_data FROM archived_changes WHERE date = ?",
+                    params![&date],
+                    |row| row.get(0),
+                )
+                .optional()?;
+
+            let mut merged_changes = match existing_data {
+                Some(data) => Self::decode_archived_changes(&data)?,
+                None => Vec::new(),
+            };
+            merged_changes.extend(changes);
+            let record_count = merged_changes.len() as i32;
+
             // 序列化为JSON
-            let json_data = serde_json::to_vec(&changes).unwrap_or_default();
+            let compressed = serde_json::to_vec(&merged_changes)
+                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
 
             // 使用简单压缩（这里用JSON，实际可以用gzip等）
             // TODO: 添加gzip压缩
-            let compressed = json_data;
 
             tx.execute(
                 r#"
@@ -1008,13 +1023,13 @@ impl Database {
                 VALUES (?1, ?2, ?3, ?4)
                 ON CONFLICT(date) DO UPDATE SET
                     compressed_data = excluded.compressed_data,
-                    record_count = excluded.record_count + archived_changes.record_count,
+                    record_count = excluded.record_count,
                     created_at = excluded.created_at
                 "#,
                 params![
                     date,
                     compressed,
-                    changes.len() as i32,
+                    record_count,
                     std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap()
@@ -1056,10 +1071,17 @@ impl Database {
             |row| row.get(0),
         )?;
 
-        // 解压缩（目前只是JSON反序列化）
-        let changes: Vec<FileChange> = serde_json::from_slice(&data).unwrap_or_default();
+        Self::decode_archived_changes(&data)
+    }
 
-        Ok(changes)
+    fn decode_archived_changes(data: &[u8]) -> Result<Vec<FileChange>, rusqlite::Error> {
+        serde_json::from_slice(data).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Blob,
+                Box::new(error),
+            )
+        })
     }
 
     pub fn get_archived_dates(&self) -> Result<Vec<String>, rusqlite::Error> {
@@ -1076,7 +1098,7 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::Database;
+    use super::{Database, FileChange};
 
     fn make_temp_project_path() -> std::path::PathBuf {
         let nonce = std::time::SystemTime::now()
@@ -1163,6 +1185,84 @@ mod tests {
             database.get_collection_item_paths(&collection.id).unwrap(),
             vec!["C:\\project\\a.png".to_string()],
         );
+
+        drop(database);
+        std::fs::remove_dir_all(project_path).unwrap();
+    }
+
+    #[test]
+    fn archiving_same_date_merges_existing_records() {
+        let project_path = make_temp_project_path();
+        std::fs::create_dir_all(&project_path).unwrap();
+        let database = Database::new(&project_path.to_string_lossy()).unwrap();
+        let old_timestamp = Database::current_timestamp() - (16 * 24 * 60 * 60);
+
+        database
+            .add_file_change(&FileChange {
+                id: 0,
+                project_path: project_path.to_string_lossy().into_owned(),
+                file_path: project_path
+                    .join("first.txt")
+                    .to_string_lossy()
+                    .into_owned(),
+                change_type: "created".to_string(),
+                file_size: Some(1),
+                timestamp: old_timestamp,
+                depth: 0,
+            })
+            .unwrap();
+        database.archive_old_changes().unwrap();
+
+        database
+            .add_file_change(&FileChange {
+                id: 0,
+                project_path: project_path.to_string_lossy().into_owned(),
+                file_path: project_path
+                    .join("second.txt")
+                    .to_string_lossy()
+                    .into_owned(),
+                change_type: "modified".to_string(),
+                file_size: Some(2),
+                timestamp: old_timestamp + 1,
+                depth: 0,
+            })
+            .unwrap();
+        database.archive_old_changes().unwrap();
+
+        let date = Database::timestamp_to_date(old_timestamp);
+        let changes = database.get_archived_changes(&date).unwrap();
+        assert_eq!(changes.len(), 2);
+        assert_eq!(
+            changes[0].file_path,
+            project_path.join("first.txt").to_string_lossy()
+        );
+        assert_eq!(
+            changes[1].file_path,
+            project_path.join("second.txt").to_string_lossy()
+        );
+
+        drop(database);
+        std::fs::remove_dir_all(project_path).unwrap();
+    }
+
+    #[test]
+    fn reading_corrupt_archived_data_returns_an_error() {
+        let project_path = make_temp_project_path();
+        std::fs::create_dir_all(&project_path).unwrap();
+        let database = Database::new(&project_path.to_string_lossy()).unwrap();
+        let date = "2020-01-01";
+
+        database
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO archived_changes(date,compressed_data,record_count,created_at) VALUES(?1,?2,1,0)",
+                rusqlite::params![date, b"not-json".as_slice()],
+            )
+            .unwrap();
+
+        assert!(database.get_archived_changes(date).is_err());
 
         drop(database);
         std::fs::remove_dir_all(project_path).unwrap();
