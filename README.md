@@ -59,6 +59,7 @@ Windows MSI 安装包会在系统“已安装的应用”中显示发布者“�
 - [ ] 新建普通文件模板与项目级快速创建流程。
 - [ ] Windows 窗口句柄监听，以及以此为基础的文件星链：单向/双向链接、拓扑视图与目录内关联查找。
 - [ ] 局域网二维码文件传输、权限确认、断点/失败恢复，以及后续协同或渲染农场。
+- [ ] 百度网盘跨设备项目同步：PMC Server 只保存相对路径、文件 hash、版本和差异，文件正文由各设备通过百度网盘传输。实施方案见 [下一项计划：百度网盘跨设备同步](./docs/NEXT_PLAN_BAIDU_SYNC.md)。
 - [ ] 云端登录、云端设置同步和插件商城服务端。
 - [ ] 快速水印插件示例。
 - [ ] MDX 支持与 MDT 编辑器体验优化。
@@ -153,6 +154,17 @@ npm run build
 
 ```bash
 npm run tauri build
+```
+
+### 百度网盘 CLI
+
+项目提供了一个 Windows/WSL 桥接 CLI，复用已安装的 `baidu-drive` skill 和 `bdpan` 登录状态。它使用 skill 的授权链接加 32 位授权码流程，不需要在项目里配置 AppKey，也不读取项目内的 token 文件。
+
+详细登录、WSL 配置和命令示例见 [百度网盘 CLI 操作说明](./docs/BAIDU_PAN.md)。最小入口如下：
+
+```powershell
+npm run baidu-pan -- help
+npm run baidu-pan -- login
 ```
 
 ## 使用说明

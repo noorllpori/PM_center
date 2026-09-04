@@ -12,6 +12,7 @@
     "plugin:init": "node scripts/plugin-tool.mjs init",
     "plugin:validate": "node scripts/plugin-tool.mjs validate",
     "plugin:pack": "node scripts/plugin-tool.mjs pack",
+    "baidu-pan": "node scripts/baidu-pan.mjs",
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",

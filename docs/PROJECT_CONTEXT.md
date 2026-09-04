@@ -26,12 +26,14 @@ PM Center 是面向本地制作项目的 Windows 优先桌面工作台。一个�
 | 本地配置 | `@tauri-apps/plugin-store` | `settingsStore`、任务状态、会话及部分调度预设。 |
 | 项目数据 | SQLite + 项目目录 | `.pm_center/data.db`、`.pm_center/tree_cache.db` 和缓存目录。 |
 | 应用级数据 | SQLite + 应用数据目录 | `smart_clipboard/clipboard_history.db`、图像载荷及设备协作数据；不写入项目 `.pm_center`。 |
+| 后台 CLI | Node.js + WSL skill 桥接 | `scripts/baidu-pan.mjs`：调用 `baidu-drive` skill 的 `login.sh` 和 `bdpan`，复用已授权的本地百度网盘状态。 |
 
 开发命令：
 
 ```powershell
 npm run tauri dev
 npm run build
+npm run baidu-pan -- help
 cd src-tauri; cargo check
 cd src-tauri; cargo test --lib
 ```
@@ -194,6 +196,15 @@ React invoke/listen
 - 跨网络协作使用可选的独立 PMC Server。服务器不可用时，UDP 31523 局域网发现、TCP 31524 私聊与文件直传保持完整可用。
 - 同一设备按稳定 `deviceId` 合并局域网与服务器在线来源。文本默认局域网优先并可回退服务器；文件在报价前固定通道，失败不自动切换。
 - PMC Server 使用 Axum、Tokio 与 SQLite WAL；消息每个会话保留最近 30 条，文件仅通过有界内存流式转发，不写入服务端磁盘。
+
+### 7.6 百度网盘 CLI
+
+- `scripts/baidu-pan.mjs` 是 Windows/WSL 桥接器，不重新实现百度 API，也不读取 skill 的 `~/.config/bdpan/config.json`。
+- `npm run baidu-pan -- login` 必须调用已安装 skill 的 `scripts/login.sh`；首次登录由脚本输出授权链接，用户在浏览器完成授权后输入 32 位授权码。禁止改为直接调用 `bdpan login` 子命令。
+- WSL 默认发行版为 `Ubuntu-22.04`，可用 `BAIDU_WSL_DISTRO` 覆盖；skill 默认位置为 `%USERPROFILE%\.codex\skills\baidu-drive`，可用 `BAIDU_SKILL_DIR` 覆盖。
+- 远端文件操作沿用 skill 的 `/apps/bdpan/` 路径限制和确认规则，支持列表、搜索、上传、下载、转存、分享、复制、移动、重命名、创建目录和删除。
+- Windows 本地路径会转换为 `/mnt/<盘符>/...` 后传给 WSL；授权配置和 Token 继续由 WSL 中的 `bdpan` 管理。
+- 完整命令见 [`docs/BAIDU_PAN.md`](./BAIDU_PAN.md)。旧的 AppKey 直连实现保留在 `scripts/baidu-pan-openapi.mjs`，不作为默认入口。
 
 ## 8. 扩展流程
 
